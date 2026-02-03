@@ -1,0 +1,1230 @@
+import SwiftUI
+import AppKit
+import AVKit
+import AVFoundation
+import Combine
+import PDFKit
+import WebKit
+
+@MainActor
+final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate, AVAudioPlayerDelegate {
+    enum OverlayMode: String, CaseIterable, Identifiable {
+        case countdown = "Timer"
+        case clock = "Clock"
+
+        var id: String { rawValue }
+    }
+
+    struct OverlayState: Equatable {
+        var mode: OverlayMode = .countdown
+        var isClockVisible: Bool = false
+        var isCountdownRunning: Bool = false
+        var countdownEndDate: Date? = nil
+    }
+
+    @Published var slides: [Slide] = []
+    @Published var currentSlideID: Slide.ID?
+    @Published var isPresenting = false
+    @Published var videoMuted = false
+    @Published var videoPaused = false
+    @Published var videoLoop = true
+    @Published var videoFill = false
+    @Published private(set) var backgroundVisualURL: URL? = nil
+    @Published var isBackgroundVisualVisible = true
+    @Published private(set) var backgroundAudioURL: URL? = nil
+    @Published private(set) var isBackgroundAudioPlaying = false
+    @Published private(set) var backgroundAudioLoop = true
+    @Published private(set) var backgroundAudioVolume: Double = 1.0
+    @Published var areSlidesVisible = true
+    @Published private(set) var overlay = OverlayState()
+    private var countdownToken = UUID()
+
+    private var backgroundAudioPlayer: AVAudioPlayer?
+
+    private var window: NSWindow?
+    private var preferredPresentationScreenID: CGDirectDisplayID?
+    private var screenParametersObserver: NSObjectProtocol?
+    private var screenRepositionWorkItem: DispatchWorkItem?
+
+    override init() {
+        super.init()
+        screenParametersObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.schedulePresentationWindowReposition()
+            }
+        }
+    }
+
+    deinit {
+        if let screenParametersObserver {
+            NotificationCenter.default.removeObserver(screenParametersObserver)
+        }
+        screenRepositionWorkItem?.cancel()
+        if #available(macOS 12.3, *) {
+            Task { @MainActor in
+                await ScreenCaptureManager.shared.stopAllCaptures()
+            }
+        }
+    }
+
+    var overlayMode: OverlayMode { overlay.mode }
+    var isClockVisible: Bool { overlay.isClockVisible }
+    var isCountdownRunning: Bool { overlay.isCountdownRunning }
+    var countdownEndDate: Date? { overlay.countdownEndDate }
+
+    var currentSlide: Slide? {
+        guard let currentSlideID else { return nil }
+        return slides.first { $0.id == currentSlideID }
+    }
+
+    var hasAvailableBackgroundVisual: Bool {
+        guard let url = backgroundVisualURL else { return false }
+        return FileManager.default.fileExists(atPath: url.path)
+    }
+
+    func setSlides(_ slides: [Slide]) {
+        self.slides = slides
+        currentSlideID = slides.first?.id
+    }
+
+    func clearSlides() {
+        slides = []
+        currentSlideID = nil
+    }
+
+    func addWindowCaptureSlide(windowID: CGWindowID, windowTitle: String) {
+        let newSlide = Slide(
+            index: slides.count + 1,
+            lines: [],
+            label: "Window: \(windowTitle)",
+            videoURL: nil,
+            pdfURL: nil,
+            pdfPageIndex: nil,
+            imageURL: nil,
+            captureWindowID: windowID
+        )
+
+        slides.append(newSlide)
+        currentSlideID = newSlide.id
+    }
+
+    func startPresentation(preferredScreen: NSScreen?, slidesVisible: Bool = true) {
+        guard window == nil else { return }
+        let screen = preferredScreen ?? NSScreen.main
+        preferredPresentationScreenID = screen?.displayID
+        let frame = screen?.frame ?? .zero
+
+        let view = PresentationView()
+            .environmentObject(self)
+
+        let hostingView = NSHostingView(rootView: view)
+        hostingView.translatesAutoresizingMaskIntoConstraints = false
+
+        let presentationWindow = PresentationWindow(
+            contentRect: frame,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false,
+            screen: screen
+        )
+        presentationWindow.isReleasedWhenClosed = false
+        presentationWindow.level = .screenSaver
+        presentationWindow.backgroundColor = .black
+        presentationWindow.isOpaque = true
+        presentationWindow.hasShadow = false
+        presentationWindow.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        presentationWindow.delegate = self
+        presentationWindow.session = self
+        let container = NSView(frame: NSRect(origin: .zero, size: frame.size))
+        container.wantsLayer = true
+        container.layer?.backgroundColor = NSColor.black.cgColor
+        container.addSubview(hostingView)
+        NSLayoutConstraint.activate([
+            hostingView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            hostingView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            hostingView.topAnchor.constraint(equalTo: container.topAnchor),
+            hostingView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+        ])
+        presentationWindow.contentView = container
+        presentationWindow.makeKeyAndOrderFront(nil)
+        presentationWindow.makeFirstResponder(presentationWindow)
+
+        if frame != .zero {
+            presentationWindow.setFrame(frame, display: true)
+        }
+
+        window = presentationWindow
+        isPresenting = true
+        areSlidesVisible = slidesVisible
+    }
+
+    func stopPresentation() {
+        guard let window else {
+            teardownPresentationState()
+            return
+        }
+        window.orderOut(nil)
+        window.close()
+    }
+
+    func showSlides(preferredScreen: NSScreen?) {
+        if !isPresenting {
+            startPresentation(preferredScreen: preferredScreen)
+        }
+        areSlidesVisible = true
+    }
+
+    func hideSlides() {
+        guard isPresenting else { return }
+        areSlidesVisible = false
+    }
+
+    func toggleBackgroundVisualVisibility(preferredScreen: NSScreen?) {
+        guard backgroundVisualURL != nil else { return }
+        if !isPresenting {
+            startPresentation(preferredScreen: preferredScreen, slidesVisible: false)
+            isBackgroundVisualVisible = true
+            return
+        }
+        isBackgroundVisualVisible.toggle()
+    }
+
+    func moveSelection(_ delta: Int) {
+        // Defer to avoid publishing changes during view updates.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            guard let currentID = self.currentSlideID,
+                  let index = self.slides.firstIndex(where: { $0.id == currentID }) else {
+                self.currentSlideID = self.slides.first?.id
+                return
+            }
+            let nextIndex = max(0, min(self.slides.count - 1, index + delta))
+            self.currentSlideID = self.slides[nextIndex].id
+        }
+    }
+
+    private func teardownPresentationState() {
+        screenRepositionWorkItem?.cancel()
+        screenRepositionWorkItem = nil
+        window = nil
+        isPresenting = false
+    }
+
+    private func schedulePresentationWindowReposition() {
+        guard isPresenting else { return }
+        screenRepositionWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.repositionPresentationWindowIfNeeded()
+        }
+        screenRepositionWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: workItem)
+    }
+
+    private func repositionPresentationWindowIfNeeded() {
+        guard let window else { return }
+        guard let targetScreen = resolvePreferredPresentationScreen() else { return }
+        let targetFrame = targetScreen.frame
+        guard targetFrame != .zero else { return }
+        guard window.frame != targetFrame else { return }
+        window.setFrame(targetFrame, display: true)
+    }
+
+    private func resolvePreferredPresentationScreen() -> NSScreen? {
+        if let preferredPresentationScreenID,
+           let exactMatch = NSScreen.screens.first(where: { $0.displayID == preferredPresentationScreenID }) {
+            return exactMatch
+        }
+
+        let fallbackScreen = NSScreen.screens.count > 1 ? NSScreen.screens[1] : NSScreen.main
+        preferredPresentationScreenID = fallbackScreen?.displayID
+        return fallbackScreen
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        deferTeardownPresentationState()
+    }
+
+    func startCountdown(minutes: Int) {
+        let safeMinutes = max(1, minutes)
+        let endDate = Date().addingTimeInterval(Double(safeMinutes) * 60.0)
+        applyOverlay { state in
+            state.mode = .countdown
+            state.isClockVisible = false
+            state.isCountdownRunning = true
+            state.countdownEndDate = endDate
+        }
+        let token = UUID()
+        countdownToken = token
+        let duration = Double(safeMinutes) * 60.0
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
+            guard let self else { return }
+            guard self.countdownToken == token else { return }
+            self.stopCountdown()
+        }
+    }
+
+    func stopCountdown() {
+        countdownToken = UUID()
+        applyOverlay { state in
+            state.isCountdownRunning = false
+            state.countdownEndDate = nil
+        }
+    }
+
+    func setOverlayMode(_ mode: OverlayMode) {
+        applyOverlay { state in
+            state.mode = mode
+            switch mode {
+            case .countdown:
+                state.isClockVisible = false
+            case .clock:
+                state.isCountdownRunning = false
+                state.countdownEndDate = nil
+            }
+        }
+    }
+
+    func setClockVisible(_ visible: Bool) {
+        applyOverlay { state in
+            state.mode = .clock
+            state.isCountdownRunning = false
+            state.countdownEndDate = nil
+            state.isClockVisible = visible
+        }
+    }
+
+    func remainingCountdownSeconds(at date: Date = Date()) -> Int {
+        guard isCountdownRunning, let end = countdownEndDate else { return 0 }
+        let remaining = Int(ceil(end.timeIntervalSince(date)))
+        return max(0, remaining)
+    }
+
+    func countdownDisplay(at date: Date = Date()) -> String {
+        let totalSeconds = remainingCountdownSeconds(at: date)
+        let minutes = totalSeconds / 60
+        let seconds = totalSeconds % 60
+        return String(format: "%02d:%02d", minutes, seconds)
+    }
+
+    var isTimeOverlayVisible: Bool {
+        switch overlay.mode {
+        case .countdown:
+            return overlay.isCountdownRunning
+        case .clock:
+            return overlay.isClockVisible
+        }
+    }
+
+    func clockDisplay(at date: Date = Date()) -> String {
+        Self.clockFormatter.string(from: date)
+    }
+
+    func setBackgroundVisual(_ url: URL?) {
+        backgroundVisualURL = url
+        isBackgroundVisualVisible = (url != nil)
+    }
+
+    func setBackgroundAudio(url: URL?, autoplay: Bool) {
+        if backgroundAudioURL == url {
+            if autoplay {
+                playBackgroundAudio()
+            }
+            return
+        }
+        backgroundAudioURL = url
+        configureBackgroundAudioPlayer(for: url, autoplay: autoplay)
+    }
+
+    func playBackgroundAudio() {
+        guard let player = backgroundAudioPlayer else {
+            if let url = backgroundAudioURL {
+                configureBackgroundAudioPlayer(for: url, autoplay: true)
+            }
+            return
+        }
+        player.play()
+        isBackgroundAudioPlaying = true
+    }
+
+    func pauseBackgroundAudio() {
+        backgroundAudioPlayer?.pause()
+        isBackgroundAudioPlaying = false
+    }
+
+    func stopBackgroundAudioPlayback() {
+        backgroundAudioPlayer?.stop()
+        backgroundAudioPlayer?.currentTime = 0
+        isBackgroundAudioPlaying = false
+    }
+
+    func clearBackgroundAudio() {
+        stopBackgroundAudioPlayback()
+        backgroundAudioPlayer = nil
+        backgroundAudioURL = nil
+    }
+
+    func setBackgroundAudioLoop(_ loop: Bool) {
+        backgroundAudioLoop = loop
+        backgroundAudioPlayer?.numberOfLoops = loop ? -1 : 0
+    }
+
+    func setBackgroundAudioVolume(_ volume: Double) {
+        let clamped = min(max(volume, 0.0), 1.0)
+        backgroundAudioVolume = clamped
+        backgroundAudioPlayer?.volume = Float(clamped)
+    }
+
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        DispatchQueue.main.async { [weak self] in
+            self?.isBackgroundAudioPlaying = false
+        }
+    }
+
+    func overlayTintColor(remaining: Int) -> Color {
+        if overlay.mode == .countdown && remaining <= 60 {
+            return .orange
+        }
+        return AccentColorProvider.color
+    }
+
+    private static let clockFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
+
+    private func applyOverlay(_ update: @escaping (inout OverlayState) -> Void) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            var next = self.overlay
+            update(&next)
+            if next != self.overlay {
+                self.overlay = next
+            }
+        }
+    }
+
+    private func deferTeardownPresentationState() {
+        DispatchQueue.main.async { [weak self] in
+            self?.teardownPresentationState()
+        }
+    }
+
+    private func configureBackgroundAudioPlayer(for url: URL?, autoplay: Bool) {
+        backgroundAudioPlayer?.stop()
+        backgroundAudioPlayer = nil
+        isBackgroundAudioPlaying = false
+
+        guard let url else { return }
+
+        do {
+            let player = try AVAudioPlayer(contentsOf: url)
+            player.delegate = self
+            player.numberOfLoops = backgroundAudioLoop ? -1 : 0
+            player.volume = Float(backgroundAudioVolume)
+            player.prepareToPlay()
+            backgroundAudioPlayer = player
+            if autoplay {
+                player.play()
+                isBackgroundAudioPlaying = true
+            }
+        } catch {
+            // Keep the URL so the selection persists even if the file is missing.
+        }
+    }
+
+}
+
+struct PresentationView: View {
+    @EnvironmentObject var session: PresentationSession
+    @AppStorage("presentationFontScale") private var presentationFontScale: Double = 1.0
+
+    var body: some View {
+        GeometryReader { proxy in
+            let size = proxy.size
+            let horizontalMargin = max(40, size.width * 0.1)
+            let maxWidth = max(0, size.width - horizontalMargin * 2)
+
+            ZStack {
+                Color.black
+                    .frame(width: size.width, height: size.height)
+
+                backgroundLayer
+                    .frame(width: size.width, height: size.height)
+
+                slidesLayer(in: size, maxWidth: maxWidth)
+                    .frame(width: size.width, height: size.height)
+
+                overlayLayer
+                    .frame(width: size.width, height: size.height)
+            }
+            .frame(width: size.width, height: size.height)
+            .clipped()
+        }
+        .ignoresSafeArea()
+    }
+
+    @ViewBuilder
+    private var backgroundLayer: some View {
+        if let backgroundURL = session.backgroundVisualURL,
+           session.hasAvailableBackgroundVisual,
+           session.isBackgroundVisualVisible {
+            let isVisible = shouldShowBackground(for: session.currentSlide)
+            BackgroundVisualView(url: backgroundURL, isVisible: isVisible)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
+                .overlay(Color.black.opacity(0.35))
+                .opacity(isVisible ? 1.0 : 0.0)
+                .allowsHitTesting(false)
+        }
+    }
+
+    @ViewBuilder
+    private func slidesLayer(in size: CGSize, maxWidth: CGFloat) -> some View {
+        ZStack {
+            let currentSlide = session.currentSlide
+            // Show black background only when a non-lyrics slide is actively shown.
+            // When there is no selected slide, keep projection visually equivalent to "slides hidden".
+            let isLyricsVisible = session.areSlidesVisible && (currentSlide.map(isLyricsSlide) ?? false)
+            let shouldShowBlackBg = session.areSlidesVisible && currentSlide != nil && !isLyricsVisible
+            if shouldShowBlackBg {
+                Color.black
+            }
+            VStack(spacing: 28) {
+                if session.areSlidesVisible, let slide = currentSlide {
+                        if #available(macOS 12.3, *), let windowID = slide.captureWindowID {
+                            WindowCaptureSlideView(windowID: windowID)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else if let videoURL = slide.videoURL {
+                            VideoSlideView(
+                                url: videoURL,
+                                isMuted: $session.videoMuted,
+                                isPaused: $session.videoPaused,
+                                isLooping: $session.videoLoop,
+                                isFill: $session.videoFill
+                            )
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else if let pdfURL = slide.pdfURL, let pageIndex = slide.pdfPageIndex {
+                            PDFSlideView(url: pdfURL, pageIndex: pageIndex)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else if let webpageURL = slide.webpageURL {
+                            WebpageSlideView(url: webpageURL)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else if let imageURL = slide.imageURL {
+                            ImageSlideView(url: imageURL)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else {
+                            ForEach(slide.lines) { line in
+                                VStack(spacing: 10) {
+                                    Text(line.text)
+                                        .font(dynamicFont(for: line, in: size, maxWidth: maxWidth))
+                                        .foregroundStyle(.white)
+                                        .multilineTextAlignment(.center)
+                                        .frame(maxWidth: maxWidth)
+                                        .lineLimit(nil)
+                                        .minimumScaleFactor(0.4)
+                                        .allowsTightening(true)
+                                }
+                            }
+                        }
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    @ViewBuilder
+    private var overlayLayer: some View {
+        if session.isTimeOverlayVisible {
+            TimeOverlay()
+                .environmentObject(session)
+                .padding(26)
+        }
+    }
+
+    private func isLyricsSlide(_ slide: Slide) -> Bool {
+        slide.videoURL == nil
+            && slide.pdfURL == nil
+            && slide.imageURL == nil
+            && slide.webpageURL == nil
+            && slide.captureWindowID == nil
+    }
+
+    private func shouldShowBackground(for slide: Slide?) -> Bool {
+        if !session.isBackgroundVisualVisible { return false }
+        if !session.areSlidesVisible { return true }
+        guard let slide else { return true }
+        return isLyricsSlide(slide)
+    }
+
+    private func lineFont(for line: SlideLine) -> Font {
+        let baseSize: CGFloat = 52
+        if line.languageTag.caseInsensitiveCompare("Meaning") == .orderedSame {
+            return .system(size: baseSize * 0.5, weight: .regular).italic()
+        }
+        return .system(size: baseSize, weight: .bold)
+    }
+
+    private func dynamicFont(for line: SlideLine, in size: CGSize, maxWidth: CGFloat) -> Font {
+        let isMeaning = line.languageTag.caseInsensitiveCompare("Meaning") == .orderedSame
+        let lineCount = max(1, session.currentSlide?.lines.count ?? 1)
+        let verticalPadding: CGFloat = 120
+        let availableHeight = max(80, (size.height - verticalPadding) / CGFloat(lineCount))
+
+        let maxSize: CGFloat = min(84, availableHeight * 0.9) * presentationFontScale
+        let minSize: CGFloat = 16 * presentationFontScale
+        let baseSize = fitFontSize(
+            text: line.text,
+            maxWidth: maxWidth,
+            maxHeight: availableHeight,
+            maxSize: maxSize,
+            minSize: minSize,
+            weight: isMeaning ? .regular : .bold,
+            italic: isMeaning
+        )
+
+        let finalSize = isMeaning ? max(minSize, baseSize * 0.5) : baseSize
+        let font = Font.system(size: finalSize, weight: isMeaning ? .regular : .bold)
+        return isMeaning ? font.italic() : font
+    }
+
+
+    private func fitFontSize(
+        text: String,
+        maxWidth: CGFloat,
+        maxHeight: CGFloat,
+        maxSize: CGFloat,
+        minSize: CGFloat,
+        weight: NSFont.Weight,
+        italic: Bool
+    ) -> CGFloat {
+        if text.isEmpty { return minSize }
+
+        // Check cache first
+        if let cached = CacheManager.shared.getCachedFontSize(
+            text: text,
+            maxWidth: maxWidth,
+            maxHeight: maxHeight,
+            maxSize: maxSize,
+            minSize: minSize,
+            weight: weight,
+            italic: italic
+        ) {
+            return cached
+        }
+
+        // Calculate if not cached
+        var low = minSize
+        var high = maxSize
+        var best = minSize
+        let constraint = CGSize(width: maxWidth, height: maxHeight)
+
+        while high - low > 0.5 {
+            let mid = (low + high) / 2
+            let font = makeNSFont(size: mid, weight: weight, italic: italic)
+            let rect = measure(text: text, font: font, constraint: constraint)
+            if rect.width <= constraint.width && rect.height <= constraint.height {
+                best = mid
+                low = mid
+            } else {
+                high = mid
+            }
+        }
+
+        // Cache the result
+        CacheManager.shared.cacheFontSize(
+            best,
+            text: text,
+            maxWidth: maxWidth,
+            maxHeight: maxHeight,
+            maxSize: maxSize,
+            minSize: minSize,
+            weight: weight,
+            italic: italic
+        )
+
+        return best
+    }
+
+    private func makeNSFont(size: CGFloat, weight: NSFont.Weight, italic: Bool) -> NSFont {
+        let base = NSFont.systemFont(ofSize: size, weight: weight)
+        if italic {
+            return NSFontManager.shared.convert(base, toHaveTrait: .italicFontMask)
+        }
+        return base
+    }
+
+    private func measure(text: String, font: NSFont, constraint: CGSize) -> CGRect {
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineBreakMode = .byWordWrapping
+        paragraphStyle.alignment = .center
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .paragraphStyle: paragraphStyle
+        ]
+        let attributed = NSAttributedString(string: text, attributes: attrs)
+        return attributed.boundingRect(
+            with: constraint,
+            options: [.usesLineFragmentOrigin, .usesFontLeading]
+        )
+    }
+
+}
+
+struct BackgroundVisualView: View {
+    let url: URL
+    let isVisible: Bool
+
+    var body: some View {
+        if isVideoURL(url) {
+            BackgroundVideoView(url: url, isVisible: isVisible)
+        } else {
+            BackgroundImageView(url: url)
+        }
+    }
+
+    private func isVideoURL(_ url: URL) -> Bool {
+        let ext = url.pathExtension.lowercased()
+        return ["mp4", "mov", "m4v", "avi", "mkv"].contains(ext)
+    }
+}
+
+struct BackgroundImageView: View {
+    let url: URL
+    @State private var image: NSImage?
+
+    var body: some View {
+        ZStack {
+            Color.black
+            if let image = image {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipped()
+            }
+        }
+        .onAppear {
+            loadImage()
+        }
+        .onChange(of: url) { _, _ in
+            loadImage()
+        }
+    }
+
+    private func loadImage() {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let loadedImage = NSImage(contentsOf: url)
+            DispatchQueue.main.async {
+                self.image = loadedImage
+            }
+        }
+    }
+}
+
+struct BackgroundVideoView: View {
+    let url: URL
+    let isVisible: Bool
+    @State private var player: AVPlayer? = nil
+    @State private var endObserver: Any? = nil
+    @State private var configuredURL: URL? = nil
+
+    var body: some View {
+        AVPlayerViewRepresentable(
+            player: player,
+            isMuted: true,
+            isFill: true
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear {
+            configurePlayer()
+        }
+        .onChange(of: url) { _, _ in
+            configurePlayer()
+        }
+        .onChange(of: isVisible) { _, newValue in
+            if newValue {
+                player?.play()
+            } else {
+                player?.pause()
+            }
+        }
+        .onDisappear {
+            teardownPlayer()
+        }
+    }
+
+    private func configurePlayer() {
+        if configuredURL == url, let currentPlayer = player {
+            currentPlayer.isMuted = true
+            if isVisible {
+                currentPlayer.play()
+            } else {
+                currentPlayer.pause()
+            }
+            configureLoopObserver()
+            return
+        }
+
+        teardownPlayer()
+        let newPlayer = AVPlayer(url: url)
+        newPlayer.allowsExternalPlayback = false
+        newPlayer.isMuted = true
+        player = newPlayer
+        configuredURL = url
+        if isVisible {
+            newPlayer.play()
+        }
+        configureLoopObserver()
+    }
+
+    private func teardownPlayer() {
+        removeLoopObserver()
+        endObserver = nil
+        player?.pause()
+        player = nil
+        configuredURL = nil
+    }
+
+    private func configureLoopObserver() {
+        removeLoopObserver()
+        guard let currentItem = player?.currentItem else { return }
+        let currentPlayer = player
+        endObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: currentItem,
+            queue: .main
+        ) { _ in
+            currentPlayer?.seek(to: .zero)
+            currentPlayer?.play()
+        }
+    }
+
+    private func removeLoopObserver() {
+        if let endObserver {
+            NotificationCenter.default.removeObserver(endObserver)
+        }
+    }
+}
+
+struct TimeOverlay: View {
+    @EnvironmentObject var session: PresentationSession
+    @AppStorage("overlayScale") private var overlayScale: Double = 1.0
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1.0)) { context in
+            let remaining = session.remainingCountdownSeconds(at: context.date)
+            overlayView(remaining: remaining, date: context.date)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .padding(.trailing, 28)
+                .padding(.top, 28)
+        }
+    }
+
+    private func overlayView(remaining: Int, date: Date) -> some View {
+        let mode = session.overlayMode
+        let labelText = mode == .clock ? "Clock" : "Timer"
+        let timeText = mode == .clock
+            ? session.clockDisplay(at: date)
+            : session.countdownDisplay(at: date)
+        let baseColor = backgroundColor(remaining: remaining)
+        return OverlayBadgeView(
+            label: labelText,
+            text: timeText,
+            scale: overlayScale,
+            tint: baseColor
+        )
+    }
+
+    private func backgroundColor(remaining: Int) -> Color {
+        session.overlayTintColor(remaining: remaining)
+    }
+}
+
+struct VideoSlideView: View {
+    let url: URL
+    @Binding var isMuted: Bool
+    @Binding var isPaused: Bool
+    @Binding var isLooping: Bool
+    @Binding var isFill: Bool
+    @State private var player: AVPlayer? = nil
+    @State private var endObserver: Any? = nil
+    @State private var configuredURL: URL? = nil
+
+    var body: some View {
+        AVPlayerViewRepresentable(
+            player: player,
+            isMuted: isMuted,
+            isFill: isFill
+        )
+            .onAppear {
+                configurePlayer()
+            }
+            .onChange(of: url) { _, _ in
+                configurePlayer()
+            }
+            .onChange(of: isMuted) { _, newValue in
+                player?.isMuted = newValue
+            }
+            .onChange(of: isPaused) { _, newValue in
+                if newValue {
+                    player?.pause()
+                } else {
+                    player?.play()
+                }
+            }
+            .onChange(of: isLooping) { _, _ in
+                configureLoopObserver()
+            }
+            .onChange(of: isFill) { _, _ in
+                // handled in AVPlayerViewRepresentable
+            }
+            .onDisappear {
+                teardownPlayer()
+            }
+    }
+
+    private func configurePlayer() {
+        if configuredURL == url, let currentPlayer = player {
+            currentPlayer.isMuted = isMuted
+            if isPaused {
+                currentPlayer.pause()
+            } else {
+                currentPlayer.play()
+            }
+            configureLoopObserver()
+            return
+        }
+
+        teardownPlayer()
+        let newPlayer = AVPlayer(url: url)
+        newPlayer.allowsExternalPlayback = false
+        player = newPlayer
+        configuredURL = url
+        newPlayer.isMuted = isMuted
+        if isPaused {
+            newPlayer.pause()
+        } else {
+            newPlayer.play()
+        }
+        configureLoopObserver()
+    }
+
+    private func teardownPlayer() {
+        removeLoopObserver()
+        endObserver = nil
+        player?.pause()
+        player = nil
+        configuredURL = nil
+    }
+
+    private func configureLoopObserver() {
+        removeLoopObserver()
+        guard isLooping, let currentItem = player?.currentItem else { return }
+        let currentPlayer = player
+        endObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: currentItem,
+            queue: .main
+        ) { _ in
+            currentPlayer?.seek(to: .zero)
+            currentPlayer?.play()
+        }
+    }
+
+    private func removeLoopObserver() {
+        if let endObserver {
+            NotificationCenter.default.removeObserver(endObserver)
+        }
+    }
+}
+
+struct PDFSlideView: NSViewRepresentable {
+    let url: URL
+    let pageIndex: Int
+
+    func makeNSView(context: Context) -> PDFView {
+        let view = PDFView()
+        view.autoScales = true
+        view.displayMode = .singlePage
+        view.displayDirection = .vertical
+        view.backgroundColor = .clear
+        view.displaysPageBreaks = false
+        view.pageBreakMargins = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+        view.displaysAsBook = false
+        if let document = PDFDocument(url: url) {
+            view.document = document
+            if let page = document.page(at: pageIndex) {
+                view.go(to: page)
+            }
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: PDFView, context: Context) {
+        if nsView.document?.documentURL != url {
+            nsView.document = PDFDocument(url: url)
+        }
+        nsView.backgroundColor = .clear
+        nsView.displaysPageBreaks = false
+        nsView.pageBreakMargins = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+        nsView.displaysAsBook = false
+        if let document = nsView.document, let page = document.page(at: pageIndex) {
+            nsView.go(to: page)
+        }
+    }
+}
+
+struct WebpageSlideView: View {
+    let url: URL
+
+    var body: some View {
+        WebpageViewRepresentable(url: url)
+            .background(Color.white)
+    }
+}
+
+struct WebpageViewRepresentable: NSViewRepresentable {
+    let url: URL
+    var onTitleChange: ((String) -> Void)? = nil
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onTitleChange: onTitleChange)
+    }
+
+    func makeNSView(context: Context) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+        let view = WKWebView(frame: .zero, configuration: configuration)
+        view.allowsMagnification = false
+        view.allowsBackForwardNavigationGestures = false
+        view.underPageBackgroundColor = .white
+        view.navigationDelegate = context.coordinator
+        view.uiDelegate = context.coordinator
+        context.coordinator.load(url: url, in: view)
+        return view
+    }
+
+    func updateNSView(_ nsView: WKWebView, context: Context) {
+        context.coordinator.load(url: url, in: nsView)
+    }
+
+    static func dismantleNSView(_ nsView: WKWebView, coordinator: Coordinator) {
+        coordinator.teardown(nsView)
+    }
+
+    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+        private var requestedURL: URL?
+        private var isShowingFailure = false
+        private let onTitleChange: ((String) -> Void)?
+
+        init(onTitleChange: ((String) -> Void)? = nil) {
+            self.onTitleChange = onTitleChange
+        }
+
+        func load(url: URL, in webView: WKWebView) {
+            guard requestedURL != url || isShowingFailure else { return }
+            requestedURL = url
+            isShowingFailure = false
+            webView.load(URLRequest(url: url))
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            isShowingFailure = false
+            if let title = webView.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !title.isEmpty {
+                onTitleChange?(title)
+            }
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            showFailure(error, in: webView)
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            showFailure(error, in: webView)
+        }
+
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            guard let requestedURL else { return }
+            isShowingFailure = false
+            webView.load(URLRequest(url: requestedURL))
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            runOpenPanelWith parameters: WKOpenPanelParameters,
+            initiatedByFrame frame: WKFrameInfo,
+            completionHandler: @escaping @MainActor ([URL]?) -> Void
+        ) {
+            let panel = NSOpenPanel()
+            panel.canChooseFiles = true
+            panel.canChooseDirectories = parameters.allowsDirectories
+            panel.allowsMultipleSelection = parameters.allowsMultipleSelection
+            panel.canCreateDirectories = false
+            panel.resolvesAliases = true
+
+            if let window = webView.window {
+                panel.beginSheetModal(for: window) { response in
+                    completionHandler(response == .OK ? panel.urls : nil)
+                }
+            } else {
+                let response = panel.runModal()
+                completionHandler(response == .OK ? panel.urls : nil)
+            }
+        }
+
+        func teardown(_ webView: WKWebView) {
+            requestedURL = nil
+            isShowingFailure = false
+            webView.stopLoading()
+            webView.navigationDelegate = nil
+            webView.uiDelegate = nil
+            webView.load(URLRequest(url: URL(string: "about:blank")!))
+        }
+
+        private func showFailure(_ error: Error, in webView: WKWebView) {
+            guard let requestedURL else { return }
+            isShowingFailure = true
+            let message = (error as NSError).localizedDescription
+                .replacingOccurrences(of: "&", with: "&amp;")
+                .replacingOccurrences(of: "<", with: "&lt;")
+                .replacingOccurrences(of: ">", with: "&gt;")
+            let host = (requestedURL.host(percentEncoded: false) ?? requestedURL.absoluteString)
+                .replacingOccurrences(of: "&", with: "&amp;")
+                .replacingOccurrences(of: "<", with: "&lt;")
+                .replacingOccurrences(of: ">", with: "&gt;")
+            webView.loadHTMLString(
+                """
+                <html>
+                <body style="margin:0;background:#111;color:#f5f5f5;font: -apple-system-body;display:flex;align-items:center;justify-content:center;height:100vh;">
+                  <div style="max-width:760px;padding:32px;text-align:center;">
+                    <div style="font: -apple-system-title2;font-weight:600;margin-bottom:12px;">Unable to load webpage</div>
+                    <div style="opacity:0.8;margin-bottom:8px;">\(host)</div>
+                    <div style="opacity:0.72;">\(message)</div>
+                  </div>
+                </body>
+                </html>
+                """,
+                baseURL: nil
+            )
+        }
+    }
+}
+
+struct AVPlayerViewRepresentable: NSViewRepresentable {
+    let player: AVPlayer?
+    let isMuted: Bool
+    let isFill: Bool
+
+    func makeNSView(context: Context) -> AVPlayerView {
+        let view = AVPlayerView()
+        view.controlsStyle = .none
+        view.videoGravity = isFill ? .resizeAspectFill : .resizeAspect
+        view.player = player
+        return view
+    }
+
+    func updateNSView(_ nsView: AVPlayerView, context: Context) {
+        nsView.player = player
+        nsView.player?.isMuted = isMuted
+        nsView.videoGravity = isFill ? .resizeAspectFill : .resizeAspect
+    }
+}
+
+final class PresentationWindow: NSWindow {
+    weak var session: PresentationSession?
+
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+
+    override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 53: // Esc
+            cancelOperation(nil)
+        case 18 where event.modifierFlags.contains(.command): // Cmd+1
+            requestStopProjection()
+        case 19 where event.modifierFlags.contains(.command): // Cmd+2
+            requestToggleSlidesVisibility()
+        case 20 where event.modifierFlags.contains(.command): // Cmd+3
+            requestClearBackgroundVisual()
+        case 21 where event.modifierFlags.contains(.command): // Cmd+4
+            requestClearBackgroundAudio()
+        case 23 where event.modifierFlags.contains(.command): // Cmd+5
+            requestClearAllLayers()
+        case 123, 126, 116: // Left, Up, Page Up
+            requestMoveSelection(-1)
+        case 124, 125, 121: // Right, Down, Page Down
+            requestMoveSelection(1)
+        default:
+            super.keyDown(with: event)
+        }
+    }
+
+    override func cancelOperation(_ sender: Any?) {
+        requestHideSlides()
+    }
+
+    private func requestHideSlides() {
+        DispatchQueue.main.async { [weak self] in
+            self?.session?.hideSlides()
+        }
+    }
+
+    private func requestStopProjection() {
+        DispatchQueue.main.async { [weak self] in
+            self?.session?.stopPresentation()
+        }
+    }
+
+    private func requestToggleSlidesVisibility() {
+        DispatchQueue.main.async { [weak self] in
+            guard let session = self?.session else { return }
+            if session.areSlidesVisible {
+                session.hideSlides()
+            } else {
+                session.showSlides(preferredScreen: nil)
+            }
+        }
+    }
+
+    private func requestClearBackgroundVisual() {
+        DispatchQueue.main.async { [weak self] in
+            self?.session?.setBackgroundVisual(nil)
+        }
+    }
+
+    private func requestClearBackgroundAudio() {
+        DispatchQueue.main.async { [weak self] in
+            self?.session?.clearBackgroundAudio()
+        }
+    }
+
+    private func requestClearAllLayers() {
+        DispatchQueue.main.async { [weak self] in
+            guard let session = self?.session else { return }
+            session.hideSlides()
+            session.setBackgroundVisual(nil)
+            session.clearBackgroundAudio()
+        }
+    }
+
+    private func requestMoveSelection(_ delta: Int) {
+        DispatchQueue.main.async { [weak self] in
+            self?.session?.moveSelection(delta)
+        }
+    }
+}
+
+private extension NSScreen {
+    var displayID: CGDirectDisplayID? {
+        guard let number = deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
+            return nil
+        }
+        return CGDirectDisplayID(number.uint32Value)
+    }
+}

@@ -1,0 +1,784 @@
+import SwiftUI
+import AppKit
+import CoreGraphics
+
+enum SidebarSelection: Hashable {
+    case library(URL)
+    case playlist(UUID)
+    case web(URL)
+    case window(CGWindowID)
+}
+
+struct PlaylistSidebarItem: Identifiable, Hashable {
+    let id: UUID
+    let title: String
+    let exists: Bool
+}
+
+struct SidebarView: View {
+    @ObservedObject var session: PresentationSession
+    let isWindowCaptureSupported: Bool
+    let libraryFiles: [URL]
+    let playlistItems: [PlaylistSidebarItem]
+    let libraryRootURL: URL?
+    let downloadsURL: URL?
+    let libraryFolders: [URL]
+    let captureWindows: [ScreenCaptureManager.CapturedWindow]
+    @Binding var librarySearchQuery: String
+    @Binding var webpageDraft: String
+    let webpageURLs: [URL]
+    let selectedWebpageURL: URL?
+    @Binding var selectedLibraryFolder: URL?
+    @Binding var selectedFileURL: URL?
+    @Binding var selectedPlaylistEntryID: UUID?
+    @Binding var selectedPlaylistEntryIDs: Set<UUID>
+    @Binding var sidebarSelection: SidebarSelection?
+    @Binding var backgroundAudioLoop: Bool
+    @Binding var overlayScaleDraft: Double
+    @Binding var backgroundAudioVolumeDraft: Double
+    @Binding var countdownMinutes: Int
+    @Binding var presentationFontScale: Double
+    @Binding var thumbnailFontScale: Double
+    @Binding var thumbnailScale: Double
+    @Binding var windowCaptureFrameRate: Int
+    @FocusState.Binding var isSidebarFocused: Bool
+    let librarySearchMinimumCharacterCount: Int
+    let librarySearchResultCount: Int
+    let isLibrarySearchIndexing: Bool
+
+    let displayName: (URL) -> String
+    let titleForWebpage: (URL) -> String
+    let onChooseFile: () -> Void
+    let onRefreshLibrary: () -> Void
+    let onSelectLibraryFolder: (URL?) -> Void
+    let onSelectDownloads: (URL) -> Void
+    let onAddSelectedToPlaylist: () -> Void
+    let onRemoveSelectedFromPlaylist: () -> Void
+    let onMovePlaylistUp: () -> Void
+    let onMovePlaylistDown: () -> Void
+    let onChooseBackgroundVisual: () -> Void
+    let onClearBackgroundVisual: () -> Void
+    let onChooseBackgroundAudio: () -> Void
+    let onPlayPauseBackgroundAudio: () -> Void
+    let onStopBackgroundAudio: () -> Void
+    let onClearBackgroundAudio: () -> Void
+    let onApplyBackgroundAudioVolume: (Double) -> Void
+    let onOverlayScaleDraftChange: (Double) -> Void
+    let onSetOverlayMode: (PresentationSession.OverlayMode) -> Void
+    let onStartCountdown: (Int) -> Void
+    let onStopCountdown: () -> Void
+    let onSetClockVisible: (Bool) -> Void
+    let onSelectionChange: (SidebarSelection?) -> Void
+    let onPreviewWebpage: () -> Void
+    let onClearWebpage: () -> Void
+    let onPickWindow: () -> Void
+    let onClearSelectedWindow: () -> Void
+    @State private var playlistSelectionAnchor: UUID?
+
+    var body: some View {
+        GeometryReader { proxy in
+            let libraryListMaxHeight = max(160, min(320, proxy.size.height * 0.35))
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    sidebarSectionHeader("Library", systemImage: "folder")
+                    libraryControls
+                    sidebarScrollableFileList(libraryFiles, maxHeight: libraryListMaxHeight) { .library($0) }
+
+                    sectionDivider
+
+                    sidebarSectionHeader("Web", systemImage: "globe")
+                    webControls
+
+                    sectionDivider
+
+                    sidebarSectionHeader("Playlist", systemImage: "folder")
+                    playlistControls
+                    sidebarPlaylistList
+
+                    if isWindowCaptureSupported {
+                        sectionDivider
+
+                        sidebarSectionHeader("Windows", systemImage: "macwindow")
+                        windowsControls
+                    }
+
+                    sectionDivider
+
+                    sidebarSectionHeader("Background", systemImage: "photo.on.rectangle")
+                    backgroundControls
+
+                    sectionDivider
+
+                    sidebarSectionHeader("Timer", systemImage: "timer")
+                    timerControls
+
+                    sectionDivider
+
+                    sidebarSectionHeader("Appearance", systemImage: "slider.horizontal.3")
+                    appearanceControls
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+        .background(
+            VisualEffectView(material: .sidebar, blendingMode: .withinWindow)
+                .ignoresSafeArea()
+        )
+        .controlSize(.small)
+        .focusEffectDisabled(true)
+        .overlay(
+            Color.clear
+                .frame(width: 1, height: 1)
+                .focusable(true)
+                .focusEffectDisabled(true)
+                .focused($isSidebarFocused)
+                .onMoveCommand { direction in
+                    guard isSidebarFocused else { return }
+                    handleSidebarMoveCommand(direction)
+                }
+        )
+        .onChange(of: sidebarSelection) { _, newValue in
+            onSelectionChange(newValue)
+        }
+        .font(.subheadline)
+    }
+
+    private var libraryControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Button("Open File") { onChooseFile() }
+                    .sidebarActionStyle()
+                Button("Refresh") { onRefreshLibrary() }
+                    .sidebarActionStyle()
+                Button("Add to Playlist") { onAddSelectedToPlaylist() }
+                    .sidebarActionStyle(primary: true)
+                    .disabled(selectedFileURL == nil)
+            }
+            if let rootURL = libraryRootURL {
+                Text(rootURL.path)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            librarySearchControls
+
+            HStack(spacing: 8) {
+                Picker("Library", selection: $selectedLibraryFolder) {
+                    Text("Root").tag(Optional<URL>.none)
+                    ForEach(libraryFolders, id: \.self) { folder in
+                        Text(folder.lastPathComponent).tag(Optional(folder))
+                    }
+                }
+                .pickerStyle(.menu)
+                .controlSize(.small)
+
+                if let downloadsURL {
+                    Button {
+                        selectedLibraryFolder = nil
+                        onSelectDownloads(downloadsURL)
+                    } label: {
+                        Label("Downloads", systemImage: "arrow.down.circle")
+                    }
+                    .sidebarActionStyle()
+                }
+            }
+            .onChange(of: selectedLibraryFolder) { _, newValue in
+                onSelectLibraryFolder(newValue)
+            }
+        }
+    }
+
+    private var librarySearchControls: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+
+                TextField("Search lyrics and filenames", text: $librarySearchQuery)
+                    .textFieldStyle(.plain)
+
+                if !librarySearchQuery.isEmpty {
+                    Button {
+                        librarySearchQuery = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 24)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color(NSColor.controlBackgroundColor).opacity(0.65))
+            )
+
+            if shouldShowSearchMinimumHint {
+                Text("Type at least \(librarySearchMinimumCharacterCount) characters")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else if isLibrarySearchIndexing {
+                Text("Indexing text files...")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else if shouldShowNoSearchResults {
+                Text("No matches")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var webControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "globe")
+                    .foregroundStyle(.secondary)
+
+                TextField("Enter webpage URL", text: $webpageDraft)
+                    .textFieldStyle(.plain)
+                    .onSubmit {
+                        onPreviewWebpage()
+                    }
+                    .submitLabel(.go)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 24)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color(NSColor.controlBackgroundColor).opacity(0.65))
+            )
+
+            ForEach(webpageURLs, id: \.self) { url in
+                Button {
+                    isSidebarFocused = true
+                    let selectionValue = SidebarSelection.web(url)
+                    if sidebarSelection == selectionValue {
+                        onSelectionChange(selectionValue)
+                    } else {
+                        sidebarSelection = selectionValue
+                    }
+                } label: {
+                    sidebarRow(
+                        title: titleForWebpage(url),
+                        isSelected: sidebarSelection == .web(url)
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+
+            if let selectedWebpageURL {
+                HStack(spacing: 8) {
+                    Button {
+                        onClearWebpage()
+                    } label: {
+                        Label("Clear", systemImage: "xmark.circle")
+                    }
+                    .labelStyle(.iconOnly)
+                    .sidebarActionStyle()
+                    .help("Clear webpage preview")
+
+                    Text(titleForWebpage(selectedWebpageURL))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+        }
+    }
+
+    private var trimmedLibrarySearchQuery: String {
+        librarySearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var isLibrarySearchActive: Bool {
+        trimmedLibrarySearchQuery.count >= librarySearchMinimumCharacterCount
+    }
+
+    private var shouldShowSearchMinimumHint: Bool {
+        !trimmedLibrarySearchQuery.isEmpty && trimmedLibrarySearchQuery.count < librarySearchMinimumCharacterCount
+    }
+
+    private var shouldShowNoSearchResults: Bool {
+        isLibrarySearchActive && !isLibrarySearchIndexing && librarySearchResultCount == 0
+    }
+
+    private var playlistControls: some View {
+        HStack(spacing: 10) {
+            Button("Remove Selected") { onRemoveSelectedFromPlaylist() }
+                .sidebarActionStyle()
+                .disabled(selectedPlaylistEntryIDs.isEmpty)
+            Button {
+                onMovePlaylistUp()
+            } label: {
+                Label("Move Up", systemImage: "arrow.up")
+            }
+            .labelStyle(.iconOnly)
+            .sidebarActionStyle()
+            .disabled(selectedPlaylistEntryIDs.isEmpty)
+            Button {
+                onMovePlaylistDown()
+            } label: {
+                Label("Move Down", systemImage: "arrow.down")
+            }
+            .labelStyle(.iconOnly)
+            .sidebarActionStyle()
+            .disabled(selectedPlaylistEntryIDs.isEmpty)
+        }
+    }
+
+    private var windowsControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Button("Pick Window") {
+                    onPickWindow()
+                }
+                .sidebarActionStyle(primary: true)
+                .help("Choose a window to preview")
+
+                Button {
+                    onClearSelectedWindow()
+                } label: {
+                    Label("Clear", systemImage: "xmark.circle")
+                }
+                .labelStyle(.iconOnly)
+                .sidebarActionStyle()
+                .disabled(!hasSelectedWindow)
+                .help("Clear selected window")
+            }
+
+            if !captureWindows.isEmpty {
+                sidebarWindowsList
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Frame Rate")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Picker("Frame Rate", selection: $windowCaptureFrameRate) {
+                    Text("24").tag(24)
+                    Text("30").tag(30)
+                    Text("60").tag(60)
+                }
+                .pickerStyle(.segmented)
+                .controlSize(.small)
+                Text("Applies to the next window capture.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var hasSelectedWindow: Bool {
+        if case .window = sidebarSelection {
+            return true
+        }
+        return false
+    }
+
+    private var backgroundControls: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Visual")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    Button("Set Visual") { onChooseBackgroundVisual() }
+                        .sidebarActionStyle(primary: true)
+                        .help("Choose a background image or video")
+                    Button {
+                        onClearBackgroundVisual()
+                    } label: {
+                        Label("Clear", systemImage: "xmark.circle")
+                    }
+                    .labelStyle(.iconOnly)
+                    .sidebarActionStyle()
+                    .disabled(session.backgroundVisualURL == nil)
+                }
+                if let url = session.backgroundVisualURL {
+                    Text(displayName(url))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Text("Applies to lyrics only")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Audio")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    Button("Set Audio") { onChooseBackgroundAudio() }
+                        .sidebarActionStyle(primary: true)
+                        .help("Choose a background audio file")
+                    Button {
+                        onPlayPauseBackgroundAudio()
+                    } label: {
+                        Label(session.isBackgroundAudioPlaying ? "Pause" : "Play",
+                              systemImage: session.isBackgroundAudioPlaying ? "pause.fill" : "play.fill")
+                    }
+                    .labelStyle(.iconOnly)
+                    .sidebarActionStyle()
+                    .disabled(session.backgroundAudioURL == nil)
+                    .help(session.isBackgroundAudioPlaying ? "Pause" : "Play")
+
+                    Button {
+                        onStopBackgroundAudio()
+                    } label: {
+                        Label("Stop", systemImage: "stop.fill")
+                    }
+                    .labelStyle(.iconOnly)
+                    .sidebarActionStyle()
+                    .disabled(session.backgroundAudioURL == nil)
+                    .help("Stop")
+
+                    Button {
+                        onClearBackgroundAudio()
+                    } label: {
+                        Label("Clear", systemImage: "xmark.circle")
+                    }
+                    .labelStyle(.iconOnly)
+                    .sidebarActionStyle()
+                    .disabled(session.backgroundAudioURL == nil)
+                    .help("Clear audio")
+
+                    Toggle(isOn: $backgroundAudioLoop) {
+                        Label("Loop", systemImage: "repeat")
+                    }
+                    .labelStyle(.iconOnly)
+                    .toggleStyle(.button)
+                    .controlSize(.small)
+                    .disabled(session.backgroundAudioURL == nil)
+                    .help("Loop")
+                }
+                if let url = session.backgroundAudioURL {
+                    Text(displayName(url))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Audio Volume")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 8) {
+                        Text("\(Int(backgroundAudioVolumeDraft * 100))%")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 40, alignment: .trailing)
+                        Slider(value: $backgroundAudioVolumeDraft, in: 0.0...1.0, step: 0.01)
+                            .controlSize(.small)
+                            .onChange(of: backgroundAudioVolumeDraft) { _, newValue in
+                                onApplyBackgroundAudioVolume(newValue)
+                            }
+                    }
+                }
+            }
+        }
+    }
+
+    private var timerControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Picker(
+                "Overlay Mode",
+                selection: Binding(
+                    get: { session.overlayMode },
+                    set: { newMode in
+                        onSetOverlayMode(newMode)
+                    }
+                )
+            ) {
+                ForEach(PresentationSession.OverlayMode.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .controlSize(.small)
+            .labelsHidden()
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Overlay Size")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    Text("\(Int(overlayScaleDraft * 100))%")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 40, alignment: .trailing)
+                    Slider(value: $overlayScaleDraft, in: 0.5...6.0, step: 0.1)
+                        .controlSize(.small)
+                        .onChange(of: overlayScaleDraft) { _, newValue in
+                            onOverlayScaleDraftChange(newValue)
+                        }
+                }
+            }
+
+            if session.overlayMode == .countdown {
+                HStack(spacing: 8) {
+                    Text("\(countdownMinutes)m")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 40, alignment: .trailing)
+                    Slider(
+                        value: Binding(
+                            get: { Double(countdownMinutes) },
+                            set: { countdownMinutes = Int($0.rounded()) }
+                        ),
+                        in: 1...30,
+                        step: 1
+                    )
+                    .controlSize(.small)
+                }
+                HStack(spacing: 8) {
+                    Button(session.isCountdownRunning ? "Restart Timer" : "Start Timer") {
+                        onStartCountdown(countdownMinutes)
+                    }
+                    .sidebarActionStyle(primary: true)
+                    Button("Stop") {
+                        onStopCountdown()
+                    }
+                    .sidebarActionStyle()
+                    .disabled(!session.isCountdownRunning)
+                }
+            } else {
+                HStack(spacing: 8) {
+                    Button(session.isClockVisible ? "Hide Clock" : "Show Clock") {
+                        onSetClockVisible(!session.isClockVisible)
+                    }
+                    .sidebarActionStyle(primary: true)
+                }
+            }
+        }
+    }
+
+    private var appearanceControls: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Presentation Font Size")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    Text("\(Int(presentationFontScale * 100))%")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 40, alignment: .trailing)
+                    Slider(value: $presentationFontScale, in: 0.5...2.0, step: 0.1)
+                        .controlSize(.small)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Thumbnail Font Size")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    Text("\(Int(thumbnailFontScale * 100))%")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 40, alignment: .trailing)
+                    Slider(value: $thumbnailFontScale, in: 0.3...2.0, step: 0.1)
+                        .controlSize(.small)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Thumbnail Size")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    Text("\(Int(thumbnailScale * 100))%")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 40, alignment: .trailing)
+                    Slider(value: $thumbnailScale, in: 0.6...1.6, step: 0.1)
+                        .controlSize(.small)
+                }
+            }
+        }
+    }
+
+    private func sidebarSectionHeader(_ title: String, systemImage: String) -> some View {
+        Label(title, systemImage: systemImage)
+            .font(.headline)
+            .foregroundStyle(.primary)
+            .padding(.top, 4)
+    }
+
+    private var sectionDivider: some View {
+        Divider()
+            .padding(.vertical, 4)
+    }
+
+    private func sidebarFileList(_ urls: [URL], selection: @escaping (URL) -> SidebarSelection) -> some View {
+        LazyVStack(alignment: .leading, spacing: 0) {
+            ForEach(urls, id: \.self) { url in
+                let selectionValue = selection(url)
+                Button {
+                    isSidebarFocused = true
+                    sidebarSelection = selectionValue
+                } label: {
+                    sidebarRow(title: displayName(url), isSelected: sidebarSelection == selectionValue)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func sidebarScrollableFileList(
+        _ urls: [URL],
+        maxHeight: CGFloat,
+        selection: @escaping (URL) -> SidebarSelection
+    ) -> some View {
+        ScrollView {
+            sidebarFileList(urls, selection: selection)
+        }
+        .frame(maxWidth: .infinity, maxHeight: maxHeight, alignment: .topLeading)
+    }
+
+    private var sidebarPlaylistList: some View {
+        LazyVStack(alignment: .leading, spacing: 0) {
+            ForEach(playlistItems) { item in
+                Button {
+                    isSidebarFocused = true
+                    applyPlaylistSelection(item.id)
+                } label: {
+                    sidebarRow(title: item.title, isSelected: selectedPlaylistEntryIDs.contains(item.id), isMissing: !item.exists)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private var sidebarWindowsList: some View {
+        LazyVStack(alignment: .leading, spacing: 0) {
+            ForEach(captureWindows) { window in
+                let selectionValue = SidebarSelection.window(window.windowID)
+                let rowTitle = window.title == window.appName ? window.appName : "\(window.appName): \(window.title)"
+                Button {
+                    isSidebarFocused = true
+                    if sidebarSelection == selectionValue {
+                        // Re-load the same picked window after Current gets cleared.
+                        onSelectionChange(selectionValue)
+                    } else {
+                        sidebarSelection = selectionValue
+                    }
+                } label: {
+                    sidebarRow(
+                        title: rowTitle,
+                        isSelected: sidebarSelection == selectionValue
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func sidebarRow(title: String, isSelected: Bool, isMissing: Bool = false) -> some View {
+        let selectionShape = RoundedRectangle(cornerRadius: 6, style: .continuous)
+        return Text(title)
+            .font(.system(size: 14))
+            .foregroundStyle(isMissing ? Color.secondary : Color.primary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .frame(height: 22, alignment: .leading)
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                selectionShape
+                    .fill(isSelected ? AccentColorProvider.color.opacity(0.22) : Color.clear)
+            )
+            .overlay(
+                selectionShape
+                    .stroke(isSelected ? AccentColorProvider.color.opacity(0.7) : Color.clear, lineWidth: 1)
+            )
+            .focusEffectDisabled()
+    }
+
+    private var sidebarSelectableItems: [SidebarSelection] {
+        let libraryItems = libraryFiles.map { SidebarSelection.library($0) }
+        let playlistSelectionItems = playlistItems.map { SidebarSelection.playlist($0.id) }
+        let webpageItems = webpageURLs.map { SidebarSelection.web($0) }
+        let windowItems = captureWindows.map { SidebarSelection.window($0.windowID) }
+        return libraryItems + webpageItems + playlistSelectionItems + windowItems
+    }
+
+    private func handleSidebarMoveCommand(_ direction: MoveCommandDirection) {
+        guard direction == .up || direction == .down else { return }
+        let items = sidebarSelectableItems
+        guard !items.isEmpty else { return }
+
+        if let current = sidebarSelection, let index = items.firstIndex(of: current) {
+            let nextIndex = direction == .up ? max(0, index - 1) : min(items.count - 1, index + 1)
+            if nextIndex != index {
+                applyKeyboardSelection(items[nextIndex])
+            }
+            return
+        }
+
+        applyKeyboardSelection(direction == .up ? items.last : items.first)
+    }
+
+    private func applyPlaylistSelection(_ id: UUID) {
+        let flags = NSApp.currentEvent?.modifierFlags ?? []
+        let isCommand = flags.contains(.command)
+        let isShift = flags.contains(.shift)
+
+        if isShift,
+           let anchor = playlistSelectionAnchor,
+           let anchorIndex = playlistItems.firstIndex(where: { $0.id == anchor }),
+           let tappedIndex = playlistItems.firstIndex(where: { $0.id == id }) {
+            let range = anchorIndex <= tappedIndex ? anchorIndex...tappedIndex : tappedIndex...anchorIndex
+            selectedPlaylistEntryIDs = Set(playlistItems[range].map(\.id))
+            sidebarSelection = .playlist(id)
+            return
+        }
+
+        if isCommand {
+            if selectedPlaylistEntryIDs.contains(id) {
+                selectedPlaylistEntryIDs.remove(id)
+                if case .playlist(let currentID) = sidebarSelection, currentID == id {
+                    sidebarSelection = selectedPlaylistEntryIDs.first.map { .playlist($0) }
+                }
+            } else {
+                selectedPlaylistEntryIDs.insert(id)
+                sidebarSelection = .playlist(id)
+            }
+            playlistSelectionAnchor = selectedPlaylistEntryIDs.first ?? id
+            return
+        }
+
+        selectedPlaylistEntryIDs = [id]
+        sidebarSelection = .playlist(id)
+        playlistSelectionAnchor = id
+    }
+
+    private func applyKeyboardSelection(_ selection: SidebarSelection?) {
+        guard let selection else { return }
+        sidebarSelection = selection
+        switch selection {
+        case .library:
+            selectedPlaylistEntryID = nil
+            selectedPlaylistEntryIDs = []
+        case .playlist(let id):
+            selectedPlaylistEntryIDs = [id]
+            playlistSelectionAnchor = id
+        case .web:
+            selectedPlaylistEntryID = nil
+            selectedPlaylistEntryIDs = []
+        case .window:
+            selectedPlaylistEntryID = nil
+            selectedPlaylistEntryIDs = []
+        }
+    }
+}
