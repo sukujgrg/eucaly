@@ -28,6 +28,9 @@ public struct ContentView: View {
     @AppStorage("overlayScale") private var overlayScale: Double = 1.0
     @AppStorage("windowCaptureFrameRate") private var windowCaptureFrameRate: Int = 30
     @AppStorage("projectionScreenDisplayID") private var projectionScreenDisplayID: Int = 0
+    @AppStorage("savedWebpageURLs") private var savedWebpageURLs: String = ""
+    @AppStorage("savedSelectedWebpageURL") private var savedSelectedWebpageURL: String = ""
+    @AppStorage("savedWebpageTitles") private var savedWebpageTitles: String = ""
     @State private var overlayScaleDraft: Double = 1.0
     @State private var overlayScaleDebounceToken = UUID()
     @State private var backgroundAudioVolumeDraft: Double = 1.0
@@ -223,6 +226,15 @@ public struct ContentView: View {
         .onChange(of: librarySearchQuery) { _, newValue in
             handleLibrarySearchQueryChange(newValue)
         }
+        .onChange(of: webpageURLs) { _, _ in
+            persistWebpageState()
+        }
+        .onChange(of: selectedWebpageURL) { _, _ in
+            persistWebpageState()
+        }
+        .onChange(of: webpageTitles) { _, _ in
+            persistWebpageState()
+        }
         .onDisappear {
             librarySearchDebounceTask?.cancel()
             librarySearchRebuildTask?.cancel()
@@ -387,6 +399,7 @@ public struct ContentView: View {
         refreshDownloadsAccess()
         refreshBackgroundVisualAccess()
         refreshBackgroundAudioAccess()
+        restoreWebpageState()
         loadPlaylists()
         overlayScaleDraft = overlayScale
         backgroundAudioVolumeDraft = backgroundAudioVolume
@@ -566,6 +579,7 @@ public struct ContentView: View {
                 paneToggleAnimation: paneToggleAnimation,
                 loadAnimation: loadAnimation,
                 titleForWebpage: webpageTitle(for:),
+                onWebpageNavigationChange: updatePreviewWebpageURL(to:from:),
                 onWebpageTitleChange: updateWebpageTitle(_:for:),
                 onEdit: {
                     isEditingLyrics = true
@@ -1781,6 +1795,109 @@ public struct ContentView: View {
             : normalizedTitle
         if webpageTitles[url] != resolvedTitle {
             webpageTitles[url] = resolvedTitle
+        }
+    }
+
+    private func restoreWebpageState() {
+        let restoredURLs = decodeWebpageURLs(from: savedWebpageURLs)
+        let restoredTitles = decodeWebpageTitles(from: savedWebpageTitles, validURLs: Set(restoredURLs))
+        let restoredSelectedURL = URL(string: savedSelectedWebpageURL).flatMap { url in
+            restoredURLs.contains(url) ? url : nil
+        }
+
+        if webpageURLs != restoredURLs {
+            webpageURLs = restoredURLs
+        }
+        if webpageTitles != restoredTitles {
+            webpageTitles = restoredTitles
+        }
+        if selectedWebpageURL != restoredSelectedURL {
+            selectedWebpageURL = restoredSelectedURL
+        }
+    }
+
+    private func persistWebpageState() {
+        let encoder = JSONEncoder()
+        let sortedURLs = webpageURLs.map(\.absoluteString)
+        if let data = try? encoder.encode(sortedURLs),
+           let string = String(data: data, encoding: .utf8) {
+            savedWebpageURLs = string
+        } else {
+            savedWebpageURLs = ""
+        }
+
+        savedSelectedWebpageURL = selectedWebpageURL?.absoluteString ?? ""
+
+        let titleMap = webpageTitles.reduce(into: [String: String]()) { partialResult, entry in
+            partialResult[entry.key.absoluteString] = entry.value
+        }
+        if let data = try? encoder.encode(titleMap),
+           let string = String(data: data, encoding: .utf8) {
+            savedWebpageTitles = string
+        } else {
+            savedWebpageTitles = ""
+        }
+    }
+
+    private func decodeWebpageURLs(from rawValue: String) -> [URL] {
+        guard let data = rawValue.data(using: .utf8),
+              let strings = try? JSONDecoder().decode([String].self, from: data) else {
+            return []
+        }
+
+        var seen = Set<URL>()
+        return strings.compactMap { value in
+            guard let url = URL(string: value), isSupportedWebpageURL(url), seen.insert(url).inserted else {
+                return nil
+            }
+            return url
+        }
+    }
+
+    private func decodeWebpageTitles(from rawValue: String, validURLs: Set<URL>) -> [URL: String] {
+        guard let data = rawValue.data(using: .utf8),
+              let strings = try? JSONDecoder().decode([String: String].self, from: data) else {
+            return [:]
+        }
+
+        return strings.reduce(into: [URL: String]()) { partialResult, entry in
+            guard let url = URL(string: entry.key), validURLs.contains(url) else { return }
+            partialResult[url] = entry.value
+        }
+    }
+
+    private func updatePreviewWebpageURL(to newURL: URL, from previousURL: URL) {
+        guard isSupportedWebpageURL(newURL) else { return }
+
+        let sourceURL = selectedWebpageURL ?? previousURL
+        if sourceURL == newURL {
+            if !webpageURLs.contains(newURL) {
+                webpageURLs.append(newURL)
+            }
+            selectedWebpageURL = newURL
+            setPreviewSlides(buildWebpageSlides(from: newURL))
+            return
+        }
+
+        if let existingIndex = webpageURLs.firstIndex(of: sourceURL) {
+            webpageURLs[existingIndex] = newURL
+        } else if !webpageURLs.contains(newURL) {
+            webpageURLs.append(newURL)
+        }
+
+        var seenURLs = Set<URL>()
+        webpageURLs = webpageURLs.filter { seenURLs.insert($0).inserted }
+
+        if let existingTitle = webpageTitles[sourceURL], webpageTitles[newURL] == nil {
+            webpageTitles[newURL] = existingTitle
+        }
+        webpageTitles.removeValue(forKey: sourceURL)
+
+        selectedWebpageURL = newURL
+        setPreviewSlides(buildWebpageSlides(from: newURL))
+
+        if sidebarSelection == .web(sourceURL) {
+            sidebarSelection = .web(newURL)
         }
     }
 

@@ -32,17 +32,17 @@ Browsing never silently replaces **Current**.
 
 ## Project Structure
 
-- `/Users/suku/Swift/eucaly/eucaly/ContentView.swift`
+- `eucaly/ContentView.swift`
   - app-level orchestration
-- `/Users/suku/Swift/eucaly/eucaly/PresentationFlowController.swift`
+- `eucaly/PresentationFlowController.swift`
   - Preview -> Current flow
-- `/Users/suku/Swift/eucaly/eucaly/PresentationWindowController.swift`
+- `eucaly/PresentationWindowController.swift`
   - projection runtime, layers, playback
-- `/Users/suku/Swift/eucaly/eucaly/SidebarView.swift`
+- `eucaly/SidebarView.swift`
   - source selection UI
-- `/Users/suku/Swift/eucaly/eucaly/ScreenCaptureManager.swift`
+- `eucaly/ScreenCaptureManager.swift`
   - window capture and picker integration
-- `/Users/suku/Swift/eucaly/eucaly/LibraryTextSearchIndex.swift`
+- `eucaly/LibraryTextSearchIndex.swift`
   - recursive text indexing and FTS search
 
 ## Requirements
@@ -109,13 +109,13 @@ Release safeguards:
 
 Search behavior and implementation details are documented in:
 
-- `/Users/suku/Swift/eucaly/SEARCH.md`
+- `SEARCH.md`
 
 ## Developer Notes
 
 The project-specific engineering and flow rules are documented in:
 
-- `/Users/suku/Swift/eucaly/AGENTS.md`
+- `AGENTS.md`
 
 This is the authoritative guide for:
 

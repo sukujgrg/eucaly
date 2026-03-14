@@ -9,6 +9,7 @@ struct PreviewPaneContainerView: View {
     let paneToggleAnimation: Animation
     let loadAnimation: Animation
     let titleForWebpage: (URL) -> String
+    let onWebpageNavigationChange: (URL, URL) -> Void
     let onWebpageTitleChange: (String, URL) -> Void
     let onEdit: () -> Void
     let onLoadToCurrent: () -> Void
@@ -85,8 +86,11 @@ struct PreviewPaneContainerView: View {
 
                             WebpageViewRepresentable(
                                 url: selectedWebpageURL,
-                                onTitleChange: { title in
-                                    onWebpageTitleChange(title, selectedWebpageURL)
+                                onURLChange: { currentURL in
+                                    onWebpageNavigationChange(currentURL, selectedWebpageURL)
+                                },
+                                onTitleChange: { title, currentURL in
+                                    onWebpageTitleChange(title, currentURL)
                                 }
                             )
                                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))

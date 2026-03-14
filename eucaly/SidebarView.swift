@@ -236,23 +236,31 @@ struct SidebarView: View {
 
     private var webControls: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: "globe")
-                    .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: "globe")
+                        .foregroundStyle(.secondary)
 
-                TextField("Enter webpage URL", text: $webpageDraft)
-                    .textFieldStyle(.plain)
-                    .onSubmit {
-                        onPreviewWebpage()
-                    }
-                    .submitLabel(.go)
+                    TextField("Enter webpage URL", text: $webpageDraft)
+                        .textFieldStyle(.plain)
+                        .onSubmit {
+                            onPreviewWebpage()
+                        }
+                        .submitLabel(.go)
+                }
+                .padding(.horizontal, 8)
+                .frame(height: 24)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color(NSColor.controlBackgroundColor).opacity(0.65))
+                )
+
+                Button("Add") {
+                    onPreviewWebpage()
+                }
+                .sidebarActionStyle(primary: true)
+                .disabled(webpageDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-            .padding(.horizontal, 8)
-            .frame(height: 24)
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Color(NSColor.controlBackgroundColor).opacity(0.65))
-            )
 
             ForEach(webpageURLs, id: \.self) { url in
                 Button {

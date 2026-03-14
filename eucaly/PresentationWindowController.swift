@@ -990,10 +990,11 @@ struct WebpageSlideView: View {
 
 struct WebpageViewRepresentable: NSViewRepresentable {
     let url: URL
-    var onTitleChange: ((String) -> Void)? = nil
+    var onURLChange: ((URL) -> Void)? = nil
+    var onTitleChange: ((String, URL) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onTitleChange: onTitleChange)
+        Coordinator(onURLChange: onURLChange, onTitleChange: onTitleChange)
     }
 
     func makeNSView(context: Context) -> WKWebView {
@@ -1020,13 +1021,21 @@ struct WebpageViewRepresentable: NSViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         private var requestedURL: URL?
         private var isShowingFailure = false
-        private let onTitleChange: ((String) -> Void)?
+        private let onURLChange: ((URL) -> Void)?
+        private let onTitleChange: ((String, URL) -> Void)?
+        private var urlObservation: NSKeyValueObservation?
+        private var titleObservation: NSKeyValueObservation?
 
-        init(onTitleChange: ((String) -> Void)? = nil) {
+        init(
+            onURLChange: ((URL) -> Void)? = nil,
+            onTitleChange: ((String, URL) -> Void)? = nil
+        ) {
+            self.onURLChange = onURLChange
             self.onTitleChange = onTitleChange
         }
 
         func load(url: URL, in webView: WKWebView) {
+            attachObservers(to: webView)
             guard requestedURL != url || isShowingFailure else { return }
             requestedURL = url
             isShowingFailure = false
@@ -1035,10 +1044,6 @@ struct WebpageViewRepresentable: NSViewRepresentable {
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             isShowingFailure = false
-            if let title = webView.title?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !title.isEmpty {
-                onTitleChange?(title)
-            }
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -1081,10 +1086,40 @@ struct WebpageViewRepresentable: NSViewRepresentable {
         func teardown(_ webView: WKWebView) {
             requestedURL = nil
             isShowingFailure = false
+            urlObservation?.invalidate()
+            titleObservation?.invalidate()
+            urlObservation = nil
+            titleObservation = nil
             webView.stopLoading()
             webView.navigationDelegate = nil
             webView.uiDelegate = nil
             webView.load(URLRequest(url: URL(string: "about:blank")!))
+        }
+
+        private func attachObservers(to webView: WKWebView) {
+            guard urlObservation == nil, titleObservation == nil else { return }
+
+            urlObservation = webView.observe(\.url, options: [.initial, .new]) { [weak self] webView, _ in
+                guard let self, let currentURL = webView.url, self.isSupportedSidebarURL(currentURL) else { return }
+                self.requestedURL = currentURL
+                self.onURLChange?(currentURL)
+            }
+
+            titleObservation = webView.observe(\.title, options: [.new]) { [weak self] webView, _ in
+                guard let self,
+                      let currentURL = webView.url,
+                      self.isSupportedSidebarURL(currentURL),
+                      let title = webView.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !title.isEmpty else { return }
+                self.onTitleChange?(title, currentURL)
+            }
+        }
+
+        private func isSupportedSidebarURL(_ url: URL) -> Bool {
+            guard let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme) else {
+                return false
+            }
+            return url.host(percentEncoded: false)?.isEmpty == false
         }
 
         private func showFailure(_ error: Error, in webView: WKWebView) {
