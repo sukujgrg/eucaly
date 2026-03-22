@@ -9,6 +9,35 @@ enum SidebarSelection: Hashable {
     case window(CGWindowID)
 }
 
+private enum SidebarSectionTint {
+    case library
+    case web
+    case playlist
+    case windows
+    case background
+    case timer
+    case appearance
+
+    var color: Color {
+        switch self {
+        case .library:
+            Color(nsColor: .systemTeal)
+        case .web:
+            Color(nsColor: .systemIndigo)
+        case .playlist:
+            Color(nsColor: .systemGreen)
+        case .windows:
+            Color(nsColor: .systemOrange)
+        case .background:
+            Color(nsColor: .systemPink)
+        case .timer:
+            Color(nsColor: .systemPurple)
+        case .appearance:
+            Color(nsColor: .systemBrown)
+        }
+    }
+}
+
 struct PlaylistSidebarItem: Identifiable, Hashable {
     let id: UUID
     let title: String
@@ -73,6 +102,28 @@ struct SidebarView: View {
     let onClearWebpage: () -> Void
     let onPickWindow: () -> Void
     let onClearSelectedWindow: () -> Void
+
+    @AppStorage("sidebar.librarySectionExpanded")
+    private var isLibrarySectionExpanded = true
+
+    @AppStorage("sidebar.webSectionExpanded")
+    private var isWebSectionExpanded = true
+
+    @AppStorage("sidebar.playlistSectionExpanded")
+    private var isPlaylistSectionExpanded = true
+
+    @AppStorage("sidebar.windowsSectionExpanded")
+    private var isWindowsSectionExpanded = false
+
+    @AppStorage("sidebar.backgroundSectionExpanded")
+    private var isBackgroundSectionExpanded = false
+
+    @AppStorage("sidebar.timerSectionExpanded")
+    private var isTimerSectionExpanded = false
+
+    @AppStorage("sidebar.appearanceSectionExpanded")
+    private var isAppearanceSectionExpanded = false
+
     @State private var playlistSelectionAnchor: UUID?
 
     var body: some View {
@@ -80,44 +131,88 @@ struct SidebarView: View {
             let libraryListMaxHeight = max(160, min(320, proxy.size.height * 0.35))
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
-                    sidebarSectionHeader("Library", systemImage: "folder")
-                    libraryControls
-                    sidebarScrollableFileList(libraryFiles, maxHeight: libraryListMaxHeight) { .library($0) }
-
-                    sectionDivider
-
-                    sidebarSectionHeader("Web", systemImage: "globe")
-                    webControls
-
-                    sectionDivider
-
-                    sidebarSectionHeader("Playlist", systemImage: "folder")
-                    playlistControls
-                    sidebarPlaylistList
-
-                    if isWindowCaptureSupported {
-                        sectionDivider
-
-                        sidebarSectionHeader("Windows", systemImage: "macwindow")
-                        windowsControls
+                    sidebarSection(
+                        "Library",
+                        systemImage: "folder",
+                        tint: .library,
+                        isExpanded: $isLibrarySectionExpanded
+                    ) {
+                        libraryControls
+                        sidebarScrollableFileList(libraryFiles, maxHeight: libraryListMaxHeight) { .library($0) }
                     }
 
                     sectionDivider
 
-                    sidebarSectionHeader("Background", systemImage: "photo.on.rectangle")
-                    backgroundControls
+                    sidebarSection(
+                        "Web",
+                        systemImage: "globe",
+                        tint: .web,
+                        isExpanded: $isWebSectionExpanded
+                    ) {
+                        webControls
+                    }
 
                     sectionDivider
 
-                    sidebarSectionHeader("Timer", systemImage: "timer")
-                    timerControls
+                    sidebarSection(
+                        "Playlist",
+                        systemImage: "folder",
+                        tint: .playlist,
+                        isExpanded: $isPlaylistSectionExpanded
+                    ) {
+                        playlistControls
+                        sidebarPlaylistList
+                    }
+
+                    if isWindowCaptureSupported {
+                        sectionDivider
+
+                        sidebarSection(
+                            "Windows",
+                            systemImage: "macwindow",
+                            tint: .windows,
+                            isExpanded: $isWindowsSectionExpanded
+                        ) {
+                            windowsControls
+                        }
+                    }
 
                     sectionDivider
 
-                    sidebarSectionHeader("Appearance", systemImage: "slider.horizontal.3")
-                    appearanceControls
+                    sidebarSection(
+                        "Background",
+                        systemImage: "photo.on.rectangle",
+                        tint: .background,
+                        isExpanded: $isBackgroundSectionExpanded
+                    ) {
+                        backgroundControls
+                    }
+
+                    sectionDivider
+
+                    sidebarSection(
+                        "Timer",
+                        systemImage: "timer",
+                        tint: .timer,
+                        isExpanded: $isTimerSectionExpanded
+                    ) {
+                        timerControls
+                    }
+
+                    sectionDivider
+
+                    sidebarSection(
+                        "Appearance",
+                        systemImage: "slider.horizontal.3",
+                        tint: .appearance,
+                        isExpanded: $isAppearanceSectionExpanded
+                    ) {
+                        appearanceControls
+                    }
                 }
-                .padding(.horizontal, 12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, 12)
+                .padding(.trailing, 18)
                 .padding(.vertical, 10)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -190,6 +285,41 @@ struct SidebarView: View {
                 onSelectLibraryFolder(newValue)
             }
         }
+    }
+
+    private func sidebarSection<Content: View>(
+        _ title: String,
+        systemImage: String,
+        tint: SidebarSectionTint,
+        isExpanded: Binding<Bool>,
+        @ViewBuilder content: @escaping () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.16)) {
+                    isExpanded.wrappedValue.toggle()
+                }
+            } label: {
+                sidebarSectionHeader(
+                    title,
+                    systemImage: systemImage,
+                    tint: tint,
+                    isExpanded: isExpanded.wrappedValue
+                )
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            .contentShape(Rectangle())
+
+            if isExpanded.wrappedValue {
+                VStack(alignment: .leading, spacing: 10) {
+                    content()
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 6)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var librarySearchControls: some View {
@@ -616,11 +746,40 @@ struct SidebarView: View {
         }
     }
 
-    private func sidebarSectionHeader(_ title: String, systemImage: String) -> some View {
-        Label(title, systemImage: systemImage)
-            .font(.headline)
-            .foregroundStyle(.primary)
-            .padding(.top, 4)
+    private func sidebarSectionHeader(
+        _ title: String,
+        systemImage: String,
+        tint: SidebarSectionTint,
+        isExpanded: Bool
+    ) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: systemImage)
+                .font(.headline)
+                .foregroundStyle(tint.color)
+                .frame(width: 22, height: 22)
+                .background(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(tint.color.opacity(0.16))
+                )
+
+            Text(title)
+                .font(.headline)
+                .foregroundStyle(.primary)
+
+            Spacer(minLength: 0)
+
+            Capsule(style: .continuous)
+                .fill(tint.color.opacity(0.28))
+                .frame(width: 24, height: 4)
+
+            Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 12)
+        }
+        .padding(.top, 4)
+        .padding(.trailing, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var sectionDivider: some View {
