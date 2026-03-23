@@ -53,7 +53,6 @@ struct SidebarView: View {
     let downloadsURL: URL?
     let libraryFolders: [URL]
     let captureWindows: [ScreenCaptureManager.CapturedWindow]
-    @Binding var librarySearchQuery: String
     @Binding var webpageDraft: String
     let webpageURLs: [URL]
     let selectedWebpageURL: URL?
@@ -71,14 +70,10 @@ struct SidebarView: View {
     @Binding var thumbnailScale: Double
     @Binding var windowCaptureFrameRate: Int
     @FocusState.Binding var isSidebarFocused: Bool
-    let librarySearchMinimumCharacterCount: Int
-    let librarySearchResultCount: Int
-    let isLibrarySearchIndexing: Bool
 
     let displayName: (URL) -> String
     let titleForWebpage: (URL) -> String
-    let onChooseFile: () -> Void
-    let onRefreshLibrary: () -> Void
+    let onShowLibrarySearch: () -> Void
     let onSelectLibraryFolder: (URL?) -> Void
     let onSelectDownloads: (URL) -> Void
     let onAddSelectedToPlaylist: () -> Void
@@ -242,14 +237,9 @@ struct SidebarView: View {
 
     private var libraryControls: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                Button("Open File") { onChooseFile() }
-                    .sidebarActionStyle()
-                Button("Refresh") { onRefreshLibrary() }
-                    .sidebarActionStyle()
+            if selectedFileURL != nil {
                 Button("Add to Playlist") { onAddSelectedToPlaylist() }
                     .sidebarActionStyle(primary: true)
-                    .disabled(selectedFileURL == nil)
             }
             if let rootURL = libraryRootURL {
                 Text(rootURL.path)
@@ -259,7 +249,10 @@ struct SidebarView: View {
                     .truncationMode(.middle)
             }
 
-            librarySearchControls
+            Button("Command Palette") {
+                onShowLibrarySearch()
+            }
+            .sidebarActionStyle()
 
             HStack(spacing: 8) {
                 Picker("Library", selection: $selectedLibraryFolder) {
@@ -320,48 +313,6 @@ struct SidebarView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var librarySearchControls: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-
-                TextField("Search lyrics and filenames", text: $librarySearchQuery)
-                    .textFieldStyle(.plain)
-
-                if !librarySearchQuery.isEmpty {
-                    Button {
-                        librarySearchQuery = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 8)
-            .frame(height: 24)
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Color(NSColor.controlBackgroundColor).opacity(0.65))
-            )
-
-            if shouldShowSearchMinimumHint {
-                Text("Type at least \(librarySearchMinimumCharacterCount) characters")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            } else if isLibrarySearchIndexing {
-                Text("Indexing text files...")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            } else if shouldShowNoSearchResults {
-                Text("No matches")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-        }
     }
 
     private var webControls: some View {
@@ -429,22 +380,6 @@ struct SidebarView: View {
                 }
             }
         }
-    }
-
-    private var trimmedLibrarySearchQuery: String {
-        librarySearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private var isLibrarySearchActive: Bool {
-        trimmedLibrarySearchQuery.count >= librarySearchMinimumCharacterCount
-    }
-
-    private var shouldShowSearchMinimumHint: Bool {
-        !trimmedLibrarySearchQuery.isEmpty && trimmedLibrarySearchQuery.count < librarySearchMinimumCharacterCount
-    }
-
-    private var shouldShowNoSearchResults: Bool {
-        isLibrarySearchActive && !isLibrarySearchIndexing && librarySearchResultCount == 0
     }
 
     private var playlistControls: some View {

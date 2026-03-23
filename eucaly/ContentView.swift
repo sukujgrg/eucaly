@@ -48,7 +48,9 @@ public struct ContentView: View {
     @State private var webpageURLs: [URL] = []
     @State private var webpageTitles: [URL: String] = [:]
     @State private var selectedWebpageURL: URL? = nil
-    @State private var librarySearchResults: [URL] = []
+    @State private var librarySearchResults: [LibraryTextSearchIndex.SearchResult] = []
+    @State private var isLibrarySearchPresented: Bool = false
+    @State private var selectedLibrarySearchResult: URL? = nil
     @State private var isLibrarySearchIndexing: Bool = false
     @State private var librarySearchDebounceTask: Task<Void, Never>? = nil
     @State private var librarySearchRebuildTask: Task<Void, Never>? = nil
@@ -162,7 +164,7 @@ public struct ContentView: View {
     }
 
     private var rootSplitView: some View {
-        rootSplitWithNotificationObservers
+        rootSplitWithLibrarySearchOverlay
     }
 
     private var rootSplitBase: some View {
@@ -177,6 +179,31 @@ public struct ContentView: View {
             projectionToolbar
         }
         .applyToolbarBackgroundIfAvailable()
+    }
+
+    private var rootSplitWithLibrarySearchOverlay: some View {
+        ZStack {
+            rootSplitWithNotificationObservers
+
+            if isLibrarySearchPresented {
+                LibrarySearchOverlayView(
+                    query: $librarySearchQuery,
+                    selectedResult: $selectedLibrarySearchResult,
+                    actions: matchingLibrarySearchActions,
+                    results: filteredLibrarySearchResults,
+                    minimumCharacterCount: librarySearchMinimumCharacterCount,
+                    isIndexing: isLibrarySearchIndexing,
+                    displayName: { displayName(for: $0) },
+                    snippet: librarySearchSnippet(for:),
+                    onRunAction: runLibrarySearchAction,
+                    onClose: dismissLibrarySearch,
+                    onOpenResult: previewLibrarySearchResult
+                )
+                .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                .zIndex(1)
+            }
+        }
+        .animation(.easeInOut(duration: 0.16), value: isLibrarySearchPresented)
     }
 
     private var rootSplitWithStateObservers: some View {
@@ -259,11 +286,14 @@ public struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: .toggleBackgroundVisibility), perform: handleToggleBackgroundVisibilityNotification)
             .onReceive(NotificationCenter.default.publisher(for: .toggleBackgroundAudio), perform: handleToggleBackgroundAudioNotification)
             .onReceive(NotificationCenter.default.publisher(for: .clearAllLayers), perform: handleClearAllLayersNotification)
-            .onReceive(NotificationCenter.default.publisher(for: .clearBackgroundVisual), perform: handleClearBackgroundVisualNotification)
-            .onReceive(NotificationCenter.default.publisher(for: .clearBackgroundAudio), perform: handleClearBackgroundAudioNotification)
-            .onReceive(NotificationCenter.default.publisher(for: .newLyrics), perform: handleNewLyricsNotification)
-            .onReceive(NotificationCenter.default.publisher(for: .saveLyrics), perform: handleSaveLyricsNotification)
-            .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification), perform: handleMainWindowWillCloseNotification)
+        .onReceive(NotificationCenter.default.publisher(for: .clearBackgroundVisual), perform: handleClearBackgroundVisualNotification)
+        .onReceive(NotificationCenter.default.publisher(for: .clearBackgroundAudio), perform: handleClearBackgroundAudioNotification)
+        .onReceive(NotificationCenter.default.publisher(for: .newLyrics), perform: handleNewLyricsNotification)
+        .onReceive(NotificationCenter.default.publisher(for: .saveLyrics), perform: handleSaveLyricsNotification)
+        .onReceive(NotificationCenter.default.publisher(for: .showLibrarySearch)) { _ in
+            presentLibrarySearch()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification), perform: handleMainWindowWillCloseNotification)
     }
 
     @ViewBuilder
@@ -271,13 +301,12 @@ public struct ContentView: View {
         SidebarView(
             session: session,
             isWindowCaptureSupported: isWindowCaptureSupported,
-            libraryFiles: filteredLibraryFiles,
+            libraryFiles: markdownFiles,
             playlistItems: playlistSidebarItems,
             libraryRootURL: libraryRootURL,
             downloadsURL: downloadsURL,
             libraryFolders: libraryFolders,
             captureWindows: captureWindows,
-            librarySearchQuery: $librarySearchQuery,
             webpageDraft: $webpageDraft,
             webpageURLs: webpageURLs,
             selectedWebpageURL: selectedWebpageURL,
@@ -295,13 +324,9 @@ public struct ContentView: View {
             thumbnailScale: $thumbnailScale,
             windowCaptureFrameRate: $windowCaptureFrameRate,
             isSidebarFocused: $isSidebarFocused,
-            librarySearchMinimumCharacterCount: librarySearchMinimumCharacterCount,
-            librarySearchResultCount: librarySearchResults.count,
-            isLibrarySearchIndexing: isLibrarySearchIndexing,
             displayName: { displayName(for: $0) },
             titleForWebpage: webpageTitle(for:),
-            onChooseFile: chooseFile,
-            onRefreshLibrary: refreshLibrary,
+            onShowLibrarySearch: presentLibrarySearch,
             onSelectLibraryFolder: handleSelectedLibraryFolderChange,
             onSelectDownloads: selectDownloadsFolder,
             onAddSelectedToPlaylist: addSelectedToPlaylist,
@@ -1172,12 +1197,13 @@ public struct ContentView: View {
         return url.lastPathComponent
     }
 
-    private var filteredLibraryFiles: [URL] {
-        let trimmed = librarySearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.count >= librarySearchMinimumCharacterCount else {
-            return markdownFiles
+    private func librarySearchSnippet(for url: URL) -> String? {
+        let standardizedURL = url.standardizedFileURL
+        guard let snippet = filteredLibrarySearchResults.first(where: { $0.url == standardizedURL })?.snippet,
+              !snippet.isEmpty else {
+            return nil
         }
-        return filterSearchResultsToCurrentLibrary(librarySearchResults)
+        return snippet
     }
 
     private var playlistResolvedURLs: [URL] {
@@ -1191,6 +1217,7 @@ public struct ContentView: View {
         let trimmed = newQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count >= librarySearchMinimumCharacterCount else {
             librarySearchResults = []
+            selectedLibrarySearchResult = nil
             return
         }
 
@@ -1206,6 +1233,7 @@ public struct ContentView: View {
                 let currentQuery = librarySearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard currentQuery == trimmed else { return }
                 librarySearchResults = filterSearchResultsToCurrentLibrary(results)
+                syncSelectedLibrarySearchResult()
             }
         }
     }
@@ -1225,7 +1253,7 @@ public struct ContentView: View {
                 librarySearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
             }
 
-            var refreshedResults: [URL] = []
+            var refreshedResults: [LibraryTextSearchIndex.SearchResult] = []
             if currentQuery.count >= librarySearchMinimumCharacterCount {
                 refreshedResults = await index.search(query: currentQuery)
             }
@@ -1233,15 +1261,79 @@ public struct ContentView: View {
             await MainActor.run {
                 isLibrarySearchIndexing = false
                 librarySearchResults = filterSearchResultsToCurrentLibrary(refreshedResults)
+                syncSelectedLibrarySearchResult()
             }
         }
     }
 
-    private func filterSearchResultsToCurrentLibrary(_ results: [URL]) -> [URL] {
+    private var filteredLibrarySearchResults: [LibraryTextSearchIndex.SearchResult] {
+        filterSearchResultsToCurrentLibrary(librarySearchResults)
+    }
+
+    private var matchingLibrarySearchActions: [LibraryCommandPaletteAction] {
+        LibraryCommandPaletteAction.allCases.filter {
+            $0.matches(librarySearchQuery)
+        }
+    }
+
+    private func filterSearchResultsToCurrentLibrary(
+        _ results: [LibraryTextSearchIndex.SearchResult]
+    ) -> [LibraryTextSearchIndex.SearchResult] {
         let available = Set(markdownFiles.map(\.standardizedFileURL))
         return results
-            .map(\.standardizedFileURL)
-            .filter { available.contains($0) }
+            .map { result in
+                LibraryTextSearchIndex.SearchResult(
+                    url: result.url.standardizedFileURL,
+                    snippet: result.snippet
+                )
+            }
+            .filter { available.contains($0.url) }
+    }
+
+    @MainActor
+    private func syncSelectedLibrarySearchResult() {
+        let resultURLs = filteredLibrarySearchResults.map(\.url)
+        if let selectedLibrarySearchResult, resultURLs.contains(selectedLibrarySearchResult) {
+            return
+        }
+        if let currentSelectedURL {
+            let standardizedCurrentURL = currentSelectedURL.standardizedFileURL
+            if resultURLs.contains(standardizedCurrentURL) {
+                selectedLibrarySearchResult = standardizedCurrentURL
+                return
+            }
+        }
+        selectedLibrarySearchResult = resultURLs.first
+    }
+
+    @MainActor
+    private func presentLibrarySearch() {
+        isLibrarySearchPresented = true
+        syncSelectedLibrarySearchResult()
+    }
+
+    @MainActor
+    private func dismissLibrarySearch() {
+        isLibrarySearchPresented = false
+    }
+
+    @MainActor
+    private func previewLibrarySearchResult(_ url: URL) {
+        dismissLibrarySearch()
+        sidebarSelection = .library(url)
+    }
+
+    @MainActor
+    private func runLibrarySearchAction(_ action: LibraryCommandPaletteAction) {
+        dismissLibrarySearch()
+        switch action {
+        case .newLyrics:
+            handleNewLyrics()
+        case .openFile:
+            chooseFile()
+        case .refreshLibrary:
+            refreshLibrary()
+        }
     }
 
     private var playlistSidebarItems: [PlaylistSidebarItem] {

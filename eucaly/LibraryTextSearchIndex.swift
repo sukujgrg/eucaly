@@ -4,6 +4,11 @@ import SQLite3
 actor LibraryTextSearchIndex {
     static let maxIndexedFileSizeBytes: Int64 = 10 * 1024
 
+    struct SearchResult: Hashable, Sendable {
+        let url: URL
+        let snippet: String
+    }
+
     private var db: OpaquePointer?
     private let databaseURL: URL
 
@@ -75,7 +80,7 @@ actor LibraryTextSearchIndex {
         return inserted
     }
 
-    func search(query: String, limit: Int = 250) -> [URL] {
+    func search(query: String, limit: Int = 250) -> [SearchResult] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count >= 3 else { return [] }
         guard openDatabaseIfNeeded(), let db else { return [] }
@@ -84,7 +89,7 @@ actor LibraryTextSearchIndex {
         guard !ftsQuery.isEmpty else { return [] }
 
         let sql = """
-        SELECT path
+        SELECT path, content
         FROM file_index
         WHERE file_index MATCH ?1
         ORDER BY bm25(file_index, 0.05, 1.0)
@@ -107,13 +112,33 @@ actor LibraryTextSearchIndex {
         }
         sqlite3_bind_int(statement, 2, Int32(max(1, limit)))
 
-        var urls: [URL] = []
+        var results: [SearchResult] = []
         while sqlite3_step(statement) == SQLITE_ROW {
             guard let cPath = sqlite3_column_text(statement, 0) else { continue }
             let path = String(cString: cPath)
-            urls.append(URL(fileURLWithPath: path))
+            let snippet: String
+            if let cSnippet = sqlite3_column_text(statement, 1) {
+                snippet = Self.previewText(from: String(cString: cSnippet))
+            } else {
+                snippet = ""
+            }
+            results.append(
+                SearchResult(
+                    url: URL(fileURLWithPath: path),
+                    snippet: snippet.trimmingCharacters(in: .whitespacesAndNewlines)
+                )
+            )
         }
-        return urls
+        return results
+    }
+
+    private static func previewText(from content: String) -> String {
+        content
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .prefix(3)
+            .joined(separator: "\n")
     }
 
     private func shouldIndex(url: URL) -> Bool {

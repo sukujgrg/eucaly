@@ -47,6 +47,12 @@ struct EucalyApp: App {
                 }
                 .keyboardShortcut("n", modifiers: .command)
             }
+            CommandGroup(after: .newItem) {
+                Button("Quick Open...") {
+                    NotificationCenter.default.post(name: .showLibrarySearch, object: nil)
+                }
+                .keyboardShortcut("o", modifiers: [.command, .shift])
+            }
             CommandGroup(replacing: .saveItem) {
                 Button("Save Lyrics") {
                     NotificationCenter.default.post(name: .saveLyrics, object: nil)
@@ -105,4 +111,5 @@ extension Notification.Name {
     static let clearBackgroundAudio = Notification.Name("clearBackgroundAudio")
     static let clearAllLayers = Notification.Name("clearAllLayers")
     static let saveLyrics = Notification.Name("saveLyrics")
+    static let showLibrarySearch = Notification.Name("showLibrarySearch")
 }
