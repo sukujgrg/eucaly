@@ -53,7 +53,6 @@ struct SidebarView: View {
     let downloadsURL: URL?
     let libraryFolders: [URL]
     let captureWindows: [ScreenCaptureManager.CapturedWindow]
-    @Binding var webpageDraft: String
     let webpageURLs: [URL]
     let selectedWebpageURL: URL?
     @Binding var selectedLibraryFolder: URL?
@@ -93,7 +92,6 @@ struct SidebarView: View {
     let onStopCountdown: () -> Void
     let onSetClockVisible: (Bool) -> Void
     let onSelectionChange: (SidebarSelection?) -> Void
-    let onPreviewWebpage: () -> Void
     let onClearWebpage: () -> Void
     let onPickWindow: () -> Void
     let onClearSelectedWindow: () -> Void
@@ -317,31 +315,9 @@ struct SidebarView: View {
 
     private var webControls: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                HStack(spacing: 6) {
-                    Image(systemName: "globe")
-                        .foregroundStyle(.secondary)
-
-                    TextField("Enter webpage URL", text: $webpageDraft)
-                        .textFieldStyle(.plain)
-                        .onSubmit {
-                            onPreviewWebpage()
-                        }
-                        .submitLabel(.go)
-                }
-                .padding(.horizontal, 8)
-                .frame(height: 24)
-                .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(Color(NSColor.controlBackgroundColor).opacity(0.65))
-                )
-
-                Button("Add") {
-                    onPreviewWebpage()
-                }
-                .sidebarActionStyle(primary: true)
-                .disabled(webpageDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
+            Text("Add webpage URLs from Quick Open.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             ForEach(webpageURLs, id: \.self) { url in
                 Button {
@@ -359,6 +335,12 @@ struct SidebarView: View {
                     )
                 }
                 .buttonStyle(.plain)
+            }
+
+            if webpageURLs.isEmpty {
+                Text("No saved webpages")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
 
             if let selectedWebpageURL {

@@ -6,6 +6,9 @@ struct CurrentPaneContainerView: View {
     let thumbnailScale: Double
     let paneToggleAnimation: Animation
     let loadAnimation: Animation
+    let titleForWebpage: (URL) -> String
+    let onWebpageNavigationChange: (URL, URL) -> Void
+    let onWebpageTitleChange: (String, URL) -> Void
     let onClearCurrent: (() -> Void)?
     @AppStorage("overlayScale") private var overlayScale: Double = 1.0
     @FocusState private var isFocused: Bool
@@ -13,6 +16,7 @@ struct CurrentPaneContainerView: View {
     var body: some View {
         let slides = session.slides
         let isCollapsed = flow.isCurrentCollapsed
+        let selectedWebpageURL = currentWebpageURL(from: slides)
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 if session.isPresenting || !slides.isEmpty {
@@ -76,6 +80,52 @@ struct CurrentPaneContainerView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding()
+                } else if let selectedWebpageURL {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 8) {
+                            Label(
+                                titleForWebpage(selectedWebpageURL),
+                                systemImage: "globe"
+                            )
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+
+                            Spacer()
+
+                            Button {
+                                session.webpageMuted.toggle()
+                            } label: {
+                                Label(
+                                    session.webpageMuted ? "Unmute" : "Mute",
+                                    systemImage: session.webpageMuted ? "speaker.wave.2.fill" : "speaker.slash.fill"
+                                )
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                        .padding(.horizontal, 10)
+
+                        WebpageViewRepresentable(
+                            url: selectedWebpageURL,
+                            isMuted: session.webpageMuted,
+                            onURLChange: { currentURL in
+                                onWebpageNavigationChange(currentURL, selectedWebpageURL)
+                            },
+                            onTitleChange: { title, currentURL in
+                                onWebpageTitleChange(title, currentURL)
+                            }
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(.separator, lineWidth: 1)
+                        )
+                        .padding(.horizontal, 10)
+                        .padding(.bottom, 4)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
                 } else {
                     GeometryReader { proxy in
                         TimelineView(.periodic(from: .now, by: 1.0)) { context in
@@ -152,7 +202,12 @@ struct CurrentPaneContainerView: View {
             }
         }
         .padding(10)
-        .frame(maxWidth: .infinity, maxHeight: isCollapsed ? nil : .infinity, alignment: .top)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: selectedWebpageURL == nil || isCollapsed ? nil : 420,
+            maxHeight: isCollapsed ? nil : .infinity,
+            alignment: .top
+        )
         .background(
             VisualEffectView(material: .contentBackground, blendingMode: .withinWindow)
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -163,6 +218,7 @@ struct CurrentPaneContainerView: View {
         )
         .animation(paneToggleAnimation, value: isCollapsed)
         .animation(loadAnimation, value: slides.count)
+        .layoutPriority(selectedWebpageURL == nil ? 0 : 1)
     }
 
     private func toggleCollapsed() {
@@ -209,5 +265,19 @@ struct CurrentPaneContainerView: View {
         // This provides an alternative way to navigate when PresentationWindow loses focus
         session.moveSelection(delta)
         return .handled
+    }
+
+    private func currentWebpageURL(from slides: [Slide]) -> URL? {
+        if let selectionID = session.currentSlideID,
+           let selectedSlide = slides.first(where: { $0.id == selectionID }),
+           let webpageURL = selectedSlide.webpageURL {
+            return webpageURL
+        }
+
+        if slides.count == 1 {
+            return slides.first?.webpageURL
+        }
+
+        return nil
     }
 }

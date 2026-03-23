@@ -26,6 +26,7 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate, A
     @Published var currentSlideID: Slide.ID?
     @Published var isPresenting = false
     @Published var videoMuted = false
+    @Published var webpageMuted = false
     @Published var videoPaused = false
     @Published var videoLoop = true
     @Published var videoFill = false
@@ -512,7 +513,10 @@ struct PresentationView: View {
                             PDFSlideView(url: pdfURL, pageIndex: pageIndex)
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                         } else if let webpageURL = slide.webpageURL {
-                            WebpageSlideView(url: webpageURL)
+                            WebpageSlideView(
+                                url: webpageURL,
+                                isMuted: session.webpageMuted
+                            )
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                         } else if let imageURL = slide.imageURL {
                             ImageSlideView(url: imageURL)
@@ -981,15 +985,126 @@ struct PDFSlideView: NSViewRepresentable {
 
 struct WebpageSlideView: View {
     let url: URL
+    let isMuted: Bool
 
     var body: some View {
-        WebpageViewRepresentable(url: url)
+        WebpageViewRepresentable(
+            url: url,
+            isMuted: isMuted
+        )
             .background(Color.white)
     }
 }
 
+private let webpageMuteBootstrapScript = """
+(function() {
+  window.__eucalyAudioContexts = window.__eucalyAudioContexts || [];
+
+  const mediaState = new WeakMap();
+
+  const applyMuteToMediaElement = function(element, muted) {
+    if (!mediaState.has(element)) {
+      mediaState.set(element, {
+        volume: typeof element.volume === 'number' ? element.volume : 1
+      });
+    }
+
+    const state = mediaState.get(element);
+
+    if (muted && typeof element.volume === 'number') {
+      state.volume = element.volume;
+    }
+
+    element.defaultMuted = muted;
+    element.muted = muted;
+
+    if (typeof element.volume === 'number') {
+      element.volume = muted ? 0 : state.volume;
+    }
+  };
+
+  const applyMuteToMediaTree = function(root, muted) {
+    if (!root || !root.querySelectorAll) {
+      return;
+    }
+
+    root.querySelectorAll('audio,video').forEach(function(element) {
+      applyMuteToMediaElement(element, muted);
+    });
+  };
+
+  const wrapAudioContextConstructor = function(name) {
+    const Original = window[name];
+    if (!Original || Original.__eucalyWrapped) {
+      return;
+    }
+
+    const Wrapped = function(...args) {
+      const context = new Original(...args);
+      window.__eucalyAudioContexts.push(context);
+
+      if (window.__eucalyMuted) {
+        try {
+          context.suspend();
+        } catch (error) {}
+      }
+
+      return context;
+    };
+
+    Wrapped.prototype = Original.prototype;
+    Object.setPrototypeOf(Wrapped, Original);
+    Wrapped.__eucalyWrapped = true;
+    window[name] = Wrapped;
+  };
+
+  wrapAudioContextConstructor('AudioContext');
+  wrapAudioContextConstructor('webkitAudioContext');
+
+  if (!window.__eucalyMediaPlayPatched && window.HTMLMediaElement) {
+    const originalPlay = window.HTMLMediaElement.prototype.play;
+
+    window.HTMLMediaElement.prototype.play = function(...args) {
+      applyMuteToMediaElement(this, !!window.__eucalyMuted);
+      return originalPlay.apply(this, args);
+    };
+
+    window.__eucalyMediaPlayPatched = true;
+  }
+
+  window.__eucalyApplyMute = function(muted) {
+    window.__eucalyMuted = muted;
+    applyMuteToMediaTree(document, muted);
+    window.__eucalyAudioContexts.forEach(function(context) {
+      try {
+        if (muted) {
+          context.suspend();
+        } else {
+          context.resume();
+        }
+      } catch (error) {}
+    });
+
+    if (!window.__eucalyMuteObserver) {
+      window.__eucalyMuteObserver = new MutationObserver(function() {
+        applyMuteToMediaTree(document, !!window.__eucalyMuted);
+      });
+
+      const target = document.documentElement || document.body;
+      if (target) {
+        window.__eucalyMuteObserver.observe(target, {
+          childList: true,
+          subtree: true
+        });
+      }
+    }
+  };
+})();
+"""
+
 struct WebpageViewRepresentable: NSViewRepresentable {
     let url: URL
+    var isMuted: Bool = false
     var onURLChange: ((URL) -> Void)? = nil
     var onTitleChange: ((String, URL) -> Void)? = nil
 
@@ -1000,17 +1115,26 @@ struct WebpageViewRepresentable: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+        configuration.userContentController.addUserScript(
+            WKUserScript(
+                source: webpageMuteBootstrapScript,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false
+            )
+        )
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.allowsMagnification = false
         view.allowsBackForwardNavigationGestures = false
         view.underPageBackgroundColor = .white
         view.navigationDelegate = context.coordinator
         view.uiDelegate = context.coordinator
+        context.coordinator.setMute(isMuted, in: view)
         context.coordinator.load(url: url, in: view)
         return view
     }
 
     func updateNSView(_ nsView: WKWebView, context: Context) {
+        context.coordinator.setMute(isMuted, in: nsView)
         context.coordinator.load(url: url, in: nsView)
     }
 
@@ -1021,6 +1145,7 @@ struct WebpageViewRepresentable: NSViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         private var requestedURL: URL?
         private var isShowingFailure = false
+        private var isMuted = false
         private let onURLChange: ((URL) -> Void)?
         private let onTitleChange: ((String, URL) -> Void)?
         private var urlObservation: NSKeyValueObservation?
@@ -1044,6 +1169,7 @@ struct WebpageViewRepresentable: NSViewRepresentable {
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             isShowingFailure = false
+            applyMute(in: webView)
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -1086,6 +1212,7 @@ struct WebpageViewRepresentable: NSViewRepresentable {
         func teardown(_ webView: WKWebView) {
             requestedURL = nil
             isShowingFailure = false
+            isMuted = false
             urlObservation?.invalidate()
             titleObservation?.invalidate()
             urlObservation = nil
@@ -1094,6 +1221,11 @@ struct WebpageViewRepresentable: NSViewRepresentable {
             webView.navigationDelegate = nil
             webView.uiDelegate = nil
             webView.load(URLRequest(url: URL(string: "about:blank")!))
+        }
+
+        func setMute(_ isMuted: Bool, in webView: WKWebView) {
+            self.isMuted = isMuted
+            applyMute(in: webView)
         }
 
         private func attachObservers(to webView: WKWebView) {
@@ -1120,6 +1252,12 @@ struct WebpageViewRepresentable: NSViewRepresentable {
                 return false
             }
             return url.host(percentEncoded: false)?.isEmpty == false
+        }
+
+        private func applyMute(in webView: WKWebView) {
+            webView.evaluateJavaScript(
+                "window.__eucalyApplyMute && window.__eucalyApplyMute(\(isMuted ? "true" : "false"));"
+            )
         }
 
         private func showFailure(_ error: Error, in webView: WKWebView) {

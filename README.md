@@ -25,6 +25,13 @@ Browsing never silently replaces **Current**.
 - Recursive text search under library root
 - Explicit projection display selection
 
+Webpage behavior:
+
+- webpages are interactive in both Preview and Current
+- webpage mute is intentionally independent:
+  - Preview webpage mute affects Preview only
+  - Current webpage mute affects Current and projection
+
 ## Screenshots
 
 ### Main Window

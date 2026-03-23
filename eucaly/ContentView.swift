@@ -39,15 +39,16 @@ public struct ContentView: View {
     @State private var newFileWarning: String? = nil
     @State private var lastLoadedText: String = ""
     @State private var sidebarSelection: SidebarSelection? = nil
+    @State private var ignoresNextSidebarSelectionChange: Bool = false
     @State private var currentLoadingURL: URL? = nil
     @State private var isEditingLyrics: Bool = false
     @State private var libraryFolders: [URL] = []
     @State private var selectedLibraryFolder: URL? = nil
     @State private var librarySearchQuery: String = ""
-    @State private var webpageDraft: String = ""
     @State private var webpageURLs: [URL] = []
     @State private var webpageTitles: [URL: String] = [:]
     @State private var selectedWebpageURL: URL? = nil
+    @State private var previewWebpageMuted: Bool = false
     @State private var librarySearchResults: [LibraryTextSearchIndex.SearchResult] = []
     @State private var isLibrarySearchPresented: Bool = false
     @State private var selectedLibrarySearchResult: URL? = nil
@@ -190,12 +191,14 @@ public struct ContentView: View {
                     query: $librarySearchQuery,
                     selectedResult: $selectedLibrarySearchResult,
                     actions: matchingLibrarySearchActions,
+                    webpageCandidateURL: commandPaletteWebpageCandidateURL,
                     results: filteredLibrarySearchResults,
                     minimumCharacterCount: librarySearchMinimumCharacterCount,
                     isIndexing: isLibrarySearchIndexing,
                     displayName: { displayName(for: $0) },
                     snippet: librarySearchSnippet(for:),
                     onRunAction: runLibrarySearchAction,
+                    onOpenWebpage: openWebpageFromCommandPalette,
                     onClose: dismissLibrarySearch,
                     onOpenResult: previewLibrarySearchResult
                 )
@@ -307,7 +310,6 @@ public struct ContentView: View {
             downloadsURL: downloadsURL,
             libraryFolders: libraryFolders,
             captureWindows: captureWindows,
-            webpageDraft: $webpageDraft,
             webpageURLs: webpageURLs,
             selectedWebpageURL: selectedWebpageURL,
             selectedLibraryFolder: $selectedLibraryFolder,
@@ -346,7 +348,6 @@ public struct ContentView: View {
             onStopCountdown: stopCountdown,
             onSetClockVisible: setClockVisible,
             onSelectionChange: handleSidebarSelection,
-            onPreviewWebpage: previewWebpageFromSidebar,
             onClearWebpage: clearWebpageFromSidebar,
             onPickWindow: pickWindowForPreview,
             onClearSelectedWindow: clearSelectedWindowFromSidebar
@@ -599,6 +600,7 @@ public struct ContentView: View {
                 session: session,
                 flow: flow,
                 isCollapsed: $isPreviewCollapsed,
+                isWebpageMuted: $previewWebpageMuted,
                 canEditSelection: canEditSelection,
                 thumbnailScale: thumbnailScale,
                 paneToggleAnimation: paneToggleAnimation,
@@ -617,6 +619,9 @@ public struct ContentView: View {
                 thumbnailScale: thumbnailScale,
                 paneToggleAnimation: paneToggleAnimation,
                 loadAnimation: loadAnimation,
+                titleForWebpage: webpageTitle(for:),
+                onWebpageNavigationChange: updateCurrentWebpageURL(to:from:),
+                onWebpageTitleChange: updateWebpageTitle(_:for:),
                 onClearCurrent: clearCurrentDocument
             ),
             showEditorAndPreview: isEditingLyrics && !isCurrentSelectionMediaFile && !isPreviewCollapsed
@@ -1276,6 +1281,10 @@ public struct ContentView: View {
         }
     }
 
+    private var commandPaletteWebpageCandidateURL: URL? {
+        normalizedWebpageURL(from: librarySearchQuery)
+    }
+
     private func filterSearchResultsToCurrentLibrary(
         _ results: [LibraryTextSearchIndex.SearchResult]
     ) -> [LibraryTextSearchIndex.SearchResult] {
@@ -1334,6 +1343,12 @@ public struct ContentView: View {
         case .refreshLibrary:
             refreshLibrary()
         }
+    }
+
+    @MainActor
+    private func openWebpageFromCommandPalette(_ url: URL) {
+        dismissLibrarySearch()
+        previewWebpage(url)
     }
 
     private var playlistSidebarItems: [PlaylistSidebarItem] {
@@ -1531,6 +1546,11 @@ public struct ContentView: View {
     }
 
     private func handleSidebarSelection(_ selection: SidebarSelection?) {
+        if ignoresNextSidebarSelectionChange {
+            ignoresNextSidebarSelectionChange = false
+            return
+        }
+
         guard let selection else { return }
         switch selection {
         case .library(let url):
@@ -1813,22 +1833,16 @@ public struct ContentView: View {
         screenCaptureManager.presentWindowPicker()
     }
 
-    private func previewWebpageFromSidebar() {
-        guard let url = normalizedWebpageURL(from: webpageDraft) else {
-            newFileWarning = "Enter a valid webpage URL."
-            return
-        }
+    private func previewWebpage(_ url: URL) {
         newFileWarning = nil
         if !webpageURLs.contains(url) {
             webpageURLs.append(url)
         }
-        webpageDraft = ""
         selectedWebpageURL = url
         sidebarSelection = .web(url)
     }
 
     private func clearWebpageFromSidebar() {
-        webpageDraft = ""
         guard let selectedWebpageURL else {
             if case .web = sidebarSelection {
                 sidebarSelection = nil
@@ -1961,7 +1975,7 @@ public struct ContentView: View {
     private func updatePreviewWebpageURL(to newURL: URL, from previousURL: URL) {
         guard isSupportedWebpageURL(newURL) else { return }
 
-        let sourceURL = selectedWebpageURL ?? previousURL
+        let sourceURL = previousURL
         if sourceURL == newURL {
             if !webpageURLs.contains(newURL) {
                 webpageURLs.append(newURL)
@@ -1989,8 +2003,48 @@ public struct ContentView: View {
         setPreviewSlides(buildWebpageSlides(from: newURL))
 
         if sidebarSelection == .web(sourceURL) {
-            sidebarSelection = .web(newURL)
+            setSidebarSelectionWithoutLoading(.web(newURL))
         }
+    }
+
+    private func updateCurrentWebpageURL(to newURL: URL, from previousURL: URL) {
+        guard isSupportedWebpageURL(newURL) else { return }
+
+        let sourceURL = previousURL
+        if sourceURL == newURL {
+            if !webpageURLs.contains(newURL) {
+                webpageURLs.append(newURL)
+            }
+            selectedWebpageURL = newURL
+            setCurrentSlides(buildWebpageSlides(from: newURL))
+            return
+        }
+
+        if let existingIndex = webpageURLs.firstIndex(of: sourceURL) {
+            webpageURLs[existingIndex] = newURL
+        } else if !webpageURLs.contains(newURL) {
+            webpageURLs.append(newURL)
+        }
+
+        var seenURLs = Set<URL>()
+        webpageURLs = webpageURLs.filter { seenURLs.insert($0).inserted }
+
+        if let existingTitle = webpageTitles[sourceURL], webpageTitles[newURL] == nil {
+            webpageTitles[newURL] = existingTitle
+        }
+        webpageTitles.removeValue(forKey: sourceURL)
+
+        selectedWebpageURL = newURL
+        setCurrentSlides(buildWebpageSlides(from: newURL))
+
+        if sidebarSelection == .web(sourceURL) {
+            setSidebarSelectionWithoutLoading(.web(newURL))
+        }
+    }
+
+    private func setSidebarSelectionWithoutLoading(_ selection: SidebarSelection?) {
+        ignoresNextSidebarSelectionChange = true
+        sidebarSelection = selection
     }
 
     private func loadWindowPreview(for windowID: CGWindowID) {

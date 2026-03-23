@@ -6,6 +6,7 @@
 - PDFs
 - images
 - videos
+- webpages
 - captured app windows (live stream)
 
 Primary UX model:
@@ -90,6 +91,14 @@ If a new type cannot follow this contract, treat it as a design bug and refactor
   - `Load to Current` (or `Switch Current` while presenting)
   - `Clear`
 - Clear can run while projecting; it clears Current without implicitly restoring Preview.
+
+### Webpages
+- Webpages are opened from `File > Quick Open...` / the command palette.
+- Opening a webpage creates a saved entry in the sidebar Web list and loads the page into **Preview**.
+- Webpages are live and interactive in both **Preview** and **Current**.
+- Once a webpage is in **Current**, navigation inside Current updates Current/runtime state and the saved sidebar URL entry, but must not silently rebuild Preview.
+- Preview webpage mute is local to Preview.
+- Current webpage mute is session-level (`session.webpageMuted`) and affects Current plus projection.
 
 ### Projection
 - Toolbar and menu control slide visibility separately from background layer visibility.
@@ -219,7 +228,11 @@ Window capture supports live streaming of a user-picked app window into a slide.
 - Capture:
   - `eucaly/ScreenCaptureManager.swift`
 - Search:
-  - See `/Users/suku/Swift/eucaly/SEARCH.md` for query behavior, indexing rules, and implementation details.
+  - See `SEARCH.md` for query behavior, indexing rules, and implementation details.
+- Webpages:
+  - `eucaly/PresentationWindowController.swift` (`WebpageViewRepresentable`, `WebpageSlideView`)
+  - `eucaly/PreviewPaneContainerView.swift`
+  - `eucaly/CurrentPaneContainerView.swift`
 
 ## Caching
 - `eucaly/CacheManager.swift`
@@ -317,10 +330,12 @@ Window capture supports live streaming of a user-picked app window into a slide.
 
 ## Change Checklist
 When changing behavior, verify:
-- Lyrics/PDF/Image/Video/Window all load into Preview.
+- Lyrics/PDF/Image/Video/Webpage/Window all load into Preview.
 - Preview does not implicitly overwrite Current.
 - Load to Current works identically across media types.
 - Projection only renders Current.
+- Webpage navigation in Current updates Current and the sidebar Web entry without forcing Preview to reload.
+- Webpage mute affects Preview, Current, and projection consistently.
 - Background visual/audio remain independent from slides visibility.
 - Projection display picker selects the correct monitor across start/toggle/background actions.
 - Display unplug/hot-plug does not leave projection on an invalid screen.

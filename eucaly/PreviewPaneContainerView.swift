@@ -4,6 +4,7 @@ struct PreviewPaneContainerView: View {
     @ObservedObject var session: PresentationSession
     @ObservedObject var flow: PresentationFlowController
     @Binding var isCollapsed: Bool
+    @Binding var isWebpageMuted: Bool
     let canEditSelection: Bool
     let thumbnailScale: Double
     let paneToggleAnimation: Animation
@@ -81,11 +82,23 @@ struct PreviewPaneContainerView: View {
                                 .truncationMode(.middle)
 
                                 Spacer()
+
+                                Button {
+                                    isWebpageMuted.toggle()
+                                } label: {
+                                    Label(
+                                        isWebpageMuted ? "Unmute" : "Mute",
+                                        systemImage: isWebpageMuted ? "speaker.wave.2.fill" : "speaker.slash.fill"
+                                    )
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
                             }
                             .padding(.horizontal, 10)
 
                             WebpageViewRepresentable(
                                 url: selectedWebpageURL,
+                                isMuted: isWebpageMuted,
                                 onURLChange: { currentURL in
                                     onWebpageNavigationChange(currentURL, selectedWebpageURL)
                                 },
