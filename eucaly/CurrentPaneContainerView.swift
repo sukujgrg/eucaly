@@ -216,13 +216,14 @@ struct CurrentPaneContainerView: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(.separator, lineWidth: 1)
         )
-        .animation(paneToggleAnimation, value: isCollapsed)
         .animation(loadAnimation, value: slides.count)
         .layoutPriority(selectedWebpageURL == nil ? 0 : 1)
     }
 
     private func toggleCollapsed() {
-        flow.isCurrentCollapsed.toggle()
+        withAnimation(paneToggleAnimation) {
+            flow.isCurrentCollapsed.toggle()
+        }
     }
 
     private func clearSlides() {

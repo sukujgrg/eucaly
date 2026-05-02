@@ -70,14 +70,12 @@ struct LibrarySearchOverlayView: View {
     @Binding var selectedResult: URL?
 
     let actions: [LibraryCommandPaletteAction]
-    let webpageCandidateURL: URL?
     let results: [LibraryTextSearchIndex.SearchResult]
     let minimumCharacterCount: Int
     let isIndexing: Bool
     let displayName: (URL) -> String
     let snippet: (URL) -> String?
     let onRunAction: (LibraryCommandPaletteAction) -> Void
-    let onOpenWebpage: (URL) -> Void
     let onClose: () -> Void
     let onOpenResult: (URL) -> Void
 
@@ -182,22 +180,8 @@ struct LibrarySearchOverlayView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 6) {
-                        if !actions.isEmpty || shouldShowWebpageAction {
+                        if !actions.isEmpty {
                             paletteSectionHeader("Actions")
-
-                            if shouldShowWebpageAction {
-                                Button {
-                                    guard let webpageCandidateURL else { return }
-                                    onOpenWebpage(webpageCandidateURL)
-                                } label: {
-                                    LibrarySearchWebpageRow(
-                                        url: webpageCandidateURL,
-                                        draftText: trimmedQuery
-                                    )
-                                }
-                                .buttonStyle(.plain)
-                                .disabled(webpageCandidateURL == nil)
-                            }
 
                             ForEach(actions) { action in
                                 Button {
@@ -276,11 +260,6 @@ struct LibrarySearchOverlayView: View {
             return
         }
 
-        if let webpageCandidateURL {
-            onOpenWebpage(webpageCandidateURL)
-            return
-        }
-
         guard let action = matchedPrimaryAction else { return }
         onRunAction(action)
     }
@@ -311,12 +290,11 @@ struct LibrarySearchOverlayView: View {
         trimmedQuery.count >= minimumCharacterCount &&
             !isIndexing &&
             results.isEmpty &&
-            actions.isEmpty &&
-            webpageCandidateURL == nil
+            actions.isEmpty
     }
 
     private var shouldShowStatusView: Bool {
-        if !actions.isEmpty || !results.isEmpty || shouldShowWebpageAction {
+        if !actions.isEmpty || !results.isEmpty {
             return false
         }
         return shouldShowEmptyState || shouldShowMinimumHint || shouldShowNoResults || isIndexing
@@ -331,16 +309,9 @@ struct LibrarySearchOverlayView: View {
         return actions.first
     }
 
-    private var shouldShowWebpageAction: Bool {
-        trimmedQuery.isEmpty || webpageCandidateURL != nil
-    }
-
     private var primaryButtonTitle: String {
         if shouldUsePrimaryActionForResult {
             return "Preview"
-        }
-        if webpageCandidateURL != nil {
-            return "Open Webpage"
         }
         return matchedPrimaryAction?.title ?? "Run"
     }
@@ -349,7 +320,7 @@ struct LibrarySearchOverlayView: View {
         if shouldUsePrimaryActionForResult {
             return selectedResult == nil && results.first == nil
         }
-        return webpageCandidateURL == nil && matchedPrimaryAction == nil
+        return matchedPrimaryAction == nil
     }
 
     private var statusSymbol: String {
@@ -427,49 +398,6 @@ private struct LibrarySearchActionRow: View {
                 .fill(Color(NSColor.controlBackgroundColor).opacity(0.45))
         )
         .contentShape(Rectangle())
-    }
-}
-
-private struct LibrarySearchWebpageRow: View {
-    let url: URL?
-    let draftText: String
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "globe")
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(Color.accentColor)
-                .frame(width: 18)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Open Webpage")
-                    .font(.headline)
-                    .foregroundStyle(.primary)
-
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-            }
-
-            Spacer(minLength: 0)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color(NSColor.controlBackgroundColor).opacity(0.45))
-        )
-        .contentShape(Rectangle())
-    }
-
-    private var subtitle: String {
-        if let url, !draftText.isEmpty {
-            return url.absoluteString
-        }
-        return "Enter a URL like example.com"
     }
 }
 

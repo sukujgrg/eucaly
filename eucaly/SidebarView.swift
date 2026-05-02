@@ -44,6 +44,11 @@ struct PlaylistSidebarItem: Identifiable, Hashable {
     let exists: Bool
 }
 
+struct LibraryScrollRequest: Equatable {
+    let id = UUID()
+    let url: URL
+}
+
 struct SidebarView: View {
     @ObservedObject var session: PresentationSession
     let isWindowCaptureSupported: Bool
@@ -54,9 +59,8 @@ struct SidebarView: View {
     let libraryFolders: [URL]
     let captureWindows: [ScreenCaptureManager.CapturedWindow]
     let webpageURLs: [URL]
-    let selectedWebpageURL: URL?
+    let libraryScrollRequest: LibraryScrollRequest?
     @Binding var selectedLibraryFolder: URL?
-    @Binding var selectedFileURL: URL?
     @Binding var selectedPlaylistEntryID: UUID?
     @Binding var selectedPlaylistEntryIDs: Set<UUID>
     @Binding var sidebarSelection: SidebarSelection?
@@ -72,10 +76,9 @@ struct SidebarView: View {
 
     let displayName: (URL) -> String
     let titleForWebpage: (URL) -> String
-    let onShowLibrarySearch: () -> Void
     let onSelectLibraryFolder: (URL?) -> Void
     let onSelectDownloads: (URL) -> Void
-    let onAddSelectedToPlaylist: () -> Void
+    let onAddLibraryItemToPlaylist: (URL) -> Void
     let onRemoveSelectedFromPlaylist: () -> Void
     let onMovePlaylistUp: () -> Void
     let onMovePlaylistDown: () -> Void
@@ -92,7 +95,8 @@ struct SidebarView: View {
     let onStopCountdown: () -> Void
     let onSetClockVisible: (Bool) -> Void
     let onSelectionChange: (SidebarSelection?) -> Void
-    let onClearWebpage: () -> Void
+    let onOpenWebpageAddress: (String) -> Bool
+    let onRemoveWebpage: (URL) -> Void
     let onPickWindow: () -> Void
     let onClearSelectedWindow: () -> Void
 
@@ -118,6 +122,10 @@ struct SidebarView: View {
     private var isAppearanceSectionExpanded = false
 
     @State private var playlistSelectionAnchor: UUID?
+
+    @State private var webpageAddressDraft: String = ""
+
+    @State private var webpageAddressError: String? = nil
 
     var body: some View {
         GeometryReader { proxy in
@@ -230,15 +238,16 @@ struct SidebarView: View {
         .onChange(of: sidebarSelection) { _, newValue in
             onSelectionChange(newValue)
         }
+        .onChange(of: libraryScrollRequest?.id) { _, _ in
+            if libraryScrollRequest != nil {
+                isLibrarySectionExpanded = true
+            }
+        }
         .font(.subheadline)
     }
 
     private var libraryControls: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if selectedFileURL != nil {
-                Button("Add to Playlist") { onAddSelectedToPlaylist() }
-                    .sidebarActionStyle(primary: true)
-            }
             if let rootURL = libraryRootURL {
                 Text(rootURL.path)
                     .font(.caption)
@@ -246,11 +255,6 @@ struct SidebarView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
-
-            Button("Command Palette") {
-                onShowLibrarySearch()
-            }
-            .sidebarActionStyle()
 
             HStack(spacing: 8) {
                 Picker("Library", selection: $selectedLibraryFolder) {
@@ -315,51 +319,68 @@ struct SidebarView: View {
 
     private var webControls: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Add webpage URLs from Quick Open.")
+            HStack(spacing: 8) {
+                TextField("https://example.com", text: $webpageAddressDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .submitLabel(.go)
+                    .onSubmit(submitWebpageAddress)
+
+                Button("Open") {
+                    submitWebpageAddress()
+                }
+                .sidebarActionStyle(primary: true)
+                .disabled(webpageAddressDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+
+            Text("Enter a URL to load it into Preview and save it here.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
+            if let webpageAddressError {
+                Text(webpageAddressError)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+            }
+
             ForEach(webpageURLs, id: \.self) { url in
-                Button {
-                    isSidebarFocused = true
-                    let selectionValue = SidebarSelection.web(url)
-                    if sidebarSelection == selectionValue {
-                        onSelectionChange(selectionValue)
-                    } else {
-                        sidebarSelection = selectionValue
+                HStack(spacing: 6) {
+                    Button {
+                        isSidebarFocused = true
+                        let selectionValue = SidebarSelection.web(url)
+                        if sidebarSelection == selectionValue {
+                            onSelectionChange(selectionValue)
+                        } else {
+                            sidebarSelection = selectionValue
+                        }
+                    } label: {
+                        sidebarRow(
+                            title: titleForWebpage(url),
+                            isSelected: sidebarSelection == .web(url)
+                        )
                     }
-                } label: {
-                    sidebarRow(
-                        title: titleForWebpage(url),
-                        isSelected: sidebarSelection == .web(url)
-                    )
+                    .buttonStyle(.plain)
+
+                    Button {
+                        onRemoveWebpage(url)
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 20, height: 20)
+                            .background(
+                                Circle()
+                                    .fill(Color.secondary.opacity(0.12))
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .help("Remove webpage")
                 }
-                .buttonStyle(.plain)
             }
 
             if webpageURLs.isEmpty {
                 Text("No saved webpages")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-            }
-
-            if let selectedWebpageURL {
-                HStack(spacing: 8) {
-                    Button {
-                        onClearWebpage()
-                    } label: {
-                        Label("Clear", systemImage: "xmark.circle")
-                    }
-                    .labelStyle(.iconOnly)
-                    .sidebarActionStyle()
-                    .help("Clear webpage preview")
-
-                    Text(titleForWebpage(selectedWebpageURL))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
             }
         }
     }
@@ -708,13 +729,35 @@ struct SidebarView: View {
         LazyVStack(alignment: .leading, spacing: 0) {
             ForEach(urls, id: \.self) { url in
                 let selectionValue = selection(url)
-                Button {
-                    isSidebarFocused = true
-                    sidebarSelection = selectionValue
-                } label: {
-                    sidebarRow(title: displayName(url), isSelected: sidebarSelection == selectionValue)
+                HStack(spacing: 6) {
+                    Button {
+                        isSidebarFocused = true
+                        if sidebarSelection == selectionValue {
+                            onSelectionChange(selectionValue)
+                        } else {
+                            sidebarSelection = selectionValue
+                        }
+                    } label: {
+                        sidebarRow(title: displayName(url), isSelected: sidebarSelection == selectionValue)
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        onAddLibraryItemToPlaylist(url)
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color.accentColor)
+                            .frame(width: 20, height: 20)
+                            .background(
+                                Circle()
+                                    .fill(Color.accentColor.opacity(0.12))
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .help("Add to Playlist")
                 }
-                .buttonStyle(.plain)
+                .id(url.standardizedFileURL)
             }
         }
     }
@@ -724,10 +767,30 @@ struct SidebarView: View {
         maxHeight: CGFloat,
         selection: @escaping (URL) -> SidebarSelection
     ) -> some View {
-        ScrollView {
-            sidebarFileList(urls, selection: selection)
+        ScrollViewReader { proxy in
+            ScrollView {
+                sidebarFileList(urls, selection: selection)
+            }
+            .onAppear {
+                scrollLibraryListIfNeeded(with: proxy)
+            }
+            .onChange(of: libraryScrollRequest?.id) { _, _ in
+                scrollLibraryListIfNeeded(with: proxy)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: maxHeight, alignment: .topLeading)
+    }
+
+    private func scrollLibraryListIfNeeded(with proxy: ScrollViewProxy) {
+        guard let libraryScrollRequest else { return }
+        let targetURL = libraryScrollRequest.url.standardizedFileURL
+        guard libraryFiles.contains(where: { $0.standardizedFileURL == targetURL }) else { return }
+
+        DispatchQueue.main.async {
+            withAnimation(.easeOut(duration: 0.16)) {
+                proxy.scrollTo(targetURL, anchor: .center)
+            }
+        }
     }
 
     private var sidebarPlaylistList: some View {
@@ -817,6 +880,7 @@ struct SidebarView: View {
         let flags = NSApp.currentEvent?.modifierFlags ?? []
         let isCommand = flags.contains(.command)
         let isShift = flags.contains(.shift)
+        let selectionValue = SidebarSelection.playlist(id)
 
         if isShift,
            let anchor = playlistSelectionAnchor,
@@ -824,7 +888,7 @@ struct SidebarView: View {
            let tappedIndex = playlistItems.firstIndex(where: { $0.id == id }) {
             let range = anchorIndex <= tappedIndex ? anchorIndex...tappedIndex : tappedIndex...anchorIndex
             selectedPlaylistEntryIDs = Set(playlistItems[range].map(\.id))
-            sidebarSelection = .playlist(id)
+            sidebarSelection = selectionValue
             return
         }
 
@@ -842,8 +906,15 @@ struct SidebarView: View {
             return
         }
 
+        if sidebarSelection == selectionValue {
+            selectedPlaylistEntryIDs = [id]
+            playlistSelectionAnchor = id
+            onSelectionChange(selectionValue)
+            return
+        }
+
         selectedPlaylistEntryIDs = [id]
-        sidebarSelection = .playlist(id)
+        sidebarSelection = selectionValue
         playlistSelectionAnchor = id
     }
 
@@ -863,6 +934,18 @@ struct SidebarView: View {
         case .window:
             selectedPlaylistEntryID = nil
             selectedPlaylistEntryIDs = []
+        }
+    }
+
+    private func submitWebpageAddress() {
+        let candidate = webpageAddressDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !candidate.isEmpty else { return }
+
+        if onOpenWebpageAddress(candidate) {
+            webpageAddressDraft = ""
+            webpageAddressError = nil
+        } else {
+            webpageAddressError = "Enter a valid http(s) URL."
         }
     }
 }

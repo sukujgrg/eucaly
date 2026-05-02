@@ -44,9 +44,31 @@ final class LibraryTextSearchIndexTests: XCTestCase {
         _ = await index.rebuild(with: [filenameMatchURL, contentMatchURL, nonMatchURL])
         let results = await index.search(query: "bea")
 
-        XCTAssertTrue(results.contains(filenameMatchURL.standardizedFileURL))
-        XCTAssertTrue(results.contains(contentMatchURL.standardizedFileURL))
-        XCTAssertFalse(results.contains(nonMatchURL.standardizedFileURL))
+        XCTAssertTrue(containsResult(results, url: filenameMatchURL))
+        XCTAssertTrue(containsResult(results, url: contentMatchURL))
+        XCTAssertFalse(containsResult(results, url: nonMatchURL))
+    }
+
+    func testFilenameSearchIncludesMediaFiles() async throws {
+        let (index, directoryURL) = try makeIndex()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let pdfURL = try writeBinaryFile(
+            in: directoryURL,
+            name: "sermon-guide.pdf"
+        )
+        let videoURL = try writeBinaryFile(
+            in: directoryURL,
+            name: "welcome-loop.mp4"
+        )
+
+        _ = await index.rebuild(with: [pdfURL, videoURL])
+
+        let pdfResults = await index.search(query: "ser")
+        let videoResults = await index.search(query: "wel")
+
+        XCTAssertTrue(containsResult(pdfResults, url: pdfURL))
+        XCTAssertTrue(containsResult(videoResults, url: videoURL))
     }
 
     func testMultiTokenSearchUsesPhraseMatching() async throws {
@@ -67,11 +89,11 @@ final class LibraryTextSearchIndexTests: XCTestCase {
         _ = await index.rebuild(with: [phraseMatchURL, reverseOrderURL])
         let results = await index.search(query: "be thou")
 
-        XCTAssertTrue(results.contains(phraseMatchURL.standardizedFileURL))
-        XCTAssertFalse(results.contains(reverseOrderURL.standardizedFileURL))
+        XCTAssertTrue(containsResult(results, url: phraseMatchURL))
+        XCTAssertFalse(containsResult(results, url: reverseOrderURL))
     }
 
-    func testRebuildSkipsNonTxtAndOverLimitFiles() async throws {
+    func testRebuildIndexesFilenameForAllFilesButOnlyIndexesEligibleTxtContent() async throws {
         let (index, directoryURL) = try makeIndex()
         defer { try? FileManager.default.removeItem(at: directoryURL) }
 
@@ -80,10 +102,9 @@ final class LibraryTextSearchIndexTests: XCTestCase {
             name: "included.txt",
             contents: "small uniquecontent"
         )
-        let nonTxtURL = try writeTextFile(
+        let pdfURL = try writeBinaryFile(
             in: directoryURL,
-            name: "ignored.md",
-            contents: "small uniquenontext"
+            name: "service-pack.pdf"
         )
         let oversizedContent = String(repeating: "a", count: Int(LibraryTextSearchIndex.maxIndexedFileSizeBytes + 1))
         let oversizedURL = try writeTextFile(
@@ -92,15 +113,17 @@ final class LibraryTextSearchIndexTests: XCTestCase {
             contents: oversizedContent + " oversizeunique"
         )
 
-        let inserted = await index.rebuild(with: [includedURL, nonTxtURL, oversizedURL])
+        let inserted = await index.rebuild(with: [includedURL, pdfURL, oversizedURL])
         let includedResults = await index.search(query: "uniquecontent")
-        let nonTxtResults = await index.search(query: "uniquenontext")
+        let pdfFilenameResults = await index.search(query: "ser")
+        let oversizedFilenameResults = await index.search(query: "too")
         let oversizedResults = await index.search(query: "oversizeunique")
 
-        XCTAssertEqual(inserted, 1)
-        XCTAssertTrue(includedResults.contains(includedURL.standardizedFileURL))
-        XCTAssertFalse(nonTxtResults.contains(nonTxtURL.standardizedFileURL))
-        XCTAssertFalse(oversizedResults.contains(oversizedURL.standardizedFileURL))
+        XCTAssertEqual(inserted, 3)
+        XCTAssertTrue(containsResult(includedResults, url: includedURL))
+        XCTAssertTrue(containsResult(pdfFilenameResults, url: pdfURL))
+        XCTAssertTrue(containsResult(oversizedFilenameResults, url: oversizedURL))
+        XCTAssertFalse(containsResult(oversizedResults, url: oversizedURL))
     }
 
     func testRebuildReplacesExistingIndexContent() async throws {
@@ -124,8 +147,8 @@ final class LibraryTextSearchIndexTests: XCTestCase {
         let oldResults = await index.search(query: "legacytokenvalue")
         let newResults = await index.search(query: "freshuniquetoken")
 
-        XCTAssertFalse(oldResults.contains(oldURL.standardizedFileURL))
-        XCTAssertTrue(newResults.contains(newURL.standardizedFileURL))
+        XCTAssertFalse(containsResult(oldResults, url: oldURL))
+        XCTAssertTrue(containsResult(newResults, url: newURL))
     }
 
     private func makeIndex() throws -> (LibraryTextSearchIndex, URL) {
@@ -140,5 +163,16 @@ final class LibraryTextSearchIndexTests: XCTestCase {
         let fileURL = directoryURL.appendingPathComponent(name, isDirectory: false)
         try contents.write(to: fileURL, atomically: true, encoding: .utf8)
         return fileURL
+    }
+
+    private func writeBinaryFile(in directoryURL: URL, name: String) throws -> URL {
+        let fileURL = directoryURL.appendingPathComponent(name, isDirectory: false)
+        try Data([0x00, 0x01, 0x02]).write(to: fileURL)
+        return fileURL
+    }
+
+    private func containsResult(_ results: [LibraryTextSearchIndex.SearchResult], url: URL) -> Bool {
+        let expectedURL = url.standardizedFileURL
+        return results.contains { $0.url.standardizedFileURL == expectedURL }
     }
 }

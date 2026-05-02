@@ -50,8 +50,7 @@ actor LibraryTextSearchIndex {
         let uniqueURLs = Array(Set(urls))
 
         for url in uniqueURLs {
-            guard shouldIndex(url: url) else { continue }
-            guard let content = try? String(contentsOf: url, encoding: .utf8), !content.isEmpty else { continue }
+            let content = indexedContent(for: url)
 
             let bindFilenameResult = url.lastPathComponent.withCString { value in
                 sqlite3_bind_text(statement, 1, value, -1, Self.sqliteTransient)
@@ -141,12 +140,17 @@ actor LibraryTextSearchIndex {
             .joined(separator: "\n")
     }
 
-    private func shouldIndex(url: URL) -> Bool {
-        guard url.pathExtension.lowercased() == "txt" else { return false }
-        guard let values = try? url.resourceValues(forKeys: [.fileSizeKey]), let fileSize = values.fileSize else {
-            return false
+    private func indexedContent(for url: URL) -> String {
+        guard url.pathExtension.lowercased() == "txt" else { return "" }
+        guard
+            let values = try? url.resourceValues(forKeys: [.fileSizeKey]),
+            let fileSize = values.fileSize,
+            Int64(fileSize) <= Self.maxIndexedFileSizeBytes
+        else {
+            return ""
         }
-        return Int64(fileSize) <= Self.maxIndexedFileSizeBytes
+
+        return (try? String(contentsOf: url, encoding: .utf8)) ?? ""
     }
 
     private func matchQuery(for query: String) -> String {

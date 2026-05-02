@@ -38,16 +38,22 @@ public struct ContentView: View {
     @State private var fileDisplayNames: [URL: String] = [:]
     @State private var newFileWarning: String? = nil
     @State private var lastLoadedText: String = ""
+    @State private var editingSourceURL: URL? = nil
     @State private var sidebarSelection: SidebarSelection? = nil
     @State private var ignoresNextSidebarSelectionChange: Bool = false
-    @State private var currentLoadingURL: URL? = nil
+    @State private var previewLoadToken = UUID()
+    @State private var previewSource: PreviewSource = .none
     @State private var isEditingLyrics: Bool = false
     @State private var libraryFolders: [URL] = []
     @State private var selectedLibraryFolder: URL? = nil
     @State private var librarySearchQuery: String = ""
+    @State private var cachedLibraryRootFiles: [URL] = []
+    @State private var librarySearchScopeFiles: [URL] = []
+    @State private var libraryScrollRequest: LibraryScrollRequest?
     @State private var webpageURLs: [URL] = []
     @State private var webpageTitles: [URL: String] = [:]
     @State private var selectedWebpageURL: URL? = nil
+    @State private var currentWebpageSourceURL: URL? = nil
     @State private var previewWebpageMuted: Bool = false
     @State private var librarySearchResults: [LibraryTextSearchIndex.SearchResult] = []
     @State private var isLibrarySearchPresented: Bool = false
@@ -65,7 +71,7 @@ public struct ContentView: View {
     @State private var librarySearchIndex = LibraryTextSearchIndex()
     @State private var isPreviewCollapsed: Bool = false
     private let playlistDirectoryName = "Playlist"
-    private let paneToggleAnimation = Animation.easeInOut(duration: 0.20)
+    private let paneToggleAnimation = Animation.easeOut(duration: 0.12)
     private let loadAnimation = Animation.easeInOut(duration: 0.24)
     private let librarySearchMinimumCharacterCount = 3
     private let windowCaptureFrameRateOptions = [24, 30, 60]
@@ -74,6 +80,14 @@ public struct ContentView: View {
         let displayID: Int
         let label: String
         var id: Int { displayID }
+    }
+
+    private enum PreviewSource: Equatable {
+        case none
+        case file(URL)
+        case web(URL)
+        case window(CGWindowID)
+        case lyrics
     }
 
     private enum FileKind {
@@ -191,14 +205,12 @@ public struct ContentView: View {
                     query: $librarySearchQuery,
                     selectedResult: $selectedLibrarySearchResult,
                     actions: matchingLibrarySearchActions,
-                    webpageCandidateURL: commandPaletteWebpageCandidateURL,
                     results: filteredLibrarySearchResults,
                     minimumCharacterCount: librarySearchMinimumCharacterCount,
                     isIndexing: isLibrarySearchIndexing,
                     displayName: { displayName(for: $0) },
                     snippet: librarySearchSnippet(for:),
                     onRunAction: runLibrarySearchAction,
-                    onOpenWebpage: openWebpageFromCommandPalette,
                     onClose: dismissLibrarySearch,
                     onOpenResult: previewLibrarySearchResult
                 )
@@ -311,9 +323,8 @@ public struct ContentView: View {
             libraryFolders: libraryFolders,
             captureWindows: captureWindows,
             webpageURLs: webpageURLs,
-            selectedWebpageURL: selectedWebpageURL,
+            libraryScrollRequest: libraryScrollRequest,
             selectedLibraryFolder: $selectedLibraryFolder,
-            selectedFileURL: $selectedFileURL,
             selectedPlaylistEntryID: $selectedPlaylistEntryID,
             selectedPlaylistEntryIDs: $selectedPlaylistEntryIDs,
             sidebarSelection: $sidebarSelection,
@@ -328,10 +339,9 @@ public struct ContentView: View {
             isSidebarFocused: $isSidebarFocused,
             displayName: { displayName(for: $0) },
             titleForWebpage: webpageTitle(for:),
-            onShowLibrarySearch: presentLibrarySearch,
             onSelectLibraryFolder: handleSelectedLibraryFolderChange,
             onSelectDownloads: selectDownloadsFolder,
-            onAddSelectedToPlaylist: addSelectedToPlaylist,
+            onAddLibraryItemToPlaylist: addLibraryItemToPlaylist,
             onRemoveSelectedFromPlaylist: removeSelectedFromPlaylist,
             onMovePlaylistUp: moveSelectedPlaylistEntriesUp,
             onMovePlaylistDown: moveSelectedPlaylistEntriesDown,
@@ -348,7 +358,8 @@ public struct ContentView: View {
             onStopCountdown: stopCountdown,
             onSetClockVisible: setClockVisible,
             onSelectionChange: handleSidebarSelection,
-            onClearWebpage: clearWebpageFromSidebar,
+            onOpenWebpageAddress: openWebpageFromSidebar,
+            onRemoveWebpage: removeWebpage,
             onPickWindow: pickWindowForPreview,
             onClearSelectedWindow: clearSelectedWindowFromSidebar
         )
@@ -377,6 +388,15 @@ public struct ContentView: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(!canToggleSlides)
                 .help(isShowingSlides ? "Hide Slides" : "Show Slides")
+
+                Button {
+                    presentLibrarySearch()
+                } label: {
+                    Label("Command Palette", systemImage: "magnifyingglass")
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.bordered)
+                .help("Open the command palette")
 
                 projectionScreenPicker
 
@@ -470,7 +490,7 @@ public struct ContentView: View {
                 sidebarSelection = nil
             }
             if flow.previewSlides.contains(where: { $0.captureWindowID != nil }) {
-                flow.clearPreviewDocument()
+                clearPreviewDocument()
             }
             return
         }
@@ -545,7 +565,7 @@ public struct ContentView: View {
     private func handleSaveLyricsNotification(_ notification: Notification) {
         guard isEditingLyrics, !isCurrentSelectionMediaFile else { return }
         deferSessionChange {
-            if currentSelectedURL == nil {
+            if editorSourceURL == nil {
                 createNewFile()
             } else {
                 saveCurrentFile()
@@ -566,6 +586,8 @@ public struct ContentView: View {
     }
 
     private func handleNewLyrics() {
+        beginPreviewTransition(to: .lyrics)
+        editingSourceURL = nil
         var state = NewLyricsState(
             rawLyrics: rawLyrics,
             lastLoadedText: lastLoadedText,
@@ -608,9 +630,7 @@ public struct ContentView: View {
                 titleForWebpage: webpageTitle(for:),
                 onWebpageNavigationChange: updatePreviewWebpageURL(to:from:),
                 onWebpageTitleChange: updateWebpageTitle(_:for:),
-                onEdit: {
-                    isEditingLyrics = true
-                },
+                onEdit: beginLyricsEditing,
                 onLoadToCurrent: handleLoadPreviewToCurrent
             ),
             currentPane: CurrentPaneContainerView(
@@ -629,22 +649,23 @@ public struct ContentView: View {
     }
 
     private var saveButtonTitle: String {
-        currentSelectedURL == nil ? "Save As..." : "Save"
+        editorSourceURL == nil ? "Save As..." : "Save"
     }
 
     private var canSaveEditorContent: Bool {
         let trimmed = rawLyrics.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return false }
-        if currentSelectedURL != nil && rawLyrics == lastLoadedText { return false }
+        if editorSourceURL != nil && rawLyrics == lastLoadedText { return false }
         return true
     }
 
     private func handleEditorAction(_ action: EditorPaneAction) {
         switch action {
         case .close:
+            editingSourceURL = nil
             isEditingLyrics = false
         case .save:
-            if currentSelectedURL == nil {
+            if editorSourceURL == nil {
                 createNewFile()
             } else {
                 saveCurrentFile()
@@ -658,12 +679,20 @@ public struct ContentView: View {
     }
 
     private func setCurrentSlides(_ slides: [Slide], preferredSelection: Slide.ID? = nil) {
+        syncCurrentWebpageSource(with: slides)
         flow.setCurrentSlides(slides, in: session, preferredSelection: preferredSelection)
+    }
+
+    private func clearPreviewDocument() {
+        previewLoadToken = UUID()
+        previewSource = .none
+        flow.clearPreviewDocument()
     }
 
     private func clearCurrentDocument() {
         let clearedWindowFromCurrent = session.slides.contains { $0.captureWindowID != nil }
         flow.clearCurrentDocument(in: session)
+        currentWebpageSourceURL = nil
         flow.isCurrentCollapsed = true
         if clearedWindowFromCurrent, case .window = sidebarSelection {
             sidebarSelection = nil
@@ -677,6 +706,8 @@ public struct ContentView: View {
     private func handleLoadPreviewToCurrent() {
         guard !flow.previewSlides.isEmpty else { return }
         flow.movePreviewToCurrent(in: session, force: true)
+        syncCurrentWebpageSource(with: session.slides)
+        isPreviewCollapsed = true
     }
 
     private func toggleSlidesFromUI() {
@@ -934,11 +965,50 @@ public struct ContentView: View {
         return filePath == rootPath || filePath.hasPrefix(rootPath + "/")
     }
 
-    private func loadMarkdownFiles(from folder: URL) {
+    private func loadMarkdownFiles(
+        from folder: URL,
+        refreshLibrarySearchScope: Bool = false,
+        forceSearchIndexRebuild: Bool = false
+    ) {
+        let previousSearchScopeFiles = librarySearchScopeFiles
         let files = listSupportedLibraryFilesRecursively(from: folder)
+        let searchScopeFiles = resolveLibrarySearchScopeFiles(
+            displayedFolder: folder,
+            displayedFiles: files,
+            refreshLibrarySearchScope: refreshLibrarySearchScope
+        )
         markdownFiles = files
-        rebuildDisplayNames(for: markdownFiles + playlistResolvedURLs)
-        rebuildLibrarySearchIndex(for: markdownFiles)
+        librarySearchScopeFiles = searchScopeFiles
+        rebuildDisplayNames(for: searchScopeFiles + playlistResolvedURLs)
+
+        if forceSearchIndexRebuild || !haveSameStandardizedURLs(previousSearchScopeFiles, searchScopeFiles) {
+            rebuildLibrarySearchIndex(for: searchScopeFiles)
+        }
+    }
+
+    private func resolveLibrarySearchScopeFiles(
+        displayedFolder: URL,
+        displayedFiles: [URL],
+        refreshLibrarySearchScope: Bool
+    ) -> [URL] {
+        guard let root = libraryRootURL else {
+            return displayedFiles
+        }
+
+        if root.standardizedFileURL == displayedFolder.standardizedFileURL {
+            cachedLibraryRootFiles = displayedFiles
+            return displayedFiles
+        }
+
+        if refreshLibrarySearchScope || cachedLibraryRootFiles.isEmpty {
+            cachedLibraryRootFiles = listSupportedLibraryFilesRecursively(from: root)
+        }
+
+        return cachedLibraryRootFiles
+    }
+
+    private func haveSameStandardizedURLs(_ lhs: [URL], _ rhs: [URL]) -> Bool {
+        lhs.map(\.standardizedFileURL) == rhs.map(\.standardizedFileURL)
     }
 
     private func listSupportedLibraryFilesRecursively(from folder: URL) -> [URL] {
@@ -982,7 +1052,8 @@ public struct ContentView: View {
     }
 
     private func loadSelectedFile(url: URL) {
-        currentLoadingURL = url
+        let source = PreviewSource.file(url)
+        let token = beginPreviewTransition(to: source)
         let kind = FileKind(url: url)
         DispatchQueue.global(qos: .userInitiated).async {
             switch kind {
@@ -990,26 +1061,26 @@ public struct ContentView: View {
                 guard let document = PDFDocument(url: url) else { return }
                 let slides = buildPDFSlides(from: document, url: url)
                 DispatchQueue.main.async {
-                    guard currentLoadingURL == url else { return }
+                    guard previewTransitionIsCurrent(token: token, source: source) else { return }
                     applyPreviewMediaLoad(slides: slides)
                 }
             case .image:
                 let slides = buildImageSlides(from: url)
                 DispatchQueue.main.async {
-                    guard currentLoadingURL == url else { return }
+                    guard previewTransitionIsCurrent(token: token, source: source) else { return }
                     applyPreviewMediaLoad(slides: slides)
                 }
             case .video:
                 let slides = buildVideoSlides(from: url)
                 DispatchQueue.main.async {
-                    guard currentLoadingURL == url else { return }
+                    guard previewTransitionIsCurrent(token: token, source: source) else { return }
                     applyPreviewMediaLoad(slides: slides)
                 }
             case .txt:
                 guard let contents = try? String(contentsOf: url, encoding: .utf8) else { return }
                 let doc = LyricsParser.parseDocument(contents, fileName: url.lastPathComponent)
                 DispatchQueue.main.async {
-                    guard currentLoadingURL == url else { return }
+                    guard previewTransitionIsCurrent(token: token, source: source) else { return }
                     applyPreviewLyricsLoad(contents: contents, slides: doc.slides)
                 }
             case .unsupported:
@@ -1020,6 +1091,7 @@ public struct ContentView: View {
 
     private func applyPreviewMediaLoad(slides: [Slide]) {
         isEditingLyrics = false
+        editingSourceURL = nil
         rawLyrics = ""
         lastLoadedText = ""
         setPreviewSlides(slides)
@@ -1027,6 +1099,7 @@ public struct ContentView: View {
 
     private func applyPreviewLyricsLoad(contents: String, slides: [Slide]) {
         isEditingLyrics = false
+        editingSourceURL = nil
         rawLyrics = contents
         lastLoadedText = contents
         setPreviewSlides(slides)
@@ -1035,7 +1108,30 @@ public struct ContentView: View {
     }
 
     private func setPreviewSlides(_ slides: [Slide], preferredSelection: Slide.ID? = nil) {
-        flow.setPreviewSlides(slides, preferredSelection: preferredSelection)
+        setPreviewSlides(slides, preferredSelection: preferredSelection, preferredSelectionIndex: nil)
+    }
+
+    private func setPreviewSlides(
+        _ slides: [Slide],
+        preferredSelection: Slide.ID? = nil,
+        preferredSelectionIndex: Int?
+    ) {
+        if !slides.isEmpty {
+            isPreviewCollapsed = false
+        }
+        let preservedCurrentSlides = session.slides
+        let preservedCurrentSlideID = session.currentSlideID
+
+        flow.setPreviewSlides(
+            slides,
+            preferredSelection: preferredSelection,
+            preferredSelectionIndex: preferredSelectionIndex
+        )
+
+        restoreCurrentDocumentIfNeeded(
+            slides: preservedCurrentSlides,
+            currentSlideID: preservedCurrentSlideID
+        )
     }
 
     private var downloadsURL: URL? {
@@ -1169,7 +1265,11 @@ public struct ContentView: View {
         folderURL = root
         selectedLibraryFolder = nil
         loadLibraryFolders(from: root)
-        loadMarkdownFiles(from: root)
+        loadMarkdownFiles(
+            from: root,
+            refreshLibrarySearchScope: true,
+            forceSearchIndexRebuild: true
+        )
     }
 
     private func loadLibraryFolders(from root: URL) {
@@ -1281,14 +1381,10 @@ public struct ContentView: View {
         }
     }
 
-    private var commandPaletteWebpageCandidateURL: URL? {
-        normalizedWebpageURL(from: librarySearchQuery)
-    }
-
     private func filterSearchResultsToCurrentLibrary(
         _ results: [LibraryTextSearchIndex.SearchResult]
     ) -> [LibraryTextSearchIndex.SearchResult] {
-        let available = Set(markdownFiles.map(\.standardizedFileURL))
+        let available = Set(librarySearchScopeFiles.map(\.standardizedFileURL))
         return results
             .map { result in
                 LibraryTextSearchIndex.SearchResult(
@@ -1329,7 +1425,15 @@ public struct ContentView: View {
     @MainActor
     private func previewLibrarySearchResult(_ url: URL) {
         dismissLibrarySearch()
+
+        if let root = libraryRootURL, folderURL?.standardizedFileURL != root.standardizedFileURL {
+            folderURL = root
+            selectedLibraryFolder = nil
+            loadMarkdownFiles(from: root)
+        }
+
         sidebarSelection = .library(url)
+        libraryScrollRequest = LibraryScrollRequest(url: url)
     }
 
     @MainActor
@@ -1343,12 +1447,6 @@ public struct ContentView: View {
         case .refreshLibrary:
             refreshLibrary()
         }
-    }
-
-    @MainActor
-    private func openWebpageFromCommandPalette(_ url: URL) {
-        dismissLibrarySearch()
-        previewWebpage(url)
     }
 
     private var playlistSidebarItems: [PlaylistSidebarItem] {
@@ -1404,11 +1502,7 @@ public struct ContentView: View {
         rebuildDisplayNames(for: markdownFiles + playlistResolvedURLs)
     }
 
-    private func addSelectedToPlaylist() {
-        guard let source = selectedFileURL else {
-            newFileWarning = "Select a file from the Library first."
-            return
-        }
+    private func addLibraryItemToPlaylist(_ source: URL) {
         guard libraryRootURL != nil else {
             newFileWarning = "Set a library root before adding to playlists."
             return
@@ -1451,13 +1545,21 @@ public struct ContentView: View {
             ensurePlaylistDirectory(in: root)
         }
         if let folderURL {
-            loadMarkdownFiles(from: folderURL)
+            loadMarkdownFiles(
+                from: folderURL,
+                refreshLibrarySearchScope: true,
+                forceSearchIndexRebuild: true
+            )
             loadPlaylists()
             return
         }
         if let root = libraryRootURL {
             folderURL = root
-            loadMarkdownFiles(from: root)
+            loadMarkdownFiles(
+                from: root,
+                refreshLibrarySearchScope: true,
+                forceSearchIndexRebuild: true
+            )
             loadPlaylists()
             return
         }
@@ -1555,6 +1657,9 @@ public struct ContentView: View {
         switch selection {
         case .library(let url):
             if selectedFileURL == url, selectedPlaylistEntryID == nil {
+                if flow.previewSlides.isEmpty {
+                    loadSelectedFile(url: url)
+                }
                 return
             }
             selectedFileURL = url
@@ -1564,6 +1669,9 @@ public struct ContentView: View {
         case .playlist(let id):
             guard let url = playlistStore.resolvedURL(for: id) else { return }
             if selectedPlaylistEntryID == id, selectedFileURL == nil {
+                if flow.previewSlides.isEmpty {
+                    loadSelectedFile(url: url)
+                }
                 return
             }
             selectedPlaylistEntryID = id
@@ -1635,7 +1743,11 @@ public struct ContentView: View {
                     libraryRootPath = root.path
                 }
                 if let folderURL {
-                    loadMarkdownFiles(from: folderURL)
+                    loadMarkdownFiles(
+                        from: folderURL,
+                        refreshLibrarySearchScope: true,
+                        forceSearchIndexRebuild: true
+                    )
                 }
                 if let root = libraryRootURL {
                     loadLibraryFolders(from: root)
@@ -1644,8 +1756,10 @@ public struct ContentView: View {
                 selectedFileURL = fileURL
                 selectedPlaylistEntryID = nil
                 selectedPlaylistEntryIDs = []
+                editingSourceURL = fileURL
                 let doc = LyricsParser.parseDocument(rawLyrics)
-                setCurrentSlides(doc.slides)
+                beginPreviewTransition(to: .file(fileURL))
+                setPreviewSlides(doc.slides)
             } catch {
                 newFileWarning = "Could not save file: \(error.localizedDescription)"
             }
@@ -1691,10 +1805,12 @@ public struct ContentView: View {
 
     private func formatAndSave() {
         guard !isCurrentSelectionMediaFile else { return }
+        let preferredSelectionIndex = currentPreviewSelectionIndex()
         let formatted = formatLyricsMarkdown(rawLyrics)
         rawLyrics = formatted
         let doc = parseLyricsDocument(formatted)
-        setPreviewSlides(doc.slides, preferredSelection: flow.previewSelectionID)
+        beginPreviewTransition(to: .lyrics)
+        setPreviewSlides(doc.slides, preferredSelectionIndex: preferredSelectionIndex)
     }
 
     private func formatLyricsMarkdown(_ text: String) -> String {
@@ -1818,11 +1934,18 @@ public struct ContentView: View {
     }
 
     private func saveCurrentFile() {
-        guard !isCurrentSelectionMediaFile, let url = currentSelectedURL else { return }
+        guard !isCurrentSelectionMediaFile, let url = editorSourceURL else { return }
         do {
             try rawLyrics.write(to: url, atomically: true, encoding: .utf8)
             lastLoadedText = rawLyrics
-            rebuildDisplayNames(for: markdownFiles + playlistResolvedURLs)
+            if let folderURL {
+                loadMarkdownFiles(
+                    from: folderURL,
+                    forceSearchIndexRebuild: true
+                )
+            } else {
+                rebuildDisplayNames(for: markdownFiles + playlistResolvedURLs)
+            }
         } catch {
             // Silently ignore for now; could surface UI feedback later.
         }
@@ -1833,36 +1956,37 @@ public struct ContentView: View {
         screenCaptureManager.presentWindowPicker()
     }
 
-    private func previewWebpage(_ url: URL) {
-        newFileWarning = nil
-        if !webpageURLs.contains(url) {
-            webpageURLs.append(url)
-        }
-        selectedWebpageURL = url
-        sidebarSelection = .web(url)
-    }
+    private func removeWebpage(_ url: URL) {
+        webpageURLs.removeAll { $0 == url }
+        webpageTitles.removeValue(forKey: url)
 
-    private func clearWebpageFromSidebar() {
-        guard let selectedWebpageURL else {
-            if case .web = sidebarSelection {
-                sidebarSelection = nil
-            }
-            return
+        if flow.previewSlides.contains(where: { $0.webpageURL == url }) {
+            clearPreviewDocument()
         }
-        webpageURLs.removeAll { $0 == selectedWebpageURL }
-        if flow.previewSlides.contains(where: { $0.webpageURL == selectedWebpageURL }) {
-            flow.clearPreviewDocument()
-        }
-        if sidebarSelection == .web(selectedWebpageURL) {
+
+        if sidebarSelection == .web(url) {
             sidebarSelection = nil
         }
-        self.selectedWebpageURL = nil
+
+        if selectedWebpageURL == url {
+            selectedWebpageURL = nil
+        }
+    }
+
+    private func openWebpageFromSidebar(_ rawValue: String) -> Bool {
+        guard let url = normalizedWebpageURL(from: rawValue) else {
+            return false
+        }
+
+        setSidebarSelectionWithoutLoading(.web(url))
+        loadWebpagePreview(for: url)
+        return true
     }
 
     private func clearSelectedWindowFromSidebar() {
         guard case .window(let windowID) = sidebarSelection else { return }
         if flow.previewSlides.contains(where: { $0.captureWindowID == windowID }) {
-            flow.clearPreviewDocument()
+            clearPreviewDocument()
         }
         if session.slides.contains(where: { $0.captureWindowID == windowID }) {
             flow.clearCurrentDocument(in: session)
@@ -1883,6 +2007,7 @@ public struct ContentView: View {
             webpageURLs.append(url)
         }
         selectedWebpageURL = url
+        beginPreviewTransition(to: .web(url))
         applyPreviewMediaLoad(slides: buildWebpageSlides(from: url))
     }
 
@@ -1974,6 +2099,7 @@ public struct ContentView: View {
 
     private func updatePreviewWebpageURL(to newURL: URL, from previousURL: URL) {
         guard isSupportedWebpageURL(newURL) else { return }
+        guard isPreviewTrackingWebpageCallback(previousURL: previousURL, newURL: newURL) else { return }
 
         let sourceURL = previousURL
         if sourceURL == newURL {
@@ -1981,7 +2107,6 @@ public struct ContentView: View {
                 webpageURLs.append(newURL)
             }
             selectedWebpageURL = newURL
-            setPreviewSlides(buildWebpageSlides(from: newURL))
             return
         }
 
@@ -2000,6 +2125,7 @@ public struct ContentView: View {
         webpageTitles.removeValue(forKey: sourceURL)
 
         selectedWebpageURL = newURL
+        beginPreviewTransition(to: .web(newURL))
         setPreviewSlides(buildWebpageSlides(from: newURL))
 
         if sidebarSelection == .web(sourceURL) {
@@ -2009,6 +2135,7 @@ public struct ContentView: View {
 
     private func updateCurrentWebpageURL(to newURL: URL, from previousURL: URL) {
         guard isSupportedWebpageURL(newURL) else { return }
+        guard isCurrentTrackingWebpageCallback(previousURL: previousURL, newURL: newURL) else { return }
 
         let sourceURL = previousURL
         if sourceURL == newURL {
@@ -2016,7 +2143,6 @@ public struct ContentView: View {
                 webpageURLs.append(newURL)
             }
             selectedWebpageURL = newURL
-            setCurrentSlides(buildWebpageSlides(from: newURL))
             return
         }
 
@@ -2047,36 +2173,80 @@ public struct ContentView: View {
         sidebarSelection = selection
     }
 
+    private func isPreviewTrackingWebpageCallback(previousURL: URL, newURL: URL) -> Bool {
+        previewSource == .web(previousURL) || previewSource == .web(newURL)
+    }
+
+    private func isCurrentTrackingWebpageCallback(previousURL: URL, newURL: URL) -> Bool {
+        currentWebpageSourceURL == previousURL || currentWebpageSourceURL == newURL
+    }
+
+    private func syncCurrentWebpageSource(with slides: [Slide]) {
+        currentWebpageSourceURL = webpageURL(from: slides)
+    }
+
+    private func webpageURL(from slides: [Slide]) -> URL? {
+        slides.first { $0.webpageURL != nil }?.webpageURL
+    }
+
     private func loadWindowPreview(for windowID: CGWindowID) {
+        beginPreviewTransition(to: .window(windowID))
         selectedFileURL = nil
         selectedPlaylistEntryID = nil
         selectedPlaylistEntryIDs = []
+        editingSourceURL = nil
 
         guard isWindowCaptureSupported else {
-            flow.clearPreviewDocument()
+            clearPreviewDocument()
             return
         }
         guard let window = captureWindows.first(where: { $0.windowID == windowID }) else {
-            flow.clearPreviewDocument()
+            clearPreviewDocument()
             return
         }
         applyPreviewMediaLoad(slides: buildWindowSlides(from: window))
     }
 
-    private func normalizedWebpageURL(from rawValue: String) -> URL? {
-        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
+    @discardableResult
+    private func beginPreviewTransition(to source: PreviewSource) -> UUID {
+        let token = UUID()
+        previewLoadToken = token
+        previewSource = source
+        return token
+    }
 
-        if let direct = URL(string: trimmed), isSupportedWebpageURL(direct) {
-            return direct
+    private func previewTransitionIsCurrent(token: UUID, source: PreviewSource) -> Bool {
+        previewLoadToken == token && previewSource == source
+    }
+
+    private var editorSourceURL: URL? {
+        editingSourceURL
+    }
+
+    private func beginLyricsEditing() {
+        guard canEditSelection else { return }
+        editingSourceURL = currentSelectedURL
+        isEditingLyrics = true
+    }
+
+    private func currentPreviewSelectionIndex() -> Int? {
+        guard let previewSelectionID = flow.previewSelectionID else { return nil }
+        return flow.previewSlides.firstIndex(where: { $0.id == previewSelectionID })
+    }
+
+    private func restoreCurrentDocumentIfNeeded(
+        slides: [Slide],
+        currentSlideID: Slide.ID?
+    ) {
+        let preservedIDs = slides.map(\.id)
+        let currentIDs = session.slides.map(\.id)
+
+        guard preservedIDs != currentIDs || session.currentSlideID != currentSlideID else {
+            return
         }
 
-        guard !trimmed.contains("://") else { return nil }
-        let httpsCandidate = "https://\(trimmed)"
-        guard let normalized = URL(string: httpsCandidate), isSupportedWebpageURL(normalized) else {
-            return nil
-        }
-        return normalized
+        session.setSlides(slides)
+        session.currentSlideID = currentSlideID ?? slides.first?.id
     }
 
     private func isSupportedWebpageURL(_ url: URL) -> Bool {
@@ -2084,6 +2254,24 @@ public struct ContentView: View {
             return false
         }
         return url.host(percentEncoded: false)?.isEmpty == false
+    }
+
+    private func normalizedWebpageURL(from rawValue: String) -> URL? {
+        let trimmedValue = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedValue.isEmpty else {
+            return nil
+        }
+
+        if let url = URL(string: trimmedValue), isSupportedWebpageURL(url) {
+            return url
+        }
+
+        let prefixedValue = "https://\(trimmedValue)"
+        guard let prefixedURL = URL(string: prefixedValue), isSupportedWebpageURL(prefixedURL) else {
+            return nil
+        }
+
+        return prefixedURL
     }
 }
 

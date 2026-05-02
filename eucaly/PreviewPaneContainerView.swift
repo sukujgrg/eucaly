@@ -144,7 +144,6 @@ struct PreviewPaneContainerView: View {
                         }
                     }
                 }
-                .transition(.opacity)
             }
 
             if !isCollapsed {
@@ -154,7 +153,6 @@ struct PreviewPaneContainerView: View {
                         .disabled(!canEditSelection)
                     Spacer()
                 }
-                .transition(.opacity)
             }
         }
         .padding(10)
@@ -167,12 +165,13 @@ struct PreviewPaneContainerView: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(.separator, lineWidth: 1)
         )
-        .animation(paneToggleAnimation, value: isCollapsed)
         .animation(loadAnimation, value: slides.count)
     }
 
     private func toggleCollapsed() {
-        isCollapsed.toggle()
+        withAnimation(paneToggleAnimation) {
+            isCollapsed.toggle()
+        }
     }
 
     private func previewWebpageURL(from slides: [Slide]) -> URL? {

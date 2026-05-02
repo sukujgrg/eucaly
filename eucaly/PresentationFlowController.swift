@@ -20,14 +20,22 @@ final class PresentationFlowController: ObservableObject {
         previewDocument?.selectedSlideID
     }
 
-    func setPreviewSlides(_ slides: [Slide], preferredSelection: Slide.ID? = nil) {
+    func setPreviewSlides(
+        _ slides: [Slide],
+        preferredSelection: Slide.ID? = nil,
+        preferredSelectionIndex: Int? = nil
+    ) {
         guard !slides.isEmpty else {
             clearPreviewDocument()
             return
         }
-        let selected = preferredSelection.flatMap { id in
+        let selectedByID = preferredSelection.flatMap { id in
             slides.contains(where: { $0.id == id }) ? id : nil
-        } ?? slides.first?.id
+        }
+        let selectedByIndex = preferredSelectionIndex.flatMap { index in
+            slides.indices.contains(index) ? slides[index].id : nil
+        }
+        let selected = selectedByID ?? selectedByIndex ?? slides.first?.id
         previewDocument = PreviewDocumentState(slides: slides, selectedSlideID: selected)
     }
 

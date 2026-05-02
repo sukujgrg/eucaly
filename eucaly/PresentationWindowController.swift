@@ -28,7 +28,7 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate, A
     @Published var videoMuted = false
     @Published var webpageMuted = false
     @Published var videoPaused = false
-    @Published var videoLoop = true
+    @Published var videoLoop = false
     @Published var videoFill = false
     @Published private(set) var backgroundVisualURL: URL? = nil
     @Published var isBackgroundVisualVisible = true
@@ -1102,6 +1102,169 @@ private let webpageMuteBootstrapScript = """
 })();
 """
 
+final class WebpageContainerNSView: NSView {
+    let webView: WKWebView
+
+    private let overlayView = WebpageOverlayView()
+
+    init(webView: WKWebView) {
+        self.webView = webView
+        super.init(frame: .zero)
+
+        translatesAutoresizingMaskIntoConstraints = false
+        wantsLayer = true
+
+        webView.translatesAutoresizingMaskIntoConstraints = false
+        overlayView.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(webView)
+        addSubview(overlayView)
+
+        NSLayoutConstraint.activate([
+            webView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            webView.topAnchor.constraint(equalTo: topAnchor),
+            webView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            overlayView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            overlayView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            overlayView.topAnchor.constraint(equalTo: topAnchor),
+            overlayView.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    func showLoading(for url: URL?) {
+        overlayView.showLoading(for: url)
+    }
+
+    func showFailure(for url: URL, message: String, retryTarget: AnyObject, action: Selector) {
+        overlayView.showFailure(
+            for: url,
+            message: message,
+            retryTarget: retryTarget,
+            action: action
+        )
+    }
+
+    func hideStatusOverlay() {
+        overlayView.isHidden = true
+    }
+}
+
+final class WebpageOverlayView: NSVisualEffectView {
+    private let statusIconView = NSImageView()
+
+    private let statusSpinner = NSProgressIndicator()
+
+    private let titleField = NSTextField(labelWithString: "")
+
+    private let subtitleField = NSTextField(wrappingLabelWithString: "")
+
+    private let retryButton = NSButton(title: "Retry", target: nil, action: nil)
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+
+        material = .hudWindow
+        blendingMode = .withinWindow
+        state = .active
+        wantsLayer = true
+        layer?.cornerRadius = 16
+        layer?.masksToBounds = true
+
+        statusIconView.translatesAutoresizingMaskIntoConstraints = false
+        statusIconView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 28, weight: .medium)
+        statusIconView.contentTintColor = .secondaryLabelColor
+
+        statusSpinner.translatesAutoresizingMaskIntoConstraints = false
+        statusSpinner.style = .spinning
+        statusSpinner.controlSize = .regular
+        statusSpinner.isDisplayedWhenStopped = false
+
+        titleField.translatesAutoresizingMaskIntoConstraints = false
+        titleField.font = .preferredFont(forTextStyle: .title3)
+        titleField.alignment = .center
+        titleField.textColor = .labelColor
+
+        subtitleField.translatesAutoresizingMaskIntoConstraints = false
+        subtitleField.font = .preferredFont(forTextStyle: .body)
+        subtitleField.alignment = .center
+        subtitleField.lineBreakMode = .byWordWrapping
+        subtitleField.maximumNumberOfLines = 4
+        subtitleField.textColor = .secondaryLabelColor
+
+        retryButton.translatesAutoresizingMaskIntoConstraints = false
+        retryButton.bezelStyle = .rounded
+        retryButton.controlSize = .large
+        retryButton.isHidden = true
+
+        let stackView = NSStackView(views: [
+            statusIconView,
+            statusSpinner,
+            titleField,
+            subtitleField,
+            retryButton
+        ])
+        stackView.translatesAutoresizingMaskIntoConstraints = false
+        stackView.orientation = .vertical
+        stackView.alignment = .centerX
+        stackView.spacing = 12
+
+        addSubview(stackView)
+
+        NSLayoutConstraint.activate([
+            stackView.centerXAnchor.constraint(equalTo: centerXAnchor),
+            stackView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            stackView.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 28),
+            stackView.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -28),
+            stackView.widthAnchor.constraint(lessThanOrEqualToConstant: 520)
+        ])
+
+        isHidden = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    func showLoading(for url: URL?) {
+        let host = url?.host(percentEncoded: false) ?? url?.absoluteString ?? ""
+
+        isHidden = false
+        retryButton.isHidden = true
+        retryButton.target = nil
+        retryButton.action = nil
+
+        statusIconView.image = NSImage(systemSymbolName: "globe", accessibilityDescription: nil)
+        statusIconView.isHidden = false
+        statusSpinner.startAnimation(nil)
+
+        titleField.stringValue = "Loading webpage"
+        subtitleField.stringValue = host
+    }
+
+    func showFailure(for url: URL, message: String, retryTarget: AnyObject, action: Selector) {
+        let host = url.host(percentEncoded: false) ?? url.absoluteString
+
+        isHidden = false
+        statusSpinner.stopAnimation(nil)
+        retryButton.isHidden = false
+        retryButton.target = retryTarget
+        retryButton.action = action
+
+        statusIconView.image = NSImage(systemSymbolName: "wifi.exclamationmark", accessibilityDescription: nil)
+        statusIconView.isHidden = false
+
+        titleField.stringValue = "Unable to load webpage"
+        subtitleField.stringValue = "\(host)\n\(message)"
+    }
+}
+
 struct WebpageViewRepresentable: NSViewRepresentable {
     let url: URL
     var isMuted: Bool = false
@@ -1112,7 +1275,7 @@ struct WebpageViewRepresentable: NSViewRepresentable {
         Coordinator(onURLChange: onURLChange, onTitleChange: onTitleChange)
     }
 
-    func makeNSView(context: Context) -> WKWebView {
+    func makeNSView(context: Context) -> WebpageContainerNSView {
         let configuration = WKWebViewConfiguration()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         configuration.userContentController.addUserScript(
@@ -1122,34 +1285,37 @@ struct WebpageViewRepresentable: NSViewRepresentable {
                 forMainFrameOnly: false
             )
         )
-        let view = WKWebView(frame: .zero, configuration: configuration)
-        view.allowsMagnification = false
-        view.allowsBackForwardNavigationGestures = false
-        view.underPageBackgroundColor = .white
-        view.navigationDelegate = context.coordinator
-        view.uiDelegate = context.coordinator
-        context.coordinator.setMute(isMuted, in: view)
-        context.coordinator.load(url: url, in: view)
-        return view
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.allowsMagnification = false
+        webView.allowsBackForwardNavigationGestures = false
+        webView.underPageBackgroundColor = .windowBackgroundColor
+        webView.navigationDelegate = context.coordinator
+        webView.uiDelegate = context.coordinator
+        let containerView = WebpageContainerNSView(webView: webView)
+        context.coordinator.setMute(isMuted, in: containerView)
+        context.coordinator.load(url: url, in: containerView)
+        return containerView
     }
 
-    func updateNSView(_ nsView: WKWebView, context: Context) {
+    func updateNSView(_ nsView: WebpageContainerNSView, context: Context) {
         context.coordinator.setMute(isMuted, in: nsView)
         context.coordinator.load(url: url, in: nsView)
     }
 
-    static func dismantleNSView(_ nsView: WKWebView, coordinator: Coordinator) {
+    static func dismantleNSView(_ nsView: WebpageContainerNSView, coordinator: Coordinator) {
         coordinator.teardown(nsView)
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         private var requestedURL: URL?
+        private var lastReportedURL: URL?
         private var isShowingFailure = false
         private var isMuted = false
         private let onURLChange: ((URL) -> Void)?
         private let onTitleChange: ((String, URL) -> Void)?
         private var urlObservation: NSKeyValueObservation?
         private var titleObservation: NSKeyValueObservation?
+        private weak var currentContainerView: WebpageContainerNSView?
 
         init(
             onURLChange: ((URL) -> Void)? = nil,
@@ -1159,30 +1325,40 @@ struct WebpageViewRepresentable: NSViewRepresentable {
             self.onTitleChange = onTitleChange
         }
 
-        func load(url: URL, in webView: WKWebView) {
-            attachObservers(to: webView)
-            guard requestedURL != url || isShowingFailure else { return }
+        func load(url: URL, in containerView: WebpageContainerNSView) {
+            currentContainerView = containerView
+            attachObservers(to: containerView.webView)
+            guard requestedURL != url || isShowingFailure else {
+                containerView.hideStatusOverlay()
+                return
+            }
+            containerView.showLoading(for: url)
             requestedURL = url
             isShowingFailure = false
-            webView.load(URLRequest(url: url))
+            containerView.webView.load(URLRequest(url: url))
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             isShowingFailure = false
+            currentContainerView?.hideStatusOverlay()
             applyMute(in: webView)
+            reportSettledURL(from: webView)
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            guard !shouldIgnoreFailure(error) else { return }
             showFailure(error, in: webView)
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            guard !shouldIgnoreFailure(error) else { return }
             showFailure(error, in: webView)
         }
 
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
             guard let requestedURL else { return }
             isShowingFailure = false
+            currentContainerView?.showLoading(for: requestedURL)
             webView.load(URLRequest(url: requestedURL))
         }
 
@@ -1209,23 +1385,25 @@ struct WebpageViewRepresentable: NSViewRepresentable {
             }
         }
 
-        func teardown(_ webView: WKWebView) {
+        func teardown(_ containerView: WebpageContainerNSView) {
             requestedURL = nil
+            lastReportedURL = nil
             isShowingFailure = false
             isMuted = false
+            currentContainerView = nil
             urlObservation?.invalidate()
             titleObservation?.invalidate()
             urlObservation = nil
             titleObservation = nil
-            webView.stopLoading()
-            webView.navigationDelegate = nil
-            webView.uiDelegate = nil
-            webView.load(URLRequest(url: URL(string: "about:blank")!))
+            containerView.webView.stopLoading()
+            containerView.webView.navigationDelegate = nil
+            containerView.webView.uiDelegate = nil
+            containerView.webView.load(URLRequest(url: URL(string: "about:blank")!))
         }
 
-        func setMute(_ isMuted: Bool, in webView: WKWebView) {
+        func setMute(_ isMuted: Bool, in containerView: WebpageContainerNSView) {
             self.isMuted = isMuted
-            applyMute(in: webView)
+            applyMute(in: containerView.webView)
         }
 
         private func attachObservers(to webView: WKWebView) {
@@ -1233,8 +1411,8 @@ struct WebpageViewRepresentable: NSViewRepresentable {
 
             urlObservation = webView.observe(\.url, options: [.initial, .new]) { [weak self] webView, _ in
                 guard let self, let currentURL = webView.url, self.isSupportedSidebarURL(currentURL) else { return }
-                self.requestedURL = currentURL
-                self.onURLChange?(currentURL)
+                guard !webView.isLoading else { return }
+                self.reportSettledURL(from: webView)
             }
 
             titleObservation = webView.observe(\.title, options: [.new]) { [weak self] webView, _ in
@@ -1260,31 +1438,37 @@ struct WebpageViewRepresentable: NSViewRepresentable {
             )
         }
 
+        private func reportSettledURL(from webView: WKWebView) {
+            guard let currentURL = webView.url, isSupportedSidebarURL(currentURL) else { return }
+            requestedURL = currentURL
+            guard lastReportedURL != currentURL else { return }
+            lastReportedURL = currentURL
+            onURLChange?(currentURL)
+        }
+
+        @objc
+        private func retryRequested() {
+            guard let requestedURL, let currentContainerView else { return }
+            load(url: requestedURL, in: currentContainerView)
+        }
+
+        private func shouldIgnoreFailure(_ error: Error) -> Bool {
+            let nsError = error as NSError
+            return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
+        }
+
         private func showFailure(_ error: Error, in webView: WKWebView) {
             guard let requestedURL else { return }
             isShowingFailure = true
             let message = (error as NSError).localizedDescription
-                .replacingOccurrences(of: "&", with: "&amp;")
-                .replacingOccurrences(of: "<", with: "&lt;")
-                .replacingOccurrences(of: ">", with: "&gt;")
-            let host = (requestedURL.host(percentEncoded: false) ?? requestedURL.absoluteString)
-                .replacingOccurrences(of: "&", with: "&amp;")
-                .replacingOccurrences(of: "<", with: "&lt;")
-                .replacingOccurrences(of: ">", with: "&gt;")
-            webView.loadHTMLString(
-                """
-                <html>
-                <body style="margin:0;background:#111;color:#f5f5f5;font: -apple-system-body;display:flex;align-items:center;justify-content:center;height:100vh;">
-                  <div style="max-width:760px;padding:32px;text-align:center;">
-                    <div style="font: -apple-system-title2;font-weight:600;margin-bottom:12px;">Unable to load webpage</div>
-                    <div style="opacity:0.8;margin-bottom:8px;">\(host)</div>
-                    <div style="opacity:0.72;">\(message)</div>
-                  </div>
-                </body>
-                </html>
-                """,
-                baseURL: nil
+
+            currentContainerView?.showFailure(
+                for: requestedURL,
+                message: message,
+                retryTarget: self,
+                action: #selector(retryRequested)
             )
+            webView.stopLoading()
         }
     }
 }

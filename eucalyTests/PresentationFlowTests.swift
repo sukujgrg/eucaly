@@ -3,6 +3,71 @@ import XCTest
 import AppKit
 
 final class PresentationFlowTests: XCTestCase {
+    func testSetPreviewSlidesCanPreserveSelectionByIndex() async {
+        let result = await MainActor.run { () -> String? in
+            let flow = PresentationFlowController()
+
+            let originalSlides = [
+                Slide(
+                    index: 1,
+                    lines: [SlideLine(kind: .verse, languageTag: "", text: "Verse 1")],
+                    label: "Verse 1",
+                    videoURL: nil,
+                    pdfURL: nil,
+                    pdfPageIndex: nil,
+                    imageURL: nil,
+                    captureWindowID: nil
+                ),
+                Slide(
+                    index: 2,
+                    lines: [SlideLine(kind: .chorus, languageTag: "", text: "Chorus")],
+                    label: "Chorus",
+                    videoURL: nil,
+                    pdfURL: nil,
+                    pdfPageIndex: nil,
+                    imageURL: nil,
+                    captureWindowID: nil
+                )
+            ]
+
+            flow.setPreviewSlides(originalSlides, preferredSelection: originalSlides[1].id)
+
+            let rebuiltSlides = [
+                Slide(
+                    index: 1,
+                    lines: [SlideLine(kind: .verse, languageTag: "", text: "Verse 1 updated")],
+                    label: "Verse 1",
+                    videoURL: nil,
+                    pdfURL: nil,
+                    pdfPageIndex: nil,
+                    imageURL: nil,
+                    captureWindowID: nil
+                ),
+                Slide(
+                    index: 2,
+                    lines: [SlideLine(kind: .chorus, languageTag: "", text: "Chorus updated")],
+                    label: "Chorus",
+                    videoURL: nil,
+                    pdfURL: nil,
+                    pdfPageIndex: nil,
+                    imageURL: nil,
+                    captureWindowID: nil
+                )
+            ]
+
+            flow.setPreviewSlides(
+                rebuiltSlides,
+                preferredSelection: originalSlides[1].id,
+                preferredSelectionIndex: 1
+            )
+
+            guard let selectionID = flow.previewSelectionID else { return nil }
+            return flow.previewSlides.first(where: { $0.id == selectionID })?.label
+        }
+
+        XCTAssertEqual(result, "Chorus")
+    }
+
     func testHideSlidesDoesNotClearBackgroundVisual() async {
         let result = await MainActor.run { () -> (wasVisible: Bool, backgroundURL: URL?) in
             let session = PresentationSession()
