@@ -40,6 +40,23 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "Missing required command: $1"
 }
 
+ensure_developer_id_identity() {
+  local identities
+  identities="$(security find-identity -v -p codesigning 2>/dev/null || true)"
+
+  if [[ -n "$SIGNING_IDENTITY" ]]; then
+    if ! grep -F "Developer ID Application:" <<< "$identities" | grep -F "$SIGNING_IDENTITY" >/dev/null; then
+      fail "Developer ID Application signing identity '$SIGNING_IDENTITY' was not found in the active keychain. Install the certificate and private key, then verify with: security find-identity -v -p codesigning"
+    fi
+
+    return 0
+  fi
+
+  if ! grep -F "Developer ID Application:" <<< "$identities" >/dev/null; then
+    fail "No Developer ID Application signing identity found in the active keychain. Install the certificate and private key from Apple Developer, then verify with: security find-identity -v -p codesigning"
+  fi
+}
+
 PROJECT="eucaly.xcodeproj"
 SCHEME="eucaly"
 CONFIGURATION="Release"
@@ -302,6 +319,9 @@ require_command xcodebuild
 require_command xcrun
 require_command ditto
 require_command shasum
+require_command security
+
+ensure_developer_id_identity
 
 if [[ "$PUBLISH_GITHUB" == true ]]; then
   require_command gh

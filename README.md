@@ -96,6 +96,18 @@ GitHub release:
 make release-github NOTARY_PROFILE=<profile> TAG=vX.Y.Z
 ```
 
+Verify the Developer ID signing certificate is installed before releasing:
+
+```sh
+security find-identity -v -p codesigning
+```
+
+The output must include a `Developer ID Application` identity. If multiple identities are available, pass the intended one explicitly:
+
+```sh
+make release-github NOTARY_PROFILE=<profile> TAG=vX.Y.Z SIGNING_IDENTITY="Developer ID Application: Name (TEAMID)"
+```
+
 Expected release sequence:
 
 ```sh
