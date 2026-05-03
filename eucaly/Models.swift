@@ -99,6 +99,7 @@ struct Slide: Identifiable {
     let pdfPageIndex: Int?
     let imageURL: URL?
     let webpageURL: URL?
+    let webpageNavigationRevision: Int
     let captureWindowID: CGWindowID?
 
     var title: String { label ?? "Slide \(index)" }
@@ -112,6 +113,7 @@ struct Slide: Identifiable {
         pdfPageIndex: Int?,
         imageURL: URL?,
         webpageURL: URL? = nil,
+        webpageNavigationRevision: Int = 0,
         captureWindowID: CGWindowID? = nil
     ) {
         self.index = index
@@ -122,6 +124,7 @@ struct Slide: Identifiable {
         self.pdfPageIndex = pdfPageIndex
         self.imageURL = imageURL
         self.webpageURL = webpageURL
+        self.webpageNavigationRevision = webpageNavigationRevision
         self.captureWindowID = captureWindowID
     }
 }

@@ -54,6 +54,7 @@ public struct ContentView: View {
     @State private var webpageTitles: [URL: String] = [:]
     @State private var selectedWebpageURL: URL? = nil
     @State private var currentWebpageSourceURL: URL? = nil
+    @State private var currentWebpageNavigationRevision: Int = 0
     @State private var previewWebpageMuted: Bool = false
     @State private var librarySearchResults: [LibraryTextSearchIndex.SearchResult] = []
     @State private var isLibrarySearchPresented: Bool = false
@@ -693,6 +694,7 @@ public struct ContentView: View {
         let clearedWindowFromCurrent = session.slides.contains { $0.captureWindowID != nil }
         flow.clearCurrentDocument(in: session)
         currentWebpageSourceURL = nil
+        currentWebpageNavigationRevision = 0
         flow.isCurrentCollapsed = true
         if clearedWindowFromCurrent, case .window = sidebarSelection {
             sidebarSelection = nil
@@ -848,7 +850,7 @@ public struct ContentView: View {
         ]
     }
 
-    private func buildWebpageSlides(from url: URL) -> [Slide] {
+    private func buildWebpageSlides(from url: URL, navigationRevision: Int = 0) -> [Slide] {
         let label = url.host(percentEncoded: false) ?? url.absoluteString
         return [
             Slide(
@@ -859,7 +861,8 @@ public struct ContentView: View {
                 pdfURL: nil,
                 pdfPageIndex: nil,
                 imageURL: nil,
-                webpageURL: url
+                webpageURL: url,
+                webpageNavigationRevision: navigationRevision
             )
         ]
     }
@@ -2142,7 +2145,14 @@ public struct ContentView: View {
             if !webpageURLs.contains(newURL) {
                 webpageURLs.append(newURL)
             }
+            let navigationRevision = currentWebpageNavigationRevision + 1
             selectedWebpageURL = newURL
+            setCurrentSlides(
+                buildWebpageSlides(
+                    from: newURL,
+                    navigationRevision: navigationRevision
+                )
+            )
             return
         }
 
@@ -2160,8 +2170,14 @@ public struct ContentView: View {
         }
         webpageTitles.removeValue(forKey: sourceURL)
 
+        let navigationRevision = currentWebpageNavigationRevision + 1
         selectedWebpageURL = newURL
-        setCurrentSlides(buildWebpageSlides(from: newURL))
+        setCurrentSlides(
+            buildWebpageSlides(
+                from: newURL,
+                navigationRevision: navigationRevision
+            )
+        )
 
         if sidebarSelection == .web(sourceURL) {
             setSidebarSelectionWithoutLoading(.web(newURL))
@@ -2183,10 +2199,15 @@ public struct ContentView: View {
 
     private func syncCurrentWebpageSource(with slides: [Slide]) {
         currentWebpageSourceURL = webpageURL(from: slides)
+        currentWebpageNavigationRevision = webpageNavigationRevision(from: slides)
     }
 
     private func webpageURL(from slides: [Slide]) -> URL? {
         slides.first { $0.webpageURL != nil }?.webpageURL
+    }
+
+    private func webpageNavigationRevision(from slides: [Slide]) -> Int {
+        slides.first { $0.webpageURL != nil }?.webpageNavigationRevision ?? 0
     }
 
     private func loadWindowPreview(for windowID: CGWindowID) {
@@ -2266,12 +2287,32 @@ public struct ContentView: View {
             return url
         }
 
-        let prefixedValue = "https://\(trimmedValue)"
+        let defaultScheme = shouldDefaultWebpageURLToHTTP(trimmedValue) ? "http" : "https"
+        let prefixedValue = "\(defaultScheme)://\(trimmedValue)"
         guard let prefixedURL = URL(string: prefixedValue), isSupportedWebpageURL(prefixedURL) else {
             return nil
         }
 
         return prefixedURL
+    }
+
+    private func shouldDefaultWebpageURLToHTTP(_ rawValue: String) -> Bool {
+        guard
+            let url = URL(string: "http://\(rawValue)"),
+            let host = url.host(percentEncoded: false)?.lowercased()
+        else {
+            return false
+        }
+
+        if url.port != nil {
+            return true
+        }
+
+        return host == "localhost"
+            || host == "127.0.0.1"
+            || host == "0.0.0.0"
+            || host == "::1"
+            || host.hasSuffix(".local")
     }
 }
 

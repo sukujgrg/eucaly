@@ -320,7 +320,7 @@ struct SidebarView: View {
     private var webControls: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                TextField("https://example.com", text: $webpageAddressDraft)
+                TextField("https://example.com or localhost:8000", text: $webpageAddressDraft)
                     .textFieldStyle(.roundedBorder)
                     .submitLabel(.go)
                     .onSubmit(submitWebpageAddress)
@@ -332,7 +332,7 @@ struct SidebarView: View {
                 .disabled(webpageAddressDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
 
-            Text("Enter a URL to load it into Preview and save it here.")
+            Text("Enter a URL to load it into Preview and save it here. Local server addresses default to http://.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -945,7 +945,7 @@ struct SidebarView: View {
             webpageAddressDraft = ""
             webpageAddressError = nil
         } else {
-            webpageAddressError = "Enter a valid http(s) URL."
+            webpageAddressError = "Enter a valid http(s) URL or local server address."
         }
     }
 }

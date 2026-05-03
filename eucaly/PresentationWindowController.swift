@@ -497,6 +497,7 @@ struct PresentationView: View {
             }
             VStack(spacing: 28) {
                 if session.areSlidesVisible, let slide = currentSlide {
+                    Group {
                         if #available(macOS 12.3, *), let windowID = slide.captureWindowID {
                             WindowCaptureSlideView(windowID: windowID)
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -515,6 +516,7 @@ struct PresentationView: View {
                         } else if let webpageURL = slide.webpageURL {
                             WebpageSlideView(
                                 url: webpageURL,
+                                navigationRevision: slide.webpageNavigationRevision,
                                 isMuted: session.webpageMuted
                             )
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -535,6 +537,8 @@ struct PresentationView: View {
                                 }
                             }
                         }
+                    }
+                    .id(slide.id)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -985,6 +989,7 @@ struct PDFSlideView: NSViewRepresentable {
 
 struct WebpageSlideView: View {
     let url: URL
+    let navigationRevision: Int
     let isMuted: Bool
 
     var body: some View {
@@ -992,6 +997,7 @@ struct WebpageSlideView: View {
             url: url,
             isMuted: isMuted
         )
+            .id("\(url.absoluteString)#\(navigationRevision)")
             .background(Color.white)
     }
 }
@@ -1099,6 +1105,44 @@ private let webpageMuteBootstrapScript = """
       }
     }
   };
+})();
+"""
+
+private let webpageNavigationBridgeScript = """
+(function() {
+  if (window.__eucalyNavigationBridgeInstalled) {
+    return;
+  }
+  window.__eucalyNavigationBridgeInstalled = true;
+
+  const postNavigation = function() {
+    try {
+      window.webkit.messageHandlers.eucalyNavigation.postMessage(window.location.href);
+    } catch (_) {
+    }
+  };
+
+  const schedulePostNavigation = function() {
+    setTimeout(postNavigation, 0);
+  };
+
+  const wrapHistoryMethod = function(name) {
+    const original = window.history && window.history[name];
+    if (typeof original !== 'function') {
+      return;
+    }
+
+    window.history[name] = function() {
+      const result = original.apply(this, arguments);
+      schedulePostNavigation();
+      return result;
+    };
+  };
+
+  wrapHistoryMethod('pushState');
+  wrapHistoryMethod('replaceState');
+  window.addEventListener('popstate', schedulePostNavigation);
+  window.addEventListener('hashchange', schedulePostNavigation);
 })();
 """
 
@@ -1266,6 +1310,8 @@ final class WebpageOverlayView: NSVisualEffectView {
 }
 
 struct WebpageViewRepresentable: NSViewRepresentable {
+    private static let navigationMessageName = "eucalyNavigation"
+
     let url: URL
     var isMuted: Bool = false
     var onURLChange: ((URL) -> Void)? = nil
@@ -1277,14 +1323,25 @@ struct WebpageViewRepresentable: NSViewRepresentable {
 
     func makeNSView(context: Context) -> WebpageContainerNSView {
         let configuration = WKWebViewConfiguration()
+        let userContentController = WKUserContentController()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
-        configuration.userContentController.addUserScript(
+        configuration.websiteDataStore = .default()
+        userContentController.addUserScript(
             WKUserScript(
                 source: webpageMuteBootstrapScript,
                 injectionTime: .atDocumentStart,
                 forMainFrameOnly: false
             )
         )
+        userContentController.addUserScript(
+            WKUserScript(
+                source: webpageNavigationBridgeScript,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false
+            )
+        )
+        userContentController.add(context.coordinator, name: Self.navigationMessageName)
+        configuration.userContentController = userContentController
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.allowsMagnification = false
         webView.allowsBackForwardNavigationGestures = false
@@ -1306,7 +1363,7 @@ struct WebpageViewRepresentable: NSViewRepresentable {
         coordinator.teardown(nsView)
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
         private var requestedURL: URL?
         private var lastReportedURL: URL?
         private var isShowingFailure = false
@@ -1385,6 +1442,19 @@ struct WebpageViewRepresentable: NSViewRepresentable {
             }
         }
 
+        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            guard message.name == WebpageViewRepresentable.navigationMessageName,
+                  let rawURL = message.body as? String,
+                  let url = URL(string: rawURL),
+                  isSupportedSidebarURL(url) else {
+                return
+            }
+
+            requestedURL = url
+            lastReportedURL = url
+            onURLChange?(url)
+        }
+
         func teardown(_ containerView: WebpageContainerNSView) {
             requestedURL = nil
             lastReportedURL = nil
@@ -1398,6 +1468,9 @@ struct WebpageViewRepresentable: NSViewRepresentable {
             containerView.webView.stopLoading()
             containerView.webView.navigationDelegate = nil
             containerView.webView.uiDelegate = nil
+            containerView.webView.configuration.userContentController.removeScriptMessageHandler(
+                forName: WebpageViewRepresentable.navigationMessageName
+            )
             containerView.webView.load(URLRequest(url: URL(string: "about:blank")!))
         }
 
