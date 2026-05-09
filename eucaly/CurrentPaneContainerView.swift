@@ -1,4 +1,6 @@
 import SwiftUI
+import Foundation
+import AVFoundation
 
 struct CurrentPaneContainerView: View {
     @ObservedObject var session: PresentationSession
@@ -12,6 +14,8 @@ struct CurrentPaneContainerView: View {
     let onClearCurrent: (() -> Void)?
     @AppStorage("overlayScale") private var overlayScale: Double = 1.0
     @FocusState private var isFocused: Bool
+    @State private var videoSeekDraft: Double = 0
+    @State private var isSeekingVideo: Bool = false
 
     var body: some View {
         let slides = session.slides
@@ -133,7 +137,11 @@ struct CurrentPaneContainerView: View {
                             let overlayLabel = overlayBadgeLabel()
                             let overlayColor = overlayBadgeColor(at: context.date)
                             ScrollView {
-                                let layout = ThumbnailGridLayout.make(for: proxy.size.width, thumbnailScale: thumbnailScale)
+                                let horizontalInset: CGFloat = 10
+                                let layout = ThumbnailGridLayout.make(
+                                    for: proxy.size.width - (horizontalInset * 2),
+                                    thumbnailScale: thumbnailScale
+                                )
                                 LazyVGrid(columns: layout.columns, spacing: layout.spacing) {
                                     ForEach(slides) { slide in
                                         SlideGridCellView(
@@ -153,7 +161,7 @@ struct CurrentPaneContainerView: View {
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.vertical, 4)
-                                .padding(.horizontal, 10)
+                                .padding(.horizontal, horizontalInset)
                             }
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .focusable()
@@ -179,25 +187,7 @@ struct CurrentPaneContainerView: View {
                 }
 
                 if session.currentSlide?.videoURL != nil {
-                    HStack(spacing: 8) {
-                        Button {
-                            session.videoPaused.toggle()
-                        } label: {
-                            Label(session.videoPaused ? "Play" : "Pause", systemImage: session.videoPaused ? "play.fill" : "pause.fill")
-                        }
-                        Button {
-                            session.videoMuted.toggle()
-                        } label: {
-                            Label(session.videoMuted ? "Unmute" : "Mute", systemImage: session.videoMuted ? "speaker.wave.2.fill" : "speaker.slash.fill")
-                        }
-                        Button {
-                            session.videoLoop.toggle()
-                        } label: {
-                            Label("Loop", systemImage: session.videoLoop ? "repeat.1" : "repeat")
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .labelStyle(.iconOnly)
+                    videoControls
                 }
             }
         }
@@ -218,6 +208,75 @@ struct CurrentPaneContainerView: View {
         )
         .animation(loadAnimation, value: slides.count)
         .layoutPriority(selectedWebpageURL == nil ? 0 : 1)
+        .onChange(of: session.videoCurrentTime) { _, newValue in
+            guard !isSeekingVideo else { return }
+            videoSeekDraft = newValue
+        }
+        .onChange(of: session.currentSlide?.videoURL) { _, _ in
+            videoSeekDraft = session.videoCurrentTime
+            isSeekingVideo = false
+        }
+        .task(id: session.currentSlide?.videoURL) {
+            await loadCurrentVideoDuration(from: session.currentSlide?.videoURL)
+        }
+    }
+
+    private var videoControls: some View {
+        HStack(spacing: 8) {
+            Button {
+                session.videoPaused.toggle()
+            } label: {
+                Label(
+                    session.videoPaused ? "Play" : "Pause",
+                    systemImage: session.videoPaused ? "play.fill" : "pause.fill"
+                )
+            }
+
+            Button {
+                session.videoMuted.toggle()
+            } label: {
+                Label(
+                    session.videoMuted ? "Unmute" : "Mute",
+                    systemImage: session.videoMuted ? "speaker.wave.2.fill" : "speaker.slash.fill"
+                )
+            }
+
+            Button {
+                session.videoLoop.toggle()
+            } label: {
+                Label("Loop", systemImage: session.videoLoop ? "repeat.1" : "repeat")
+            }
+
+            Text(formattedVideoTime(videoSeekDraft))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 48, alignment: .trailing)
+
+            Slider(
+                value: Binding(
+                    get: { videoSeekDraft },
+                    set: { newValue in
+                        videoSeekDraft = newValue
+                        if session.videoDuration > 0 {
+                            session.seekVideo(to: newValue)
+                        }
+                    }
+                ),
+                in: 0...max(session.videoDuration, 0.01),
+                onEditingChanged: { isEditing in
+                    isSeekingVideo = isEditing
+                }
+            )
+            .disabled(session.videoDuration <= 0)
+
+            Text(formattedVideoTime(session.videoDuration))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 48, alignment: .leading)
+        }
+        .buttonStyle(.borderedProminent)
+        .labelStyle(.iconOnly)
+        .padding(.horizontal, 4)
     }
 
     private func toggleCollapsed() {
@@ -266,6 +325,43 @@ struct CurrentPaneContainerView: View {
         // This provides an alternative way to navigate when PresentationWindow loses focus
         session.moveSelection(delta)
         return .handled
+    }
+
+    private func formattedVideoTime(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds > 0 else { return "0:00" }
+        let totalSeconds = Int(seconds.rounded(.down))
+        let hours = totalSeconds / 3600
+        let minutes = (totalSeconds % 3600) / 60
+        let remainingSeconds = totalSeconds % 60
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, remainingSeconds)
+        }
+        return String(format: "%d:%02d", minutes, remainingSeconds)
+    }
+
+    private func loadCurrentVideoDuration(from url: URL?) async {
+        guard let url else { return }
+        let asset = AVURLAsset(url: url)
+
+        do {
+            let duration = try await asset.load(.duration)
+            let seconds = duration.seconds
+            guard
+                !Task.isCancelled,
+                session.currentSlide?.videoURL == url,
+                seconds.isFinite,
+                seconds > 0
+            else {
+                return
+            }
+
+            session.updateVideoPlaybackProgress(
+                currentTime: session.videoCurrentTime,
+                duration: seconds
+            )
+        } catch {
+            return
+        }
     }
 
     private func currentWebpageURL(from slides: [Slide]) -> URL? {

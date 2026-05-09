@@ -130,7 +130,7 @@ struct LibrarySearchOverlayView: View {
                     .textFieldStyle(.plain)
                     .focused($isQueryFieldFocused)
                     .onSubmit {
-                        openSelectedResult()
+                        performPrimaryAction()
                     }
                     .onKeyPress(.downArrow) {
                         moveSelection(delta: 1)

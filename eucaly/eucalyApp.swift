@@ -25,6 +25,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sender.activate(ignoringOtherApps: true)
         return true
     }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        for window in sender.windows where window is PresentationWindow {
+            window.orderOut(nil)
+            window.close()
+        }
+        return .terminateNow
+    }
 }
 
 @main

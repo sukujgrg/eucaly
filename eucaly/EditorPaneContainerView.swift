@@ -50,16 +50,13 @@ struct EditorPaneContainerView: View {
                 .buttonStyle(.bordered)
                 .disabled(!canSave)
 
-                Menu {
-                    Button("Clear") {
-                        onAction(.clear)
-                    }
-                    Divider()
-                    Button("Close") {
-                        onAction(.close)
-                    }
-                } label: {
-                    Label("More", systemImage: "ellipsis.circle")
+                Button("Clear") {
+                    onAction(.clear)
+                }
+                .buttonStyle(.bordered)
+
+                Button("Close") {
+                    onAction(.close)
                 }
                 .buttonStyle(.bordered)
 

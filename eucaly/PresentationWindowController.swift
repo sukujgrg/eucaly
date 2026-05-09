@@ -30,6 +30,10 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate, A
     @Published var videoPaused = false
     @Published var videoLoop = false
     @Published var videoFill = false
+    @Published private(set) var videoCurrentTime: Double = 0
+    @Published private(set) var videoDuration: Double = 0
+    @Published private(set) var videoSeekRevision = 0
+    private(set) var videoSeekTarget: Double = 0
     @Published private(set) var backgroundVisualURL: URL? = nil
     @Published var isBackgroundVisualVisible = true
     @Published private(set) var backgroundAudioURL: URL? = nil
@@ -90,11 +94,13 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate, A
     func setSlides(_ slides: [Slide]) {
         self.slides = slides
         currentSlideID = slides.first?.id
+        resetVideoPlaybackProgress()
     }
 
     func clearSlides() {
         slides = []
         currentSlideID = nil
+        resetVideoPlaybackProgress()
     }
 
     func addWindowCaptureSlide(windowID: CGWindowID, windowTitle: String) {
@@ -206,6 +212,27 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate, A
             let nextIndex = max(0, min(self.slides.count - 1, index + delta))
             self.currentSlideID = self.slides[nextIndex].id
         }
+    }
+
+    func seekVideo(to seconds: Double) {
+        let clamped = min(max(seconds, 0), max(videoDuration, 0))
+        videoSeekTarget = clamped
+        videoCurrentTime = clamped
+        videoSeekRevision += 1
+    }
+
+    func updateVideoPlaybackProgress(currentTime: Double, duration: Double) {
+        let normalizedDuration = duration.isFinite && duration > 0 ? duration : 0
+        let normalizedTime = currentTime.isFinite && currentTime >= 0 ? currentTime : 0
+        videoDuration = normalizedDuration
+        videoCurrentTime = min(normalizedTime, max(normalizedDuration, normalizedTime))
+    }
+
+    func resetVideoPlaybackProgress() {
+        videoCurrentTime = 0
+        videoDuration = 0
+        videoSeekTarget = 0
+        videoSeekRevision += 1
     }
 
     private func teardownPresentationState() {
@@ -859,9 +886,12 @@ struct VideoSlideView: View {
     @Binding var isPaused: Bool
     @Binding var isLooping: Bool
     @Binding var isFill: Bool
+    @EnvironmentObject private var session: PresentationSession
     @State private var player: AVPlayer? = nil
     @State private var endObserver: Any? = nil
+    @State private var timeObserver: Any? = nil
     @State private var configuredURL: URL? = nil
+    @State private var loadedDuration: Double = 0
 
     var body: some View {
         AVPlayerViewRepresentable(
@@ -891,6 +921,9 @@ struct VideoSlideView: View {
             .onChange(of: isFill) { _, _ in
                 // handled in AVPlayerViewRepresentable
             }
+            .onChange(of: session.videoSeekRevision) { _, _ in
+                seekToSessionTarget()
+            }
             .onDisappear {
                 teardownPlayer()
             }
@@ -905,10 +938,14 @@ struct VideoSlideView: View {
                 currentPlayer.play()
             }
             configureLoopObserver()
+            configureTimeObserver()
+            loadVideoDurationIfNeeded()
+            updateSessionProgress()
             return
         }
 
         teardownPlayer()
+        loadedDuration = 0
         let newPlayer = AVPlayer(url: url)
         newPlayer.allowsExternalPlayback = false
         player = newPlayer
@@ -920,14 +957,21 @@ struct VideoSlideView: View {
             newPlayer.play()
         }
         configureLoopObserver()
+        configureTimeObserver()
+        loadVideoDurationIfNeeded()
+        seekToSessionTarget()
+        updateSessionProgress()
     }
 
     private func teardownPlayer() {
         removeLoopObserver()
+        removeTimeObserver()
         endObserver = nil
+        timeObserver = nil
         player?.pause()
         player = nil
         configuredURL = nil
+        loadedDuration = 0
     }
 
     private func configureLoopObserver() {
@@ -944,9 +988,64 @@ struct VideoSlideView: View {
         }
     }
 
+    private func configureTimeObserver() {
+        removeTimeObserver()
+        guard let player else { return }
+        let interval = CMTime(seconds: 0.25, preferredTimescale: 600)
+        timeObserver = player.addPeriodicTimeObserver(
+            forInterval: interval,
+            queue: .main
+        ) { _ in
+            updateSessionProgress()
+        }
+    }
+
     private func removeLoopObserver() {
         if let endObserver {
             NotificationCenter.default.removeObserver(endObserver)
+        }
+    }
+
+    private func removeTimeObserver() {
+        guard let timeObserver, let player else { return }
+        player.removeTimeObserver(timeObserver)
+    }
+
+    private func seekToSessionTarget() {
+        guard let player else { return }
+        let target = CMTime(seconds: session.videoSeekTarget, preferredTimescale: 600)
+        player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
+            updateSessionProgress()
+        }
+    }
+
+    private func updateSessionProgress() {
+        guard let player else { return }
+        let currentTime = player.currentTime().seconds
+        let itemDuration = player.currentItem?.duration.seconds ?? 0
+        let duration = itemDuration.isFinite && itemDuration > 0
+            ? itemDuration
+            : loadedDuration
+        session.updateVideoPlaybackProgress(
+            currentTime: currentTime,
+            duration: duration
+        )
+    }
+
+    private func loadVideoDurationIfNeeded() {
+        guard loadedDuration <= 0 else { return }
+        let durationURL = url
+        let asset = AVURLAsset(url: durationURL)
+        asset.loadValuesAsynchronously(forKeys: ["duration"]) {
+            var error: NSError?
+            let status = asset.statusOfValue(forKey: "duration", error: &error)
+            guard status == .loaded else { return }
+            let seconds = asset.duration.seconds
+            DispatchQueue.main.async {
+                guard configuredURL == durationURL, seconds.isFinite, seconds > 0 else { return }
+                loadedDuration = seconds
+                updateSessionProgress()
+            }
         }
     }
 }

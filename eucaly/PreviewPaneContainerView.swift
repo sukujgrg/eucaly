@@ -118,7 +118,11 @@ struct PreviewPaneContainerView: View {
                     } else {
                         GeometryReader { proxy in
                             ScrollView {
-                                let layout = ThumbnailGridLayout.make(for: proxy.size.width, thumbnailScale: thumbnailScale)
+                                let horizontalInset: CGFloat = 10
+                                let layout = ThumbnailGridLayout.make(
+                                    for: proxy.size.width - (horizontalInset * 2),
+                                    thumbnailScale: thumbnailScale
+                                )
                                 LazyVGrid(columns: layout.columns, spacing: layout.spacing) {
                                     ForEach(slides) { slide in
                                     SlideGridCellView(
@@ -138,7 +142,7 @@ struct PreviewPaneContainerView: View {
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.vertical, 4)
-                                .padding(.horizontal, 10)
+                                .padding(.horizontal, horizontalInset)
                             }
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                         }

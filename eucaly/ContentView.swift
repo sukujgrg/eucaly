@@ -343,6 +343,7 @@ public struct ContentView: View {
             onSelectLibraryFolder: handleSelectedLibraryFolderChange,
             onSelectDownloads: selectDownloadsFolder,
             onAddLibraryItemToPlaylist: addLibraryItemToPlaylist,
+            onRemovePlaylistItem: removePlaylistItem,
             onRemoveSelectedFromPlaylist: removeSelectedFromPlaylist,
             onMovePlaylistUp: moveSelectedPlaylistEntriesUp,
             onMovePlaylistDown: moveSelectedPlaylistEntriesDown,
@@ -1527,6 +1528,17 @@ public struct ContentView: View {
         playlistStore.remove(ids: selectedPlaylistEntryIDs)
         selectedPlaylistEntryID = nil
         selectedPlaylistEntryIDs = []
+        loadPlaylists()
+    }
+
+    private func removePlaylistItem(_ id: UUID) {
+        playlistStore.remove(ids: [id])
+        selectedPlaylistEntryIDs.remove(id)
+        if selectedPlaylistEntryID == id {
+            selectedPlaylistEntryID = playlistStore.entries.first {
+                selectedPlaylistEntryIDs.contains($0.id)
+            }?.id
+        }
         loadPlaylists()
     }
 

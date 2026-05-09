@@ -79,6 +79,7 @@ struct SidebarView: View {
     let onSelectLibraryFolder: (URL?) -> Void
     let onSelectDownloads: (URL) -> Void
     let onAddLibraryItemToPlaylist: (URL) -> Void
+    let onRemovePlaylistItem: (UUID) -> Void
     let onRemoveSelectedFromPlaylist: () -> Void
     let onMovePlaylistUp: () -> Void
     let onMovePlaylistDown: () -> Void
@@ -127,6 +128,10 @@ struct SidebarView: View {
 
     @State private var webpageAddressError: String? = nil
 
+    @State private var pendingLibraryScrollTarget: URL?
+
+    @State private var keyboardLibraryScrollTarget: URL?
+
     var body: some View {
         GeometryReader { proxy in
             let libraryListMaxHeight = max(160, min(320, proxy.size.height * 0.35))
@@ -134,23 +139,13 @@ struct SidebarView: View {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     sidebarSection(
                         "Library",
+                        detail: libraryRootURL?.path,
                         systemImage: "folder",
                         tint: .library,
                         isExpanded: $isLibrarySectionExpanded
                     ) {
                         libraryControls
                         sidebarScrollableFileList(libraryFiles, maxHeight: libraryListMaxHeight) { .library($0) }
-                    }
-
-                    sectionDivider
-
-                    sidebarSection(
-                        "Web",
-                        systemImage: "globe",
-                        tint: .web,
-                        isExpanded: $isWebSectionExpanded
-                    ) {
-                        webControls
                     }
 
                     sectionDivider
@@ -163,6 +158,17 @@ struct SidebarView: View {
                     ) {
                         playlistControls
                         sidebarPlaylistList
+                    }
+
+                    sectionDivider
+
+                    sidebarSection(
+                        "Web",
+                        systemImage: "globe",
+                        tint: .web,
+                        isExpanded: $isWebSectionExpanded
+                    ) {
+                        webControls
                     }
 
                     if isWindowCaptureSupported {
@@ -248,14 +254,6 @@ struct SidebarView: View {
 
     private var libraryControls: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if let rootURL = libraryRootURL {
-                Text(rootURL.path)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-
             HStack(spacing: 8) {
                 Picker("Library", selection: $selectedLibraryFolder) {
                     Text("Root").tag(Optional<URL>.none)
@@ -265,6 +263,7 @@ struct SidebarView: View {
                 }
                 .pickerStyle(.menu)
                 .controlSize(.small)
+                .labelsHidden()
 
                 if let downloadsURL {
                     Button {
@@ -284,6 +283,7 @@ struct SidebarView: View {
 
     private func sidebarSection<Content: View>(
         _ title: String,
+        detail: String? = nil,
         systemImage: String,
         tint: SidebarSectionTint,
         isExpanded: Binding<Bool>,
@@ -297,6 +297,7 @@ struct SidebarView: View {
             } label: {
                 sidebarSectionHeader(
                     title,
+                    detail: detail,
                     systemImage: systemImage,
                     tint: tint,
                     isExpanded: isExpanded.wrappedValue
@@ -386,26 +387,36 @@ struct SidebarView: View {
     }
 
     private var playlistControls: some View {
-        HStack(spacing: 10) {
-            Button("Remove Selected") { onRemoveSelectedFromPlaylist() }
-                .sidebarActionStyle()
-                .disabled(selectedPlaylistEntryIDs.isEmpty)
+        HStack(spacing: 4) {
+            Button {
+                onRemoveSelectedFromPlaylist()
+            } label: {
+                Label("Remove Selected", systemImage: "minus.circle")
+            }
+            .labelStyle(.iconOnly)
+            .playlistIconButtonStyle()
+            .disabled(selectedPlaylistEntryIDs.isEmpty)
+            .help("Remove selected from Playlist")
+
             Button {
                 onMovePlaylistUp()
             } label: {
                 Label("Move Up", systemImage: "arrow.up")
             }
             .labelStyle(.iconOnly)
-            .sidebarActionStyle()
+            .playlistIconButtonStyle()
             .disabled(selectedPlaylistEntryIDs.isEmpty)
+            .help("Move selected up")
+
             Button {
                 onMovePlaylistDown()
             } label: {
                 Label("Move Down", systemImage: "arrow.down")
             }
             .labelStyle(.iconOnly)
-            .sidebarActionStyle()
+            .playlistIconButtonStyle()
             .disabled(selectedPlaylistEntryIDs.isEmpty)
+            .help("Move selected down")
         }
     }
 
@@ -686,6 +697,7 @@ struct SidebarView: View {
 
     private func sidebarSectionHeader(
         _ title: String,
+        detail: String?,
         systemImage: String,
         tint: SidebarSectionTint,
         isExpanded: Bool
@@ -703,6 +715,15 @@ struct SidebarView: View {
             Text(title)
                 .font(.headline)
                 .foregroundStyle(.primary)
+
+            if let detail, !detail.isEmpty {
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .layoutPriority(1)
+            }
 
             Spacer(minLength: 0)
 
@@ -727,7 +748,7 @@ struct SidebarView: View {
 
     private func sidebarFileList(_ urls: [URL], selection: @escaping (URL) -> SidebarSelection) -> some View {
         LazyVStack(alignment: .leading, spacing: 0) {
-            ForEach(urls, id: \.self) { url in
+            ForEach(urls, id: \.standardizedFileURL) { url in
                 let selectionValue = selection(url)
                 HStack(spacing: 6) {
                     Button {
@@ -772,37 +793,78 @@ struct SidebarView: View {
                 sidebarFileList(urls, selection: selection)
             }
             .onAppear {
-                scrollLibraryListIfNeeded(with: proxy)
+                prepareLibraryScrollIfNeeded(with: proxy)
             }
             .onChange(of: libraryScrollRequest?.id) { _, _ in
-                scrollLibraryListIfNeeded(with: proxy)
+                prepareLibraryScrollIfNeeded(with: proxy)
+            }
+            .onChange(of: urls.map(\.standardizedFileURL)) { _, _ in
+                prepareLibraryScrollIfNeeded(with: proxy)
+            }
+            .onChange(of: keyboardLibraryScrollTarget) { _, newValue in
+                guard let newValue else { return }
+                prepareLibraryScroll(to: newValue, with: proxy)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: maxHeight, alignment: .topLeading)
     }
 
-    private func scrollLibraryListIfNeeded(with proxy: ScrollViewProxy) {
+    private func prepareLibraryScrollIfNeeded(with proxy: ScrollViewProxy) {
         guard let libraryScrollRequest else { return }
-        let targetURL = libraryScrollRequest.url.standardizedFileURL
+        prepareLibraryScroll(to: libraryScrollRequest.url, with: proxy)
+    }
+
+    private func prepareLibraryScroll(to url: URL, with proxy: ScrollViewProxy) {
+        let targetURL = url.standardizedFileURL
         guard libraryFiles.contains(where: { $0.standardizedFileURL == targetURL }) else { return }
 
-        DispatchQueue.main.async {
-            withAnimation(.easeOut(duration: 0.16)) {
-                proxy.scrollTo(targetURL, anchor: .center)
-            }
+        pendingLibraryScrollTarget = targetURL
+        Task { @MainActor in
+            await Task.yield()
+            guard pendingLibraryScrollTarget == targetURL else { return }
+            guard libraryFiles.contains(where: { $0.standardizedFileURL == targetURL }) else { return }
+            scrollLibraryList(to: targetURL, with: proxy)
+            pendingLibraryScrollTarget = nil
+        }
+    }
+
+    private func scrollLibraryList(to targetURL: URL, with proxy: ScrollViewProxy) {
+        withAnimation(.easeOut(duration: 0.16)) {
+            proxy.scrollTo(targetURL, anchor: .center)
         }
     }
 
     private var sidebarPlaylistList: some View {
         LazyVStack(alignment: .leading, spacing: 0) {
             ForEach(playlistItems) { item in
-                Button {
-                    isSidebarFocused = true
-                    applyPlaylistSelection(item.id)
-                } label: {
-                    sidebarRow(title: item.title, isSelected: selectedPlaylistEntryIDs.contains(item.id), isMissing: !item.exists)
+                HStack(spacing: 6) {
+                    Button {
+                        isSidebarFocused = true
+                        applyPlaylistSelection(item.id)
+                    } label: {
+                        sidebarRow(
+                            title: item.title,
+                            isSelected: selectedPlaylistEntryIDs.contains(item.id),
+                            isMissing: !item.exists
+                        )
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        onRemovePlaylistItem(item.id)
+                    } label: {
+                        Image(systemName: "minus")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 20, height: 20)
+                            .background(
+                                Circle()
+                                    .fill(Color.secondary.opacity(0.12))
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .help("Remove from Playlist")
                 }
-                .buttonStyle(.plain)
             }
         }
     }
@@ -857,7 +919,7 @@ struct SidebarView: View {
         let playlistSelectionItems = playlistItems.map { SidebarSelection.playlist($0.id) }
         let webpageItems = webpageURLs.map { SidebarSelection.web($0) }
         let windowItems = captureWindows.map { SidebarSelection.window($0.windowID) }
-        return libraryItems + webpageItems + playlistSelectionItems + windowItems
+        return libraryItems + playlistSelectionItems + webpageItems + windowItems
     }
 
     private func handleSidebarMoveCommand(_ direction: MoveCommandDirection) {
@@ -922,9 +984,10 @@ struct SidebarView: View {
         guard let selection else { return }
         sidebarSelection = selection
         switch selection {
-        case .library:
+        case .library(let url):
             selectedPlaylistEntryID = nil
             selectedPlaylistEntryIDs = []
+            keyboardLibraryScrollTarget = url.standardizedFileURL
         case .playlist(let id):
             selectedPlaylistEntryIDs = [id]
             playlistSelectionAnchor = id
@@ -947,5 +1010,16 @@ struct SidebarView: View {
         } else {
             webpageAddressError = "Enter a valid http(s) URL or local server address."
         }
+    }
+}
+
+private extension View {
+    func playlistIconButtonStyle() -> some View {
+        self
+            .buttonStyle(.plain)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .frame(width: 26, height: 22)
+            .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
     }
 }
