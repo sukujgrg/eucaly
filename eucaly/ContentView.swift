@@ -3,6 +3,7 @@ import AppKit
 import UniformTypeIdentifiers
 import PDFKit
 import CoreGraphics
+import Combine
 
 public struct ContentView: View {
     @State private var rawLyrics: String = ""
@@ -44,10 +45,7 @@ public struct ContentView: View {
     @State private var previewLoadToken = UUID()
     @State private var previewSource: PreviewSource = .none
     @State private var isEditingLyrics: Bool = false
-    @State private var libraryFolders: [URL] = []
-    @State private var selectedLibraryFolder: URL? = nil
     @State private var librarySearchQuery: String = ""
-    @State private var cachedLibraryRootFiles: [URL] = []
     @State private var librarySearchScopeFiles: [URL] = []
     @State private var libraryScrollRequest: LibraryScrollRequest?
     @State private var webpageURLs: [URL] = []
@@ -63,6 +61,8 @@ public struct ContentView: View {
     @State private var librarySearchDebounceTask: Task<Void, Never>? = nil
     @State private var librarySearchRebuildTask: Task<Void, Never>? = nil
     @State private var projectionScreenOptions: [ProjectionScreenOption] = []
+    @State private var isTimerSettingsPresented: Bool = false
+    @State private var isAppearanceSettingsPresented: Bool = false
     @FocusState private var isSidebarFocused: Bool
     @State private var securityScopedRoot: URL? = nil
     @State private var securityScopedDownloads: URL? = nil
@@ -95,6 +95,7 @@ public struct ContentView: View {
         case pdf
         case image
         case video
+        case audio
         case txt
         case unsupported
 
@@ -107,6 +108,8 @@ public struct ContentView: View {
                 self = .image
             case "mp4", "mov", "m4v", "avi", "mkv":
                 self = .video
+            case "mp3", "m4a", "wav", "aiff", "aif", "flac", "aac":
+                self = .audio
             case "txt":
                 self = .txt
             default:
@@ -118,12 +121,41 @@ public struct ContentView: View {
             self != .unsupported
         }
 
+        var isPreviewLibraryItem: Bool {
+            switch self {
+            case .txt, .pdf, .image, .video:
+                return true
+            case .audio, .unsupported:
+                return false
+            }
+        }
+
+        var isBackgroundAudioSource: Bool {
+            switch self {
+            case .audio, .video:
+                return true
+            case .txt, .pdf, .image, .unsupported:
+                return false
+            }
+        }
+
         var isEditableLyrics: Bool {
             switch self {
             case .txt:
                 return true
             default:
                 return false
+            }
+        }
+    }
+
+    private enum ImportError: LocalizedError {
+        case unsupportedFile(URL)
+
+        var errorDescription: String? {
+            switch self {
+            case .unsupportedFile(let url):
+                return "\(url.lastPathComponent) is not a supported library file."
             }
         }
     }
@@ -309,6 +341,9 @@ public struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .showLibrarySearch)) { _ in
             presentLibrarySearch()
         }
+        .onReceive(Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()) { _ in
+            session.refreshBackgroundAudioProgress()
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification), perform: handleMainWindowWillCloseNotification)
     }
 
@@ -317,31 +352,24 @@ public struct ContentView: View {
         SidebarView(
             session: session,
             isWindowCaptureSupported: isWindowCaptureSupported,
-            libraryFiles: markdownFiles,
+            libraryFiles: previewLibraryFiles,
+            audioFiles: backgroundAudioLibraryFiles,
             playlistItems: playlistSidebarItems,
             libraryRootURL: libraryRootURL,
-            downloadsURL: downloadsURL,
-            libraryFolders: libraryFolders,
             captureWindows: captureWindows,
             webpageURLs: webpageURLs,
             libraryScrollRequest: libraryScrollRequest,
-            selectedLibraryFolder: $selectedLibraryFolder,
             selectedPlaylistEntryID: $selectedPlaylistEntryID,
             selectedPlaylistEntryIDs: $selectedPlaylistEntryIDs,
             sidebarSelection: $sidebarSelection,
             backgroundAudioLoop: $backgroundAudioLoop,
-            overlayScaleDraft: $overlayScaleDraft,
             backgroundAudioVolumeDraft: $backgroundAudioVolumeDraft,
-            countdownMinutes: $countdownMinutes,
-            presentationFontScale: $presentationFontScale,
-            thumbnailFontScale: $thumbnailFontScale,
-            thumbnailScale: $thumbnailScale,
             windowCaptureFrameRate: $windowCaptureFrameRate,
             isSidebarFocused: $isSidebarFocused,
             displayName: { displayName(for: $0) },
             titleForWebpage: webpageTitle(for:),
-            onSelectLibraryFolder: handleSelectedLibraryFolderChange,
-            onSelectDownloads: selectDownloadsFolder,
+            onImportToLibrary: importFilesToLibrary,
+            onImportToAudio: importAudioToLibrary,
             onAddLibraryItemToPlaylist: addLibraryItemToPlaylist,
             onRemovePlaylistItem: removePlaylistItem,
             onRemoveSelectedFromPlaylist: removeSelectedFromPlaylist,
@@ -349,16 +377,12 @@ public struct ContentView: View {
             onMovePlaylistDown: moveSelectedPlaylistEntriesDown,
             onChooseBackgroundVisual: chooseBackgroundVisual,
             onClearBackgroundVisual: clearBackgroundVisual,
-            onChooseBackgroundAudio: chooseBackgroundAudio,
+            onSelectBackgroundAudio: selectBackgroundAudio,
             onPlayPauseBackgroundAudio: toggleBackgroundAudioPlayback,
             onStopBackgroundAudio: stopBackgroundAudioPlayback,
             onClearBackgroundAudio: clearBackgroundAudio,
             onApplyBackgroundAudioVolume: handleBackgroundAudioVolumeDraftChange,
-            onOverlayScaleDraftChange: handleOverlayScaleDraftChange,
-            onSetOverlayMode: setOverlayMode,
-            onStartCountdown: startCountdown,
-            onStopCountdown: stopCountdown,
-            onSetClockVisible: setClockVisible,
+            onSeekBackgroundAudio: seekBackgroundAudio,
             onSelectionChange: handleSidebarSelection,
             onOpenWebpageAddress: openWebpageFromSidebar,
             onRemoveWebpage: removeWebpage,
@@ -416,6 +440,52 @@ public struct ContentView: View {
                 .disabled(!session.hasAvailableBackgroundVisual || isCurrentSelectionMediaFile)
                 .help(isBackgroundVisible ? "Hide background" : "Show background")
             }
+        }
+
+        ToolbarItemGroup(placement: .primaryAction) {
+            timerSettingsButton
+            appearanceSettingsButton
+        }
+    }
+
+    private var timerSettingsButton: some View {
+        Button {
+            isTimerSettingsPresented.toggle()
+        } label: {
+            Label("Timer", systemImage: "timer")
+        }
+        .labelStyle(.iconOnly)
+        .buttonStyle(.bordered)
+        .help("Timer settings")
+        .popover(isPresented: $isTimerSettingsPresented, arrowEdge: .top) {
+            TimerSettingsPopoverView(
+                session: session,
+                overlayScaleDraft: $overlayScaleDraft,
+                countdownMinutes: $countdownMinutes,
+                onOverlayScaleDraftChange: handleOverlayScaleDraftChange,
+                onSetOverlayMode: setOverlayMode,
+                onStartCountdown: startCountdown,
+                onStopCountdown: stopCountdown,
+                onSetClockVisible: setClockVisible
+            )
+        }
+    }
+
+    private var appearanceSettingsButton: some View {
+        Button {
+            isAppearanceSettingsPresented.toggle()
+        } label: {
+            Label("Appearance", systemImage: "gearshape")
+        }
+        .labelStyle(.iconOnly)
+        .buttonStyle(.bordered)
+        .help("Appearance settings")
+        .popover(isPresented: $isAppearanceSettingsPresented, arrowEdge: .top) {
+            AppearanceSettingsPopoverView(
+                presentationFontScale: $presentationFontScale,
+                thumbnailFontScale: $thumbnailFontScale,
+                thumbnailScale: $thumbnailScale
+            )
         }
     }
 
@@ -873,33 +943,214 @@ public struct ContentView: View {
     }
 
     private func chooseFile() {
+        importFilesToLibrary()
+    }
+
+    private func importFilesToLibrary() {
+        guard let root = libraryRootURL else {
+            newFileWarning = "Set a library root before importing files."
+            return
+        }
+
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
-        if let root = libraryRootURL {
-            panel.directoryURL = root
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = previewLibraryContentTypes()
+        panel.directoryURL = defaultImportDirectory()
+        panel.prompt = "Import"
+
+        guard panel.runModal() == .OK else { return }
+
+        let didAccessRoot = root.startAccessingSecurityScopedResource()
+        defer {
+            if didAccessRoot {
+                root.stopAccessingSecurityScopedResource()
+            }
         }
-        var types: [UTType] = [.plainText, .text, .pdf, .jpeg, .png, .gif, .bmp, .tiff, .movie, .video, .mpeg4Movie, .quickTimeMovie]
-        if let webpType = UTType(filenameExtension: "webp") {
-            types.append(webpType)
+
+        do {
+            let importedURLs = try panel.urls.map { try importFile($0, into: root) }
+            guard !importedURLs.isEmpty else { return }
+
+            newFileWarning = nil
+            folderURL = root
+            loadMarkdownFiles(
+                from: root,
+                refreshLibrarySearchScope: true,
+                forceSearchIndexRebuild: true
+            )
+            loadPlaylists()
+            if let firstPreviewURL = importedURLs.first(where: { FileKind(url: $0).isPreviewLibraryItem }) {
+                selectedFileURL = firstPreviewURL
+                selectedPlaylistEntryID = nil
+                selectedPlaylistEntryIDs = []
+                sidebarSelection = .library(firstPreviewURL)
+                libraryScrollRequest = LibraryScrollRequest(url: firstPreviewURL)
+                loadSelectedFile(url: firstPreviewURL)
+            }
+        } catch {
+            newFileWarning = "Could not import file: \(error.localizedDescription)"
         }
-        if let mkvType = UTType(filenameExtension: "mkv") {
-            types.append(mkvType)
+    }
+
+    private func importAudioToLibrary() {
+        guard let root = libraryRootURL else {
+            newFileWarning = "Set a library root before importing files."
+            return
         }
-        panel.allowedContentTypes = types
-        panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url {
-            guard isUnderLibraryRoot(url) else {
-                newFileWarning = "Selected file is outside the configured library root."
+
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = backgroundAudioSourceContentTypes()
+        panel.directoryURL = defaultImportDirectory()
+        panel.prompt = "Import"
+        panel.message = "Choose audio or video files to use as background audio."
+
+        guard panel.runModal() == .OK else { return }
+
+        let didAccessRoot = root.startAccessingSecurityScopedResource()
+        defer {
+            if didAccessRoot {
+                root.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        do {
+            let importedURLs = try panel.urls.map { try importFile($0, into: root) }
+            guard let firstAudioURL = importedURLs.first(where: { FileKind(url: $0).isBackgroundAudioSource }) else {
                 return
             }
+
             newFileWarning = nil
-            folderURL = url.deletingLastPathComponent()
-            loadMarkdownFiles(from: folderURL!)
-            selectedFileURL = url
+            folderURL = root
+            loadMarkdownFiles(
+                from: root,
+                refreshLibrarySearchScope: true,
+                forceSearchIndexRebuild: true
+            )
+            loadPlaylists()
+            selectedFileURL = nil
             selectedPlaylistEntryID = nil
             selectedPlaylistEntryIDs = []
-            loadSelectedFile()
+            sidebarSelection = nil
+            selectBackgroundAudio(firstAudioURL)
+        } catch {
+            newFileWarning = "Could not import audio: \(error.localizedDescription)"
+        }
+    }
+
+    private func previewLibraryContentTypes() -> [UTType] {
+        [
+            "txt",
+            "pdf",
+            "jpg",
+            "jpeg",
+            "png",
+            "gif",
+            "webp",
+            "bmp",
+            "tiff",
+            "mp4",
+            "mov",
+            "m4v",
+            "avi",
+            "mkv"
+        ].compactMap { UTType(filenameExtension: $0) }
+    }
+
+    private func backgroundAudioSourceContentTypes() -> [UTType] {
+        [
+            "mp4",
+            "mov",
+            "m4v",
+            "avi",
+            "mkv",
+            "mp3",
+            "m4a",
+            "wav",
+            "aiff",
+            "aif",
+            "flac",
+            "aac"
+        ].compactMap { UTType(filenameExtension: $0) }
+    }
+
+    private func defaultImportDirectory() -> URL? {
+        FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+    }
+
+    private func importFile(_ sourceURL: URL, into root: URL) throws -> URL {
+        let kind = FileKind(url: sourceURL)
+        guard kind.isSupportedLibraryItem else {
+            throw ImportError.unsupportedFile(sourceURL)
+        }
+
+        if isUnderLibraryRoot(sourceURL) {
+            return sourceURL
+        }
+
+        let destinationFolder = root.appendingPathComponent(
+            importFolderName(for: kind),
+            isDirectory: true
+        )
+        let didAccessSource = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if didAccessSource {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        try FileManager.default.createDirectory(
+            at: destinationFolder,
+            withIntermediateDirectories: true
+        )
+        let destinationURL = availableImportDestination(
+            for: sourceURL.lastPathComponent,
+            in: destinationFolder
+        )
+        try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+        return destinationURL
+    }
+
+    private func importFolderName(for kind: FileKind) -> String {
+        switch kind {
+        case .txt:
+            "Lyrics"
+        case .pdf:
+            "PDFs"
+        case .image:
+            "Images"
+        case .video:
+            "Videos"
+        case .audio:
+            "Audio"
+        case .unsupported:
+            "Other"
+        }
+    }
+
+    private func availableImportDestination(for fileName: String, in folder: URL) -> URL {
+        let fileManager = FileManager.default
+        let baseURL = folder.appendingPathComponent(fileName)
+        guard fileManager.fileExists(atPath: baseURL.path) else {
+            return baseURL
+        }
+
+        let name = (fileName as NSString).deletingPathExtension
+        let ext = (fileName as NSString).pathExtension
+        var index = 2
+        while true {
+            let candidateName = ext.isEmpty
+                ? "\(name) \(index)"
+                : "\(name) \(index).\(ext)"
+            let candidateURL = folder.appendingPathComponent(candidateName)
+            if !fileManager.fileExists(atPath: candidateURL.path) {
+                return candidateURL
+            }
+            index += 1
         }
     }
 
@@ -917,20 +1168,6 @@ public struct ContentView: View {
         }
     }
 
-    private func chooseBackgroundAudio() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = backgroundAudioContentTypes()
-        if panel.runModal() == .OK, let url = panel.url {
-            if let bookmark = SecurityScopedBookmarks.createBookmark(for: url) {
-                backgroundAudioBookmark = bookmark
-            }
-            updateBackgroundAudioSelection(url, autoplay: true)
-        }
-    }
-
     private func backgroundVisualContentTypes() -> [UTType] {
         var types: [UTType] = [.image, .movie, .video, .mpeg4Movie, .quickTimeMovie]
         if let webp = UTType(filenameExtension: "webp") {
@@ -938,26 +1175,6 @@ public struct ContentView: View {
         }
         if let mkv = UTType(filenameExtension: "mkv") {
             types.append(mkv)
-        }
-        return types
-    }
-
-    private func backgroundAudioContentTypes() -> [UTType] {
-        var types: [UTType] = [.audio]
-        if let mp3 = UTType(filenameExtension: "mp3") {
-            types.append(mp3)
-        }
-        if let m4a = UTType(filenameExtension: "m4a") {
-            types.append(m4a)
-        }
-        if let wav = UTType(filenameExtension: "wav") {
-            types.append(wav)
-        }
-        if let aiff = UTType(filenameExtension: "aiff") {
-            types.append(aiff)
-        }
-        if let flac = UTType(filenameExtension: "flac") {
-            types.append(flac)
         }
         return types
     }
@@ -976,14 +1193,15 @@ public struct ContentView: View {
     ) {
         let previousSearchScopeFiles = librarySearchScopeFiles
         let files = listSupportedLibraryFilesRecursively(from: folder)
+        let previewFiles = files.filter { FileKind(url: $0).isPreviewLibraryItem }
         let searchScopeFiles = resolveLibrarySearchScopeFiles(
             displayedFolder: folder,
-            displayedFiles: files,
+            displayedFiles: previewFiles,
             refreshLibrarySearchScope: refreshLibrarySearchScope
         )
         markdownFiles = files
         librarySearchScopeFiles = searchScopeFiles
-        rebuildDisplayNames(for: searchScopeFiles + playlistResolvedURLs)
+        rebuildDisplayNames(for: files + playlistResolvedURLs)
 
         if forceSearchIndexRebuild || !haveSameStandardizedURLs(previousSearchScopeFiles, searchScopeFiles) {
             rebuildLibrarySearchIndex(for: searchScopeFiles)
@@ -995,20 +1213,7 @@ public struct ContentView: View {
         displayedFiles: [URL],
         refreshLibrarySearchScope: Bool
     ) -> [URL] {
-        guard let root = libraryRootURL else {
-            return displayedFiles
-        }
-
-        if root.standardizedFileURL == displayedFolder.standardizedFileURL {
-            cachedLibraryRootFiles = displayedFiles
-            return displayedFiles
-        }
-
-        if refreshLibrarySearchScope || cachedLibraryRootFiles.isEmpty {
-            cachedLibraryRootFiles = listSupportedLibraryFilesRecursively(from: root)
-        }
-
-        return cachedLibraryRootFiles
+        displayedFiles
     }
 
     private func haveSameStandardizedURLs(_ lhs: [URL], _ rhs: [URL]) -> Bool {
@@ -1080,6 +1285,8 @@ public struct ContentView: View {
                     guard previewTransitionIsCurrent(token: token, source: source) else { return }
                     applyPreviewMediaLoad(slides: slides)
                 }
+            case .audio:
+                return
             case .txt:
                 guard let contents = try? String(contentsOf: url, encoding: .utf8) else { return }
                 let doc = LyricsParser.parseDocument(contents, fileName: url.lastPathComponent)
@@ -1136,10 +1343,6 @@ public struct ContentView: View {
             slides: preservedCurrentSlides,
             currentSlideID: preservedCurrentSlideID
         )
-    }
-
-    private var downloadsURL: URL? {
-        securityScopedDownloads
     }
 
     private var libraryRootURL: URL? {
@@ -1241,6 +1444,13 @@ public struct ContentView: View {
         }
     }
 
+    private func selectBackgroundAudio(_ url: URL) {
+        if let bookmark = SecurityScopedBookmarks.createBookmark(for: url) {
+            backgroundAudioBookmark = bookmark
+        }
+        updateBackgroundAudioSelection(url, autoplay: true)
+    }
+
     private func clearBackgroundVisual() {
         updateBackgroundVisualSelection(nil)
         backgroundVisualBookmark = ""
@@ -1267,30 +1477,11 @@ public struct ContentView: View {
         ensurePlaylistDirectory(in: root)
         playlistStore.load(fromRoot: root)
         folderURL = root
-        selectedLibraryFolder = nil
-        loadLibraryFolders(from: root)
         loadMarkdownFiles(
             from: root,
             refreshLibrarySearchScope: true,
             forceSearchIndexRebuild: true
         )
-    }
-
-    private func loadLibraryFolders(from root: URL) {
-        let fm = FileManager.default
-        guard let items = try? fm.contentsOfDirectory(
-            at: root,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            libraryFolders = []
-            return
-        }
-        libraryFolders = items.filter {
-            (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
-        }
-        .filter { $0.lastPathComponent != playlistDirectoryName }
-        .sorted { $0.lastPathComponent.lowercased() < $1.lastPathComponent.lowercased() }
     }
 
     private func ensurePlaylistDirectory(in root: URL) {
@@ -1432,7 +1623,6 @@ public struct ContentView: View {
 
         if let root = libraryRootURL, folderURL?.standardizedFileURL != root.standardizedFileURL {
             folderURL = root
-            selectedLibraryFolder = nil
             loadMarkdownFiles(from: root)
         }
 
@@ -1466,6 +1656,14 @@ public struct ContentView: View {
         }
     }
 
+    private var previewLibraryFiles: [URL] {
+        markdownFiles.filter { FileKind(url: $0).isPreviewLibraryItem }
+    }
+
+    private var backgroundAudioLibraryFiles: [URL] {
+        markdownFiles.filter { FileKind(url: $0).isBackgroundAudioSource }
+    }
+
     private func rebuildDisplayNames(for urls: [URL]) {
         var names: [URL: String] = [:]
         for url in urls {
@@ -1477,7 +1675,7 @@ public struct ContentView: View {
     private func extractTitle(from url: URL) -> String {
         let kind = FileKind(url: url)
         switch kind {
-        case .pdf, .image, .video:
+        case .pdf, .image, .video, .audio:
             return url.lastPathComponent
         default:
             break
@@ -1556,19 +1754,7 @@ public struct ContentView: View {
 
     private func refreshLibrary() {
         if let root = libraryRootURL {
-            loadLibraryFolders(from: root)
             ensurePlaylistDirectory(in: root)
-        }
-        if let folderURL {
-            loadMarkdownFiles(
-                from: folderURL,
-                refreshLibrarySearchScope: true,
-                forceSearchIndexRebuild: true
-            )
-            loadPlaylists()
-            return
-        }
-        if let root = libraryRootURL {
             folderURL = root
             loadMarkdownFiles(
                 from: root,
@@ -1579,29 +1765,6 @@ public struct ContentView: View {
             return
         }
         loadPlaylists()
-    }
-
-    private func handleSelectedLibraryFolderChange(_ newValue: URL?) {
-        if newValue == nil, let downloadsURL, folderURL == downloadsURL {
-            return
-        }
-        if let newValue {
-            folderURL = newValue
-            loadMarkdownFiles(from: newValue)
-        } else {
-            folderURL = libraryRootURL
-            if let root = libraryRootURL {
-                loadMarkdownFiles(from: root)
-            } else {
-                markdownFiles = []
-            }
-        }
-    }
-
-    private func selectDownloadsFolder(_ downloadsURL: URL) {
-        folderURL = downloadsURL
-        selectedLibraryFolder = nil
-        loadMarkdownFiles(from: downloadsURL)
     }
 
     private func toggleBackgroundAudioPlayback() {
@@ -1617,6 +1780,12 @@ public struct ContentView: View {
     private func stopBackgroundAudioPlayback() {
         deferSessionChange {
             session.stopBackgroundAudioPlayback()
+        }
+    }
+
+    private func seekBackgroundAudio(to time: Double) {
+        deferSessionChange {
+            session.seekBackgroundAudio(to: time)
         }
     }
 
@@ -1753,19 +1922,14 @@ public struct ContentView: View {
                 let contents = rawLyrics
                 try contents.write(to: fileURL, atomically: true, encoding: .utf8)
                 lastLoadedText = contents
-                folderURL = fileURL.deletingLastPathComponent()
                 if let root = libraryRootURL {
                     libraryRootPath = root.path
-                }
-                if let folderURL {
+                    folderURL = root
                     loadMarkdownFiles(
-                        from: folderURL,
+                        from: root,
                         refreshLibrarySearchScope: true,
                         forceSearchIndexRebuild: true
                     )
-                }
-                if let root = libraryRootURL {
-                    loadLibraryFolders(from: root)
                 }
                 loadPlaylists()
                 selectedFileURL = fileURL

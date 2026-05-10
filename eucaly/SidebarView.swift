@@ -15,8 +15,7 @@ private enum SidebarSectionTint {
     case playlist
     case windows
     case background
-    case timer
-    case appearance
+    case audio
 
     var color: Color {
         switch self {
@@ -30,10 +29,8 @@ private enum SidebarSectionTint {
             Color(nsColor: .systemOrange)
         case .background:
             Color(nsColor: .systemPink)
-        case .timer:
+        case .audio:
             Color(nsColor: .systemPurple)
-        case .appearance:
-            Color(nsColor: .systemBrown)
         }
     }
 }
@@ -49,35 +46,107 @@ struct LibraryScrollRequest: Equatable {
     let url: URL
 }
 
+private enum LibraryGrouping: String, CaseIterable, Identifiable {
+    case kind
+    case folder
+    case none
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .kind:
+            "Kind"
+        case .folder:
+            "Folder"
+        case .none:
+            "None"
+        }
+    }
+}
+
+private enum LibraryFileGroup: Int, CaseIterable, Identifiable {
+    case lyrics
+    case pdfs
+    case images
+    case videos
+    case other
+
+    var id: Int { rawValue }
+
+    var title: String {
+        switch self {
+        case .lyrics:
+            "Lyrics"
+        case .pdfs:
+            "PDFs"
+        case .images:
+            "Images"
+        case .videos:
+            "Videos"
+        case .other:
+            "Other"
+        }
+    }
+
+    init(url: URL) {
+        switch url.pathExtension.lowercased() {
+        case "txt":
+            self = .lyrics
+        case "pdf":
+            self = .pdfs
+        case "jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff":
+            self = .images
+        case "mp4", "mov", "m4v", "avi", "mkv":
+            self = .videos
+        default:
+            self = .other
+        }
+    }
+}
+
+private struct LibraryFileGroupSection: Identifiable {
+    let group: LibraryFileGroup
+    let urls: [URL]
+
+    var id: LibraryFileGroup { group }
+}
+
+private struct LibraryFolderGroupSection: Identifiable {
+    let title: String
+    let sortKey: String
+    let urls: [URL]
+
+    var id: String { sortKey }
+}
+
+private struct LibraryFolderGroupKey: Hashable {
+    let title: String
+    let sortKey: String
+}
+
 struct SidebarView: View {
     @ObservedObject var session: PresentationSession
     let isWindowCaptureSupported: Bool
     let libraryFiles: [URL]
+    let audioFiles: [URL]
     let playlistItems: [PlaylistSidebarItem]
     let libraryRootURL: URL?
-    let downloadsURL: URL?
-    let libraryFolders: [URL]
     let captureWindows: [ScreenCaptureManager.CapturedWindow]
     let webpageURLs: [URL]
     let libraryScrollRequest: LibraryScrollRequest?
-    @Binding var selectedLibraryFolder: URL?
     @Binding var selectedPlaylistEntryID: UUID?
     @Binding var selectedPlaylistEntryIDs: Set<UUID>
     @Binding var sidebarSelection: SidebarSelection?
     @Binding var backgroundAudioLoop: Bool
-    @Binding var overlayScaleDraft: Double
     @Binding var backgroundAudioVolumeDraft: Double
-    @Binding var countdownMinutes: Int
-    @Binding var presentationFontScale: Double
-    @Binding var thumbnailFontScale: Double
-    @Binding var thumbnailScale: Double
     @Binding var windowCaptureFrameRate: Int
     @FocusState.Binding var isSidebarFocused: Bool
 
     let displayName: (URL) -> String
     let titleForWebpage: (URL) -> String
-    let onSelectLibraryFolder: (URL?) -> Void
-    let onSelectDownloads: (URL) -> Void
+    let onImportToLibrary: () -> Void
+    let onImportToAudio: () -> Void
     let onAddLibraryItemToPlaylist: (URL) -> Void
     let onRemovePlaylistItem: (UUID) -> Void
     let onRemoveSelectedFromPlaylist: () -> Void
@@ -85,16 +154,12 @@ struct SidebarView: View {
     let onMovePlaylistDown: () -> Void
     let onChooseBackgroundVisual: () -> Void
     let onClearBackgroundVisual: () -> Void
-    let onChooseBackgroundAudio: () -> Void
+    let onSelectBackgroundAudio: (URL) -> Void
     let onPlayPauseBackgroundAudio: () -> Void
     let onStopBackgroundAudio: () -> Void
     let onClearBackgroundAudio: () -> Void
     let onApplyBackgroundAudioVolume: (Double) -> Void
-    let onOverlayScaleDraftChange: (Double) -> Void
-    let onSetOverlayMode: (PresentationSession.OverlayMode) -> Void
-    let onStartCountdown: (Int) -> Void
-    let onStopCountdown: () -> Void
-    let onSetClockVisible: (Bool) -> Void
+    let onSeekBackgroundAudio: (Double) -> Void
     let onSelectionChange: (SidebarSelection?) -> Void
     let onOpenWebpageAddress: (String) -> Bool
     let onRemoveWebpage: (URL) -> Void
@@ -116,11 +181,11 @@ struct SidebarView: View {
     @AppStorage("sidebar.backgroundSectionExpanded")
     private var isBackgroundSectionExpanded = false
 
-    @AppStorage("sidebar.timerSectionExpanded")
-    private var isTimerSectionExpanded = false
+    @AppStorage("sidebar.audioSectionExpanded")
+    private var isAudioSectionExpanded = false
 
-    @AppStorage("sidebar.appearanceSectionExpanded")
-    private var isAppearanceSectionExpanded = false
+    @AppStorage("sidebar.libraryGrouping")
+    private var libraryGrouping = LibraryGrouping.kind
 
     @State private var playlistSelectionAnchor: UUID?
 
@@ -132,6 +197,8 @@ struct SidebarView: View {
 
     @State private var keyboardLibraryScrollTarget: URL?
 
+    @State private var collapsedLibraryGroups: Set<LibraryFileGroup> = []
+
     var body: some View {
         GeometryReader { proxy in
             let libraryListMaxHeight = max(160, min(320, proxy.size.height * 0.35))
@@ -139,7 +206,6 @@ struct SidebarView: View {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     sidebarSection(
                         "Library",
-                        detail: libraryRootURL?.path,
                         systemImage: "folder",
                         tint: .library,
                         isExpanded: $isLibrarySectionExpanded
@@ -158,6 +224,17 @@ struct SidebarView: View {
                     ) {
                         playlistControls
                         sidebarPlaylistList
+                    }
+
+                    sectionDivider
+
+                    sidebarSection(
+                        "Audio",
+                        systemImage: "music.note.list",
+                        tint: .audio,
+                        isExpanded: $isAudioSectionExpanded
+                    ) {
+                        audioControls
                     }
 
                     sectionDivider
@@ -195,27 +272,6 @@ struct SidebarView: View {
                         backgroundControls
                     }
 
-                    sectionDivider
-
-                    sidebarSection(
-                        "Timer",
-                        systemImage: "timer",
-                        tint: .timer,
-                        isExpanded: $isTimerSectionExpanded
-                    ) {
-                        timerControls
-                    }
-
-                    sectionDivider
-
-                    sidebarSection(
-                        "Appearance",
-                        systemImage: "slider.horizontal.3",
-                        tint: .appearance,
-                        isExpanded: $isAppearanceSectionExpanded
-                    ) {
-                        appearanceControls
-                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.leading, 12)
@@ -253,30 +309,29 @@ struct SidebarView: View {
     }
 
     private var libraryControls: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Picker("Library", selection: $selectedLibraryFolder) {
-                    Text("Root").tag(Optional<URL>.none)
-                    ForEach(libraryFolders, id: \.self) { folder in
-                        Text(folder.lastPathComponent).tag(Optional(folder))
+                Button {
+                    onImportToLibrary()
+                } label: {
+                    Label("Import...", systemImage: "square.and.arrow.down")
+                }
+                .sidebarActionStyle(primary: true)
+                .disabled(libraryRootURL == nil)
+                .help("Import files into Library")
+
+                Text("Group")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Picker("Group", selection: $libraryGrouping) {
+                    ForEach(LibraryGrouping.allCases) { grouping in
+                        Text(grouping.title).tag(grouping)
                     }
                 }
                 .pickerStyle(.menu)
                 .controlSize(.small)
                 .labelsHidden()
-
-                if let downloadsURL {
-                    Button {
-                        selectedLibraryFolder = nil
-                        onSelectDownloads(downloadsURL)
-                    } label: {
-                        Label("Downloads", systemImage: "arrow.down.circle")
-                    }
-                    .sidebarActionStyle()
-                }
-            }
-            .onChange(of: selectedLibraryFolder) { _, newValue in
-                onSelectLibraryFolder(newValue)
             }
         }
     }
@@ -470,229 +525,156 @@ struct SidebarView: View {
     }
 
     private var backgroundControls: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Visual")
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Button("Set Visual") { onChooseBackgroundVisual() }
+                    .sidebarActionStyle(primary: true)
+                    .help("Choose a background image or video")
+                Button {
+                    onClearBackgroundVisual()
+                } label: {
+                    Label("Clear", systemImage: "xmark.circle")
+                }
+                .labelStyle(.iconOnly)
+                .sidebarActionStyle()
+                .disabled(session.backgroundVisualURL == nil)
+            }
+            if let url = session.backgroundVisualURL {
+                Text(displayName(url))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                HStack(spacing: 8) {
-                    Button("Set Visual") { onChooseBackgroundVisual() }
-                        .sidebarActionStyle(primary: true)
-                        .help("Choose a background image or video")
-                    Button {
-                        onClearBackgroundVisual()
-                    } label: {
-                        Label("Clear", systemImage: "xmark.circle")
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Text("Applies to lyrics only")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var audioControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Button {
+                    onImportToAudio()
+                } label: {
+                    Label("Import", systemImage: "square.and.arrow.down")
+                }
+                .labelStyle(.iconOnly)
+                .sidebarActionStyle(primary: true)
+                .disabled(libraryRootURL == nil)
+                .help("Import audio or video files for background audio")
+
+                Button {
+                    onPlayPauseBackgroundAudio()
+                } label: {
+                    Label(session.isBackgroundAudioPlaying ? "Pause" : "Play",
+                          systemImage: session.isBackgroundAudioPlaying ? "pause.fill" : "play.fill")
+                }
+                .labelStyle(.iconOnly)
+                .sidebarActionStyle()
+                .disabled(session.backgroundAudioURL == nil)
+                .help(session.isBackgroundAudioPlaying ? "Pause" : "Play")
+
+                Button {
+                    onStopBackgroundAudio()
+                } label: {
+                    Label("Stop", systemImage: "stop.fill")
+                }
+                .labelStyle(.iconOnly)
+                .sidebarActionStyle()
+                .disabled(session.backgroundAudioURL == nil)
+                .help("Stop")
+
+                Button {
+                    onClearBackgroundAudio()
+                } label: {
+                    Label("Clear", systemImage: "xmark.circle")
+                }
+                .labelStyle(.iconOnly)
+                .sidebarActionStyle()
+                .disabled(session.backgroundAudioURL == nil)
+                .help("Clear audio")
+
+                Toggle(isOn: $backgroundAudioLoop) {
+                    Label("Loop", systemImage: "repeat")
+                }
+                .labelStyle(.iconOnly)
+                .toggleStyle(.button)
+                .controlSize(.small)
+                .disabled(session.backgroundAudioURL == nil)
+                .help("Loop")
+            }
+
+            HStack(spacing: 8) {
+                Text("\(Int(backgroundAudioVolumeDraft * 100))%")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 42, alignment: .trailing)
+
+                Slider(value: $backgroundAudioVolumeDraft, in: 0.0...1.0, step: 0.01)
+                    .controlSize(.small)
+                    .disabled(session.backgroundAudioURL == nil)
+                    .onChange(of: backgroundAudioVolumeDraft) { _, newValue in
+                        onApplyBackgroundAudioVolume(newValue)
                     }
-                    .labelStyle(.iconOnly)
-                    .sidebarActionStyle()
-                    .disabled(session.backgroundVisualURL == nil)
-                }
-                if let url = session.backgroundVisualURL {
-                    Text(displayName(url))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                Text("Applies to lyrics only")
+
+                Text("")
+                    .frame(width: 42)
+            }
+
+            HStack(spacing: 8) {
+                Text(audioTimeLabel(session.backgroundAudioCurrentTime))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 42, alignment: .trailing)
+
+                Slider(
+                    value: Binding(
+                        get: { session.backgroundAudioCurrentTime },
+                        set: { onSeekBackgroundAudio($0) }
+                    ),
+                    in: 0...max(session.backgroundAudioDuration, 1),
+                    step: 0.25
+                )
+                .controlSize(.small)
+                .disabled(session.backgroundAudioURL == nil || session.backgroundAudioDuration <= 0)
+
+                Text(audioTimeLabel(session.backgroundAudioDuration))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 42, alignment: .leading)
+            }
+
+            if audioFiles.isEmpty {
+                Text("No audio or video files in Library")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Audio")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                HStack(spacing: 8) {
-                    Button("Set Audio") { onChooseBackgroundAudio() }
-                        .sidebarActionStyle(primary: true)
-                        .help("Choose a background audio file")
-                    Button {
-                        onPlayPauseBackgroundAudio()
-                    } label: {
-                        Label(session.isBackgroundAudioPlaying ? "Pause" : "Play",
-                              systemImage: session.isBackgroundAudioPlaying ? "pause.fill" : "play.fill")
-                    }
-                    .labelStyle(.iconOnly)
-                    .sidebarActionStyle()
-                    .disabled(session.backgroundAudioURL == nil)
-                    .help(session.isBackgroundAudioPlaying ? "Pause" : "Play")
-
-                    Button {
-                        onStopBackgroundAudio()
-                    } label: {
-                        Label("Stop", systemImage: "stop.fill")
-                    }
-                    .labelStyle(.iconOnly)
-                    .sidebarActionStyle()
-                    .disabled(session.backgroundAudioURL == nil)
-                    .help("Stop")
-
-                    Button {
-                        onClearBackgroundAudio()
-                    } label: {
-                        Label("Clear", systemImage: "xmark.circle")
-                    }
-                    .labelStyle(.iconOnly)
-                    .sidebarActionStyle()
-                    .disabled(session.backgroundAudioURL == nil)
-                    .help("Clear audio")
-
-                    Toggle(isOn: $backgroundAudioLoop) {
-                        Label("Loop", systemImage: "repeat")
-                    }
-                    .labelStyle(.iconOnly)
-                    .toggleStyle(.button)
-                    .controlSize(.small)
-                    .disabled(session.backgroundAudioURL == nil)
-                    .help("Loop")
-                }
-                if let url = session.backgroundAudioURL {
-                    Text(displayName(url))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Audio Volume")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    HStack(spacing: 8) {
-                        Text("\(Int(backgroundAudioVolumeDraft * 100))%")
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .frame(width: 40, alignment: .trailing)
-                        Slider(value: $backgroundAudioVolumeDraft, in: 0.0...1.0, step: 0.01)
-                            .controlSize(.small)
-                            .onChange(of: backgroundAudioVolumeDraft) { _, newValue in
-                                onApplyBackgroundAudioVolume(newValue)
-                            }
-                    }
-                }
-            }
-        }
-    }
-
-    private var timerControls: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Picker(
-                "Overlay Mode",
-                selection: Binding(
-                    get: { session.overlayMode },
-                    set: { newMode in
-                        onSetOverlayMode(newMode)
-                    }
-                )
-            ) {
-                ForEach(PresentationSession.OverlayMode.allCases) { mode in
-                    Text(mode.rawValue).tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
-            .controlSize(.small)
-            .labelsHidden()
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Overlay Size")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                HStack(spacing: 8) {
-                    Text("\(Int(overlayScaleDraft * 100))%")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .frame(width: 40, alignment: .trailing)
-                    Slider(value: $overlayScaleDraft, in: 0.5...6.0, step: 0.1)
-                        .controlSize(.small)
-                        .onChange(of: overlayScaleDraft) { _, newValue in
-                            onOverlayScaleDraftChange(newValue)
-                        }
-                }
-            }
-
-            if session.overlayMode == .countdown {
-                HStack(spacing: 8) {
-                    Text("\(countdownMinutes)m")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .frame(width: 40, alignment: .trailing)
-                    Slider(
-                        value: Binding(
-                            get: { Double(countdownMinutes) },
-                            set: { countdownMinutes = Int($0.rounded()) }
-                        ),
-                        in: 1...30,
-                        step: 1
-                    )
-                    .controlSize(.small)
-                }
-                HStack(spacing: 8) {
-                    Button(session.isCountdownRunning ? "Restart Timer" : "Start Timer") {
-                        onStartCountdown(countdownMinutes)
-                    }
-                    .sidebarActionStyle(primary: true)
-                    Button("Stop") {
-                        onStopCountdown()
-                    }
-                    .sidebarActionStyle()
-                    .disabled(!session.isCountdownRunning)
-                }
             } else {
-                HStack(spacing: 8) {
-                    Button(session.isClockVisible ? "Hide Clock" : "Show Clock") {
-                        onSetClockVisible(!session.isClockVisible)
-                    }
-                    .sidebarActionStyle(primary: true)
-                }
+                sidebarAudioList
             }
         }
     }
 
-    private var appearanceControls: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Presentation Font Size")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                HStack(spacing: 8) {
-                    Text("\(Int(presentationFontScale * 100))%")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .frame(width: 40, alignment: .trailing)
-                    Slider(value: $presentationFontScale, in: 0.5...2.0, step: 0.1)
-                        .controlSize(.small)
+    private var sidebarAudioList: some View {
+        LazyVStack(alignment: .leading, spacing: 0) {
+            ForEach(audioFiles, id: \.standardizedFileURL) { url in
+                let isSelected = session.backgroundAudioURL?.standardizedFileURL == url.standardizedFileURL
+                Button {
+                    isSidebarFocused = true
+                    onSelectBackgroundAudio(url)
+                } label: {
+                    sidebarRow(title: displayName(url), isSelected: isSelected)
                 }
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Thumbnail Font Size")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                HStack(spacing: 8) {
-                    Text("\(Int(thumbnailFontScale * 100))%")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .frame(width: 40, alignment: .trailing)
-                    Slider(value: $thumbnailFontScale, in: 0.3...2.0, step: 0.1)
-                        .controlSize(.small)
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Thumbnail Size")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                HStack(spacing: 8) {
-                    Text("\(Int(thumbnailScale * 100))%")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .frame(width: 40, alignment: .trailing)
-                    Slider(value: $thumbnailScale, in: 0.6...1.6, step: 0.1)
-                        .controlSize(.small)
-                }
+                .buttonStyle(.plain)
             }
         }
+    }
+
+    private func audioTimeLabel(_ time: Double) -> String {
+        guard time.isFinite, time > 0 else { return "0:00" }
+        let totalSeconds = Int(time.rounded(.down))
+        return "\(totalSeconds / 60):\(String(format: "%02d", totalSeconds % 60))"
     }
 
     private func sidebarSectionHeader(
@@ -749,37 +731,171 @@ struct SidebarView: View {
     private func sidebarFileList(_ urls: [URL], selection: @escaping (URL) -> SidebarSelection) -> some View {
         LazyVStack(alignment: .leading, spacing: 0) {
             ForEach(urls, id: \.standardizedFileURL) { url in
-                let selectionValue = selection(url)
-                HStack(spacing: 6) {
-                    Button {
-                        isSidebarFocused = true
-                        if sidebarSelection == selectionValue {
-                            onSelectionChange(selectionValue)
-                        } else {
-                            sidebarSelection = selectionValue
-                        }
-                    } label: {
-                        sidebarRow(title: displayName(url), isSelected: sidebarSelection == selectionValue)
-                    }
-                    .buttonStyle(.plain)
-
-                    Button {
-                        onAddLibraryItemToPlaylist(url)
-                    } label: {
-                        Image(systemName: "plus")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(Color.accentColor)
-                            .frame(width: 20, height: 20)
-                            .background(
-                                Circle()
-                                    .fill(Color.accentColor.opacity(0.12))
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .help("Add to Playlist")
-                }
+                sidebarFileRow(url, selection: selection)
                 .id(url.standardizedFileURL)
             }
+        }
+    }
+
+    private func sidebarGroupedFileList(_ urls: [URL], selection: @escaping (URL) -> SidebarSelection) -> some View {
+        let sections = groupedLibrarySections(from: urls)
+        return LazyVStack(alignment: .leading, spacing: 0) {
+            ForEach(sections) { section in
+                Button {
+                    toggleLibraryGroup(section.group)
+                } label: {
+                    libraryGroupHeader(section.group, count: section.urls.count)
+                }
+                .buttonStyle(.plain)
+                .padding(.top, section.group == sections.first?.group ? 0 : 6)
+
+                if !collapsedLibraryGroups.contains(section.group) {
+                    ForEach(section.urls, id: \.standardizedFileURL) { url in
+                        sidebarFileRow(url, selection: selection)
+                            .id(url.standardizedFileURL)
+                    }
+                }
+            }
+        }
+    }
+
+    private func sidebarFolderGroupedFileList(_ urls: [URL], selection: @escaping (URL) -> SidebarSelection) -> some View {
+        let sections = groupedLibraryFolderSections(from: urls)
+        return LazyVStack(alignment: .leading, spacing: 0) {
+            ForEach(sections) { section in
+                libraryFolderHeader(section.title, count: section.urls.count)
+                    .padding(.top, section.id == sections.first?.id ? 0 : 6)
+
+                ForEach(section.urls, id: \.standardizedFileURL) { url in
+                    sidebarFileRow(url, selection: selection)
+                        .id(url.standardizedFileURL)
+                }
+            }
+        }
+    }
+
+    private func sidebarFileRow(_ url: URL, selection: @escaping (URL) -> SidebarSelection) -> some View {
+        let selectionValue = selection(url)
+        return HStack(spacing: 6) {
+            Button {
+                isSidebarFocused = true
+                if sidebarSelection == selectionValue {
+                    onSelectionChange(selectionValue)
+                } else {
+                    sidebarSelection = selectionValue
+                }
+            } label: {
+                sidebarRow(title: displayName(url), isSelected: sidebarSelection == selectionValue)
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                onAddLibraryItemToPlaylist(url)
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 20, height: 20)
+                    .background(
+                        Circle()
+                            .fill(Color.accentColor.opacity(0.12))
+                    )
+            }
+            .buttonStyle(.plain)
+            .help("Add to Playlist")
+        }
+    }
+
+    private func libraryGroupHeader(_ group: LibraryFileGroup, count: Int) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: collapsedLibraryGroups.contains(group) ? "chevron.right" : "chevron.down")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 12)
+
+            Text(group.title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            Text("\(count)")
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.tertiary)
+
+            Spacer(minLength: 0)
+        }
+        .frame(height: 22)
+        .padding(.horizontal, 8)
+        .contentShape(Rectangle())
+    }
+
+    private func groupedLibrarySections(from urls: [URL]) -> [LibraryFileGroupSection] {
+        let sortedURLs = urls.sorted {
+            displayName($0).localizedCaseInsensitiveCompare(displayName($1)) == .orderedAscending
+        }
+        let grouped = Dictionary(grouping: sortedURLs) { LibraryFileGroup(url: $0) }
+        return LibraryFileGroup.allCases.compactMap { group in
+            guard let groupURLs = grouped[group], !groupURLs.isEmpty else { return nil }
+            return LibraryFileGroupSection(group: group, urls: groupURLs)
+        }
+    }
+
+    private func libraryFolderHeader(_ title: String, count: Int) -> some View {
+        HStack(spacing: 6) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            Text("\(count)")
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.tertiary)
+
+            Spacer(minLength: 0)
+        }
+        .frame(height: 22)
+        .padding(.horizontal, 8)
+    }
+
+    private func groupedLibraryFolderSections(from urls: [URL]) -> [LibraryFolderGroupSection] {
+        let sortedURLs = urls.sorted {
+            displayName($0).localizedCaseInsensitiveCompare(displayName($1)) == .orderedAscending
+        }
+        let grouped = Dictionary(grouping: sortedURLs) { libraryFolderGroup(for: $0) }
+        return grouped.map { key, urls in
+            LibraryFolderGroupSection(
+                title: key.title,
+                sortKey: key.sortKey,
+                urls: urls
+            )
+        }
+        .sorted { lhs, rhs in
+            lhs.sortKey.localizedCaseInsensitiveCompare(rhs.sortKey) == .orderedAscending
+        }
+    }
+
+    private func libraryFolderGroup(for url: URL) -> LibraryFolderGroupKey {
+        guard let libraryRootURL else {
+            return LibraryFolderGroupKey(title: "Root", sortKey: "0-root")
+        }
+        let rootPath = libraryRootURL.standardizedFileURL.path
+        let parentPath = url.deletingLastPathComponent().standardizedFileURL.path
+        guard parentPath.hasPrefix(rootPath) else {
+            return LibraryFolderGroupKey(title: "Other", sortKey: "z-other")
+        }
+        let suffix = parentPath
+            .dropFirst(rootPath.count)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let folderName = suffix.split(separator: "/").first, !folderName.isEmpty else {
+            return LibraryFolderGroupKey(title: "Root", sortKey: "0-root")
+        }
+        let title = String(folderName)
+        return LibraryFolderGroupKey(title: title, sortKey: "1-\(title.lowercased())")
+    }
+
+    private func toggleLibraryGroup(_ group: LibraryFileGroup) {
+        if collapsedLibraryGroups.contains(group) {
+            collapsedLibraryGroups.remove(group)
+        } else {
+            collapsedLibraryGroups.insert(group)
         }
     }
 
@@ -790,7 +906,13 @@ struct SidebarView: View {
     ) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
-                sidebarFileList(urls, selection: selection)
+                if libraryGrouping == .kind {
+                    sidebarGroupedFileList(urls, selection: selection)
+                } else if libraryGrouping == .folder {
+                    sidebarFolderGroupedFileList(urls, selection: selection)
+                } else {
+                    sidebarFileList(urls, selection: selection)
+                }
             }
             .onAppear {
                 prepareLibraryScrollIfNeeded(with: proxy)
@@ -817,6 +939,7 @@ struct SidebarView: View {
     private func prepareLibraryScroll(to url: URL, with proxy: ScrollViewProxy) {
         let targetURL = url.standardizedFileURL
         guard libraryFiles.contains(where: { $0.standardizedFileURL == targetURL }) else { return }
+        collapsedLibraryGroups.remove(LibraryFileGroup(url: targetURL))
 
         pendingLibraryScrollTarget = targetURL
         Task { @MainActor in
@@ -915,11 +1038,23 @@ struct SidebarView: View {
     }
 
     private var sidebarSelectableItems: [SidebarSelection] {
-        let libraryItems = libraryFiles.map { SidebarSelection.library($0) }
+        let libraryItems = visibleLibraryFilesForKeyboard.map { SidebarSelection.library($0) }
         let playlistSelectionItems = playlistItems.map { SidebarSelection.playlist($0.id) }
         let webpageItems = webpageURLs.map { SidebarSelection.web($0) }
         let windowItems = captureWindows.map { SidebarSelection.window($0.windowID) }
         return libraryItems + playlistSelectionItems + webpageItems + windowItems
+    }
+
+    private var visibleLibraryFilesForKeyboard: [URL] {
+        if libraryGrouping == .none {
+            return libraryFiles
+        }
+        if libraryGrouping == .folder {
+            return groupedLibraryFolderSections(from: libraryFiles).flatMap(\.urls)
+        }
+        return groupedLibrarySections(from: libraryFiles).flatMap { section in
+            collapsedLibraryGroups.contains(section.group) ? [] : section.urls
+        }
     }
 
     private func handleSidebarMoveCommand(_ direction: MoveCommandDirection) {

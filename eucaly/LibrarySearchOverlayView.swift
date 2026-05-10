@@ -12,7 +12,7 @@ enum LibraryCommandPaletteAction: String, CaseIterable, Identifiable {
         case .newLyrics:
             return "New Lyrics"
         case .openFile:
-            return "Open File"
+            return "Import File"
         case .refreshLibrary:
             return "Refresh Library"
         }
@@ -23,7 +23,7 @@ enum LibraryCommandPaletteAction: String, CaseIterable, Identifiable {
         case .newLyrics:
             return "Start a new editable lyrics document"
         case .openFile:
-            return "Choose a file from the library root"
+            return "Copy files into the library"
         case .refreshLibrary:
             return "Rebuild the library list and search index"
         }

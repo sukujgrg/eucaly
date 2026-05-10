@@ -7,7 +7,7 @@ import PDFKit
 import WebKit
 
 @MainActor
-final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate, AVAudioPlayerDelegate {
+final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     enum OverlayMode: String, CaseIterable, Identifiable {
         case countdown = "Timer"
         case clock = "Clock"
@@ -40,11 +40,14 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate, A
     @Published private(set) var isBackgroundAudioPlaying = false
     @Published private(set) var backgroundAudioLoop = true
     @Published private(set) var backgroundAudioVolume: Double = 1.0
+    @Published private(set) var backgroundAudioCurrentTime: Double = 0
+    @Published private(set) var backgroundAudioDuration: Double = 0
     @Published var areSlidesVisible = true
     @Published private(set) var overlay = OverlayState()
     private var countdownToken = UUID()
 
-    private var backgroundAudioPlayer: AVAudioPlayer?
+    private var backgroundAudioPlayer: AVPlayer?
+    private var backgroundAudioEndObserver: NSObjectProtocol?
 
     private var window: NSWindow?
     private var preferredPresentationScreenID: CGDirectDisplayID?
@@ -67,6 +70,9 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate, A
     deinit {
         if let screenParametersObserver {
             NotificationCenter.default.removeObserver(screenParametersObserver)
+        }
+        if let backgroundAudioEndObserver {
+            NotificationCenter.default.removeObserver(backgroundAudioEndObserver)
         }
         screenRepositionWorkItem?.cancel()
         if #available(macOS 12.3, *) {
@@ -381,11 +387,13 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate, A
     func pauseBackgroundAudio() {
         backgroundAudioPlayer?.pause()
         isBackgroundAudioPlaying = false
+        refreshBackgroundAudioProgress()
     }
 
     func stopBackgroundAudioPlayback() {
-        backgroundAudioPlayer?.stop()
-        backgroundAudioPlayer?.currentTime = 0
+        backgroundAudioPlayer?.pause()
+        backgroundAudioPlayer?.seek(to: .zero)
+        backgroundAudioCurrentTime = 0
         isBackgroundAudioPlaying = false
     }
 
@@ -393,11 +401,12 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate, A
         stopBackgroundAudioPlayback()
         backgroundAudioPlayer = nil
         backgroundAudioURL = nil
+        backgroundAudioDuration = 0
+        removeBackgroundAudioEndObserver()
     }
 
     func setBackgroundAudioLoop(_ loop: Bool) {
         backgroundAudioLoop = loop
-        backgroundAudioPlayer?.numberOfLoops = loop ? -1 : 0
     }
 
     func setBackgroundAudioVolume(_ volume: Double) {
@@ -406,9 +415,34 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate, A
         backgroundAudioPlayer?.volume = Float(clamped)
     }
 
-    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        DispatchQueue.main.async { [weak self] in
-            self?.isBackgroundAudioPlaying = false
+    func seekBackgroundAudio(to time: Double) {
+        guard let player = backgroundAudioPlayer else { return }
+        let clamped = min(max(time, 0), backgroundAudioDuration)
+        backgroundAudioCurrentTime = clamped
+        player.seek(to: CMTime(seconds: clamped, preferredTimescale: 600))
+    }
+
+    func refreshBackgroundAudioProgress() {
+        guard let player = backgroundAudioPlayer else {
+            if backgroundAudioCurrentTime != 0 {
+                backgroundAudioCurrentTime = 0
+            }
+            if backgroundAudioDuration != 0 {
+                backgroundAudioDuration = 0
+            }
+            return
+        }
+        let current = player.currentTime().seconds
+        if current.isFinite {
+            let clampedCurrent = max(0, current)
+            if abs(backgroundAudioCurrentTime - clampedCurrent) > 0.05 {
+                backgroundAudioCurrentTime = clampedCurrent
+            }
+        }
+        if let duration = player.currentItem?.duration.seconds, duration.isFinite, duration > 0 {
+            if abs(backgroundAudioDuration - duration) > 0.05 {
+                backgroundAudioDuration = duration
+            }
         }
     }
 
@@ -443,25 +477,53 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate, A
     }
 
     private func configureBackgroundAudioPlayer(for url: URL?, autoplay: Bool) {
-        backgroundAudioPlayer?.stop()
+        backgroundAudioPlayer?.pause()
         backgroundAudioPlayer = nil
         isBackgroundAudioPlaying = false
+        backgroundAudioCurrentTime = 0
+        backgroundAudioDuration = 0
+        removeBackgroundAudioEndObserver()
 
         guard let url else { return }
 
-        do {
-            let player = try AVAudioPlayer(contentsOf: url)
-            player.delegate = self
-            player.numberOfLoops = backgroundAudioLoop ? -1 : 0
-            player.volume = Float(backgroundAudioVolume)
-            player.prepareToPlay()
-            backgroundAudioPlayer = player
-            if autoplay {
-                player.play()
-                isBackgroundAudioPlaying = true
+        let player = AVPlayer(url: url)
+        player.volume = Float(backgroundAudioVolume)
+        backgroundAudioPlayer = player
+        if let item = player.currentItem {
+            backgroundAudioEndObserver = NotificationCenter.default.addObserver(
+                forName: .AVPlayerItemDidPlayToEndTime,
+                object: item,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.handleBackgroundAudioEnded()
+                }
             }
-        } catch {
-            // Keep the URL so the selection persists even if the file is missing.
+        }
+        refreshBackgroundAudioProgress()
+        if autoplay {
+            player.play()
+            isBackgroundAudioPlaying = true
+        }
+    }
+
+    private func handleBackgroundAudioEnded() {
+        guard let player = backgroundAudioPlayer else { return }
+        if backgroundAudioLoop {
+            player.seek(to: .zero)
+            backgroundAudioCurrentTime = 0
+            player.play()
+            isBackgroundAudioPlaying = true
+        } else {
+            isBackgroundAudioPlaying = false
+            refreshBackgroundAudioProgress()
+        }
+    }
+
+    private func removeBackgroundAudioEndObserver() {
+        if let backgroundAudioEndObserver {
+            NotificationCenter.default.removeObserver(backgroundAudioEndObserver)
+            self.backgroundAudioEndObserver = nil
         }
     }
 
