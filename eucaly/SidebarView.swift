@@ -202,6 +202,7 @@ struct SidebarView: View {
     var body: some View {
         GeometryReader { proxy in
             let libraryListMaxHeight = max(160, min(320, proxy.size.height * 0.35))
+            let audioListMaxHeight = max(120, min(240, proxy.size.height * 0.25))
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     sidebarSection(
@@ -234,7 +235,7 @@ struct SidebarView: View {
                         tint: .audio,
                         isExpanded: $isAudioSectionExpanded
                     ) {
-                        audioControls
+                        audioControls(maxListHeight: audioListMaxHeight)
                     }
 
                     sectionDivider
@@ -552,15 +553,14 @@ struct SidebarView: View {
         }
     }
 
-    private var audioControls: some View {
+    private func audioControls(maxListHeight: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
                 Button {
                     onImportToAudio()
                 } label: {
-                    Label("Import", systemImage: "square.and.arrow.down")
+                    Label("Import...", systemImage: "square.and.arrow.down")
                 }
-                .labelStyle(.iconOnly)
                 .sidebarActionStyle(primary: true)
                 .disabled(libraryRootURL == nil)
                 .help("Import audio or video files for background audio")
@@ -606,6 +606,17 @@ struct SidebarView: View {
                 .help("Loop")
             }
 
+            if audioFiles.isEmpty {
+                Text("No audio or video files in Library")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                ScrollView {
+                    sidebarAudioList
+                }
+                .frame(maxWidth: .infinity, maxHeight: maxListHeight, alignment: .topLeading)
+            }
+
             HStack(spacing: 8) {
                 Text("\(Int(backgroundAudioVolumeDraft * 100))%")
                     .font(.caption.monospacedDigit())
@@ -644,14 +655,6 @@ struct SidebarView: View {
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
                     .frame(width: 42, alignment: .leading)
-            }
-
-            if audioFiles.isEmpty {
-                Text("No audio or video files in Library")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            } else {
-                sidebarAudioList
             }
         }
     }
