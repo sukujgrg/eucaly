@@ -3,6 +3,7 @@
 set -euo pipefail
 
 CURRENT_ARCH_ONLY=0
+VERSION=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -24,6 +25,10 @@ EXPORT_PLIST="$TMP/eucaly-export.plist"
 EXPORT_PATH="$HOME/Applications"
 CURRENT_ARCH="$(uname -m)"
 
+if [[ -f VERSION ]]; then
+  VERSION="$(tr -d '[:space:]' < VERSION)"
+fi
+
 mkdir -p "$EXPORT_PATH"
 
 xcodebuild_args=(
@@ -35,6 +40,10 @@ xcodebuild_args=(
   STRIP_INSTALLED_PRODUCT=YES \
   COPY_PHASE_STRIP=YES
 )
+
+if [[ -n "$VERSION" ]]; then
+  xcodebuild_args+=("MARKETING_VERSION=$VERSION")
+fi
 
 if [[ "$CURRENT_ARCH_ONLY" -eq 1 ]]; then
   xcodebuild_args+=(

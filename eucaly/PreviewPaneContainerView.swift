@@ -154,6 +154,7 @@ struct PreviewPaneContainerView: View {
                 HStack(spacing: 10) {
                     Button("Edit", action: onEdit)
                         .buttonStyle(.bordered)
+                        .controlSize(.small)
                         .disabled(!canEditSelection)
                     Spacer()
                 }

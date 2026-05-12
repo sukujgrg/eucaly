@@ -60,12 +60,23 @@ struct EucalyApp: App {
                     NotificationCenter.default.post(name: .showLibrarySearch, object: nil)
                 }
                 .keyboardShortcut("o", modifiers: [.command, .shift])
+
+                Button("Refresh Library") {
+                    NotificationCenter.default.post(name: .refreshLibrary, object: nil)
+                }
+                .keyboardShortcut("r", modifiers: .command)
             }
             CommandGroup(replacing: .saveItem) {
                 Button("Save Lyrics") {
                     NotificationCenter.default.post(name: .saveLyrics, object: nil)
                 }
                 .keyboardShortcut("s", modifiers: .command)
+            }
+            CommandGroup(after: .saveItem) {
+                Button("Close Window") {
+                    NSApp.keyWindow?.performClose(nil)
+                }
+                .keyboardShortcut("w", modifiers: .command)
             }
             CommandMenu("Slides") {
                 Button("Stop Projection") {
@@ -120,4 +131,5 @@ extension Notification.Name {
     static let clearAllLayers = Notification.Name("clearAllLayers")
     static let saveLyrics = Notification.Name("saveLyrics")
     static let showLibrarySearch = Notification.Name("showLibrarySearch")
+    static let refreshLibrary = Notification.Name("refreshLibrary")
 }

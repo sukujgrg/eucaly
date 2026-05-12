@@ -64,6 +64,7 @@ public struct ContentView: View {
     @State private var projectionScreenOptions: [ProjectionScreenOption] = []
     @State private var isTimerSettingsPresented: Bool = false
     @State private var isAppearanceSettingsPresented: Bool = false
+    @State private var isBackgroundSettingsPresented: Bool = false
     @FocusState private var isSidebarFocused: Bool
     @State private var securityScopedRoot: URL? = nil
     @State private var securityScopedDownloads: URL? = nil
@@ -342,6 +343,9 @@ public struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .showLibrarySearch)) { _ in
             presentLibrarySearch()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .refreshLibrary)) { _ in
+            refreshLibrary()
+        }
         .onReceive(Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()) { _ in
             session.refreshBackgroundAudioProgress()
         }
@@ -376,8 +380,6 @@ public struct ContentView: View {
             onRemoveSelectedFromPlaylist: removeSelectedFromPlaylist,
             onMovePlaylistUp: moveSelectedPlaylistEntriesUp,
             onMovePlaylistDown: moveSelectedPlaylistEntriesDown,
-            onChooseBackgroundVisual: chooseBackgroundVisual,
-            onClearBackgroundVisual: clearBackgroundVisual,
             onSelectBackgroundAudio: selectBackgroundAudio,
             onPlayPauseBackgroundAudio: toggleBackgroundAudioPlayback,
             onStopBackgroundAudio: stopBackgroundAudioPlayback,
@@ -426,26 +428,34 @@ public struct ContentView: View {
                 .help("Open the command palette")
 
                 projectionScreenPicker
-
-                let isBackgroundVisible = session.isBackgroundVisualVisible
-                Button {
-                    toggleBackgroundVisualFromUI()
-                } label: {
-                    Label(
-                        "Background",
-                        systemImage: isBackgroundVisible ? "photo.fill.on.rectangle.fill" : "photo.on.rectangle"
-                    )
-                }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.bordered)
-                .disabled(!session.hasAvailableBackgroundVisual || isCurrentSelectionMediaFile)
-                .help(isBackgroundVisible ? "Hide background" : "Show background")
             }
         }
 
         ToolbarItemGroup(placement: .primaryAction) {
+            backgroundSettingsButton
             timerSettingsButton
             appearanceSettingsButton
+        }
+    }
+
+    private var backgroundSettingsButton: some View {
+        Button {
+            isBackgroundSettingsPresented.toggle()
+        } label: {
+            Label("Background", systemImage: "photo.on.rectangle")
+        }
+        .labelStyle(.iconOnly)
+        .buttonStyle(.bordered)
+        .help("Background settings")
+        .popover(isPresented: $isBackgroundSettingsPresented, arrowEdge: .top) {
+            BackgroundSettingsPopoverView(
+                session: session,
+                visualName: session.backgroundVisualURL.map { displayName(for: $0) },
+                isMediaCurrent: isCurrentSelectionMediaFile,
+                onChooseVisual: chooseBackgroundVisual,
+                onClearVisual: clearBackgroundVisual,
+                onToggleVisibility: toggleBackgroundVisualFromUI
+            )
         }
     }
 
@@ -961,10 +971,6 @@ public struct ContentView: View {
 
     private func isLyricsFile(_ url: URL) -> Bool {
         FileKind(url: url).isEditableLyrics
-    }
-
-    private func chooseFile() {
-        importFilesToLibrary()
     }
 
     private func importFilesToLibrary() {
@@ -1657,8 +1663,6 @@ public struct ContentView: View {
         switch action {
         case .newLyrics:
             handleNewLyrics()
-        case .openFile:
-            chooseFile()
         case .refreshLibrary:
             refreshLibrary()
         }

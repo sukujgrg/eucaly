@@ -14,7 +14,6 @@ private enum SidebarSectionTint {
     case web
     case playlist
     case windows
-    case background
     case audio
 
     var color: Color {
@@ -27,8 +26,6 @@ private enum SidebarSectionTint {
             Color(nsColor: .systemGreen)
         case .windows:
             Color(nsColor: .systemOrange)
-        case .background:
-            Color(nsColor: .systemPink)
         case .audio:
             Color(nsColor: .systemPurple)
         }
@@ -152,8 +149,6 @@ struct SidebarView: View {
     let onRemoveSelectedFromPlaylist: () -> Void
     let onMovePlaylistUp: () -> Void
     let onMovePlaylistDown: () -> Void
-    let onChooseBackgroundVisual: () -> Void
-    let onClearBackgroundVisual: () -> Void
     let onSelectBackgroundAudio: (URL) -> Void
     let onPlayPauseBackgroundAudio: () -> Void
     let onStopBackgroundAudio: () -> Void
@@ -177,9 +172,6 @@ struct SidebarView: View {
 
     @AppStorage("sidebar.windowsSectionExpanded")
     private var isWindowsSectionExpanded = false
-
-    @AppStorage("sidebar.backgroundSectionExpanded")
-    private var isBackgroundSectionExpanded = false
 
     @AppStorage("sidebar.audioSectionExpanded")
     private var isAudioSectionExpanded = false
@@ -260,17 +252,6 @@ struct SidebarView: View {
                         ) {
                             windowsControls
                         }
-                    }
-
-                    sectionDivider
-
-                    sidebarSection(
-                        "Background",
-                        systemImage: "photo.on.rectangle",
-                        tint: .background,
-                        isExpanded: $isBackgroundSectionExpanded
-                    ) {
-                        backgroundControls
                     }
 
                 }
@@ -523,34 +504,6 @@ struct SidebarView: View {
             return true
         }
         return false
-    }
-
-    private var backgroundControls: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Button("Set Visual") { onChooseBackgroundVisual() }
-                    .sidebarActionStyle(primary: true)
-                    .help("Choose a background image or video")
-                Button {
-                    onClearBackgroundVisual()
-                } label: {
-                    Label("Clear", systemImage: "xmark.circle")
-                }
-                .labelStyle(.iconOnly)
-                .sidebarActionStyle()
-                .disabled(session.backgroundVisualURL == nil)
-            }
-            if let url = session.backgroundVisualURL {
-                Text(displayName(url))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            Text("Applies to lyrics only")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
     }
 
     private func audioControls(maxListHeight: CGFloat) -> some View {

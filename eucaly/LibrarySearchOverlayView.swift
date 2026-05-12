@@ -2,7 +2,6 @@ import SwiftUI
 
 enum LibraryCommandPaletteAction: String, CaseIterable, Identifiable {
     case newLyrics
-    case openFile
     case refreshLibrary
 
     var id: String { rawValue }
@@ -11,8 +10,6 @@ enum LibraryCommandPaletteAction: String, CaseIterable, Identifiable {
         switch self {
         case .newLyrics:
             return "New Lyrics"
-        case .openFile:
-            return "Import File"
         case .refreshLibrary:
             return "Refresh Library"
         }
@@ -22,8 +19,6 @@ enum LibraryCommandPaletteAction: String, CaseIterable, Identifiable {
         switch self {
         case .newLyrics:
             return "Start a new editable lyrics document"
-        case .openFile:
-            return "Copy files into the library"
         case .refreshLibrary:
             return "Rebuild the library list and search index"
         }
@@ -33,8 +28,6 @@ enum LibraryCommandPaletteAction: String, CaseIterable, Identifiable {
         switch self {
         case .newLyrics:
             return "square.and.pencil"
-        case .openFile:
-            return "folder.badge.plus"
         case .refreshLibrary:
             return "arrow.clockwise"
         }
@@ -56,8 +49,6 @@ enum LibraryCommandPaletteAction: String, CaseIterable, Identifiable {
         switch self {
         case .newLyrics:
             return "new lyrics song text create edit"
-        case .openFile:
-            return "open file choose import library"
         case .refreshLibrary:
             return "refresh library rescan reload index search"
         }
