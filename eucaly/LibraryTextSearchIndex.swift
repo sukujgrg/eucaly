@@ -132,12 +132,49 @@ actor LibraryTextSearchIndex {
     }
 
     private static func previewText(from content: String) -> String {
-        content
+        let slidePreviewLines = LyricsParser.parseDocument(content)
+            .slides
+            .prefix(2)
+            .flatMap { slide in
+                slide.lines.flatMap { slideLine in
+                    slideLine.text
+                        .components(separatedBy: .newlines)
+                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                        .filter { !$0.isEmpty }
+                }
+            }
+            .prefix(4)
+
+        if !slidePreviewLines.isEmpty {
+            return slidePreviewLines.joined(separator: "\n")
+        }
+
+        return content
             .components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-            .prefix(3)
+            .filter { !isSnippetHeading($0) }
+            .prefix(4)
             .joined(separator: "\n")
+    }
+
+    private static func isSnippetHeading(_ line: String) -> Bool {
+        LyricsSectionCatalog.isHeader(line) || isSecondarySectionHeading(line)
+    }
+
+    private static func isSecondarySectionHeading(_ line: String) -> Bool {
+        [
+            "meaning",
+            "translation",
+            "transalation",
+            "transliteration"
+        ].contains(normalizedHeading(line))
+    }
+
+    private static func normalizedHeading(_ line: String) -> String {
+        line.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: ":"))
+            .lowercased()
     }
 
     private func indexedContent(for url: URL) -> String {

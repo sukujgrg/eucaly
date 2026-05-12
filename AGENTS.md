@@ -234,6 +234,11 @@ Window capture supports live streaming of a user-picked app window into a slide.
   - `eucaly/PreviewPaneContainerView.swift`
   - `eucaly/CurrentPaneContainerView.swift`
 
+### Parser and Domain Models
+- Pure parser/domain-model code should remain actor-independent (`nonisolated`) when it has no UI, AppKit, SwiftUI state, `@Published`, or shared mutable state.
+- Do not duplicate parser rules in UI/search/runtime code. Reuse `LyricsParser` and `LyricsSectionCatalog`.
+- If parser/domain code later needs main-thread-only APIs or observable state, isolate only that new UI-facing layer instead of moving parsing back onto `MainActor`.
+
 ## Caching
 - `eucaly/CacheManager.swift`
   - `@MainActor`, singleton

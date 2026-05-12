@@ -417,7 +417,7 @@ private struct LibrarySearchResultRow: View {
                 Text(previewText)
                     .font(.caption)
                     .foregroundStyle(isSelected ? .white.opacity(0.8) : .secondary)
-                    .lineLimit(3)
+                    .lineLimit(4)
                     .multilineTextAlignment(.leading)
             }
         }

@@ -1,6 +1,6 @@
 import Foundation
 
-enum LyricsParser {
+nonisolated enum LyricsParser {
     static func parseDocument(_ raw: String, fileName _: String? = nil) -> LyricsDocument {
         let normalized = raw.replacingOccurrences(of: "\r\n", with: "\n")
         let lines = normalized.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)

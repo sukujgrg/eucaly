@@ -11,6 +11,8 @@ struct CurrentPaneContainerView: View {
     let titleForWebpage: (URL) -> String
     let onWebpageNavigationChange: (URL, URL) -> Void
     let onWebpageTitleChange: (String, URL) -> Void
+    let canEditCurrentLyrics: Bool
+    let onEditCurrentLyrics: () -> Void
     let onClearCurrent: (() -> Void)?
     @AppStorage("overlayScale") private var overlayScale: Double = 1.0
     @FocusState private var isFocused: Bool
@@ -57,13 +59,20 @@ struct CurrentPaneContainerView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
+                Spacer()
+
                 if !slides.isEmpty {
+                    Button("Edit", action: onEditCurrentLyrics)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(!canEditCurrentLyrics)
+                        .help("Edit Current lyrics in Preview")
+
                     Button("Clear", action: clearSlides)
-                        .primaryActionStyle(fixedWidth: 170)
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
                         .help("Clear Current area")
                 }
-
-                Spacer()
             }
             .padding(.horizontal, 4)
             .padding(.vertical, 6)

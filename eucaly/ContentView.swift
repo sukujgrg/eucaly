@@ -40,6 +40,7 @@ public struct ContentView: View {
     @State private var newFileWarning: String? = nil
     @State private var lastLoadedText: String = ""
     @State private var editingSourceURL: URL? = nil
+    @State private var currentLyricsSourceURL: URL? = nil
     @State private var sidebarSelection: SidebarSelection? = nil
     @State private var ignoresNextSidebarSelectionChange: Bool = false
     @State private var previewLoadToken = UUID()
@@ -576,11 +577,16 @@ public struct ContentView: View {
     }
 
     private func handleToggleSlidesVisibilityNotification(_ notification: Notification) {
+        let currentWasEmpty = session.slides.isEmpty
+        let lyricsSourceURL = previewLyricsSourceURL()
         deferSessionChange {
             flow.toggleSlidesVisibility(
                 in: session,
                 preferredScreen: preferredProjectionScreen()
             )
+            if currentWasEmpty, !session.slides.isEmpty {
+                currentLyricsSourceURL = lyricsSourceURL
+            }
         }
     }
 
@@ -714,6 +720,8 @@ public struct ContentView: View {
                 titleForWebpage: webpageTitle(for:),
                 onWebpageNavigationChange: updateCurrentWebpageURL(to:from:),
                 onWebpageTitleChange: updateWebpageTitle(_:for:),
+                canEditCurrentLyrics: canEditCurrentLyrics,
+                onEditCurrentLyrics: beginCurrentLyricsEditing,
                 onClearCurrent: clearCurrentDocument
             ),
             showEditorAndPreview: isEditingLyrics && !isCurrentSelectionMediaFile && !isPreviewCollapsed
@@ -764,6 +772,7 @@ public struct ContentView: View {
     private func clearCurrentDocument() {
         let clearedWindowFromCurrent = session.slides.contains { $0.captureWindowID != nil }
         flow.clearCurrentDocument(in: session)
+        currentLyricsSourceURL = nil
         currentWebpageSourceURL = nil
         currentWebpageNavigationRevision = 0
         flow.isCurrentCollapsed = true
@@ -778,17 +787,24 @@ public struct ContentView: View {
 
     private func handleLoadPreviewToCurrent() {
         guard !flow.previewSlides.isEmpty else { return }
+        let lyricsSourceURL = previewLyricsSourceURL()
         flow.movePreviewToCurrent(in: session, force: true)
+        currentLyricsSourceURL = lyricsSourceURL
         syncCurrentWebpageSource(with: session.slides)
         isPreviewCollapsed = true
     }
 
     private func toggleSlidesFromUI() {
+        let currentWasEmpty = session.slides.isEmpty
+        let lyricsSourceURL = previewLyricsSourceURL()
         DispatchQueue.main.async {
             flow.toggleSlidesVisibility(
                 in: session,
                 preferredScreen: preferredProjectionScreen()
             )
+            if currentWasEmpty, !session.slides.isEmpty {
+                currentLyricsSourceURL = lyricsSourceURL
+            }
         }
     }
 
@@ -852,6 +868,11 @@ public struct ContentView: View {
     private var canEditSelection: Bool {
         guard !isCurrentSelectionMediaFile, let url = currentSelectedURL else { return false }
         return isLyricsFile(url)
+    }
+
+    private var canEditCurrentLyrics: Bool {
+        guard !session.slides.isEmpty, let currentLyricsSourceURL else { return false }
+        return isLyricsFile(currentLyricsSourceURL)
     }
 
     private var canToggleSlides: Bool {
@@ -2169,6 +2190,7 @@ public struct ContentView: View {
         }
         if session.slides.contains(where: { $0.captureWindowID == windowID }) {
             flow.clearCurrentDocument(in: session)
+            currentLyricsSourceURL = nil
         }
         if #available(macOS 14.0, *), isWindowCaptureSupported {
             screenCaptureManager.clearWindow(windowID: windowID)
@@ -2361,6 +2383,10 @@ public struct ContentView: View {
     }
 
     private func setSidebarSelectionWithoutLoading(_ selection: SidebarSelection?) {
+        guard sidebarSelection != selection else {
+            ignoresNextSidebarSelectionChange = false
+            return
+        }
         ignoresNextSidebarSelectionChange = true
         sidebarSelection = selection
     }
@@ -2424,6 +2450,36 @@ public struct ContentView: View {
         guard canEditSelection else { return }
         editingSourceURL = currentSelectedURL
         isEditingLyrics = true
+    }
+
+    private func beginCurrentLyricsEditing() {
+        guard canEditCurrentLyrics, let url = currentLyricsSourceURL else { return }
+        guard let contents = try? String(contentsOf: url, encoding: .utf8) else {
+            newFileWarning = "Could not open lyrics for editing."
+            return
+        }
+
+        let doc = LyricsParser.parseDocument(contents, fileName: url.lastPathComponent)
+        beginPreviewTransition(to: .file(url))
+        setSidebarSelectionWithoutLoading(.library(url))
+        selectedFileURL = url
+        selectedPlaylistEntryID = nil
+        selectedPlaylistEntryIDs = []
+        editingSourceURL = url
+        rawLyrics = contents
+        lastLoadedText = contents
+        isEditingLyrics = true
+        newFileWarning = nil
+        setPreviewSlides(doc.slides)
+    }
+
+    private func previewLyricsSourceURL() -> URL? {
+        guard case .file(let url) = previewSource,
+              FileKind(url: url).isEditableLyrics,
+              !flow.previewSlides.isEmpty else {
+            return nil
+        }
+        return url
     }
 
     private func currentPreviewSelectionIndex() -> Int? {

@@ -1,7 +1,7 @@
 import Foundation
 import CoreGraphics
 
-enum SectionKind: String, CaseIterable, Identifiable {
+nonisolated enum SectionKind: String, CaseIterable, Identifiable {
     case verse = "Verse"
     case chorus = "Chorus"
     case preChorus = "Pre-Chorus"
@@ -11,7 +11,7 @@ enum SectionKind: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-enum LyricsSectionCatalog {
+nonisolated enum LyricsSectionCatalog {
     struct HeaderMatch {
         let kind: SectionKind
         let label: String
@@ -78,7 +78,7 @@ enum LyricsSectionCatalog {
     }
 }
 
-struct SlideLine: Identifiable, Hashable {
+nonisolated struct SlideLine: Identifiable, Hashable {
     let id = UUID()
     let kind: SectionKind
     let languageTag: String
@@ -89,7 +89,7 @@ struct SlideLine: Identifiable, Hashable {
     }
 }
 
-struct Slide: Identifiable {
+nonisolated struct Slide: Identifiable {
     let id = UUID()
     let index: Int
     let lines: [SlideLine]
@@ -129,7 +129,7 @@ struct Slide: Identifiable {
     }
 }
 
-struct LyricsDocument {
+nonisolated struct LyricsDocument {
     var slides: [Slide]
     var metadata: [String: String] = [:]
 }

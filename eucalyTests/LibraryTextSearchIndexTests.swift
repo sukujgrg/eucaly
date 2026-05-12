@@ -93,6 +93,77 @@ final class LibraryTextSearchIndexTests: XCTestCase {
         XCTAssertFalse(containsResult(results, url: reverseOrderURL))
     }
 
+    func testSearchSnippetOmitsLyricsSectionHeaders() async throws {
+        let (index, directoryURL) = try makeIndex()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let fileURL = try writeTextFile(
+            in: directoryURL,
+            name: "above-all.txt",
+            contents: """
+            Verse 1
+            Above all powers, above all kings
+            Above all nature and all created things
+
+            Chorus
+            Crucified, laid behind a stone
+            You lived to die, rejected and alone
+            """
+        )
+
+        _ = await index.rebuild(with: [fileURL])
+        let results = await index.search(query: "above")
+
+        let result = try XCTUnwrap(results.first { $0.url.standardizedFileURL == fileURL.standardizedFileURL })
+        XCTAssertEqual(
+            result.snippet,
+            """
+            Above all powers, above all kings
+            Above all nature and all created things
+            Crucified, laid behind a stone
+            You lived to die, rejected and alone
+            """
+        )
+        XCTAssertFalse(result.snippet.contains("Verse 1"))
+        XCTAssertFalse(result.snippet.contains("Chorus"))
+    }
+
+    func testSearchSnippetUsesFirstTwoSlidesAndLimitsToFourLines() async throws {
+        let (index, directoryURL) = try makeIndex()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let fileURL = try writeTextFile(
+            in: directoryURL,
+            name: "plain.txt",
+            contents: """
+            First slide line one
+            First slide line two
+            First slide line three
+            ---
+            Second slide line one
+            Second slide line two
+            ---
+            Third slide line one
+            """
+        )
+
+        _ = await index.rebuild(with: [fileURL])
+        let results = await index.search(query: "first")
+
+        let result = try XCTUnwrap(results.first { $0.url.standardizedFileURL == fileURL.standardizedFileURL })
+        XCTAssertEqual(
+            result.snippet,
+            """
+            First slide line one
+            First slide line two
+            First slide line three
+            Second slide line one
+            """
+        )
+        XCTAssertFalse(result.snippet.contains("Second slide line two"))
+        XCTAssertFalse(result.snippet.contains("Third slide line one"))
+    }
+
     func testRebuildIndexesFilenameForAllFilesButOnlyIndexesEligibleTxtContent() async throws {
         let (index, directoryURL) = try makeIndex()
         defer { try? FileManager.default.removeItem(at: directoryURL) }
