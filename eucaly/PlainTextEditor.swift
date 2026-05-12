@@ -109,14 +109,26 @@ struct PlainTextEditor: NSViewRepresentable {
 
         private func color(for kind: SectionKind) -> NSColor {
             switch kind {
+            case .intro:
+                return .systemPurple
             case .verse:
                 return .systemBlue
             case .chorus:
                 return .systemGreen
             case .preChorus:
                 return .systemTeal
+            case .postChorus:
+                return .systemGreen
             case .bridge:
                 return .systemOrange
+            case .instrumental:
+                return .systemGray
+            case .vamp:
+                return .systemRed
+            case .coda:
+                return .systemBrown
+            case .ending, .outro:
+                return .systemPink
             case .tag:
                 return .systemPink
             }

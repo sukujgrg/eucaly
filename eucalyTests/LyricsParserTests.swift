@@ -153,6 +153,57 @@ final class LyricsParserTests: XCTestCase {
         XCTAssertEqual(doc.slides[1].label, "Chorus")
     }
 
+    func testCommonSectionHeadings() {
+        let headings = [
+            ("Intro", "Intro"),
+            ("Outro", "Outro"),
+            ("Ending", "Ending"),
+            ("Instrumental", "Instrumental"),
+            ("Vamp", "Vamp"),
+            ("Coda", "Coda"),
+            ("Pre Chorus", "Pre-Chorus"),
+            ("Post-Chorus", "Post-Chorus"),
+            ("Hook", "Chorus")
+        ]
+
+        for (heading, expectedLabel) in headings {
+            let doc = LyricsParser.parseDocument(
+                """
+                \(heading)
+                line
+                """,
+                fileName: "test.txt"
+            )
+            XCTAssertEqual(doc.slides.count, 1, heading)
+            XCTAssertEqual(doc.slides[0].label, expectedLabel, heading)
+            XCTAssertEqual(doc.slides[0].lines.first?.text, "line", heading)
+        }
+    }
+
+    func testBracketedSectionHeadings() {
+        let headings = [
+            ("[Verse 1]", "Verse 1"),
+            ("[Chorus:]", "Chorus"),
+            ("[Pre Chorus 2]", "Pre-Chorus 2"),
+            ("[Post-Chorus]", "Post-Chorus"),
+            ("[Hook]", "Chorus"),
+            ("[Instrumental]", "Instrumental")
+        ]
+
+        for (heading, expectedLabel) in headings {
+            let doc = LyricsParser.parseDocument(
+                """
+                \(heading)
+                line
+                """,
+                fileName: "test.txt"
+            )
+            XCTAssertEqual(doc.slides.count, 1, heading)
+            XCTAssertEqual(doc.slides[0].label, expectedLabel, heading)
+            XCTAssertEqual(LyricsSectionCatalog.canonicalHeaderLine(heading), expectedLabel, heading)
+        }
+    }
+
     func testCCLITrailerAndAuthorAreStripped() {
         let raw = """
         Verse

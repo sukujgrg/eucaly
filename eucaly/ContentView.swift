@@ -2120,9 +2120,17 @@ public struct ContentView: View {
     }
 
     private func canonicalCompanionHeader(line: String) -> String? {
-        let normalized = line
+        var normalized = line
             .trimmingCharacters(in: CharacterSet(charactersIn: ":"))
             .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if normalized.first == "[", normalized.last == "]" {
+            normalized.removeFirst()
+            normalized.removeLast()
+            normalized = normalized
+                .trimmingCharacters(in: CharacterSet(charactersIn: ":"))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
 
         if normalized.caseInsensitiveCompare("Meaning") == .orderedSame {
             return "Meaning"

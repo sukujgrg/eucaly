@@ -35,6 +35,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+private enum AppLinks {
+    static let supportPage = URL(string: "https://sukujgrg.github.io/eucaly/")!
+}
+
 @main
 struct EucalyApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
@@ -77,6 +81,11 @@ struct EucalyApp: App {
                     NSApp.keyWindow?.performClose(nil)
                 }
                 .keyboardShortcut("w", modifiers: .command)
+            }
+            CommandGroup(after: .help) {
+                Button("eucaly Support") {
+                    NSWorkspace.shared.open(AppLinks.supportPage)
+                }
             }
             CommandMenu("Slides") {
                 Button("Stop Projection") {

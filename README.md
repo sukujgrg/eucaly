@@ -2,6 +2,14 @@
 
 `eucaly` is a macOS presentation app for churches and teams that need reliable projection of lyrics and media.
 
+Support page: https://sukujgrg.github.io/eucaly
+
+## License
+
+This repository is publicly visible, but eucaly is proprietary software. Official releases may be used for personal, church, and other non-commercial presentation use. Redistribution, modification, resale, bundling, hosting, or commercial use requires written permission.
+
+See `LICENSE` and `COMMERCIAL.md`.
+
 Core interaction model:
 
 1. Select an item in the sidebar
