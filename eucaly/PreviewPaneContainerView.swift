@@ -14,6 +14,7 @@ struct PreviewPaneContainerView: View {
     let onWebpageTitleChange: (String, URL) -> Void
     let onEdit: () -> Void
     let onLoadToCurrent: () -> Void
+    @FocusState private var isFocused: Bool
 
     var body: some View {
         let slides = flow.previewSlides
@@ -117,34 +118,58 @@ struct PreviewPaneContainerView: View {
                         }
                     } else {
                         GeometryReader { proxy in
-                            ScrollView {
-                                let horizontalInset: CGFloat = 10
-                                let layout = ThumbnailGridLayout.make(
-                                    for: proxy.size.width - (horizontalInset * 2),
-                                    thumbnailScale: thumbnailScale
-                                )
-                                LazyVGrid(columns: layout.columns, spacing: layout.spacing) {
-                                    ForEach(slides) { slide in
-                                    SlideGridCellView(
-                                        slide: slide,
-                                        itemWidth: layout.itemWidth,
-                                        itemHeight: layout.itemHeight,
-                                        isSelected: slide.id == flow.previewSelectionID,
-                                        overlayText: nil,
-                                        overlayLabel: nil,
-                                        overlayColor: .clear,
-                                        overlayScale: 1.0,
-                                        onTap: {
-                                            flow.selectPreviewSlide(slide.id)
-                                        }
+                            ScrollViewReader { scrollProxy in
+                                ScrollView {
+                                    let horizontalInset: CGFloat = 10
+                                    let layout = ThumbnailGridLayout.make(
+                                        for: proxy.size.width - (horizontalInset * 2),
+                                        thumbnailScale: thumbnailScale
                                     )
+                                    LazyVGrid(columns: layout.columns, spacing: layout.spacing) {
+                                        ForEach(slides) { slide in
+                                            SlideGridCellView(
+                                                slide: slide,
+                                                itemWidth: layout.itemWidth,
+                                                itemHeight: layout.itemHeight,
+                                                isSelected: slide.id == flow.previewSelectionID,
+                                                overlayText: nil,
+                                                overlayLabel: nil,
+                                                overlayColor: .clear,
+                                                overlayScale: 1.0,
+                                                onTap: {
+                                                    flow.selectPreviewSlide(slide.id)
+                                                }
+                                            )
+                                            .id(slide.id)
+                                        }
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.vertical, 4)
+                                    .padding(.horizontal, horizontalInset)
                                 }
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .focusable()
+                                .focused($isFocused)
+                                .focusEffectDisabled()
+                                .onKeyPress(.upArrow) {
+                                    return handleArrowKey(delta: -1)
                                 }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.vertical, 4)
-                                .padding(.horizontal, horizontalInset)
+                                .onKeyPress(.downArrow) {
+                                    return handleArrowKey(delta: 1)
+                                }
+                                .onKeyPress(.leftArrow) {
+                                    return handleArrowKey(delta: -1)
+                                }
+                                .onKeyPress(.rightArrow) {
+                                    return handleArrowKey(delta: 1)
+                                }
+                                .onTapGesture {
+                                    isFocused = true
+                                }
+                                .onChange(of: flow.previewSelectionID) { _, newValue in
+                                    scrollToSelectedSlide(newValue, with: scrollProxy)
+                                }
                             }
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                         }
                     }
                 }
@@ -176,6 +201,19 @@ struct PreviewPaneContainerView: View {
     private func toggleCollapsed() {
         withAnimation(paneToggleAnimation) {
             isCollapsed.toggle()
+        }
+    }
+
+    private func handleArrowKey(delta: Int) -> KeyPress.Result {
+        guard !flow.previewSlides.isEmpty else { return .ignored }
+        flow.movePreviewSelection(delta: delta)
+        return .handled
+    }
+
+    private func scrollToSelectedSlide(_ slideID: Slide.ID?, with proxy: ScrollViewProxy) {
+        guard let slideID else { return }
+        withAnimation(.easeInOut(duration: 0.12)) {
+            proxy.scrollTo(slideID, anchor: .center)
         }
     }
 

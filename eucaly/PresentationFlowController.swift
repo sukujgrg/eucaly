@@ -49,6 +49,20 @@ final class PresentationFlowController: ObservableObject {
         previewDocument = document
     }
 
+    func movePreviewSelection(delta: Int) {
+        guard var document = previewDocument, !document.slides.isEmpty else { return }
+        guard let selectedSlideID = document.selectedSlideID,
+              let index = document.slides.firstIndex(where: { $0.id == selectedSlideID }) else {
+            document.selectedSlideID = document.slides.first?.id
+            previewDocument = document
+            return
+        }
+
+        let nextIndex = max(0, min(document.slides.count - 1, index + delta))
+        document.selectedSlideID = document.slides[nextIndex].id
+        previewDocument = document
+    }
+
     func setCurrentSlides(_ slides: [Slide], in session: PresentationSession, preferredSelection: Slide.ID? = nil) {
         session.setSlides(slides)
         if let preferredSelection,
