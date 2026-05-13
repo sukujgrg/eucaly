@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 enum LibraryCommandPaletteAction: String, CaseIterable, Identifiable {
@@ -69,6 +70,8 @@ struct LibrarySearchOverlayView: View {
     let onRunAction: (LibraryCommandPaletteAction) -> Void
     let onClose: () -> Void
     let onOpenResult: (URL) -> Void
+    let onAddResultToPlaylist: (URL) -> Void
+    let onCommitQuery: () -> Void
 
     @FocusState
     private var isQueryFieldFocused: Bool
@@ -80,6 +83,15 @@ struct LibrarySearchOverlayView: View {
                 .onTapGesture {
                     onClose()
                 }
+
+            LibrarySearchKeyboardCaptureView(
+                onMoveSelection: { delta in
+                    _ = moveSelection(delta: delta)
+                },
+                onSubmit: performPrimaryAction,
+                onClose: onClose
+            )
+            .frame(width: 0, height: 0)
 
             VStack(alignment: .leading, spacing: 0) {
                 header
@@ -104,7 +116,10 @@ struct LibrarySearchOverlayView: View {
             )
         }
         .onAppear {
-            isQueryFieldFocused = true
+            Task { @MainActor in
+                await Task.yield()
+                isQueryFieldFocused = true
+            }
         }
         .onExitCommand {
             onClose()
@@ -194,17 +209,20 @@ struct LibrarySearchOverlayView: View {
 
                             ForEach(results, id: \.url) { result in
                                 let url = result.url
-                                Button {
-                                    selectedResult = url
-                                    onOpenResult(url)
-                                } label: {
-                                    LibrarySearchResultRow(
-                                        title: displayName(url),
-                                        previewText: snippet(url),
-                                        isSelected: selectedResult == url
-                                    )
-                                }
-                                .buttonStyle(.plain)
+                                LibrarySearchResultRow(
+                                    title: displayName(url),
+                                    previewText: snippet(url),
+                                    isSelected: selectedResult == url,
+                                    onPreview: {
+                                        selectedResult = url
+                                        onOpenResult(url)
+                                    },
+                                    onAddToPlaylist: {
+                                        selectedResult = url
+                                        onAddResultToPlaylist(url)
+                                        isQueryFieldFocused = true
+                                    }
+                                )
                                 .id(url)
                             }
                         }
@@ -251,8 +269,12 @@ struct LibrarySearchOverlayView: View {
             return
         }
 
-        guard let action = matchedPrimaryAction else { return }
-        onRunAction(action)
+        if let action = matchedPrimaryAction {
+            onRunAction(action)
+            return
+        }
+
+        onCommitQuery()
     }
 
     private func moveSelection(delta: Int) -> KeyPress.Result {
@@ -392,25 +414,119 @@ private struct LibrarySearchActionRow: View {
     }
 }
 
+private struct LibrarySearchKeyboardCaptureView: NSViewRepresentable {
+    let onMoveSelection: (Int) -> Void
+    let onSubmit: () -> Void
+    let onClose: () -> Void
+
+    func makeNSView(context: Context) -> KeyboardCaptureNSView {
+        let view = KeyboardCaptureNSView()
+        view.onMoveSelection = onMoveSelection
+        view.onSubmit = onSubmit
+        view.onClose = onClose
+        view.installMonitor()
+        return view
+    }
+
+    func updateNSView(_ nsView: KeyboardCaptureNSView, context: Context) {
+        nsView.onMoveSelection = onMoveSelection
+        nsView.onSubmit = onSubmit
+        nsView.onClose = onClose
+        nsView.installMonitor()
+    }
+
+    static func dismantleNSView(_ nsView: KeyboardCaptureNSView, coordinator: ()) {
+        nsView.removeMonitor()
+    }
+
+    final class KeyboardCaptureNSView: NSView {
+        var onMoveSelection: ((Int) -> Void)?
+        var onSubmit: (() -> Void)?
+        var onClose: (() -> Void)?
+        private var monitor: Any?
+
+        func installMonitor() {
+            guard monitor == nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                self?.handle(event) ?? event
+            }
+        }
+
+        func removeMonitor() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
+            }
+        }
+
+        private func handle(_ event: NSEvent) -> NSEvent? {
+            let modifierMask = event.modifierFlags.intersection([.command, .control, .option])
+            guard modifierMask.isEmpty else { return event }
+
+            switch event.keyCode {
+            case 36, 76:
+                onSubmit?()
+                return nil
+            case 53:
+                onClose?()
+                return nil
+            case 125:
+                onMoveSelection?(1)
+                return nil
+            case 126:
+                onMoveSelection?(-1)
+                return nil
+            default:
+                return event
+            }
+        }
+    }
+}
+
 private struct LibrarySearchResultRow: View {
     let title: String
     let previewText: String?
     let isSelected: Bool
+    let onPreview: () -> Void
+    let onAddToPlaylist: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.headline)
-                .foregroundStyle(isSelected ? .white : .primary)
-                .lineLimit(1)
+        HStack(spacing: 10) {
+            Button(action: onPreview) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.headline)
+                        .foregroundStyle(isSelected ? .white : .primary)
+                        .lineLimit(1)
 
-            if let previewText, !previewText.isEmpty {
-                Text(previewText)
-                    .font(.caption)
-                    .foregroundStyle(isSelected ? .white.opacity(0.8) : .secondary)
-                    .lineLimit(4)
-                    .multilineTextAlignment(.leading)
+                    if let previewText, !previewText.isEmpty {
+                        Text(previewText)
+                            .font(.caption)
+                            .foregroundStyle(isSelected ? .white.opacity(0.8) : .secondary)
+                            .lineLimit(4)
+                            .multilineTextAlignment(.leading)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .focusable(false)
+
+            Button(action: onAddToPlaylist) {
+                Image(systemName: "plus")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(isSelected ? .white : Color.accentColor)
+                    .frame(width: 22, height: 22)
+                    .background(
+                        Circle()
+                            .fill(isSelected ? Color.white.opacity(0.18) : Color.accentColor.opacity(0.12))
+                    )
+            }
+            .buttonStyle(.plain)
+            .focusable(false)
+            .help("Add to Playlist")
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 12)

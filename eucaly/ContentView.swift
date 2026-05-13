@@ -56,6 +56,7 @@ public struct ContentView: View {
     @State private var currentWebpageNavigationRevision: Int = 0
     @State private var previewWebpageMuted: Bool = false
     @State private var librarySearchResults: [LibraryTextSearchIndex.SearchResult] = []
+    @State private var librarySearchResultsQuery: String = ""
     @State private var isLibrarySearchPresented: Bool = false
     @State private var selectedLibrarySearchResult: URL? = nil
     @State private var isLibrarySearchIndexing: Bool = false
@@ -247,7 +248,9 @@ public struct ContentView: View {
                     snippet: librarySearchSnippet(for:),
                     onRunAction: runLibrarySearchAction,
                     onClose: dismissLibrarySearch,
-                    onOpenResult: previewLibrarySearchResult
+                    onOpenResult: previewLibrarySearchResult,
+                    onAddResultToPlaylist: addLibrarySearchResultToPlaylist,
+                    onCommitQuery: commitLibrarySearchQuery
                 )
                 .transition(.opacity.combined(with: .scale(scale: 0.98)))
                 .zIndex(1)
@@ -1544,6 +1547,7 @@ public struct ContentView: View {
         let trimmed = newQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count >= librarySearchMinimumCharacterCount else {
             librarySearchResults = []
+            librarySearchResultsQuery = ""
             selectedLibrarySearchResult = nil
             return
         }
@@ -1560,7 +1564,8 @@ public struct ContentView: View {
                 let currentQuery = librarySearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard currentQuery == trimmed else { return }
                 librarySearchResults = filterSearchResultsToCurrentLibrary(results)
-                syncSelectedLibrarySearchResult()
+                librarySearchResultsQuery = trimmed
+                syncSelectedLibrarySearchResult(preferFirstResult: true)
             }
         }
     }
@@ -1588,13 +1593,16 @@ public struct ContentView: View {
             await MainActor.run {
                 isLibrarySearchIndexing = false
                 librarySearchResults = filterSearchResultsToCurrentLibrary(refreshedResults)
-                syncSelectedLibrarySearchResult()
+                librarySearchResultsQuery = currentQuery
+                syncSelectedLibrarySearchResult(preferFirstResult: true)
             }
         }
     }
 
     private var filteredLibrarySearchResults: [LibraryTextSearchIndex.SearchResult] {
-        filterSearchResultsToCurrentLibrary(librarySearchResults)
+        let currentQuery = librarySearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard currentQuery == librarySearchResultsQuery else { return [] }
+        return filterSearchResultsToCurrentLibrary(librarySearchResults)
     }
 
     private var matchingLibrarySearchActions: [LibraryCommandPaletteAction] {
@@ -1618,8 +1626,12 @@ public struct ContentView: View {
     }
 
     @MainActor
-    private func syncSelectedLibrarySearchResult() {
+    private func syncSelectedLibrarySearchResult(preferFirstResult: Bool = false) {
         let resultURLs = filteredLibrarySearchResults.map(\.url)
+        if preferFirstResult {
+            selectedLibrarySearchResult = resultURLs.first
+            return
+        }
         if let selectedLibrarySearchResult, resultURLs.contains(selectedLibrarySearchResult) {
             return
         }
@@ -1636,7 +1648,7 @@ public struct ContentView: View {
     @MainActor
     private func presentLibrarySearch() {
         isLibrarySearchPresented = true
-        syncSelectedLibrarySearchResult()
+        syncSelectedLibrarySearchResult(preferFirstResult: true)
     }
 
     @MainActor
@@ -1655,6 +1667,46 @@ public struct ContentView: View {
 
         sidebarSelection = .library(url)
         libraryScrollRequest = LibraryScrollRequest(url: url)
+    }
+
+    @MainActor
+    private func addLibrarySearchResultToPlaylist(_ url: URL) {
+        guard libraryRootURL != nil else {
+            newFileWarning = "Set a library root before adding to playlists."
+            return
+        }
+
+        if playlistStore.add(url: url, after: selectedPlaylistEntryID) != nil {
+            newFileWarning = nil
+            loadPlaylists()
+            return
+        }
+
+        newFileWarning = "Only files inside the library root can be added to Playlist."
+    }
+
+    @MainActor
+    private func commitLibrarySearchQuery() {
+        let trimmed = librarySearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= librarySearchMinimumCharacterCount else { return }
+
+        librarySearchDebounceTask?.cancel()
+        let index = librarySearchIndex
+        Task {
+            let results = await index.search(query: trimmed)
+            await MainActor.run {
+                let currentQuery = librarySearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard isLibrarySearchPresented, currentQuery == trimmed else { return }
+
+                librarySearchResults = filterSearchResultsToCurrentLibrary(results)
+                librarySearchResultsQuery = trimmed
+                syncSelectedLibrarySearchResult(preferFirstResult: true)
+
+                if let url = selectedLibrarySearchResult ?? filteredLibrarySearchResults.first?.url {
+                    previewLibrarySearchResult(url)
+                }
+            }
+        }
     }
 
     @MainActor
