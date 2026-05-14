@@ -5,10 +5,6 @@ struct SlideGridCellView: View {
     let itemWidth: CGFloat
     let itemHeight: CGFloat
     let isSelected: Bool
-    let overlayText: String?
-    let overlayLabel: String?
-    let overlayColor: Color
-    let overlayScale: Double
     let onTap: () -> Void
 
     var body: some View {
@@ -59,7 +55,7 @@ struct SlideGridCellView: View {
             if slide.videoURL != nil { return imageSize }
             return lyricsSize
         }()
-        ZStack(alignment: .topTrailing) {
+        Group {
             if slide.captureWindowID != nil {
                 WindowCaptureThumbnailView(title: slide.label)
             } else if let pdfURL = slide.pdfURL, let pageIndex = slide.pdfPageIndex {
@@ -73,19 +69,8 @@ struct SlideGridCellView: View {
             } else {
                 LyricsThumbnailView(slide: slide, size: lyricsSize)
             }
-
-            if let overlayText {
-                OverlayBadgeView(
-                    label: overlayLabel,
-                    text: overlayText,
-                    scale: max(0.35, overlayScale * 0.45),
-                    tint: overlayColor
-                )
-                .padding(6)
-                .allowsHitTesting(false)
-            }
         }
-        .frame(width: contentSize.width, height: contentSize.height, alignment: .topTrailing)
+        .frame(width: contentSize.width, height: contentSize.height)
         .clipped()
     }
 }

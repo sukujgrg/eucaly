@@ -132,10 +132,6 @@ struct PreviewPaneContainerView: View {
                                                 itemWidth: layout.itemWidth,
                                                 itemHeight: layout.itemHeight,
                                                 isSelected: slide.id == flow.previewSelectionID,
-                                                overlayText: nil,
-                                                overlayLabel: nil,
-                                                overlayColor: .clear,
-                                                overlayScale: 1.0,
                                                 onTap: {
                                                     flow.selectPreviewSlide(slide.id)
                                                 }

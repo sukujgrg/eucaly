@@ -468,11 +468,11 @@ public struct ContentView: View {
         Button {
             isTimerSettingsPresented.toggle()
         } label: {
-            Label("Timer", systemImage: "timer")
+            Label("Overlay", systemImage: "clock")
         }
         .labelStyle(.iconOnly)
         .buttonStyle(.bordered)
-        .help("Timer settings")
+        .help("Overlay settings")
         .popover(isPresented: $isTimerSettingsPresented, arrowEdge: .top) {
             TimerSettingsPopoverView(
                 session: session,
@@ -481,8 +481,7 @@ public struct ContentView: View {
                 onOverlayScaleDraftChange: handleOverlayScaleDraftChange,
                 onSetOverlayMode: setOverlayMode,
                 onStartCountdown: startCountdown,
-                onStopCountdown: stopCountdown,
-                onSetClockVisible: setClockVisible
+                onStopCountdown: stopCountdown
             )
         }
     }
@@ -1903,12 +1902,6 @@ public struct ContentView: View {
     private func stopCountdown() {
         deferSessionChange {
             session.stopCountdown()
-        }
-    }
-
-    private func setClockVisible(_ isVisible: Bool) {
-        deferSessionChange {
-            session.setClockVisible(isVisible)
         }
     }
 

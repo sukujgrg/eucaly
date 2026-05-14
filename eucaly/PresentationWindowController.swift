@@ -9,14 +9,15 @@ import WebKit
 @MainActor
 final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     enum OverlayMode: String, CaseIterable, Identifiable {
-        case countdown = "Timer"
+        case hidden = "Hidden"
         case clock = "Clock"
+        case countdown = "Countdown"
 
         var id: String { rawValue }
     }
 
     struct OverlayState: Equatable {
-        var mode: OverlayMode = .countdown
+        var mode: OverlayMode = .hidden
         var isClockVisible: Bool = false
         var isCountdownRunning: Bool = false
         var countdownEndDate: Date? = nil
@@ -310,24 +311,23 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     func setOverlayMode(_ mode: OverlayMode) {
+        if mode != .countdown {
+            countdownToken = UUID()
+        }
         applyOverlay { state in
             state.mode = mode
             switch mode {
+            case .hidden:
+                state.isClockVisible = false
+                state.isCountdownRunning = false
+                state.countdownEndDate = nil
             case .countdown:
                 state.isClockVisible = false
             case .clock:
                 state.isCountdownRunning = false
                 state.countdownEndDate = nil
+                state.isClockVisible = true
             }
-        }
-    }
-
-    func setClockVisible(_ visible: Bool) {
-        applyOverlay { state in
-            state.mode = .clock
-            state.isCountdownRunning = false
-            state.countdownEndDate = nil
-            state.isClockVisible = visible
         }
     }
 
@@ -346,6 +346,8 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
 
     var isTimeOverlayVisible: Bool {
         switch overlay.mode {
+        case .hidden:
+            return false
         case .countdown:
             return overlay.isCountdownRunning
         case .clock:
@@ -935,21 +937,22 @@ struct TimeOverlay: View {
 
     private func overlayView(remaining: Int, date: Date) -> some View {
         let mode = session.overlayMode
-        let labelText = mode == .clock ? "Clock" : "Timer"
         let timeText = mode == .clock
             ? session.clockDisplay(at: date)
             : session.countdownDisplay(at: date)
-        let baseColor = backgroundColor(remaining: remaining)
-        return OverlayBadgeView(
-            label: labelText,
-            text: timeText,
-            scale: overlayScale,
-            tint: baseColor
-        )
+        return Text(timeText)
+            .font(.system(size: 36 * overlayScale, weight: .bold))
+            .monospacedDigit()
+            .foregroundStyle(foregroundColor(remaining: remaining))
+            .shadow(color: .black.opacity(0.45), radius: 4, x: 0, y: 2)
+            .accessibilityLabel(mode == .clock ? "Clock" : "Countdown")
     }
 
-    private func backgroundColor(remaining: Int) -> Color {
-        session.overlayTintColor(remaining: remaining)
+    private func foregroundColor(remaining: Int) -> Color {
+        if session.overlayMode == .countdown && remaining <= 60 {
+            return .orange
+        }
+        return .white
     }
 }
 

@@ -9,15 +9,14 @@ struct TimerSettingsPopoverView: View {
     let onSetOverlayMode: (PresentationSession.OverlayMode) -> Void
     let onStartCountdown: (Int) -> Void
     let onStopCountdown: () -> Void
-    let onSetClockVisible: (Bool) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Timer")
+            Text("Overlay")
                 .font(.headline)
 
             Picker(
-                "Overlay Mode",
+                "Overlay",
                 selection: Binding(
                     get: { session.overlayMode },
                     set: { newMode in
@@ -34,7 +33,7 @@ struct TimerSettingsPopoverView: View {
 
             VStack(alignment: .leading, spacing: 7) {
                 HStack {
-                    Text("Overlay Size")
+                    Text("Size")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
@@ -55,8 +54,6 @@ struct TimerSettingsPopoverView: View {
 
             if session.overlayMode == .countdown {
                 countdownControls
-            } else {
-                clockControls
             }
         }
         .padding(16)
@@ -81,7 +78,14 @@ struct TimerSettingsPopoverView: View {
             Slider(
                 value: Binding(
                     get: { Double(countdownMinutes) },
-                    set: { countdownMinutes = Int($0.rounded()) }
+                    set: { newValue in
+                        let newMinutes = Int(newValue.rounded())
+                        guard newMinutes != countdownMinutes else { return }
+                        countdownMinutes = newMinutes
+                        if session.isCountdownRunning {
+                            onStartCountdown(newMinutes)
+                        }
+                    }
                 ),
                 in: 1...30,
                 step: 1
@@ -89,7 +93,7 @@ struct TimerSettingsPopoverView: View {
             .controlSize(.small)
 
             HStack(spacing: 8) {
-                Button(session.isCountdownRunning ? "Restart Timer" : "Start Timer") {
+                Button(session.isCountdownRunning ? "Restart" : "Start") {
                     onStartCountdown(countdownMinutes)
                 }
                 .primaryActionStyle()
@@ -100,15 +104,6 @@ struct TimerSettingsPopoverView: View {
                 .buttonStyle(.bordered)
                 .disabled(!session.isCountdownRunning)
             }
-        }
-    }
-
-    private var clockControls: some View {
-        HStack(spacing: 8) {
-            Button(session.isClockVisible ? "Hide Clock" : "Show Clock") {
-                onSetClockVisible(!session.isClockVisible)
-            }
-            .primaryActionStyle()
         }
     }
 }

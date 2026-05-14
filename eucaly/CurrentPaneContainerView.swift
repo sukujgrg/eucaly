@@ -14,7 +14,6 @@ struct CurrentPaneContainerView: View {
     let canEditCurrentLyrics: Bool
     let onEditCurrentLyrics: () -> Void
     let onClearCurrent: (() -> Void)?
-    @AppStorage("overlayScale") private var overlayScale: Double = 1.0
     @FocusState private var isFocused: Bool
     @State private var videoSeekDraft: Double = 0
     @State private var isSeekingVideo: Bool = false
@@ -141,61 +140,52 @@ struct CurrentPaneContainerView: View {
                     }
                 } else {
                     GeometryReader { proxy in
-                        TimelineView(.periodic(from: .now, by: 1.0)) { context in
-                            let overlayText = overlayBadgeText(at: context.date)
-                            let overlayLabel = overlayBadgeLabel()
-                            let overlayColor = overlayBadgeColor(at: context.date)
-                            ScrollViewReader { scrollProxy in
-                                ScrollView {
-                                    let horizontalInset: CGFloat = 10
-                                    let layout = ThumbnailGridLayout.make(
-                                        for: proxy.size.width - (horizontalInset * 2),
-                                        thumbnailScale: thumbnailScale
-                                    )
-                                    LazyVGrid(columns: layout.columns, spacing: layout.spacing) {
-                                        ForEach(slides) { slide in
-                                            SlideGridCellView(
-                                                slide: slide,
-                                                itemWidth: layout.itemWidth,
-                                                itemHeight: layout.itemHeight,
-                                                isSelected: slide.id == session.currentSlideID,
-                                                overlayText: overlayText,
-                                                overlayLabel: overlayLabel,
-                                                overlayColor: overlayColor,
-                                                overlayScale: overlayScale,
-                                                onTap: {
-                                                    flow.selectCurrentSlide(slide.id, in: session)
-                                                }
-                                            )
-                                            .id(slide.id)
-                                        }
+                        ScrollViewReader { scrollProxy in
+                            ScrollView {
+                                let horizontalInset: CGFloat = 10
+                                let layout = ThumbnailGridLayout.make(
+                                    for: proxy.size.width - (horizontalInset * 2),
+                                    thumbnailScale: thumbnailScale
+                                )
+                                LazyVGrid(columns: layout.columns, spacing: layout.spacing) {
+                                    ForEach(slides) { slide in
+                                        SlideGridCellView(
+                                            slide: slide,
+                                            itemWidth: layout.itemWidth,
+                                            itemHeight: layout.itemHeight,
+                                            isSelected: slide.id == session.currentSlideID,
+                                            onTap: {
+                                                flow.selectCurrentSlide(slide.id, in: session)
+                                            }
+                                        )
+                                        .id(slide.id)
                                     }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.vertical, 4)
-                                    .padding(.horizontal, horizontalInset)
                                 }
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                .focusable()
-                                .focused($isFocused)
-                                .focusEffectDisabled()
-                                .onKeyPress(.upArrow) {
-                                    return handleArrowKey(delta: -1)
-                                }
-                                .onKeyPress(.downArrow) {
-                                    return handleArrowKey(delta: 1)
-                                }
-                                .onKeyPress(.leftArrow) {
-                                    return handleArrowKey(delta: -1)
-                                }
-                                .onKeyPress(.rightArrow) {
-                                    return handleArrowKey(delta: 1)
-                                }
-                                .onTapGesture {
-                                    isFocused = true
-                                }
-                                .onChange(of: session.currentSlideID) { _, newValue in
-                                    scrollToSelectedSlide(newValue, with: scrollProxy)
-                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, 4)
+                                .padding(.horizontal, horizontalInset)
+                            }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .focusable()
+                            .focused($isFocused)
+                            .focusEffectDisabled()
+                            .onKeyPress(.upArrow) {
+                                return handleArrowKey(delta: -1)
+                            }
+                            .onKeyPress(.downArrow) {
+                                return handleArrowKey(delta: 1)
+                            }
+                            .onKeyPress(.leftArrow) {
+                                return handleArrowKey(delta: -1)
+                            }
+                            .onKeyPress(.rightArrow) {
+                                return handleArrowKey(delta: 1)
+                            }
+                            .onTapGesture {
+                                isFocused = true
+                            }
+                            .onChange(of: session.currentSlideID) { _, newValue in
+                                scrollToSelectedSlide(newValue, with: scrollProxy)
                             }
                         }
                     }
@@ -307,31 +297,6 @@ struct CurrentPaneContainerView: View {
         }
         flow.clearCurrentDocument(in: session)
         flow.isCurrentCollapsed = true
-    }
-
-    private func overlayBadgeText(at date: Date) -> String? {
-        guard session.isTimeOverlayVisible else { return nil }
-        switch session.overlayMode {
-        case .clock:
-            return session.clockDisplay(at: date)
-        case .countdown:
-            return session.countdownDisplay(at: date)
-        }
-    }
-
-    private func overlayBadgeColor(at date: Date) -> Color {
-        guard session.isTimeOverlayVisible else { return .clear }
-        return session.overlayTintColor(remaining: session.remainingCountdownSeconds(at: date))
-    }
-
-    private func overlayBadgeLabel() -> String? {
-        guard session.isTimeOverlayVisible else { return nil }
-        switch session.overlayMode {
-        case .clock:
-            return "Clock"
-        case .countdown:
-            return "Timer"
-        }
     }
 
     private func handleArrowKey(delta: Int) -> KeyPress.Result {
