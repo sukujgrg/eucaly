@@ -532,6 +532,8 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
 struct PresentationView: View {
     @EnvironmentObject var session: PresentationSession
     @AppStorage("presentationFontScale") private var presentationFontScale: Double = 1.0
+    @AppStorage("presentationTextAlignment") private var presentationTextAlignment: PresentationTextAlignment = .center
+    @AppStorage("presentationVerticalPosition") private var presentationVerticalPosition: PresentationVerticalPosition = .middle
 
     var body: some View {
         GeometryReader { proxy in
@@ -613,18 +615,26 @@ struct PresentationView: View {
                             ImageSlideView(url: imageURL)
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                         } else {
-                            ForEach(slide.lines) { line in
-                                VStack(spacing: 10) {
-                                    Text(line.text)
-                                        .font(dynamicFont(for: line, in: size, maxWidth: maxWidth))
-                                        .foregroundStyle(.white)
-                                        .multilineTextAlignment(.center)
-                                        .frame(maxWidth: maxWidth)
-                                        .lineLimit(nil)
-                                        .minimumScaleFactor(0.4)
-                                        .allowsTightening(true)
+                            VStack(spacing: 28) {
+                                ForEach(slide.lines) { line in
+                                    VStack(alignment: presentationTextAlignment.horizontalAlignment, spacing: 10) {
+                                        Text(line.text)
+                                            .font(dynamicFont(for: line, in: size, maxWidth: maxWidth))
+                                            .foregroundStyle(.white)
+                                            .multilineTextAlignment(presentationTextAlignment.textAlignment)
+                                            .frame(maxWidth: maxWidth, alignment: presentationTextAlignment.frameAlignment)
+                                            .lineLimit(nil)
+                                            .minimumScaleFactor(0.4)
+                                            .allowsTightening(true)
+                                    }
                                 }
                             }
+                            .padding(.vertical, max(32, size.height * 0.08))
+                            .frame(
+                                maxWidth: .infinity,
+                                maxHeight: .infinity,
+                                alignment: presentationVerticalPosition.frameAlignment(horizontal: presentationTextAlignment)
+                            )
                         }
                     }
                     .id(slide.id)

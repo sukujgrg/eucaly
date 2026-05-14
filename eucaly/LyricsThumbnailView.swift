@@ -5,12 +5,15 @@ struct LyricsThumbnailView: View {
     let slide: Slide
     let size: CGSize
     @AppStorage("thumbnailFontScale") private var thumbnailFontScale: Double = 1.0
+    @AppStorage("presentationTextAlignment") private var presentationTextAlignment: PresentationTextAlignment = .center
+    @AppStorage("presentationVerticalPosition") private var presentationVerticalPosition: PresentationVerticalPosition = .middle
 
     var body: some View {
+        let contentAlignment = presentationVerticalPosition.frameAlignment(horizontal: presentationTextAlignment)
         ZStack {
             Color.black
 
-            VStack(spacing: 3) {
+            VStack(alignment: presentationTextAlignment.horizontalAlignment, spacing: 3) {
                 ForEach(slide.lines) { line in
                     let isMeaning = line.languageTag.caseInsensitiveCompare("Meaning") == .orderedSame
                     Text(line.text)
@@ -20,12 +23,12 @@ struct LyricsThumbnailView: View {
                         ))
                         .italic(isMeaning)
                         .foregroundStyle(.white)
-                        .multilineTextAlignment(.center)
+                        .multilineTextAlignment(presentationTextAlignment.textAlignment)
                         .lineLimit(nil)
-                        .frame(maxWidth: size.width - 12)
+                        .frame(maxWidth: size.width - 12, alignment: presentationTextAlignment.frameAlignment)
                 }
             }
-            .frame(maxWidth: size.width, maxHeight: size.height)
+            .frame(maxWidth: size.width, maxHeight: size.height, alignment: contentAlignment)
             .padding(6)
         }
         .frame(width: size.width, height: size.height)

@@ -24,6 +24,8 @@ public struct ContentView: View {
     @AppStorage("backgroundAudioLoop") private var backgroundAudioLoop: Bool = true
     @AppStorage("thumbnailScale") private var thumbnailScale: Double = 1.0
     @AppStorage("presentationFontScale") private var presentationFontScale: Double = 1.0
+    @AppStorage("presentationTextAlignment") private var presentationTextAlignment: PresentationTextAlignment = .center
+    @AppStorage("presentationVerticalPosition") private var presentationVerticalPosition: PresentationVerticalPosition = .middle
     @AppStorage("thumbnailFontScale") private var thumbnailFontScale: Double = 1.0
     @AppStorage("countdownMinutes") private var countdownMinutes: Int = 5
     @AppStorage("overlayScale") private var overlayScale: Double = 1.0
@@ -497,6 +499,8 @@ public struct ContentView: View {
         .popover(isPresented: $isAppearanceSettingsPresented, arrowEdge: .top) {
             AppearanceSettingsPopoverView(
                 presentationFontScale: $presentationFontScale,
+                presentationTextAlignment: $presentationTextAlignment,
+                presentationVerticalPosition: $presentationVerticalPosition,
                 thumbnailFontScale: $thumbnailFontScale,
                 thumbnailScale: $thumbnailScale
             )
