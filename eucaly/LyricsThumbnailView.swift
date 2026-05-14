@@ -9,7 +9,7 @@ struct LyricsThumbnailView: View {
     @AppStorage("presentationVerticalPosition") private var presentationVerticalPosition: PresentationVerticalPosition = .middle
 
     var body: some View {
-        let contentAlignment = presentationVerticalPosition.frameAlignment(horizontal: presentationTextAlignment)
+        let contentAlignment = presentationVerticalPosition.frameAlignment
         ZStack {
             Color.black
 
@@ -28,6 +28,7 @@ struct LyricsThumbnailView: View {
                         .frame(maxWidth: size.width - 12, alignment: presentationTextAlignment.frameAlignment)
                 }
             }
+            .frame(maxWidth: size.width - 12, alignment: presentationTextAlignment.frameAlignment)
             .frame(maxWidth: size.width, maxHeight: size.height, alignment: contentAlignment)
             .padding(6)
         }

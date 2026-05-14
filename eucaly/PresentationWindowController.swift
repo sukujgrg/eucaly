@@ -629,11 +629,12 @@ struct PresentationView: View {
                                     }
                                 }
                             }
+                            .frame(maxWidth: maxWidth, alignment: presentationTextAlignment.frameAlignment)
                             .padding(.vertical, max(32, size.height * 0.08))
                             .frame(
                                 maxWidth: .infinity,
                                 maxHeight: .infinity,
-                                alignment: presentationVerticalPosition.frameAlignment(horizontal: presentationTextAlignment)
+                                alignment: presentationVerticalPosition.frameAlignment
                             )
                         }
                     }

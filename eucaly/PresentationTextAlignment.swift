@@ -81,26 +81,14 @@ enum PresentationVerticalPosition: String, CaseIterable, Identifiable {
         }
     }
 
-    func frameAlignment(horizontal: PresentationTextAlignment) -> Alignment {
-        switch (self, horizontal) {
-        case (.top, .left):
-            return .topLeading
-        case (.top, .center):
+    var frameAlignment: Alignment {
+        switch self {
+        case .top:
             return .top
-        case (.top, .right):
-            return .topTrailing
-        case (.middle, .left):
-            return .leading
-        case (.middle, .center):
+        case .middle:
             return .center
-        case (.middle, .right):
-            return .trailing
-        case (.bottom, .left):
-            return .bottomLeading
-        case (.bottom, .center):
+        case .bottom:
             return .bottom
-        case (.bottom, .right):
-            return .bottomTrailing
         }
     }
 }
