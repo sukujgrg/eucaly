@@ -232,6 +232,31 @@
       white-space: pre;
     }
 
+    .lyrics-patterns {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+      margin-top: 20px;
+    }
+
+    .lyrics-pattern {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+
+    .lyrics-pattern pre {
+      overflow-x: auto;
+      margin: 12px 0 0;
+      padding: 14px;
+      border-radius: 8px;
+      background: var(--bg);
+      color: var(--text);
+      font: 0.9rem/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      white-space: pre;
+    }
+
     footer {
       padding-top: 28px;
       border-top: 1px solid var(--line);
@@ -249,7 +274,8 @@
       .grid,
       .steps,
       .support-list,
-      .lyrics-layout {
+      .lyrics-layout,
+      .lyrics-patterns {
         grid-template-columns: 1fr;
       }
 
@@ -316,7 +342,7 @@
       <h2 id="lyrics">Writing Lyrics</h2>
       <div class="lyrics-layout">
         <div>
-          <p>Save lyrics as a plain text file. Section headings can be written with or without brackets, and blank lines separate blocks.</p>
+          <p>Save lyrics as a plain text file. eucaly supports simple blank-line lyrics, explicit slide separators, sectioned lyrics, and direct CCLI/SongSelect exports.</p>
           <ul class="lyrics-notes">
             <li>Supported headings are Intro, Verse, Chorus, Pre-Chorus, Post-Chorus, Bridge, Instrumental, Vamp, Coda, Ending, Outro, and Tag.</li>
             <li>Common aliases are Vers and Strophe for Verse; Refrain and Hook for Chorus; and Pre or Prechorus for Pre-Chorus.</li>
@@ -325,6 +351,8 @@
             <li>The first standalone line is treated as the song title. If there is no title line, the file name is used.</li>
             <li>Direct CCLI/SongSelect lyric exports are supported, including common trailing copyright, CCLI song number, and license metadata.</li>
             <li>The Format button can normalize common headings after you paste or type lyrics.</li>
+            <li>Use <code>Meaning</code>, <code>Translation</code>, or <code>Transliteration</code> inside a slide to show secondary text alongside the main lyric. Empty lines before these markers are okay, and Meaning is displayed in a smaller font.</li>
+            <li>For lower-third lyrics, keep each slide to only the two or three lines you want visible, then use Lyrics settings to move lyrics to Bottom.</li>
           </ul>
         </div>
         <pre class="lyrics-example"><code>Amazing Grace
@@ -340,6 +368,54 @@ Was blind, but now I see.
 And grace my fears relieved;
 How precious did that grace appear
 The hour I first believed.</code></pre>
+      </div>
+
+      <div class="lyrics-patterns" aria-label="Supported lyrics authoring styles">
+        <article class="lyrics-pattern">
+          <h3>Plain lyrics with blank lines</h3>
+          <p>No section headings are required. Each non-empty block becomes one slide.</p>
+          <pre><code>Come, Thou Fount of every blessing
+Tune my heart to sing Thy grace
+
+Streams of mercy, never ceasing
+Call for songs of loudest praise</code></pre>
+        </article>
+
+        <article class="lyrics-pattern">
+          <h3>Explicit slide breaks</h3>
+          <p>Use <code>---</code> when you want exact control over where a new slide starts.</p>
+          <pre><code>Holy, holy, holy
+Lord God Almighty
+---
+Early in the morning
+Our song shall rise to Thee</code></pre>
+        </article>
+
+        <article class="lyrics-pattern">
+          <h3>Sectioned lyrics</h3>
+          <p>Use headings for verses, choruses, bridges, intros, outros, and other song parts.</p>
+          <pre><code>Verse 1
+Amazing grace! how sweet the sound
+That saved a wretch like me
+
+Chorus
+Praise God, praise God
+His mercy still remains</code></pre>
+        </article>
+
+        <article class="lyrics-pattern">
+          <h3>Meaning and transliteration</h3>
+          <p>Add secondary text within the same slide for translated meaning or pronunciation help.</p>
+          <pre><code>Verse 1
+Prabhu tapai mahan hunuhunchha
+Transliteration
+Prabhu tapai mahan hunuhunchha
+Meaning
+Lord, You are great
+
+Chorus
+Hallelujah, hallelujah</code></pre>
+        </article>
       </div>
     </section>
 
