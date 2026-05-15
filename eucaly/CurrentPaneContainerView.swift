@@ -201,6 +201,12 @@ struct CurrentPaneContainerView: View {
                             .onTapGesture {
                                 focusCurrentThumbnails()
                             }
+                            .onAppear {
+                                session.setCurrentThumbnailColumnCount(layout.columnCount)
+                            }
+                            .onChange(of: layout.columnCount) { _, columnCount in
+                                session.setCurrentThumbnailColumnCount(columnCount)
+                            }
                             .onChange(of: session.currentSlideID) { _, newValue in
                                 scrollToSelectedSlide(newValue, with: scrollProxy)
                             }
@@ -330,26 +336,11 @@ struct CurrentPaneContainerView: View {
         direction: ThumbnailGridNavigationDirection,
         layout: ThumbnailGridLayout
     ) -> KeyPress.Result {
-        let slides = session.slides
-        guard !slides.isEmpty else { return .ignored }
-        guard
-            let currentSlideID = session.currentSlideID,
-            let currentIndex = slides.firstIndex(where: { $0.id == currentSlideID })
-        else {
-            if let firstSlideID = slides.first?.id {
-                flow.selectCurrentSlide(firstSlideID, in: session)
-            }
-            return .handled
-        }
-
         // No check for isPresenting - allow control during presentation too
         // This provides an alternative way to navigate when PresentationWindow loses focus
-        let targetIndex = layout.selectionTargetIndex(
-            from: currentIndex,
-            itemCount: slides.count,
-            direction: direction
-        )
-        flow.selectCurrentSlide(slides[targetIndex].id, in: session)
+        guard !session.slides.isEmpty else { return .ignored }
+        session.setCurrentThumbnailColumnCount(layout.columnCount)
+        session.moveSelection(direction: direction)
         return .handled
     }
 

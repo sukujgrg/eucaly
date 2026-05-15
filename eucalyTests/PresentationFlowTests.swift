@@ -276,6 +276,38 @@ final class PresentationFlowTests: XCTestCase {
         XCTAssertEqual(result.current, result.expected)
     }
 
+    func testSessionGridNavigationUsesCurrentThumbnailColumnCount() async {
+        let result = await MainActor.run { () -> (current: Slide.ID?, expected: Slide.ID?) in
+            let session = PresentationSession()
+            let slides = makeTestSlides(count: 6)
+
+            session.setSlides(slides)
+            session.currentSlideID = slides[5].id
+            session.setCurrentThumbnailColumnCount(3)
+            session.moveSelection(direction: .previousRow)
+
+            return (session.currentSlideID, slides[2].id)
+        }
+
+        XCTAssertEqual(result.current, result.expected)
+    }
+
+    func testSessionGridNavigationMovesDownByRowWhilePresenting() async {
+        let result = await MainActor.run { () -> (current: Slide.ID?, expected: Slide.ID?) in
+            let session = PresentationSession()
+            let slides = makeTestSlides(count: 6)
+
+            session.setSlides(slides)
+            session.currentSlideID = slides[1].id
+            session.setCurrentThumbnailColumnCount(3)
+            session.moveSelection(direction: .nextRow)
+
+            return (session.currentSlideID, slides[4].id)
+        }
+
+        XCTAssertEqual(result.current, result.expected)
+    }
+
     func testHideSlidesDoesNotClearBackgroundVisual() async {
         let result = await MainActor.run { () -> (wasVisible: Bool, backgroundURL: URL?) in
             let session = PresentationSession()

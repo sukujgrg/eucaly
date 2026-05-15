@@ -25,6 +25,16 @@ struct ThumbnailGridLayout {
         )
     }
 
+    static func fixedColumnCount(_ columnCount: Int) -> ThumbnailGridLayout {
+        ThumbnailGridLayout(
+            columns: [],
+            columnCount: max(1, columnCount),
+            itemWidth: 0,
+            itemHeight: 0,
+            spacing: 0
+        )
+    }
+
     func selectionTargetIndex(
         from currentIndex: Int,
         itemCount: Int,

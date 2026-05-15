@@ -54,6 +54,7 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     private var preferredPresentationScreenID: CGDirectDisplayID?
     private var screenParametersObserver: NSObjectProtocol?
     private var screenRepositionWorkItem: DispatchWorkItem?
+    private var currentThumbnailColumnCount: Int = 1
 
     override init() {
         super.init()
@@ -219,6 +220,27 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
             let nextIndex = max(0, min(self.slides.count - 1, index + delta))
             self.currentSlideID = self.slides[nextIndex].id
         }
+    }
+
+    func setCurrentThumbnailColumnCount(_ columnCount: Int) {
+        currentThumbnailColumnCount = max(1, columnCount)
+    }
+
+    func moveSelection(direction: ThumbnailGridNavigationDirection) {
+        guard !slides.isEmpty else { return }
+        guard let selectedSlideID = currentSlideID,
+              let currentIndex = slides.firstIndex(where: { $0.id == selectedSlideID }) else {
+            self.currentSlideID = slides.first?.id
+            return
+        }
+
+        let layout = ThumbnailGridLayout.fixedColumnCount(currentThumbnailColumnCount)
+        let targetIndex = layout.selectionTargetIndex(
+            from: currentIndex,
+            itemCount: slides.count,
+            direction: direction
+        )
+        self.currentSlideID = slides[targetIndex].id
     }
 
     func seekVideo(to seconds: Double) {
@@ -1761,9 +1783,17 @@ final class PresentationWindow: NSWindow {
             requestClearBackgroundAudio()
         case 23 where event.modifierFlags.contains(.command): // Cmd+5
             requestClearAllLayers()
-        case 123, 126, 116: // Left, Up, Page Up
+        case 123: // Left
+            requestMoveSelection(direction: .previousItem)
+        case 124: // Right
+            requestMoveSelection(direction: .nextItem)
+        case 126: // Up
+            requestMoveSelection(direction: .previousRow)
+        case 125: // Down
+            requestMoveSelection(direction: .nextRow)
+        case 116: // Page Up
             requestMoveSelection(-1)
-        case 124, 125, 121: // Right, Down, Page Down
+        case 121: // Page Down
             requestMoveSelection(1)
         default:
             super.keyDown(with: event)
@@ -1821,6 +1851,12 @@ final class PresentationWindow: NSWindow {
     private func requestMoveSelection(_ delta: Int) {
         DispatchQueue.main.async { [weak self] in
             self?.session?.moveSelection(delta)
+        }
+    }
+
+    private func requestMoveSelection(direction: ThumbnailGridNavigationDirection) {
+        DispatchQueue.main.async { [weak self] in
+            self?.session?.moveSelection(direction: direction)
         }
     }
 }
