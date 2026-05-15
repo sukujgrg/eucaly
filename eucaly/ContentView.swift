@@ -69,6 +69,7 @@ public struct ContentView: View {
     @State private var isAppearanceSettingsPresented: Bool = false
     @State private var isBackgroundSettingsPresented: Bool = false
     @FocusState private var isSidebarFocused: Bool
+    @FocusState private var focusedDetailTarget: DetailFocusTarget?
     @State private var securityScopedRoot: URL? = nil
     @State private var securityScopedDownloads: URL? = nil
     @State private var securityScopedBackgroundVisual: URL? = nil
@@ -713,7 +714,6 @@ public struct ContentView: View {
                 onAction: handleEditorAction
             ),
             previewPane: PreviewPaneContainerView(
-                session: session,
                 flow: flow,
                 isCollapsed: $isPreviewCollapsed,
                 isWebpageMuted: $previewWebpageMuted,
@@ -738,7 +738,8 @@ public struct ContentView: View {
                 onWebpageTitleChange: updateWebpageTitle(_:for:),
                 canEditCurrentLyrics: canEditCurrentLyrics,
                 onEditCurrentLyrics: beginCurrentLyricsEditing,
-                onClearCurrent: clearCurrentDocument
+                onClearCurrent: clearCurrentDocument,
+                focusedDetailTarget: $focusedDetailTarget
             ),
             showEditorAndPreview: isEditingLyrics && !isCurrentSelectionMediaFile && !isPreviewCollapsed
         )
@@ -808,6 +809,9 @@ public struct ContentView: View {
         currentLyricsSourceURL = lyricsSourceURL
         syncCurrentWebpageSource(with: session.slides)
         isPreviewCollapsed = true
+        focusedDetailTarget = session.slides.contains { $0.webpageURL != nil }
+            ? nil
+            : .currentThumbnails
     }
 
     private func toggleSlidesFromUI() {
@@ -1348,7 +1352,7 @@ public struct ContentView: View {
         lastLoadedText = contents
         setPreviewSlides(slides)
         // Keep Current independent from browsing.
-        // User must explicitly Load/Switch from Preview to Current.
+        // User must explicitly load Preview into Current.
     }
 
     private func setPreviewSlides(_ slides: [Slide], preferredSelection: Slide.ID? = nil) {
@@ -2559,8 +2563,11 @@ public struct ContentView: View {
             return
         }
 
+        let restoredSelection = currentSlideID.flatMap { slideID in
+            slides.contains(where: { $0.id == slideID }) ? slideID : nil
+        }
         session.setSlides(slides)
-        session.currentSlideID = currentSlideID ?? slides.first?.id
+        session.currentSlideID = restoredSelection ?? slides.first?.id
     }
 
     private func isSupportedWebpageURL(_ url: URL) -> Bool {

@@ -1,7 +1,6 @@
 import SwiftUI
 
 struct PreviewPaneContainerView: View {
-    @ObservedObject var session: PresentationSession
     @ObservedObject var flow: PresentationFlowController
     @Binding var isCollapsed: Bool
     @Binding var isWebpageMuted: Bool
@@ -40,12 +39,12 @@ struct PreviewPaneContainerView: View {
                 if !slides.isEmpty {
                     Button(action: onLoadToCurrent) {
                         HStack(spacing: 6) {
-                            Image(systemName: session.isPresenting ? "arrow.triangle.branch" : "arrow.down.circle.fill")
-                            Text(session.isPresenting ? "Switch Current" : "Load to Current")
+                            Image(systemName: "arrow.down.circle.fill")
+                            Text("Load to Current")
                         }
                     }
                     .primaryActionStyle(fixedWidth: 170)
-                    .help(session.isPresenting ? "Switch to this document" : "Load to Current area")
+                    .help("Load to Current area")
                 }
 
                 Spacer()
@@ -118,13 +117,13 @@ struct PreviewPaneContainerView: View {
                         }
                     } else {
                         GeometryReader { proxy in
+                            let horizontalInset: CGFloat = 10
+                            let layout = ThumbnailGridLayout.make(
+                                for: proxy.size.width - (horizontalInset * 2),
+                                thumbnailScale: thumbnailScale
+                            )
                             ScrollViewReader { scrollProxy in
                                 ScrollView {
-                                    let horizontalInset: CGFloat = 10
-                                    let layout = ThumbnailGridLayout.make(
-                                        for: proxy.size.width - (horizontalInset * 2),
-                                        thumbnailScale: thumbnailScale
-                                    )
                                     LazyVGrid(columns: layout.columns, spacing: layout.spacing) {
                                         ForEach(slides) { slide in
                                             SlideGridCellView(
@@ -148,16 +147,28 @@ struct PreviewPaneContainerView: View {
                                 .focused($isFocused)
                                 .focusEffectDisabled()
                                 .onKeyPress(.upArrow) {
-                                    return handleArrowKey(delta: -1)
+                                    return handleArrowKey(
+                                        direction: .previousRow,
+                                        layout: layout
+                                    )
                                 }
                                 .onKeyPress(.downArrow) {
-                                    return handleArrowKey(delta: 1)
+                                    return handleArrowKey(
+                                        direction: .nextRow,
+                                        layout: layout
+                                    )
                                 }
                                 .onKeyPress(.leftArrow) {
-                                    return handleArrowKey(delta: -1)
+                                    return handleArrowKey(
+                                        direction: .previousItem,
+                                        layout: layout
+                                    )
                                 }
                                 .onKeyPress(.rightArrow) {
-                                    return handleArrowKey(delta: 1)
+                                    return handleArrowKey(
+                                        direction: .nextItem,
+                                        layout: layout
+                                    )
                                 }
                                 .onTapGesture {
                                     isFocused = true
@@ -200,9 +211,28 @@ struct PreviewPaneContainerView: View {
         }
     }
 
-    private func handleArrowKey(delta: Int) -> KeyPress.Result {
-        guard !flow.previewSlides.isEmpty else { return .ignored }
-        flow.movePreviewSelection(delta: delta)
+    private func handleArrowKey(
+        direction: ThumbnailGridNavigationDirection,
+        layout: ThumbnailGridLayout
+    ) -> KeyPress.Result {
+        let slides = flow.previewSlides
+        guard !slides.isEmpty else { return .ignored }
+        guard
+            let selectionID = flow.previewSelectionID,
+            let currentIndex = slides.firstIndex(where: { $0.id == selectionID })
+        else {
+            if let firstSlideID = slides.first?.id {
+                flow.selectPreviewSlide(firstSlideID)
+            }
+            return .handled
+        }
+
+        let targetIndex = layout.selectionTargetIndex(
+            from: currentIndex,
+            itemCount: slides.count,
+            direction: direction
+        )
+        flow.selectPreviewSlide(slides[targetIndex].id)
         return .handled
     }
 

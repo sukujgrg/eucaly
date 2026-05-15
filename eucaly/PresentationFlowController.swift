@@ -68,7 +68,7 @@ final class PresentationFlowController: ObservableObject {
         if let preferredSelection,
            slides.contains(where: { $0.id == preferredSelection }) {
             session.currentSlideID = preferredSelection
-        } else if session.currentSlideID == nil {
+        } else if session.currentSlideID == nil || !slides.contains(where: { $0.id == session.currentSlideID }) {
             session.currentSlideID = slides.first?.id
         }
     }

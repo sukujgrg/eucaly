@@ -2,6 +2,10 @@ import SwiftUI
 import Foundation
 import AVFoundation
 
+enum DetailFocusTarget: Hashable {
+    case currentThumbnails
+}
+
 struct CurrentPaneContainerView: View {
     @ObservedObject var session: PresentationSession
     @ObservedObject var flow: PresentationFlowController
@@ -14,7 +18,7 @@ struct CurrentPaneContainerView: View {
     let canEditCurrentLyrics: Bool
     let onEditCurrentLyrics: () -> Void
     let onClearCurrent: (() -> Void)?
-    @FocusState private var isFocused: Bool
+    @FocusState.Binding var focusedDetailTarget: DetailFocusTarget?
     @State private var videoSeekDraft: Double = 0
     @State private var isSeekingVideo: Bool = false
 
@@ -140,13 +144,13 @@ struct CurrentPaneContainerView: View {
                     }
                 } else {
                     GeometryReader { proxy in
+                        let horizontalInset: CGFloat = 10
+                        let layout = ThumbnailGridLayout.make(
+                            for: proxy.size.width - (horizontalInset * 2),
+                            thumbnailScale: thumbnailScale
+                        )
                         ScrollViewReader { scrollProxy in
                             ScrollView {
-                                let horizontalInset: CGFloat = 10
-                                let layout = ThumbnailGridLayout.make(
-                                    for: proxy.size.width - (horizontalInset * 2),
-                                    thumbnailScale: thumbnailScale
-                                )
                                 LazyVGrid(columns: layout.columns, spacing: layout.spacing) {
                                     ForEach(slides) { slide in
                                         SlideGridCellView(
@@ -155,6 +159,7 @@ struct CurrentPaneContainerView: View {
                                             itemHeight: layout.itemHeight,
                                             isSelected: slide.id == session.currentSlideID,
                                             onTap: {
+                                                focusCurrentThumbnails()
                                                 flow.selectCurrentSlide(slide.id, in: session)
                                             }
                                         )
@@ -167,22 +172,34 @@ struct CurrentPaneContainerView: View {
                             }
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .focusable()
-                            .focused($isFocused)
+                            .focused($focusedDetailTarget, equals: .currentThumbnails)
                             .focusEffectDisabled()
                             .onKeyPress(.upArrow) {
-                                return handleArrowKey(delta: -1)
+                                return handleArrowKey(
+                                    direction: .previousRow,
+                                    layout: layout
+                                )
                             }
                             .onKeyPress(.downArrow) {
-                                return handleArrowKey(delta: 1)
+                                return handleArrowKey(
+                                    direction: .nextRow,
+                                    layout: layout
+                                )
                             }
                             .onKeyPress(.leftArrow) {
-                                return handleArrowKey(delta: -1)
+                                return handleArrowKey(
+                                    direction: .previousItem,
+                                    layout: layout
+                                )
                             }
                             .onKeyPress(.rightArrow) {
-                                return handleArrowKey(delta: 1)
+                                return handleArrowKey(
+                                    direction: .nextItem,
+                                    layout: layout
+                                )
                             }
                             .onTapGesture {
-                                isFocused = true
+                                focusCurrentThumbnails()
                             }
                             .onChange(of: session.currentSlideID) { _, newValue in
                                 scrollToSelectedSlide(newValue, with: scrollProxy)
@@ -288,22 +305,51 @@ struct CurrentPaneContainerView: View {
         withAnimation(paneToggleAnimation) {
             flow.isCurrentCollapsed.toggle()
         }
+        if flow.isCurrentCollapsed {
+            focusedDetailTarget = nil
+        }
     }
 
     private func clearSlides() {
         if let onClearCurrent {
+            focusedDetailTarget = nil
             onClearCurrent()
             return
         }
         flow.clearCurrentDocument(in: session)
         flow.isCurrentCollapsed = true
+        focusedDetailTarget = nil
     }
 
-    private func handleArrowKey(delta: Int) -> KeyPress.Result {
-        guard !session.slides.isEmpty else { return .ignored }
+    private func focusCurrentThumbnails() {
+        guard !flow.isCurrentCollapsed, !session.slides.isEmpty else { return }
+        focusedDetailTarget = .currentThumbnails
+    }
+
+    private func handleArrowKey(
+        direction: ThumbnailGridNavigationDirection,
+        layout: ThumbnailGridLayout
+    ) -> KeyPress.Result {
+        let slides = session.slides
+        guard !slides.isEmpty else { return .ignored }
+        guard
+            let currentSlideID = session.currentSlideID,
+            let currentIndex = slides.firstIndex(where: { $0.id == currentSlideID })
+        else {
+            if let firstSlideID = slides.first?.id {
+                flow.selectCurrentSlide(firstSlideID, in: session)
+            }
+            return .handled
+        }
+
         // No check for isPresenting - allow control during presentation too
         // This provides an alternative way to navigate when PresentationWindow loses focus
-        session.moveSelection(delta)
+        let targetIndex = layout.selectionTargetIndex(
+            from: currentIndex,
+            itemCount: slides.count,
+            direction: direction
+        )
+        flow.selectCurrentSlide(slides[targetIndex].id, in: session)
         return .handled
     }
 
