@@ -314,6 +314,21 @@ struct SidebarView: View {
                 .pickerStyle(.menu)
                 .controlSize(.small)
                 .labelsHidden()
+
+                Button {
+                    toggleAllLibraryKindGroups()
+                } label: {
+                    Label(
+                        allLibraryKindGroupsCollapsed ? "Expand Kinds" : "Collapse Kinds",
+                        systemImage: allLibraryKindGroupsCollapsed
+                            ? "rectangle.expand.vertical"
+                            : "rectangle.compress.vertical"
+                    )
+                }
+                .labelStyle(.iconOnly)
+                .playlistIconButtonStyle()
+                .disabled(libraryGrouping != .kind || libraryKindGroups.isEmpty)
+                .help(allLibraryKindGroupsCollapsed ? "Expand all kinds" : "Collapse all kinds")
             }
         }
     }
@@ -852,6 +867,25 @@ struct SidebarView: View {
             collapsedLibraryGroups.remove(group)
         } else {
             collapsedLibraryGroups.insert(group)
+        }
+    }
+
+    private var libraryKindGroups: [LibraryFileGroup] {
+        groupedLibrarySections(from: libraryFiles).map(\.group)
+    }
+
+    private var allLibraryKindGroupsCollapsed: Bool {
+        let groups = libraryKindGroups
+        return !groups.isEmpty && groups.allSatisfy { collapsedLibraryGroups.contains($0) }
+    }
+
+    private func toggleAllLibraryKindGroups() {
+        let groups = libraryKindGroups
+        guard !groups.isEmpty else { return }
+        if allLibraryKindGroupsCollapsed {
+            collapsedLibraryGroups.subtract(groups)
+        } else {
+            collapsedLibraryGroups.formUnion(groups)
         }
     }
 

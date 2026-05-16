@@ -207,7 +207,7 @@ actor LibraryTextSearchIndex {
         let phrase = tokens
             .map { $0.replacingOccurrences(of: "\"", with: "\"\"") }
             .joined(separator: " ")
-        return "\"\(phrase)\""
+        return "\"\(phrase)\"*"
     }
 
     @discardableResult

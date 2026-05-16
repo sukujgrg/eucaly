@@ -71,7 +71,7 @@ final class LibraryTextSearchIndexTests: XCTestCase {
         XCTAssertTrue(containsResult(videoResults, url: videoURL))
     }
 
-    func testMultiTokenSearchUsesPhraseMatching() async throws {
+    func testMultiTokenSearchUsesPhraseMatchingWithFinalTokenPrefix() async throws {
         let (index, directoryURL) = try makeIndex()
         defer { try? FileManager.default.removeItem(at: directoryURL) }
 
@@ -91,6 +91,28 @@ final class LibraryTextSearchIndexTests: XCTestCase {
 
         XCTAssertTrue(containsResult(results, url: phraseMatchURL))
         XCTAssertFalse(containsResult(results, url: reverseOrderURL))
+    }
+
+    func testMultiTokenSearchMatchesPartialFinalToken() async throws {
+        let (index, directoryURL) = try makeIndex()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let partialPhraseURL = try writeTextFile(
+            in: directoryURL,
+            name: "safe.txt",
+            contents: "Onnum bhayappedenda ni vishamikkenda"
+        )
+        let separatedTermsURL = try writeTextFile(
+            in: directoryURL,
+            name: "separated.txt",
+            contents: "Onnum venda bhayappedenda"
+        )
+
+        _ = await index.rebuild(with: [partialPhraseURL, separatedTermsURL])
+        let results = await index.search(query: "Onnum bha")
+
+        XCTAssertTrue(containsResult(results, url: partialPhraseURL))
+        XCTAssertFalse(containsResult(results, url: separatedTermsURL))
     }
 
     func testSearchSnippetOmitsLyricsSectionHeaders() async throws {

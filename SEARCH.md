@@ -14,7 +14,7 @@ Search currently matches:
 
 ## Query Semantics
 - Single-word query: prefix match (for example, `bea` matches `beautiful`).
-- Multi-word query: phrase match (for example, `be thou` matches the phrase, not separate terms anywhere).
+- Multi-word query: ordered phrase match with final-word prefix matching (for example, `be tho` matches `be thou`, but not separate terms anywhere).
 
 This is intentional to avoid overly broad results from token-only matching.
 
@@ -51,10 +51,10 @@ This keeps index state aligned with the current active library list.
 ### 3) Query building
 User input is transformed before SQL `MATCH`:
 - Single token (example `bea`) -> `bea*` (prefix match)
-- Multi token (example `be thou`) -> `"be thou"` (phrase match)
+- Multi token (example `be tho`) -> `"be tho"*` (phrase match with final-token prefix)
 
 The `*` suffix is FTS prefix search.
-Quoted text is FTS phrase search.
+Quoted text is FTS phrase search. The trailing `*` on a quoted phrase lets the final typed token remain incomplete during live search.
 
 ### 4) Search SQL
 Search uses:
@@ -67,7 +67,7 @@ The weights used here give more importance to content than filename, so lyrics c
 
 ### 5) Why results can differ from `grep`
 - FTS is token-based and ranked, not raw line scanning.
-- Prefix and phrase rules affect matching.
+- Prefix and phrase rules affect matching, including final-word prefix matching for multi-word queries.
 - Results are ordered by relevance (`bm25`), not file order.
 - Search covers filenames for the indexed library file set.
 - Content search only covers `.txt` files that are `<= 10KB`.
