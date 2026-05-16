@@ -11,6 +11,8 @@ public struct ContentView: View {
     @StateObject private var flow = PresentationFlowController()
     @State private var folderURL: URL?
     @State private var markdownFiles: [URL] = []
+    @State private var previewLibraryFiles: [URL] = []
+    @State private var backgroundAudioLibraryFiles: [URL] = []
     @State private var selectedFileURL: URL?
     @State private var selectedPlaylistEntryID: UUID?
     @State private var selectedPlaylistEntryIDs: Set<UUID> = []
@@ -64,6 +66,8 @@ public struct ContentView: View {
     @State private var isLibrarySearchIndexing: Bool = false
     @State private var librarySearchDebounceTask: Task<Void, Never>? = nil
     @State private var librarySearchRebuildTask: Task<Void, Never>? = nil
+    @State private var libraryLoadTask: Task<Void, Never>? = nil
+    @State private var isLibraryLoading: Bool = false
     @State private var projectionScreenOptions: [ProjectionScreenOption] = []
     @State private var isTimerSettingsPresented: Bool = false
     @State private var isAppearanceSettingsPresented: Bool = false
@@ -82,6 +86,7 @@ public struct ContentView: View {
     private let loadAnimation = Animation.easeInOut(duration: 0.24)
     private let librarySearchMinimumCharacterCount = 3
     private let windowCaptureFrameRateOptions = [24, 30, 60]
+    private let libraryFileScanner = LibraryFileScannerService()
 
     private struct ProjectionScreenOption: Identifiable, Hashable {
         let displayID: Int
@@ -97,64 +102,6 @@ public struct ContentView: View {
         case lyrics
     }
 
-    private enum FileKind {
-        case pdf
-        case image
-        case video
-        case audio
-        case txt
-        case unsupported
-
-        init(url: URL) {
-            let ext = url.pathExtension.lowercased()
-            switch ext {
-            case "pdf":
-                self = .pdf
-            case "jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff":
-                self = .image
-            case "mp4", "mov", "m4v", "avi", "mkv":
-                self = .video
-            case "mp3", "m4a", "wav", "aiff", "aif", "flac", "aac":
-                self = .audio
-            case "txt":
-                self = .txt
-            default:
-                self = .unsupported
-            }
-        }
-
-        var isSupportedLibraryItem: Bool {
-            self != .unsupported
-        }
-
-        var isPreviewLibraryItem: Bool {
-            switch self {
-            case .txt, .pdf, .image, .video:
-                return true
-            case .audio, .unsupported:
-                return false
-            }
-        }
-
-        var isBackgroundAudioSource: Bool {
-            switch self {
-            case .audio, .video:
-                return true
-            case .txt, .pdf, .image, .unsupported:
-                return false
-            }
-        }
-
-        var isEditableLyrics: Bool {
-            switch self {
-            case .txt:
-                return true
-            default:
-                return false
-            }
-        }
-    }
-
     private enum ImportError: LocalizedError {
         case unsupportedFile(URL)
 
@@ -168,7 +115,7 @@ public struct ContentView: View {
 
     private var isCurrentSelectionMediaFile: Bool {
         guard let url = currentSelectedURL else { return false }
-        let kind = FileKind(url: url)
+        let kind = LibraryFileKind(url: url)
         switch kind {
         case .pdf, .image, .video:
             return true
@@ -318,10 +265,14 @@ public struct ContentView: View {
         .onChange(of: webpageTitles) { _, _ in
             persistWebpageState()
         }
-        .onDisappear {
-            librarySearchDebounceTask?.cancel()
-            librarySearchRebuildTask?.cancel()
-        }
+        .onDisappear(perform: handleRootOnDisappear)
+    }
+
+    private func handleRootOnDisappear() {
+        librarySearchDebounceTask?.cancel()
+        librarySearchRebuildTask?.cancel()
+        libraryLoadTask?.cancel()
+        isLibraryLoading = false
     }
 
     private func handleExitCommand() {
@@ -365,6 +316,7 @@ public struct ContentView: View {
             isWindowCaptureSupported: isWindowCaptureSupported,
             libraryFiles: previewLibraryFiles,
             audioFiles: backgroundAudioLibraryFiles,
+            isLibraryLoading: isLibraryLoading,
             playlistItems: playlistSidebarItems,
             libraryRootURL: libraryRootURL,
             captureWindows: captureWindows,
@@ -980,7 +932,7 @@ public struct ContentView: View {
     }
 
     private func isLyricsFile(_ url: URL) -> Bool {
-        FileKind(url: url).isEditableLyrics
+        LibraryFileKind(url: url).isEditableLyrics
     }
 
     private func importFilesToLibrary() {
@@ -1018,7 +970,7 @@ public struct ContentView: View {
                 forceSearchIndexRebuild: true
             )
             loadPlaylists()
-            if let firstPreviewURL = importedURLs.first(where: { FileKind(url: $0).isPreviewLibraryItem }) {
+            if let firstPreviewURL = importedURLs.first(where: { LibraryFileKind(url: $0).isPreviewLibraryItem }) {
                 selectedFileURL = firstPreviewURL
                 selectedPlaylistEntryID = nil
                 selectedPlaylistEntryIDs = []
@@ -1057,7 +1009,7 @@ public struct ContentView: View {
 
         do {
             let importedURLs = try panel.urls.map { try importFile($0, into: root) }
-            guard let firstAudioURL = importedURLs.first(where: { FileKind(url: $0).isBackgroundAudioSource }) else {
+            guard let firstAudioURL = importedURLs.first(where: { LibraryFileKind(url: $0).isBackgroundAudioSource }) else {
                 return
             }
 
@@ -1120,7 +1072,7 @@ public struct ContentView: View {
     }
 
     private func importFile(_ sourceURL: URL, into root: URL) throws -> URL {
-        let kind = FileKind(url: sourceURL)
+        let kind = LibraryFileKind(url: sourceURL)
         guard kind.isSupportedLibraryItem else {
             throw ImportError.unsupportedFile(sourceURL)
         }
@@ -1152,7 +1104,7 @@ public struct ContentView: View {
         return destinationURL
     }
 
-    private func importFolderName(for kind: FileKind) -> String {
+    private func importFolderName(for kind: LibraryFileKind) -> String {
         switch kind {
         case .txt:
             "Lyrics"
@@ -1229,19 +1181,37 @@ public struct ContentView: View {
         forceSearchIndexRebuild: Bool = false
     ) {
         let previousSearchScopeFiles = librarySearchScopeFiles
-        let files = listSupportedLibraryFilesRecursively(from: folder)
-        let previewFiles = files.filter { FileKind(url: $0).isPreviewLibraryItem }
-        let searchScopeFiles = resolveLibrarySearchScopeFiles(
-            displayedFolder: folder,
-            displayedFiles: previewFiles,
-            refreshLibrarySearchScope: refreshLibrarySearchScope
-        )
-        markdownFiles = files
-        librarySearchScopeFiles = searchScopeFiles
-        rebuildDisplayNames(for: files + playlistResolvedURLs)
+        let playlistURLs = playlistResolvedURLs
+        let scanner = libraryFileScanner
 
-        if forceSearchIndexRebuild || !haveSameStandardizedURLs(previousSearchScopeFiles, searchScopeFiles) {
-            rebuildLibrarySearchIndex(for: searchScopeFiles)
+        libraryLoadTask?.cancel()
+        isLibraryLoading = true
+        libraryLoadTask = Task.detached(priority: .userInitiated) {
+            let result = scanner.scan(
+                folder: folder,
+                additionalDisplayNameURLs: playlistURLs
+            )
+            guard !Task.isCancelled else { return }
+
+            await MainActor.run {
+                guard !Task.isCancelled else { return }
+                let searchScopeFiles = resolveLibrarySearchScopeFiles(
+                    displayedFolder: folder,
+                    displayedFiles: result.previewFiles,
+                    refreshLibrarySearchScope: refreshLibrarySearchScope
+                )
+
+                markdownFiles = result.files
+                previewLibraryFiles = result.previewFiles
+                backgroundAudioLibraryFiles = result.backgroundAudioFiles
+                librarySearchScopeFiles = searchScopeFiles
+                fileDisplayNames.merge(result.displayNames) { _, new in new }
+                isLibraryLoading = false
+
+                if forceSearchIndexRebuild || !haveSameStandardizedURLs(previousSearchScopeFiles, searchScopeFiles) {
+                    rebuildLibrarySearchIndex(for: searchScopeFiles)
+                }
+            }
         }
     }
 
@@ -1257,41 +1227,6 @@ public struct ContentView: View {
         lhs.map(\.standardizedFileURL) == rhs.map(\.standardizedFileURL)
     }
 
-    private func listSupportedLibraryFilesRecursively(from folder: URL) -> [URL] {
-        let fileManager = FileManager.default
-        guard let enumerator = fileManager.enumerator(
-            at: folder,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
-        ) else {
-            return []
-        }
-
-        var files: [URL] = []
-        for case let url as URL in enumerator {
-            guard
-                let values = try? url.resourceValues(forKeys: [.isRegularFileKey]),
-                values.isRegularFile == true,
-                FileKind(url: url).isSupportedLibraryItem
-            else {
-                continue
-            }
-            files.append(url)
-        }
-
-        let basePath = folder.standardizedFileURL.path
-        return files.sorted {
-            relativeSortKey(for: $0, basePath: basePath) < relativeSortKey(for: $1, basePath: basePath)
-        }
-    }
-
-    private func relativeSortKey(for url: URL, basePath: String) -> String {
-        let path = url.standardizedFileURL.path
-        guard path.hasPrefix(basePath) else { return path.lowercased() }
-        let suffix = path.dropFirst(basePath.count)
-        return suffix.trimmingCharacters(in: CharacterSet(charactersIn: "/")).lowercased()
-    }
-
     private func loadSelectedFile() {
         guard let url = currentSelectedURL else { return }
         loadSelectedFile(url: url)
@@ -1300,7 +1235,7 @@ public struct ContentView: View {
     private func loadSelectedFile(url: URL) {
         let source = PreviewSource.file(url)
         let token = beginPreviewTransition(to: source)
-        let kind = FileKind(url: url)
+        let kind = LibraryFileKind(url: url)
         DispatchQueue.global(qos: .userInitiated).async {
             switch kind {
             case .pdf:
@@ -1740,43 +1675,9 @@ public struct ContentView: View {
         }
     }
 
-    private var previewLibraryFiles: [URL] {
-        markdownFiles.filter { FileKind(url: $0).isPreviewLibraryItem }
-    }
-
-    private var backgroundAudioLibraryFiles: [URL] {
-        markdownFiles.filter { FileKind(url: $0).isBackgroundAudioSource }
-    }
-
     private func rebuildDisplayNames(for urls: [URL]) {
-        var names: [URL: String] = [:]
-        for url in urls {
-            names[url] = extractTitle(from: url)
-        }
+        let names = libraryFileScanner.displayNames(for: urls)
         fileDisplayNames.merge(names) { _, new in new }
-    }
-
-    private func extractTitle(from url: URL) -> String {
-        let kind = FileKind(url: url)
-        switch kind {
-        case .pdf, .image, .video, .audio:
-            return url.lastPathComponent
-        default:
-            break
-        }
-        guard let contents = try? String(contentsOf: url, encoding: .utf8) else {
-            return url.lastPathComponent
-        }
-        let lines = contents
-            .replacingOccurrences(of: "\r\n", with: "\n")
-            .split(separator: "\n", omittingEmptySubsequences: true)
-            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-
-        if let first = lines.first, !first.isEmpty {
-            return first
-        }
-
-        return url.lastPathComponent
     }
 
     private func loadPlaylists() {
@@ -1785,7 +1686,7 @@ public struct ContentView: View {
         if let selectedPlaylistEntryID, selectedPlaylistEntryIDs.contains(selectedPlaylistEntryID) == false {
             self.selectedPlaylistEntryID = selectedPlaylistEntryIDs.first
         }
-        rebuildDisplayNames(for: markdownFiles + playlistResolvedURLs)
+        rebuildDisplayNames(for: playlistResolvedURLs)
     }
 
     private func addLibraryItemToPlaylist(_ source: URL) {
@@ -1848,6 +1749,7 @@ public struct ContentView: View {
             loadPlaylists()
             return
         }
+        isLibraryLoading = false
         loadPlaylists()
     }
 
@@ -2209,7 +2111,7 @@ public struct ContentView: View {
                     forceSearchIndexRebuild: true
                 )
             } else {
-                rebuildDisplayNames(for: markdownFiles + playlistResolvedURLs)
+                rebuildDisplayNames(for: [url] + playlistResolvedURLs)
             }
         } catch {
             // Silently ignore for now; could surface UI feedback later.
@@ -2540,7 +2442,7 @@ public struct ContentView: View {
 
     private func previewLyricsSourceURL() -> URL? {
         guard case .file(let url) = previewSource,
-              FileKind(url: url).isEditableLyrics,
+              LibraryFileKind(url: url).isEditableLyrics,
               !flow.previewSlides.isEmpty else {
             return nil
         }

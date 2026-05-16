@@ -127,6 +127,7 @@ struct SidebarView: View {
     let isWindowCaptureSupported: Bool
     let libraryFiles: [URL]
     let audioFiles: [URL]
+    let isLibraryLoading: Bool
     let playlistItems: [PlaylistSidebarItem]
     let libraryRootURL: URL?
     let captureWindows: [ScreenCaptureManager.CapturedWindow]
@@ -204,7 +205,7 @@ struct SidebarView: View {
                         isExpanded: $isLibrarySectionExpanded
                     ) {
                         libraryControls
-                        sidebarScrollableFileList(libraryFiles, maxHeight: libraryListMaxHeight) { .library($0) }
+                        libraryContent(maxHeight: libraryListMaxHeight)
                     }
 
                     sectionDivider
@@ -919,6 +920,17 @@ struct SidebarView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: maxHeight, alignment: .topLeading)
+    }
+
+    @ViewBuilder
+    private func libraryContent(maxHeight: CGFloat) -> some View {
+        if isLibraryLoading && libraryFiles.isEmpty {
+            Text("Loading library...")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        } else {
+            sidebarScrollableFileList(libraryFiles, maxHeight: maxHeight) { .library($0) }
+        }
     }
 
     private func prepareLibraryScrollIfNeeded(with proxy: ScrollViewProxy) {
