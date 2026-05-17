@@ -652,6 +652,9 @@ struct SidebarView: View {
                     sidebarRow(title: displayName(url), isSelected: isSelected)
                 }
                 .buttonStyle(.plain)
+                .contextMenu {
+                    revealInFinderButton(for: url)
+                }
             }
         }
     }
@@ -800,6 +803,27 @@ struct SidebarView: View {
             .buttonStyle(.plain)
             .help("Add to Playlist")
         }
+        .contextMenu {
+            Button {
+                onAddLibraryItemToPlaylist(url)
+            } label: {
+                Label("Add to Playlist", systemImage: "plus")
+            }
+
+            revealInFinderButton(for: url)
+        }
+    }
+
+    private func revealInFinderButton(for url: URL) -> some View {
+        Button {
+            revealInFinder(url)
+        } label: {
+            Label("Reveal in Finder", systemImage: "folder")
+        }
+    }
+
+    private func revealInFinder(_ url: URL) {
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
     private func libraryGroupHeader(_ group: LibraryFileGroup, count: Int) -> some View {

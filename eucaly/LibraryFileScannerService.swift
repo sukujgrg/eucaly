@@ -152,9 +152,23 @@ nonisolated struct LibraryFileScannerService: Sendable {
             .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
 
         if let first = lines.first, !first.isEmpty {
-            return first
+            return displayTitle(from: first)
         }
 
         return url.lastPathComponent
+    }
+
+    private func displayTitle(from rawTitle: String) -> String {
+        let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard shouldApplyTitleCase(to: title) else { return title }
+        return title.localizedCapitalized
+    }
+
+    private func shouldApplyTitleCase(to title: String) -> Bool {
+        let letters = title.unicodeScalars.filter {
+            CharacterSet.letters.contains($0)
+        }
+        guard !letters.isEmpty else { return false }
+        return title == title.localizedLowercase
     }
 }
