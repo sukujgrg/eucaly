@@ -193,6 +193,8 @@ struct SidebarView: View {
 
     @State private var collapsedLibraryGroups: Set<LibraryFileGroup> = []
 
+    @State private var collapsedLibraryFolders: Set<String> = []
+
     @State private var cachedLibraryKindSections: [LibraryFileGroupSection] = []
 
     @State private var cachedLibraryFolderSections: [LibraryFolderGroupSection] = []
@@ -328,19 +330,19 @@ struct SidebarView: View {
                 .labelsHidden()
 
                 Button {
-                    toggleAllLibraryKindGroups()
+                    toggleAllLibraryGroups()
                 } label: {
                     Label(
-                        allLibraryKindGroupsCollapsed ? "Expand Kinds" : "Collapse Kinds",
-                        systemImage: allLibraryKindGroupsCollapsed
+                        allVisibleLibraryGroupsCollapsed ? "Expand Groups" : "Collapse Groups",
+                        systemImage: allVisibleLibraryGroupsCollapsed
                             ? "rectangle.expand.vertical"
                             : "rectangle.compress.vertical"
                     )
                 }
                 .labelStyle(.iconOnly)
                 .playlistIconButtonStyle()
-                .disabled(libraryGrouping != .kind || libraryKindGroups.isEmpty)
-                .help(allLibraryKindGroupsCollapsed ? "Expand all kinds" : "Collapse all kinds")
+                .disabled(!canToggleLibraryGroups)
+                .help(libraryGroupToggleHelp)
             }
         }
     }
@@ -746,12 +748,23 @@ struct SidebarView: View {
         let sections = cachedLibraryFolderSections
         return LazyVStack(alignment: .leading, spacing: 0) {
             ForEach(sections) { section in
-                libraryFolderHeader(section.title, count: section.urls.count)
-                    .padding(.top, section.id == sections.first?.id ? 0 : 6)
+                Button {
+                    toggleLibraryFolder(section.id)
+                } label: {
+                    libraryFolderHeader(
+                        section.title,
+                        count: section.urls.count,
+                        isCollapsed: collapsedLibraryFolders.contains(section.id)
+                    )
+                }
+                .buttonStyle(.plain)
+                .padding(.top, section.id == sections.first?.id ? 0 : 6)
 
-                ForEach(section.urls, id: \.standardizedFileURL) { url in
-                    sidebarFileRow(url, selection: selection)
-                        .id(url.standardizedFileURL)
+                if !collapsedLibraryFolders.contains(section.id) {
+                    ForEach(section.urls, id: \.standardizedFileURL) { url in
+                        sidebarFileRow(url, selection: selection)
+                            .id(url.standardizedFileURL)
+                    }
                 }
             }
         }
@@ -822,8 +835,13 @@ struct SidebarView: View {
         }
     }
 
-    private func libraryFolderHeader(_ title: String, count: Int) -> some View {
+    private func libraryFolderHeader(_ title: String, count: Int, isCollapsed: Bool) -> some View {
         HStack(spacing: 6) {
+            Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 12)
+
             Text(title)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
@@ -836,6 +854,7 @@ struct SidebarView: View {
         }
         .frame(height: 22)
         .padding(.horizontal, 8)
+        .contentShape(Rectangle())
     }
 
     private func groupedLibraryFolderSections(from urls: [URL]) -> [LibraryFolderGroupSection] {
@@ -882,22 +901,78 @@ struct SidebarView: View {
         }
     }
 
+    private func toggleLibraryFolder(_ folderID: String) {
+        if collapsedLibraryFolders.contains(folderID) {
+            collapsedLibraryFolders.remove(folderID)
+        } else {
+            collapsedLibraryFolders.insert(folderID)
+        }
+    }
+
+    private var canToggleLibraryGroups: Bool {
+        switch libraryGrouping {
+        case .kind:
+            !libraryKindGroups.isEmpty
+        case .folder:
+            !libraryFolderIDs.isEmpty
+        case .none:
+            false
+        }
+    }
+
+    private var libraryGroupToggleHelp: String {
+        let action = allVisibleLibraryGroupsCollapsed ? "Expand" : "Collapse"
+        switch libraryGrouping {
+        case .kind:
+            return "\(action) all kinds"
+        case .folder:
+            return "\(action) all folders"
+        case .none:
+            return "Choose Kind or Folder grouping to collapse sections"
+        }
+    }
+
     private var libraryKindGroups: [LibraryFileGroup] {
         cachedLibraryKindSections.map(\.group)
     }
 
-    private var allLibraryKindGroupsCollapsed: Bool {
-        let groups = libraryKindGroups
-        return !groups.isEmpty && groups.allSatisfy { collapsedLibraryGroups.contains($0) }
+    private var libraryFolderIDs: [String] {
+        cachedLibraryFolderSections.map(\.id)
     }
 
-    private func toggleAllLibraryKindGroups() {
-        let groups = libraryKindGroups
-        guard !groups.isEmpty else { return }
-        if allLibraryKindGroupsCollapsed {
-            collapsedLibraryGroups.subtract(groups)
-        } else {
-            collapsedLibraryGroups.formUnion(groups)
+    private var allVisibleLibraryGroupsCollapsed: Bool {
+        switch libraryGrouping {
+        case .kind:
+            let groups = libraryKindGroups
+            return !groups.isEmpty && groups.allSatisfy { collapsedLibraryGroups.contains($0) }
+        case .folder:
+            let folderIDs = libraryFolderIDs
+            return !folderIDs.isEmpty && folderIDs.allSatisfy { collapsedLibraryFolders.contains($0) }
+        case .none:
+            return false
+        }
+    }
+
+    private func toggleAllLibraryGroups() {
+        switch libraryGrouping {
+        case .kind:
+            let groups = libraryKindGroups
+            guard !groups.isEmpty else { return }
+            if allVisibleLibraryGroupsCollapsed {
+                collapsedLibraryGroups.subtract(groups)
+            } else {
+                collapsedLibraryGroups.formUnion(groups)
+            }
+        case .folder:
+            let folderIDs = libraryFolderIDs
+            guard !folderIDs.isEmpty else { return }
+            if allVisibleLibraryGroupsCollapsed {
+                collapsedLibraryFolders.subtract(folderIDs)
+            } else {
+                collapsedLibraryFolders.formUnion(folderIDs)
+            }
+        case .none:
+            return
         }
     }
 
@@ -955,6 +1030,7 @@ struct SidebarView: View {
         let targetURL = url.standardizedFileURL
         guard libraryFiles.contains(where: { $0.standardizedFileURL == targetURL }) else { return }
         collapsedLibraryGroups.remove(LibraryFileGroup(url: targetURL))
+        collapsedLibraryFolders.remove(libraryFolderGroup(for: targetURL).sortKey)
 
         pendingLibraryScrollTarget = targetURL
         Task { @MainActor in
@@ -1065,7 +1141,9 @@ struct SidebarView: View {
             return libraryFiles
         }
         if libraryGrouping == .folder {
-            return cachedLibraryFolderSections.flatMap(\.urls)
+            return cachedLibraryFolderSections.flatMap { section in
+                collapsedLibraryFolders.contains(section.id) ? [] : section.urls
+            }
         }
         return cachedLibraryKindSections.flatMap { section in
             collapsedLibraryGroups.contains(section.group) ? [] : section.urls
