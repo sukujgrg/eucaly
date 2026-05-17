@@ -192,6 +192,10 @@ struct SidebarView: View {
 
     @State private var collapsedLibraryGroups: Set<LibraryFileGroup> = []
 
+    @State private var cachedLibraryKindSections: [LibraryFileGroupSection] = []
+
+    @State private var cachedLibraryFolderSections: [LibraryFolderGroupSection] = []
+
     var body: some View {
         GeometryReader { proxy in
             let libraryListMaxHeight = max(160, min(320, proxy.size.height * 0.35))
@@ -282,6 +286,12 @@ struct SidebarView: View {
         )
         .onChange(of: sidebarSelection) { _, newValue in
             onSelectionChange(newValue)
+        }
+        .onAppear {
+            rebuildLibraryCaches()
+        }
+        .onChange(of: libraryCacheInput) { _, _ in
+            rebuildLibraryCaches()
         }
         .onChange(of: libraryScrollRequest?.id) { _, _ in
             if libraryScrollRequest != nil {
@@ -710,7 +720,7 @@ struct SidebarView: View {
     }
 
     private func sidebarGroupedFileList(_ urls: [URL], selection: @escaping (URL) -> SidebarSelection) -> some View {
-        let sections = groupedLibrarySections(from: urls)
+        let sections = cachedLibraryKindSections
         return LazyVStack(alignment: .leading, spacing: 0) {
             ForEach(sections) { section in
                 Button {
@@ -732,7 +742,7 @@ struct SidebarView: View {
     }
 
     private func sidebarFolderGroupedFileList(_ urls: [URL], selection: @escaping (URL) -> SidebarSelection) -> some View {
-        let sections = groupedLibraryFolderSections(from: urls)
+        let sections = cachedLibraryFolderSections
         return LazyVStack(alignment: .leading, spacing: 0) {
             ForEach(sections) { section in
                 libraryFolderHeader(section.title, count: section.urls.count)
@@ -872,7 +882,7 @@ struct SidebarView: View {
     }
 
     private var libraryKindGroups: [LibraryFileGroup] {
-        groupedLibrarySections(from: libraryFiles).map(\.group)
+        cachedLibraryKindSections.map(\.group)
     }
 
     private var allLibraryKindGroupsCollapsed: Bool {
@@ -888,6 +898,18 @@ struct SidebarView: View {
         } else {
             collapsedLibraryGroups.formUnion(groups)
         }
+    }
+
+    private var libraryCacheInput: [String] {
+        let rootPath = libraryRootURL?.standardizedFileURL.path ?? ""
+        return [rootPath] + libraryFiles.map { url in
+            url.standardizedFileURL.path
+        }
+    }
+
+    private func rebuildLibraryCaches() {
+        cachedLibraryKindSections = groupedLibrarySections(from: libraryFiles)
+        cachedLibraryFolderSections = groupedLibraryFolderSections(from: libraryFiles)
     }
 
     private func sidebarScrollableFileList(
@@ -1052,9 +1074,9 @@ struct SidebarView: View {
             return libraryFiles
         }
         if libraryGrouping == .folder {
-            return groupedLibraryFolderSections(from: libraryFiles).flatMap(\.urls)
+            return cachedLibraryFolderSections.flatMap(\.urls)
         }
-        return groupedLibrarySections(from: libraryFiles).flatMap { section in
+        return cachedLibraryKindSections.flatMap { section in
             collapsedLibraryGroups.contains(section.group) ? [] : section.urls
         }
     }
