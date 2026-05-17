@@ -244,6 +244,127 @@ final class LibraryTextSearchIndexTests: XCTestCase {
         XCTAssertTrue(containsResult(newResults, url: newURL))
     }
 
+    func testSyncLibraryMetadataReturnsPreviewAndAudioMetadata() async throws {
+        let (index, directoryURL) = try makeIndex()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let songURL = try writeTextFile(
+            in: directoryURL,
+            name: "song.txt",
+            contents: "Cached Song Title\nunique lyric content"
+        )
+        let audioURL = try writeBinaryFile(
+            in: directoryURL,
+            name: "ambient-pad.mp3"
+        )
+        let pdfURL = try writeBinaryFile(
+            in: directoryURL,
+            name: "service-notes.pdf"
+        )
+
+        let metadata = await index.syncLibraryMetadata(
+            root: directoryURL,
+            discoveredFiles: try [songURL, audioURL, pdfURL].map { try discoveredFile(for: $0, root: directoryURL) }
+        )
+
+        XCTAssertEqual(metadata.first { $0.url == songURL.standardizedFileURL }?.title, "Cached Song Title")
+        XCTAssertEqual(metadata.first { $0.url == audioURL.standardizedFileURL }?.kind, .audio)
+        XCTAssertEqual(metadata.first { $0.url == pdfURL.standardizedFileURL }?.kind, .pdf)
+
+        let lyricResults = await index.search(query: "unique")
+        let audioFilenameResults = await index.search(query: "ambient")
+
+        XCTAssertTrue(containsResult(lyricResults, url: songURL))
+        XCTAssertTrue(containsResult(audioFilenameResults, url: audioURL))
+    }
+
+    func testSyncLibraryMetadataRemovesDeletedFilesFromSearch() async throws {
+        let (index, directoryURL) = try makeIndex()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let oldURL = try writeTextFile(
+            in: directoryURL,
+            name: "old.txt",
+            contents: "Old Title\nolduniquetoken"
+        )
+        let newURL = try writeTextFile(
+            in: directoryURL,
+            name: "new.txt",
+            contents: "New Title\nnewuniquetoken"
+        )
+
+        _ = await index.syncLibraryMetadata(
+            root: directoryURL,
+            discoveredFiles: try [oldURL].map { try discoveredFile(for: $0, root: directoryURL) }
+        )
+        _ = await index.syncLibraryMetadata(
+            root: directoryURL,
+            discoveredFiles: try [newURL].map { try discoveredFile(for: $0, root: directoryURL) }
+        )
+
+        let oldResults = await index.search(query: "olduniquetoken")
+        let newResults = await index.search(query: "newuniquetoken")
+
+        XCTAssertFalse(containsResult(oldResults, url: oldURL))
+        XCTAssertTrue(containsResult(newResults, url: newURL))
+    }
+
+    func testSyncLibraryMetadataReusesCachedTitleAndSearchForUnchangedFile() async throws {
+        let (index, directoryURL) = try makeIndex()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let fileURL = try writeTextFile(
+            in: directoryURL,
+            name: "cached.txt",
+            contents: "Original Title\nlegacyuniquetoken"
+        )
+        let originalDiscovery = try discoveredFile(for: fileURL, root: directoryURL)
+
+        _ = await index.syncLibraryMetadata(
+            root: directoryURL,
+            discoveredFiles: [originalDiscovery]
+        )
+
+        try "Changed Title\nfreshuniquetoken".write(to: fileURL, atomically: true, encoding: .utf8)
+        let metadata = await index.syncLibraryMetadata(
+            root: directoryURL,
+            discoveredFiles: [originalDiscovery]
+        )
+
+        let legacyResults = await index.search(query: "legacyuniquetoken")
+        let freshResults = await index.search(query: "freshuniquetoken")
+
+        XCTAssertEqual(metadata.first?.title, "Original Title")
+        XCTAssertTrue(containsResult(legacyResults, url: fileURL))
+        XCTAssertFalse(containsResult(freshResults, url: fileURL))
+    }
+
+    func testCachedLibraryMetadataReturnsLastSyncedRows() async throws {
+        let (index, directoryURL) = try makeIndex()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let songURL = try writeTextFile(
+            in: directoryURL,
+            name: "song.txt",
+            contents: "Cached Title\nlyrics"
+        )
+        let audioURL = try writeBinaryFile(
+            in: directoryURL,
+            name: "backing-track.mp3"
+        )
+
+        _ = await index.syncLibraryMetadata(
+            root: directoryURL,
+            discoveredFiles: try [songURL, audioURL].map { try discoveredFile(for: $0, root: directoryURL) }
+        )
+
+        let cached = await index.cachedLibraryMetadata(root: directoryURL)
+
+        XCTAssertEqual(cached.map(\.url), [audioURL.standardizedFileURL, songURL.standardizedFileURL])
+        XCTAssertEqual(cached.first { $0.url == songURL.standardizedFileURL }?.title, "Cached Title")
+        XCTAssertEqual(cached.first { $0.url == audioURL.standardizedFileURL }?.kind, .audio)
+    }
+
     private func makeIndex() throws -> (LibraryTextSearchIndex, URL) {
         let directoryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("eucaly-search-tests-\(UUID().uuidString)", isDirectory: true)
@@ -262,6 +383,24 @@ final class LibraryTextSearchIndexTests: XCTestCase {
         let fileURL = directoryURL.appendingPathComponent(name, isDirectory: false)
         try Data([0x00, 0x01, 0x02]).write(to: fileURL)
         return fileURL
+    }
+
+    private func discoveredFile(for url: URL, root: URL) throws -> LibraryDiscoveredFileModel {
+        let standardizedURL = url.standardizedFileURL
+        let values = try standardizedURL.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        let rootPath = root.standardizedFileURL.path
+        let path = standardizedURL.path
+        let suffix = path.hasPrefix(rootPath)
+            ? path.dropFirst(rootPath.count).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            : path
+
+        return LibraryDiscoveredFileModel(
+            url: standardizedURL,
+            kind: LibraryFileKind(url: standardizedURL),
+            size: Int64(values.fileSize ?? 0),
+            modificationTime: values.contentModificationDate?.timeIntervalSince1970 ?? 0,
+            relativeSortKey: String(suffix).lowercased()
+        )
     }
 
     private func containsResult(_ results: [LibraryTextSearchIndex.SearchResult], url: URL) -> Bool {

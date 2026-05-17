@@ -7,6 +7,11 @@ Search currently matches:
 - filenames for every file in the library root indexed set
 - `.txt` file contents (full-text index)
 
+The app uses a hybrid filesystem/SQLite model:
+- files remain the source of truth and can be edited directly
+- SQLite stores derived metadata and full-text rows for fast startup/search
+- refresh reconciles SQLite with the current filesystem state
+
 ## User Behavior
 - Search starts only when query length is `>= 3` characters.
 - Query is debounced (about `220ms`) to reduce unnecessary recomputation.
@@ -22,10 +27,13 @@ This is intentional to avoid overly broad results from token-only matching.
 - Index backend: SQLite FTS5 via `SQLite3` (system library, no third-party package).
 - Every indexed library URL contributes its `filename`.
 - `.txt` files contribute `content` only when they are `<= 10KB`.
+- Library metadata is cached in SQLite so startup can show the last synced library list before the filesystem scan finishes.
+- Unchanged files reuse cached titles/search rows based on path, file size, and modification time.
 - Index table stores:
   - `filename`
   - `content`
   - `path` (unindexed)
+- Metadata table stores path, root, relative sort key, display title, file kind, size, modification time, and source flags.
 
 ## How SQLite FTS5 Works Here
 
@@ -39,14 +47,16 @@ In code this is created once with:
 - `CREATE VIRTUAL TABLE ... USING fts5(...)`
 - tokenizer: `unicode61` (good default for case-insensitive word tokenization).
 
-### 2) Rebuild strategy
+### 2) Sync strategy
 On library refresh/reload:
 1. Begin transaction
-2. Clear existing FTS rows
-3. Insert one row per indexed library file
-4. Commit transaction
+2. Walk supported files under the library root off the main thread
+3. Reuse cached metadata and FTS rows for unchanged files
+4. Re-index new or modified files
+5. Remove metadata and FTS rows for deleted files
+6. Commit transaction
 
-This keeps index state aligned with the current active library list.
+This keeps index state aligned with the filesystem without reading every lyrics file on every launch.
 
 ### 3) Query building
 User input is transformed before SQL `MATCH`:
@@ -74,10 +84,11 @@ The weights used here give more importance to content than filename, so lyrics c
 
 ## File Discovery Input
 - Library files shown in the sidebar are discovered recursively from the selected folder/root.
-- Search indexing is always rebuilt from the library root when one is configured.
+- Search indexing is incrementally synced from the library root when one is configured.
 - Discovery currently includes regular supported files.
-- Search index rebuild uses the library root file list, not the selected subfolder.
+- Search index sync uses the library root file list, not the selected subfolder.
 - Non-`.txt` files contribute filename matches only.
+- Audio files are included in cached library metadata for the Background Audio library, but not in the Preview file list.
 
 Note:
 - Symlinks are currently not treated as regular files in recursive discovery.

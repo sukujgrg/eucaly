@@ -65,9 +65,9 @@ public struct ContentView: View {
     @State private var selectedLibrarySearchResult: URL? = nil
     @State private var isLibrarySearchIndexing: Bool = false
     @State private var librarySearchDebounceTask: Task<Void, Never>? = nil
-    @State private var librarySearchRebuildTask: Task<Void, Never>? = nil
     @State private var libraryLoadTask: Task<Void, Never>? = nil
     @State private var isLibraryLoading: Bool = false
+    @State private var libraryRevision: Int = 0
     @State private var projectionScreenOptions: [ProjectionScreenOption] = []
     @State private var isTimerSettingsPresented: Bool = false
     @State private var isAppearanceSettingsPresented: Bool = false
@@ -270,9 +270,9 @@ public struct ContentView: View {
 
     private func handleRootOnDisappear() {
         librarySearchDebounceTask?.cancel()
-        librarySearchRebuildTask?.cancel()
         libraryLoadTask?.cancel()
         isLibraryLoading = false
+        isLibrarySearchIndexing = false
     }
 
     private func handleExitCommand() {
@@ -317,6 +317,7 @@ public struct ContentView: View {
             libraryFiles: previewLibraryFiles,
             audioFiles: backgroundAudioLibraryFiles,
             isLibraryLoading: isLibraryLoading,
+            libraryRevision: libraryRevision,
             playlistItems: playlistSidebarItems,
             libraryRootURL: libraryRootURL,
             captureWindows: captureWindows,
@@ -967,7 +968,7 @@ public struct ContentView: View {
             loadMarkdownFiles(
                 from: root,
                 refreshLibrarySearchScope: true,
-                forceSearchIndexRebuild: true
+                refreshSearchResults: true
             )
             loadPlaylists()
             if let firstPreviewURL = importedURLs.first(where: { LibraryFileKind(url: $0).isPreviewLibraryItem }) {
@@ -1018,7 +1019,7 @@ public struct ContentView: View {
             loadMarkdownFiles(
                 from: root,
                 refreshLibrarySearchScope: true,
-                forceSearchIndexRebuild: true
+                refreshSearchResults: true
             )
             loadPlaylists()
             selectedFileURL = nil
@@ -1178,41 +1179,98 @@ public struct ContentView: View {
     private func loadMarkdownFiles(
         from folder: URL,
         refreshLibrarySearchScope: Bool = false,
-        forceSearchIndexRebuild: Bool = false
+        refreshSearchResults: Bool = false
     ) {
         let previousSearchScopeFiles = librarySearchScopeFiles
-        let playlistURLs = playlistResolvedURLs
         let scanner = libraryFileScanner
+        let index = librarySearchIndex
 
         libraryLoadTask?.cancel()
         isLibraryLoading = true
+        isLibrarySearchIndexing = true
         libraryLoadTask = Task.detached(priority: .userInitiated) {
-            let result = scanner.scan(
-                folder: folder,
-                additionalDisplayNameURLs: playlistURLs
+            let cachedMetadata = await index.cachedLibraryMetadata(root: folder)
+            if !cachedMetadata.isEmpty {
+                await MainActor.run {
+                    guard !Task.isCancelled else { return }
+                    applyLibraryMetadata(
+                        cachedMetadata,
+                        displayedFolder: folder,
+                        refreshLibrarySearchScope: refreshLibrarySearchScope
+                    )
+                }
+            }
+            guard !Task.isCancelled else { return }
+
+            let discoveredFiles = scanner.discoverFiles(in: folder)
+            guard !Task.isCancelled else { return }
+
+            let metadata = await index.syncLibraryMetadata(
+                root: folder,
+                discoveredFiles: discoveredFiles
             )
+            guard !Task.isCancelled else { return }
+
+            let currentQuery = await MainActor.run {
+                librarySearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+
+            let refreshedResults: [LibraryTextSearchIndex.SearchResult]
+            if currentQuery.count >= librarySearchMinimumCharacterCount {
+                refreshedResults = await index.search(query: currentQuery)
+            } else {
+                refreshedResults = []
+            }
             guard !Task.isCancelled else { return }
 
             await MainActor.run {
                 guard !Task.isCancelled else { return }
-                let searchScopeFiles = resolveLibrarySearchScopeFiles(
+                let searchScopeFiles = applyLibraryMetadata(
+                    metadata,
                     displayedFolder: folder,
-                    displayedFiles: result.previewFiles,
                     refreshLibrarySearchScope: refreshLibrarySearchScope
                 )
-
-                markdownFiles = result.files
-                previewLibraryFiles = result.previewFiles
-                backgroundAudioLibraryFiles = result.backgroundAudioFiles
-                librarySearchScopeFiles = searchScopeFiles
-                fileDisplayNames.merge(result.displayNames) { _, new in new }
                 isLibraryLoading = false
+                isLibrarySearchIndexing = false
 
-                if forceSearchIndexRebuild || !haveSameStandardizedURLs(previousSearchScopeFiles, searchScopeFiles) {
-                    rebuildLibrarySearchIndex(for: searchScopeFiles)
+                if refreshSearchResults || !haveSameStandardizedURLs(previousSearchScopeFiles, searchScopeFiles) {
+                    librarySearchResults = filterSearchResultsToCurrentLibrary(refreshedResults)
+                    librarySearchResultsQuery = currentQuery
+                    syncSelectedLibrarySearchResult(preferFirstResult: true)
                 }
             }
         }
+    }
+
+    @discardableResult
+    private func applyLibraryMetadata(
+        _ metadata: [LibraryTextSearchIndex.FileMetadata],
+        displayedFolder: URL,
+        refreshLibrarySearchScope: Bool
+    ) -> [URL] {
+        let files = metadata.map(\.url)
+        let previewFiles = metadata
+            .filter { $0.kind.isPreviewLibraryItem }
+            .map(\.url)
+        let backgroundAudioFiles = metadata
+            .filter { $0.kind.isBackgroundAudioSource }
+            .map(\.url)
+        let displayNames = Dictionary(
+            uniqueKeysWithValues: metadata.map { ($0.url, $0.title) }
+        )
+        let searchScopeFiles = resolveLibrarySearchScopeFiles(
+            displayedFolder: displayedFolder,
+            displayedFiles: previewFiles,
+            refreshLibrarySearchScope: refreshLibrarySearchScope
+        )
+
+        markdownFiles = files
+        previewLibraryFiles = previewFiles
+        backgroundAudioLibraryFiles = backgroundAudioFiles
+        librarySearchScopeFiles = searchScopeFiles
+        fileDisplayNames.merge(displayNames) { _, new in new }
+        libraryRevision &+= 1
+        return searchScopeFiles
     }
 
     private func resolveLibrarySearchScopeFiles(
@@ -1452,7 +1510,7 @@ public struct ContentView: View {
         loadMarkdownFiles(
             from: root,
             refreshLibrarySearchScope: true,
-            forceSearchIndexRebuild: true
+            refreshSearchResults: true
         )
     }
 
@@ -1507,35 +1565,6 @@ public struct ContentView: View {
                 guard currentQuery == trimmed else { return }
                 librarySearchResults = filterSearchResultsToCurrentLibrary(results)
                 librarySearchResultsQuery = trimmed
-                syncSelectedLibrarySearchResult(preferFirstResult: true)
-            }
-        }
-    }
-
-    @MainActor
-    private func rebuildLibrarySearchIndex(for urls: [URL]) {
-        librarySearchRebuildTask?.cancel()
-        let index = librarySearchIndex
-        let urlsToIndex = urls
-
-        isLibrarySearchIndexing = true
-        librarySearchRebuildTask = Task {
-            _ = await index.rebuild(with: urlsToIndex)
-            guard !Task.isCancelled else { return }
-
-            let currentQuery = await MainActor.run {
-                librarySearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-            }
-
-            var refreshedResults: [LibraryTextSearchIndex.SearchResult] = []
-            if currentQuery.count >= librarySearchMinimumCharacterCount {
-                refreshedResults = await index.search(query: currentQuery)
-            }
-
-            await MainActor.run {
-                isLibrarySearchIndexing = false
-                librarySearchResults = filterSearchResultsToCurrentLibrary(refreshedResults)
-                librarySearchResultsQuery = currentQuery
                 syncSelectedLibrarySearchResult(preferFirstResult: true)
             }
         }
@@ -1744,7 +1773,7 @@ public struct ContentView: View {
             loadMarkdownFiles(
                 from: root,
                 refreshLibrarySearchScope: true,
-                forceSearchIndexRebuild: true
+                refreshSearchResults: true
             )
             loadPlaylists()
             return
@@ -1908,7 +1937,7 @@ public struct ContentView: View {
                     loadMarkdownFiles(
                         from: root,
                         refreshLibrarySearchScope: true,
-                        forceSearchIndexRebuild: true
+                        refreshSearchResults: true
                     )
                 }
                 loadPlaylists()
@@ -2108,7 +2137,7 @@ public struct ContentView: View {
             if let folderURL {
                 loadMarkdownFiles(
                     from: folderURL,
-                    forceSearchIndexRebuild: true
+                    refreshSearchResults: true
                 )
             } else {
                 rebuildDisplayNames(for: [url] + playlistResolvedURLs)

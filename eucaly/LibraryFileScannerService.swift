@@ -1,6 +1,6 @@
 import Foundation
 
-nonisolated enum LibraryFileKind {
+nonisolated enum LibraryFileKind: Sendable, Equatable {
     case pdf
     case image
     case video
@@ -58,74 +58,61 @@ nonisolated enum LibraryFileKind {
     }
 }
 
-nonisolated struct LibraryScanResultModel: Sendable {
-    let files: [URL]
-    let previewFiles: [URL]
-    let backgroundAudioFiles: [URL]
-    let displayNames: [URL: String]
+nonisolated struct LibraryDiscoveredFileModel: Sendable {
+    let url: URL
+    let kind: LibraryFileKind
+    let size: Int64
+    let modificationTime: Double
+    let relativeSortKey: String
 }
 
 nonisolated struct LibraryFileScannerService: Sendable {
-
-    func scan(
-        folder: URL,
-        additionalDisplayNameURLs: [URL]
-    ) -> LibraryScanResultModel {
-        let files = listSupportedLibraryFilesRecursively(from: folder)
-        guard !Task.isCancelled else {
-            return LibraryScanResultModel(
-                files: [],
-                previewFiles: [],
-                backgroundAudioFiles: [],
-                displayNames: [:]
-            )
-        }
-
-        let previewFiles = files.filter { LibraryFileKind(url: $0).isPreviewLibraryItem }
-        let backgroundAudioFiles = files.filter { LibraryFileKind(url: $0).isBackgroundAudioSource }
-        let displayNames = buildDisplayNames(for: files + additionalDisplayNameURLs)
-
-        return LibraryScanResultModel(
-            files: files,
-            previewFiles: previewFiles,
-            backgroundAudioFiles: backgroundAudioFiles,
-            displayNames: displayNames
-        )
-    }
 
     func displayNames(for urls: [URL]) -> [URL: String] {
         buildDisplayNames(for: urls)
     }
 
-    private func listSupportedLibraryFilesRecursively(from folder: URL) -> [URL] {
+    func discoverFiles(in folder: URL) -> [LibraryDiscoveredFileModel] {
         let fileManager = FileManager.default
         guard let enumerator = fileManager.enumerator(
             at: folder,
-            includingPropertiesForKeys: [.isRegularFileKey],
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey],
             options: [.skipsHiddenFiles, .skipsPackageDescendants]
         ) else {
             return []
         }
 
-        var files: [URL] = []
+        let basePath = folder.standardizedFileURL.path
+        var files: [LibraryDiscoveredFileModel] = []
         for case let url as URL in enumerator {
             if Task.isCancelled {
                 return []
             }
 
             guard
-                let values = try? url.resourceValues(forKeys: [.isRegularFileKey]),
+                let values = try? url.resourceValues(
+                    forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]
+                ),
                 values.isRegularFile == true,
                 LibraryFileKind(url: url).isSupportedLibraryItem
             else {
                 continue
             }
-            files.append(url)
+
+            let standardizedURL = url.standardizedFileURL
+            files.append(
+                LibraryDiscoveredFileModel(
+                    url: standardizedURL,
+                    kind: LibraryFileKind(url: standardizedURL),
+                    size: Int64(values.fileSize ?? 0),
+                    modificationTime: values.contentModificationDate?.timeIntervalSince1970 ?? 0,
+                    relativeSortKey: relativeSortKey(for: standardizedURL, basePath: basePath)
+                )
+            )
         }
 
-        let basePath = folder.standardizedFileURL.path
         return files.sorted {
-            relativeSortKey(for: $0, basePath: basePath) < relativeSortKey(for: $1, basePath: basePath)
+            $0.relativeSortKey < $1.relativeSortKey
         }
     }
 

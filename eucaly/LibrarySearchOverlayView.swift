@@ -21,7 +21,7 @@ enum LibraryCommandPaletteAction: String, CaseIterable, Identifiable {
         case .newLyrics:
             return "Start a new editable lyrics document"
         case .refreshLibrary:
-            return "Rebuild the library list and search index"
+            return "Refresh the library list and search index"
         }
     }
 

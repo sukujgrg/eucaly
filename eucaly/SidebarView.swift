@@ -128,6 +128,7 @@ struct SidebarView: View {
     let libraryFiles: [URL]
     let audioFiles: [URL]
     let isLibraryLoading: Bool
+    let libraryRevision: Int
     let playlistItems: [PlaylistSidebarItem]
     let libraryRootURL: URL?
     let captureWindows: [ScreenCaptureManager.CapturedWindow]
@@ -290,7 +291,7 @@ struct SidebarView: View {
         .onAppear {
             rebuildLibraryCaches()
         }
-        .onChange(of: libraryCacheInput) { _, _ in
+        .onChange(of: libraryRevision) { _, _ in
             rebuildLibraryCaches()
         }
         .onChange(of: libraryScrollRequest?.id) { _, _ in
@@ -900,13 +901,6 @@ struct SidebarView: View {
         }
     }
 
-    private var libraryCacheInput: [String] {
-        let rootPath = libraryRootURL?.standardizedFileURL.path ?? ""
-        return [rootPath] + libraryFiles.map { url in
-            url.standardizedFileURL.path
-        }
-    }
-
     private func rebuildLibraryCaches() {
         cachedLibraryKindSections = groupedLibrarySections(from: libraryFiles)
         cachedLibraryFolderSections = groupedLibraryFolderSections(from: libraryFiles)
@@ -931,9 +925,6 @@ struct SidebarView: View {
                 prepareLibraryScrollIfNeeded(with: proxy)
             }
             .onChange(of: libraryScrollRequest?.id) { _, _ in
-                prepareLibraryScrollIfNeeded(with: proxy)
-            }
-            .onChange(of: urls.map(\.standardizedFileURL)) { _, _ in
                 prepareLibraryScrollIfNeeded(with: proxy)
             }
             .onChange(of: keyboardLibraryScrollTarget) { _, newValue in
