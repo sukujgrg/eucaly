@@ -19,7 +19,6 @@ public struct ContentView: View {
     @StateObject private var playlistStore = PlaylistStore()
     @AppStorage("libraryRootPath") private var libraryRootPath: String = ""
     @AppStorage("libraryRootBookmark") private var libraryRootBookmark: String = ""
-    @AppStorage("downloadsBookmark") private var downloadsBookmark: String = ""
     @AppStorage("backgroundVisualBookmark") private var backgroundVisualBookmark: String = ""
     @AppStorage("backgroundAudioBookmark") private var backgroundAudioBookmark: String = ""
     @AppStorage("backgroundAudioVolume") private var backgroundAudioVolume: Double = 1.0
@@ -75,7 +74,6 @@ public struct ContentView: View {
     @FocusState private var isSidebarFocused: Bool
     @FocusState private var focusedDetailTarget: DetailFocusTarget?
     @State private var securityScopedRoot: URL? = nil
-    @State private var securityScopedDownloads: URL? = nil
     @State private var securityScopedBackgroundVisual: URL? = nil
     @State private var securityScopedBackgroundAudio: URL? = nil
     @StateObject private var screenCaptureManager = ScreenCaptureManager.shared
@@ -223,9 +221,6 @@ public struct ContentView: View {
         }
         .onChange(of: libraryRootPath) { _, _ in
             refreshLibraryRootAccess()
-        }
-        .onChange(of: downloadsBookmark) { _, _ in
-            refreshDownloadsAccess()
         }
         .onChange(of: backgroundVisualBookmark) { _, _ in
             refreshBackgroundVisualAccess()
@@ -485,7 +480,6 @@ public struct ContentView: View {
     private func handleRootOnAppear() {
         refreshProjectionScreenOptions()
         refreshLibraryRootAccess()
-        refreshDownloadsAccess()
         refreshBackgroundVisualAccess()
         refreshBackgroundAudioAccess()
         restoreWebpageState()
@@ -1402,17 +1396,6 @@ public struct ContentView: View {
 
         if let root = libraryRootURL {
             configureLibraryRoot(root)
-        }
-    }
-
-    private func refreshDownloadsAccess() {
-        if let result = SecurityScopedBookmarks.resolve(downloadsBookmark) {
-            if let updated = result.updatedBookmark {
-                downloadsBookmark = updated
-            }
-            securityScopedDownloads = result.url
-        } else {
-            securityScopedDownloads = nil
         }
     }
 

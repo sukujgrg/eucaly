@@ -4,9 +4,7 @@ import AppKit
 struct AppSettingsView: View {
     @AppStorage("libraryRootPath") private var libraryRootPath: String = ""
     @AppStorage("libraryRootBookmark") private var libraryRootBookmark: String = ""
-    @AppStorage("downloadsBookmark") private var downloadsBookmark: String = ""
     @State private var resolvedLibraryRoot: URL? = nil
-    @State private var resolvedDownloads: URL? = nil
     @State private var cacheStats: CacheManager.CacheStats = CacheManager.shared.getCacheStats()
 
     var body: some View {
@@ -31,30 +29,6 @@ struct AppSettingsView: View {
                         .foregroundStyle(.secondary)
                 } else if !libraryRootPath.isEmpty {
                     Text(libraryRootPath)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            Section("Downloads") {
-                HStack {
-                    Text("Status")
-                    Spacer()
-                    Text(downloadsStatus)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(downloadsStatusColor)
-                }
-
-                Button(resolvedDownloads == nil ? "Enable Downloads Access" : "Downloads Enabled ✓") {
-                    if resolvedDownloads == nil {
-                        enableDownloadsAccess()
-                    }
-                }
-                .buttonStyle(.bordered)
-                .disabled(resolvedDownloads != nil)
-
-                if let resolvedDownloads {
-                    Text(resolvedDownloads.path)
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
@@ -91,9 +65,6 @@ struct AppSettingsView: View {
         .onChange(of: libraryRootBookmark) { _, _ in
             refreshResolvedURLs()
         }
-        .onChange(of: downloadsBookmark) { _, _ in
-            refreshResolvedURLs()
-        }
     }
 
     private var libraryRootStatus: String {
@@ -110,14 +81,6 @@ struct AppSettingsView: View {
         resolvedLibraryRoot != nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange)
     }
 
-    private var downloadsStatus: String {
-        resolvedDownloads != nil ? "Enabled" : (downloadsBookmark.isEmpty ? "Disabled" : "Needs permission")
-    }
-
-    private var downloadsStatusColor: AnyShapeStyle {
-        resolvedDownloads != nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange)
-    }
-
     private func refreshCacheStats() {
         cacheStats = CacheManager.shared.getCacheStats()
     }
@@ -130,15 +93,6 @@ struct AppSettingsView: View {
             resolvedLibraryRoot = result.url
         } else {
             resolvedLibraryRoot = nil
-        }
-
-        if let result = SecurityScopedBookmarks.resolve(downloadsBookmark) {
-            if let updated = result.updatedBookmark {
-                downloadsBookmark = updated
-            }
-            resolvedDownloads = result.url
-        } else {
-            resolvedDownloads = nil
         }
     }
 
@@ -154,22 +108,6 @@ struct AppSettingsView: View {
             libraryRootPath = url.path
             _ = url.startAccessingSecurityScopedResource()
             resolvedLibraryRoot = url
-        }
-    }
-
-    private func enableDownloadsAccess() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.directoryURL = URL(fileURLWithPath: NSString(string: "~/Downloads").expandingTildeInPath)
-        panel.message = "Select your Downloads folder to enable access"
-        if panel.runModal() == .OK, let url = panel.url {
-            if let bookmark = SecurityScopedBookmarks.createBookmark(for: url) {
-                downloadsBookmark = bookmark
-            }
-            _ = url.startAccessingSecurityScopedResource()
-            resolvedDownloads = url
         }
     }
 
