@@ -32,7 +32,6 @@ struct SecurityScopedBookmarks {
                 relativeTo: nil,
                 bookmarkDataIsStale: &isStale
             )
-            _ = url.startAccessingSecurityScopedResource()
 
             var updatedBookmark: String? = nil
             if isStale {

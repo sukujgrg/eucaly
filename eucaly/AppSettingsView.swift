@@ -5,6 +5,7 @@ struct AppSettingsView: View {
     @AppStorage("libraryRootPath") private var libraryRootPath: String = ""
     @AppStorage("libraryRootBookmark") private var libraryRootBookmark: String = ""
     @State private var resolvedLibraryRoot: URL? = nil
+    @State private var securityScopedLibraryRoot: URL? = nil
     @State private var cacheStats: CacheManager.CacheStats = CacheManager.shared.getCacheStats()
 
     var body: some View {
@@ -65,6 +66,9 @@ struct AppSettingsView: View {
         .onChange(of: libraryRootBookmark) { _, _ in
             refreshResolvedURLs()
         }
+        .onDisappear {
+            updateSecurityScopedLibraryRoot(nil)
+        }
     }
 
     private var libraryRootStatus: String {
@@ -90,9 +94,9 @@ struct AppSettingsView: View {
             if let updated = result.updatedBookmark {
                 libraryRootBookmark = updated
             }
-            resolvedLibraryRoot = result.url
+            updateSecurityScopedLibraryRoot(result.url)
         } else {
-            resolvedLibraryRoot = nil
+            updateSecurityScopedLibraryRoot(nil)
         }
     }
 
@@ -106,9 +110,21 @@ struct AppSettingsView: View {
                 libraryRootBookmark = bookmark
             }
             libraryRootPath = url.path
-            _ = url.startAccessingSecurityScopedResource()
-            resolvedLibraryRoot = url
+            updateSecurityScopedLibraryRoot(url)
         }
+    }
+
+    private func updateSecurityScopedLibraryRoot(_ url: URL?) {
+        guard securityScopedLibraryRoot != url else {
+            resolvedLibraryRoot = url
+            return
+        }
+        securityScopedLibraryRoot?.stopAccessingSecurityScopedResource()
+        securityScopedLibraryRoot = url
+        if let url {
+            _ = url.startAccessingSecurityScopedResource()
+        }
+        resolvedLibraryRoot = url
     }
 
 }

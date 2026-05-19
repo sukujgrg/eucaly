@@ -12,6 +12,8 @@ struct WindowCaptureSlideView: View {
     @StateObject private var streamOutput = WindowStreamOutput()
     @State private var error: Error?
     @State private var activeCaptureWindowID: CGWindowID?
+    @State private var activeCaptureOwnerID: UUID?
+    @State private var captureOwnerID = UUID()
 
     var body: some View {
         ZStack {
@@ -39,19 +41,29 @@ struct WindowCaptureSlideView: View {
             }
         }
         .task(id: windowID) {
-            await switchCapture(to: windowID)
-        }
-        .onDisappear {
-            Task {
-                await tearDownCapture()
+            captureOwnerID = UUID()
+            let ownerID = captureOwnerID
+            await switchCapture(to: windowID, ownerID: ownerID)
+            await withTaskCancellationHandler {
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                }
+            } onCancel: {
+                Task { @MainActor in
+                    await tearDownCapture(windowID: windowID, ownerID: ownerID)
+                }
             }
         }
     }
 
-    private func switchCapture(to targetWindowID: CGWindowID) async {
+    private func switchCapture(to targetWindowID: CGWindowID, ownerID: UUID) async {
         if let currentWindowID = activeCaptureWindowID, currentWindowID != targetWindowID {
-            try? await ScreenCaptureManager.shared.stopCapture(windowID: currentWindowID)
+            try? await ScreenCaptureManager.shared.stopCapture(
+                windowID: currentWindowID,
+                ownerID: activeCaptureOwnerID
+            )
             activeCaptureWindowID = nil
+            activeCaptureOwnerID = nil
             streamOutput.clearFrame()
         }
 
@@ -59,21 +71,24 @@ struct WindowCaptureSlideView: View {
         do {
             _ = try await ScreenCaptureManager.shared.startCapture(
                 windowID: targetWindowID,
+                ownerID: ownerID,
                 outputHandler: streamOutput
             )
             activeCaptureWindowID = targetWindowID
+            activeCaptureOwnerID = ownerID
         } catch {
             self.error = error
             streamOutput.clearFrame()
         }
     }
 
-    private func tearDownCapture() async {
-        if let currentWindowID = activeCaptureWindowID {
-            try? await ScreenCaptureManager.shared.stopCapture(windowID: currentWindowID)
+    private func tearDownCapture(windowID: CGWindowID, ownerID: UUID) async {
+        try? await ScreenCaptureManager.shared.stopCapture(windowID: windowID, ownerID: ownerID)
+        if activeCaptureWindowID == windowID, activeCaptureOwnerID == ownerID {
+            activeCaptureWindowID = nil
+            activeCaptureOwnerID = nil
+            streamOutput.clearFrame()
         }
-        activeCaptureWindowID = nil
-        streamOutput.clearFrame()
     }
 }
 

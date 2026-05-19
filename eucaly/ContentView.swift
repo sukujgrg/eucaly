@@ -268,6 +268,7 @@ public struct ContentView: View {
         libraryLoadTask?.cancel()
         isLibraryLoading = false
         isLibrarySearchIndexing = false
+        releaseSecurityScopedAccess()
     }
 
     private func handleExitCommand() {
@@ -1389,9 +1390,9 @@ public struct ContentView: View {
             if let updated = result.updatedBookmark {
                 libraryRootBookmark = updated
             }
-            securityScopedRoot = result.url
+            updateLibraryRootAccess(result.url)
         } else {
-            securityScopedRoot = nil
+            updateLibraryRootAccess(nil)
         }
 
         if let root = libraryRootURL {
@@ -1430,11 +1431,12 @@ public struct ContentView: View {
     }
 
     private func updateBackgroundVisualSelection(_ url: URL?) {
-        if securityScopedBackgroundVisual != url {
+        let didChangeAccess = securityScopedBackgroundVisual != url
+        if didChangeAccess {
             securityScopedBackgroundVisual?.stopAccessingSecurityScopedResource()
         }
         securityScopedBackgroundVisual = url
-        if let url {
+        if didChangeAccess, let url {
             _ = url.startAccessingSecurityScopedResource()
         }
         deferSessionChange {
@@ -1442,12 +1444,31 @@ public struct ContentView: View {
         }
     }
 
+    private func updateLibraryRootAccess(_ url: URL?) {
+        guard securityScopedRoot != url else { return }
+        securityScopedRoot?.stopAccessingSecurityScopedResource()
+        securityScopedRoot = url
+        if let url {
+            _ = url.startAccessingSecurityScopedResource()
+        }
+    }
+
+    private func releaseSecurityScopedAccess() {
+        securityScopedRoot?.stopAccessingSecurityScopedResource()
+        securityScopedRoot = nil
+        securityScopedBackgroundVisual?.stopAccessingSecurityScopedResource()
+        securityScopedBackgroundVisual = nil
+        securityScopedBackgroundAudio?.stopAccessingSecurityScopedResource()
+        securityScopedBackgroundAudio = nil
+    }
+
     private func updateBackgroundAudioSelection(_ url: URL?, autoplay: Bool) {
-        if securityScopedBackgroundAudio != url {
+        let didChangeAccess = securityScopedBackgroundAudio != url
+        if didChangeAccess {
             securityScopedBackgroundAudio?.stopAccessingSecurityScopedResource()
         }
         securityScopedBackgroundAudio = url
-        if let url {
+        if didChangeAccess, let url {
             _ = url.startAccessingSecurityScopedResource()
         }
         deferSessionChange {
@@ -1928,6 +1949,8 @@ public struct ContentView: View {
                 selectedPlaylistEntryID = nil
                 selectedPlaylistEntryIDs = []
                 editingSourceURL = fileURL
+                sidebarSelection = .library(fileURL)
+                libraryScrollRequest = LibraryScrollRequest(url: fileURL)
                 let doc = LyricsParser.parseDocument(rawLyrics)
                 beginPreviewTransition(to: .file(fileURL))
                 setPreviewSlides(doc.slides)

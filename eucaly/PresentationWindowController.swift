@@ -884,6 +884,7 @@ struct BackgroundVideoView: View {
             } else {
                 player?.pause()
             }
+            configureLoopObserver()
         }
         .onDisappear {
             teardownPlayer()
@@ -931,6 +932,7 @@ struct BackgroundVideoView: View {
             object: currentItem,
             queue: .main
         ) { _ in
+            guard isVisible else { return }
             currentPlayer?.seek(to: .zero)
             currentPlayer?.play()
         }

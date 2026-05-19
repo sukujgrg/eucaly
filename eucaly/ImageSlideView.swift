@@ -4,6 +4,7 @@ import AppKit
 struct ImageSlideView: View {
     let url: URL
     @State private var image: NSImage?
+    @State private var loadToken = UUID()
 
     var body: some View {
         Group {
@@ -26,9 +27,13 @@ struct ImageSlideView: View {
     }
 
     private func loadImage() {
+        let token = UUID()
+        loadToken = token
+        let imageURL = url
         DispatchQueue.global(qos: .userInitiated).async {
-            if let loadedImage = NSImage(contentsOf: url) {
+            if let loadedImage = NSImage(contentsOf: imageURL) {
                 DispatchQueue.main.async {
+                    guard loadToken == token, url == imageURL else { return }
                     self.image = loadedImage
                 }
             }

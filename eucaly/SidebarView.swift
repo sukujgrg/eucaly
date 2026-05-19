@@ -1026,6 +1026,9 @@ struct SidebarView: View {
             .onChange(of: libraryScrollRequest?.id) { _, _ in
                 prepareLibraryScrollIfNeeded(with: proxy)
             }
+            .onChange(of: libraryRevision) { _, _ in
+                prepareLibraryScrollIfNeeded(with: proxy)
+            }
             .onChange(of: keyboardLibraryScrollTarget) { _, newValue in
                 guard let newValue else { return }
                 prepareLibraryScroll(to: newValue, with: proxy)

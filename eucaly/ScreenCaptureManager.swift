@@ -8,9 +8,14 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
     static let shared = ScreenCaptureManager()
 
     // MARK: - Properties
+    private struct ActiveCapture {
+        let stream: SCStream
+        let ownerID: UUID
+    }
+
     private let sampleQueue = DispatchQueue(label: "eucaly.window-capture.sample", qos: .userInitiated)
     @MainActor var preferredFrameRate: Int = 60
-    @MainActor private var activeStreams: [CGWindowID: SCStream] = [:]
+    @MainActor private var activeStreams: [CGWindowID: ActiveCapture] = [:]
     @MainActor private var captureFilters: [CGWindowID: SCContentFilter] = [:]
     @MainActor @Published var windows: [CapturedWindow] = []
     @MainActor private var availabilityMonitorTask: Task<Void, Never>?
@@ -57,9 +62,14 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
 
     // MARK: - Stream Management
     @MainActor
-    func startCapture(windowID: CGWindowID, outputHandler: SCStreamOutput) async throws -> SCStream {
-        if let existingStream = activeStreams[windowID] {
-            try? await existingStream.stopCapture()
+    func startCapture(
+        windowID: CGWindowID,
+        ownerID: UUID = UUID(),
+        outputHandler: SCStreamOutput
+    ) async throws -> SCStream {
+        if let existingCapture = activeStreams[windowID] {
+            try? await existingCapture.stream.stopCapture()
+            activeStreams.removeValue(forKey: windowID)
         }
 
         guard let filter = captureFilters[windowID] else {
@@ -90,23 +100,24 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
         try stream.addStreamOutput(outputHandler, type: .screen, sampleHandlerQueue: sampleQueue)
         try await stream.startCapture()
 
-        activeStreams[windowID] = stream
+        activeStreams[windowID] = ActiveCapture(stream: stream, ownerID: ownerID)
         ensureAvailabilityMonitorIfNeeded()
         return stream
     }
 
     @MainActor
-    func stopCapture(windowID: CGWindowID) async throws {
-        guard let stream = activeStreams[windowID] else { return }
-        try await stream.stopCapture()
+    func stopCapture(windowID: CGWindowID, ownerID: UUID? = nil) async throws {
+        guard let activeCapture = activeStreams[windowID] else { return }
+        if let ownerID, activeCapture.ownerID != ownerID { return }
+        try await activeCapture.stream.stopCapture()
         activeStreams.removeValue(forKey: windowID)
         stopAvailabilityMonitorIfIdle()
     }
 
     @MainActor
     func stopAllCaptures() async {
-        for (_, stream) in activeStreams {
-            try? await stream.stopCapture()
+        for (_, activeCapture) in activeStreams {
+            try? await activeCapture.stream.stopCapture()
         }
         activeStreams.removeAll()
         stopAvailabilityMonitorIfIdle()
@@ -280,7 +291,7 @@ extension ScreenCaptureManager: SCContentSharingPickerObserver {
 extension ScreenCaptureManager: SCStreamDelegate {
     func stream(_ stream: SCStream, didStopWithError error: any Error) {
         Task { @MainActor in
-            if let stoppedWindowID = activeStreams.first(where: { $0.value === stream })?.key {
+            if let stoppedWindowID = activeStreams.first(where: { $0.value.stream === stream })?.key {
                 activeStreams.removeValue(forKey: stoppedWindowID)
                 removePickedWindow(windowID: stoppedWindowID)
             }
