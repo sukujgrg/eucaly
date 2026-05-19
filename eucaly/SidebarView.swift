@@ -199,6 +199,12 @@ struct SidebarView: View {
 
     @State private var cachedLibraryFolderSections: [LibraryFolderGroupSection] = []
 
+    @State private var displayedLibraryGrouping: LibraryGrouping = .kind
+
+    @State private var isPreparingLibraryGrouping: Bool = false
+
+    @State private var libraryGroupingTransitionTask: Task<Void, Never>? = nil
+
     var body: some View {
         GeometryReader { proxy in
             let libraryListMaxHeight = max(160, min(320, proxy.size.height * 0.35))
@@ -291,7 +297,11 @@ struct SidebarView: View {
             onSelectionChange(newValue)
         }
         .onAppear {
+            displayedLibraryGrouping = libraryGrouping
             rebuildLibraryCaches()
+        }
+        .onDisappear {
+            libraryGroupingTransitionTask?.cancel()
         }
         .onChange(of: libraryRevision) { _, _ in
             rebuildLibraryCaches()
@@ -320,7 +330,7 @@ struct SidebarView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                Picker("Group", selection: $libraryGrouping) {
+                Picker("Group", selection: libraryGroupingBinding) {
                     ForEach(LibraryGrouping.allCases) { grouping in
                         Text(grouping.title).tag(grouping)
                     }
@@ -341,10 +351,17 @@ struct SidebarView: View {
                 }
                 .labelStyle(.iconOnly)
                 .playlistIconButtonStyle()
-                .disabled(!canToggleLibraryGroups)
+                .disabled(isPreparingLibraryGrouping || !canToggleLibraryGroups)
                 .help(libraryGroupToggleHelp)
             }
         }
+    }
+
+    private var libraryGroupingBinding: Binding<LibraryGrouping> {
+        Binding(
+            get: { libraryGrouping },
+            set: { prepareLibraryGroupingChange($0) }
+        )
     }
 
     private func sidebarSection<Content: View>(
@@ -933,8 +950,26 @@ struct SidebarView: View {
         }
     }
 
+    private func prepareLibraryGroupingChange(_ grouping: LibraryGrouping) {
+        libraryGrouping = grouping
+        libraryGroupingTransitionTask?.cancel()
+        guard displayedLibraryGrouping != grouping else {
+            isPreparingLibraryGrouping = false
+            return
+        }
+
+        isPreparingLibraryGrouping = true
+        libraryGroupingTransitionTask = Task { @MainActor in
+            await Task.yield()
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            guard !Task.isCancelled else { return }
+            displayedLibraryGrouping = grouping
+            isPreparingLibraryGrouping = false
+        }
+    }
+
     private var canToggleLibraryGroups: Bool {
-        switch libraryGrouping {
+        switch displayedLibraryGrouping {
         case .kind:
             !libraryKindGroups.isEmpty
         case .folder:
@@ -946,7 +981,7 @@ struct SidebarView: View {
 
     private var libraryGroupToggleHelp: String {
         let action = allVisibleLibraryGroupsCollapsed ? "Expand" : "Collapse"
-        switch libraryGrouping {
+        switch displayedLibraryGrouping {
         case .kind:
             return "\(action) all kinds"
         case .folder:
@@ -965,7 +1000,7 @@ struct SidebarView: View {
     }
 
     private var allVisibleLibraryGroupsCollapsed: Bool {
-        switch libraryGrouping {
+        switch displayedLibraryGrouping {
         case .kind:
             let groups = libraryKindGroups
             return !groups.isEmpty && groups.allSatisfy { collapsedLibraryGroups.contains($0) }
@@ -978,7 +1013,7 @@ struct SidebarView: View {
     }
 
     private func toggleAllLibraryGroups() {
-        switch libraryGrouping {
+        switch displayedLibraryGrouping {
         case .kind:
             let groups = libraryKindGroups
             guard !groups.isEmpty else { return }
@@ -1012,9 +1047,9 @@ struct SidebarView: View {
     ) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
-                if libraryGrouping == .kind {
+                if displayedLibraryGrouping == .kind {
                     sidebarGroupedFileList(urls, selection: selection)
-                } else if libraryGrouping == .folder {
+                } else if displayedLibraryGrouping == .folder {
                     sidebarFolderGroupedFileList(urls, selection: selection)
                 } else {
                     sidebarFileList(urls, selection: selection)
@@ -1043,9 +1078,25 @@ struct SidebarView: View {
             Text("Loading library...")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+        } else if isPreparingLibraryGrouping {
+            preparingLibraryGroupingView(maxHeight: maxHeight)
         } else {
             sidebarScrollableFileList(libraryFiles, maxHeight: maxHeight) { .library($0) }
         }
+    }
+
+    private func preparingLibraryGroupingView(maxHeight: CGFloat) -> some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+
+            Text("Preparing \(libraryGrouping.title) view...")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: maxHeight, alignment: .topLeading)
+        .padding(.horizontal, 8)
+        .padding(.top, 8)
     }
 
     private func prepareLibraryScrollIfNeeded(with proxy: ScrollViewProxy) {
@@ -1164,10 +1215,10 @@ struct SidebarView: View {
     }
 
     private var visibleLibraryFilesForKeyboard: [URL] {
-        if libraryGrouping == .none {
+        if displayedLibraryGrouping == .none {
             return libraryFiles
         }
-        if libraryGrouping == .folder {
+        if displayedLibraryGrouping == .folder {
             return cachedLibraryFolderSections.flatMap { section in
                 collapsedLibraryFolders.contains(section.id) ? [] : section.urls
             }
