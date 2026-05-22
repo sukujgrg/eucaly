@@ -386,9 +386,10 @@ struct SidebarView: View {
                     isExpanded: isExpanded.wrappedValue
                 )
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .contentShape(Rectangle())
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             if isExpanded.wrappedValue {
                 VStack(alignment: .leading, spacing: 10) {
@@ -443,6 +444,8 @@ struct SidebarView: View {
                         )
                     }
                     .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
 
                     Button {
                         onRemoveWebpage(url)
@@ -459,6 +462,14 @@ struct SidebarView: View {
                     .buttonStyle(.plain)
                     .help("Remove webpage")
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contextMenu {
+                    Button {
+                        copyWebpageURL(url)
+                    } label: {
+                        Label("Copy URL", systemImage: "doc.on.doc")
+                    }
+                }
             }
 
             if webpageURLs.isEmpty {
@@ -467,6 +478,11 @@ struct SidebarView: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private func copyWebpageURL(_ url: URL) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(url.absoluteString, forType: .string)
     }
 
     private var playlistControls: some View {
@@ -665,6 +681,8 @@ struct SidebarView: View {
                     sidebarRow(title: displayName(url), isSelected: isSelected)
                 }
                 .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
                 .contextMenu {
                     revealInFinderButton(for: url)
                 }
@@ -748,6 +766,8 @@ struct SidebarView: View {
                     libraryGroupHeader(section.group, count: section.urls.count)
                 }
                 .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
                 .padding(.top, section.group == sections.first?.group ? 0 : 6)
 
                 if !collapsedLibraryGroups.contains(section.group) {
@@ -774,6 +794,8 @@ struct SidebarView: View {
                     )
                 }
                 .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
                 .padding(.top, section.id == sections.first?.id ? 0 : 6)
 
                 if !collapsedLibraryFolders.contains(section.id) {
@@ -800,6 +822,8 @@ struct SidebarView: View {
                 sidebarRow(title: displayName(url), isSelected: sidebarSelection == selectionValue)
             }
             .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
 
             Button {
                 onAddLibraryItemToPlaylist(url)
@@ -816,6 +840,7 @@ struct SidebarView: View {
             .buttonStyle(.plain)
             .help("Add to Playlist")
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .contextMenu {
             Button {
                 onAddLibraryItemToPlaylist(url)
@@ -1137,6 +1162,8 @@ struct SidebarView: View {
                         )
                     }
                     .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
 
                     Button {
                         onRemovePlaylistItem(item.id)
@@ -1153,6 +1180,7 @@ struct SidebarView: View {
                     .buttonStyle(.plain)
                     .help("Remove from Playlist")
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -1175,6 +1203,8 @@ struct SidebarView: View {
             )
         }
         .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
     }
 
     private func sidebarRow(title: String, isSelected: Bool, isMissing: Bool = false) -> some View {
@@ -1195,6 +1225,7 @@ struct SidebarView: View {
                 selectionShape
                     .stroke(isSelected ? AccentColorProvider.color.opacity(0.7) : Color.clear, lineWidth: 1)
             )
+            .contentShape(Rectangle())
             .focusEffectDisabled()
     }
 
