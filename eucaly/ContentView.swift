@@ -260,6 +260,9 @@ public struct ContentView: View {
         .onChange(of: webpageTitles) { _, _ in
             persistWebpageState()
         }
+        .onChange(of: projectionScreenDisplayID) { _, _ in
+            applyProjectionScreenPreference()
+        }
         .onDisappear(perform: handleRootOnDisappear)
     }
 
@@ -269,6 +272,7 @@ public struct ContentView: View {
         isLibraryLoading = false
         isLibrarySearchIndexing = false
         releaseSecurityScopedAccess()
+        stopWindowCapturesForShutdown()
     }
 
     private func handleExitCommand() {
@@ -283,6 +287,9 @@ public struct ContentView: View {
             .onReceive(screenCaptureManager.$windows, perform: handleCaptureWindowsUpdate)
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
                 refreshProjectionScreenOptions()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .projectionScreenFellBackToAuto)) { _ in
+                projectionScreenDisplayID = 0
             }
             .onReceive(NotificationCenter.default.publisher(for: .toggleSlidesVisibility), perform: handleToggleSlidesVisibilityNotification)
             .onReceive(NotificationCenter.default.publisher(for: .stopProjection), perform: handleStopProjectionNotification)
@@ -723,15 +730,28 @@ public struct ContentView: View {
         }
     }
 
-    private func setCurrentSlides(_ slides: [Slide], preferredSelection: Slide.ID? = nil) {
+    private func setCurrentSlides(
+        _ slides: [Slide],
+        preferredSelection: Slide.ID? = nil,
+        preferredSelectionIndex: Int? = nil
+    ) {
         syncCurrentWebpageSource(with: slides)
-        flow.setCurrentSlides(slides, in: session, preferredSelection: preferredSelection)
+        flow.setCurrentSlides(
+            slides,
+            in: session,
+            preferredSelection: preferredSelection,
+            preferredSelectionIndex: preferredSelectionIndex
+        )
     }
 
     private func clearPreviewDocument() {
+        let clearedWindowFromPreview = flow.previewSlides.contains { $0.captureWindowID != nil }
         previewLoadToken = UUID()
         previewSource = .none
         flow.clearPreviewDocument()
+        if clearedWindowFromPreview {
+            releaseWindowCaptureSelectionIfUnused()
+        }
     }
 
     private func clearCurrentDocument() {
@@ -743,6 +763,19 @@ public struct ContentView: View {
         flow.isCurrentCollapsed = true
         if clearedWindowFromCurrent, case .window = sidebarSelection {
             sidebarSelection = nil
+        }
+        if clearedWindowFromCurrent {
+            releaseWindowCaptureSelectionIfUnused()
+        }
+    }
+
+    private func releaseWindowCaptureSelectionIfUnused() {
+        guard isWindowCaptureSupported else { return }
+        let previewHasWindow = flow.previewSlides.contains { $0.captureWindowID != nil }
+        let currentHasWindow = session.slides.contains { $0.captureWindowID != nil }
+        guard !previewHasWindow && !currentHasWindow else { return }
+        Task { @MainActor in
+            await screenCaptureManager.clearWindowSelectionAndDeactivatePicker()
         }
     }
 
@@ -823,6 +856,19 @@ public struct ContentView: View {
         if projectionScreenDisplayID != 0,
            !projectionScreenOptions.contains(where: { $0.displayID == projectionScreenDisplayID }) {
             projectionScreenDisplayID = 0
+        }
+
+        applyProjectionScreenPreference()
+    }
+
+    private func applyProjectionScreenPreference() {
+        guard session.isPresenting else { return }
+        session.setPreferredPresentationScreen(preferredProjectionScreen())
+    }
+
+    private func stopWindowCapturesForShutdown() {
+        Task { @MainActor in
+            await ScreenCaptureManager.shared.stopAllCaptures()
         }
     }
 
@@ -1357,6 +1403,9 @@ public struct ContentView: View {
         }
         let preservedCurrentSlides = session.slides
         let preservedCurrentSlideID = session.currentSlideID
+        let preservedCurrentSlideIndex = preservedCurrentSlideID.flatMap { slideID in
+            preservedCurrentSlides.firstIndex { $0.id == slideID }
+        }
 
         flow.setPreviewSlides(
             slides,
@@ -1366,7 +1415,8 @@ public struct ContentView: View {
 
         restoreCurrentDocumentIfNeeded(
             slides: preservedCurrentSlides,
-            currentSlideID: preservedCurrentSlideID
+            currentSlideID: preservedCurrentSlideID,
+            currentSlideIndex: preservedCurrentSlideIndex
         )
     }
 
@@ -2166,6 +2216,11 @@ public struct ContentView: View {
             clearPreviewDocument()
         }
 
+        if session.slides.contains(where: { $0.webpageURL == url })
+            || currentWebpageSourceURL == url {
+            clearCurrentDocument()
+        }
+
         if sidebarSelection == .web(url) {
             sidebarSelection = nil
         }
@@ -2186,13 +2241,20 @@ public struct ContentView: View {
     }
 
     private func clearSelectedWindowFromSidebar() {
-        guard case .window(let windowID) = sidebarSelection else { return }
+        let windowID: CGWindowID?
+        if case .window(let selectedWindowID) = sidebarSelection {
+            windowID = selectedWindowID
+        } else {
+            windowID = captureWindows.first?.windowID
+        }
+        guard let windowID else { return }
         if flow.previewSlides.contains(where: { $0.captureWindowID == windowID }) {
             clearPreviewDocument()
         }
         if session.slides.contains(where: { $0.captureWindowID == windowID }) {
-            flow.clearCurrentDocument(in: session)
-            currentLyricsSourceURL = nil
+            clearCurrentDocument()
+        } else {
+            releaseWindowCaptureSelectionIfUnused()
         }
         if #available(macOS 14.0, *), isWindowCaptureSupported {
             screenCaptureManager.clearWindow(windowID: windowID)
@@ -2491,7 +2553,8 @@ public struct ContentView: View {
 
     private func restoreCurrentDocumentIfNeeded(
         slides: [Slide],
-        currentSlideID: Slide.ID?
+        currentSlideID: Slide.ID?,
+        currentSlideIndex: Int?
     ) {
         let preservedIDs = slides.map(\.id)
         let currentIDs = session.slides.map(\.id)
@@ -2503,8 +2566,12 @@ public struct ContentView: View {
         let restoredSelection = currentSlideID.flatMap { slideID in
             slides.contains(where: { $0.id == slideID }) ? slideID : nil
         }
-        session.setSlides(slides)
-        session.currentSlideID = restoredSelection ?? slides.first?.id
+        flow.setCurrentSlides(
+            slides,
+            in: session,
+            preferredSelection: restoredSelection,
+            preferredSelectionIndex: currentSlideIndex
+        )
     }
 
     private func isSupportedWebpageURL(_ url: URL) -> Bool {

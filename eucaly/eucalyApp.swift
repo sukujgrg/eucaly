@@ -9,6 +9,8 @@ import SwiftUI
 import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var isTerminatingAfterCaptureCleanup = false
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Ensure the app runs as a regular GUI app when launched via `swift run`.
         NSApplication.shared.setActivationPolicy(.regular)
@@ -27,11 +29,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        for window in sender.windows where window is PresentationWindow {
+        guard !isTerminatingAfterCaptureCleanup else {
+            return .terminateNow
+        }
+
+        if #available(macOS 14.0, *) {
+            Task { @MainActor in
+                await ScreenCaptureManager.shared.stopAllCaptures()
+                closePresentationWindows(in: sender)
+                isTerminatingAfterCaptureCleanup = true
+                sender.reply(toApplicationShouldTerminate: true)
+            }
+            return .terminateLater
+        }
+
+        closePresentationWindows(in: sender)
+        return .terminateNow
+    }
+
+    private func closePresentationWindows(in application: NSApplication) {
+        for window in application.windows where window is PresentationWindow {
             window.orderOut(nil)
             window.close()
         }
-        return .terminateNow
     }
 }
 
@@ -141,4 +161,5 @@ extension Notification.Name {
     static let saveLyrics = Notification.Name("saveLyrics")
     static let showLibrarySearch = Notification.Name("showLibrarySearch")
     static let refreshLibrary = Notification.Name("refreshLibrary")
+    static let projectionScreenFellBackToAuto = Notification.Name("projectionScreenFellBackToAuto")
 }

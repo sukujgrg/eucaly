@@ -259,7 +259,7 @@ struct SidebarView: View {
                         sectionDivider
 
                         sidebarSection(
-                            "Windows",
+                            "Window",
                             systemImage: "macwindow",
                             tint: .windows,
                             isExpanded: $isWindowsSectionExpanded
@@ -506,11 +506,11 @@ struct SidebarView: View {
     private var windowsControls: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Button("Pick Window") {
+                Button(captureWindows.isEmpty ? "Pick Window" : "Replace Window") {
                     onPickWindow()
                 }
                 .sidebarActionStyle(primary: true)
-                .help("Choose a window to preview")
+                .help(captureWindows.isEmpty ? "Choose a window to preview" : "Choose a different window to preview")
 
                 Button {
                     onClearSelectedWindow()
@@ -521,16 +521,11 @@ struct SidebarView: View {
                 .sidebarActionStyle()
                 .disabled(!hasSelectedWindow)
                 .help("Clear selected window")
-            }
 
-            if !captureWindows.isEmpty {
-                sidebarWindowsList
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Frame Rate")
+                Text("FPS")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
                 Picker("Frame Rate", selection: $windowCaptureFrameRate) {
                     Text("24").tag(24)
                     Text("30").tag(30)
@@ -538,18 +533,19 @@ struct SidebarView: View {
                 }
                 .pickerStyle(.segmented)
                 .controlSize(.small)
-                Text("Applies to the next window capture.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                .labelsHidden()
+                .frame(width: 104)
+                .help("Window capture frame rate")
+            }
+
+            if let window = captureWindows.first {
+                selectedWindowRow(window)
             }
         }
     }
 
     private var hasSelectedWindow: Bool {
-        if case .window = sidebarSelection {
-            return true
-        }
-        return false
+        !captureWindows.isEmpty
     }
 
     private func audioControls(maxListHeight: CGFloat) -> some View {
@@ -1161,28 +1157,24 @@ struct SidebarView: View {
         }
     }
 
-    private var sidebarWindowsList: some View {
-        LazyVStack(alignment: .leading, spacing: 0) {
-            ForEach(captureWindows) { window in
-                let selectionValue = SidebarSelection.window(window.windowID)
-                let rowTitle = window.title == window.appName ? window.appName : "\(window.appName): \(window.title)"
-                Button {
-                    isSidebarFocused = true
-                    if sidebarSelection == selectionValue {
-                        // Re-load the same picked window after Current gets cleared.
-                        onSelectionChange(selectionValue)
-                    } else {
-                        sidebarSelection = selectionValue
-                    }
-                } label: {
-                    sidebarRow(
-                        title: rowTitle,
-                        isSelected: sidebarSelection == selectionValue
-                    )
-                }
-                .buttonStyle(.plain)
+    private func selectedWindowRow(_ window: ScreenCaptureManager.CapturedWindow) -> some View {
+        let selectionValue = SidebarSelection.window(window.windowID)
+        let rowTitle = window.title == window.appName ? window.appName : "\(window.appName): \(window.title)"
+        return Button {
+            isSidebarFocused = true
+            if sidebarSelection == selectionValue {
+                // Re-load the same picked window after Current gets cleared.
+                onSelectionChange(selectionValue)
+            } else {
+                sidebarSelection = selectionValue
             }
+        } label: {
+            sidebarRow(
+                title: rowTitle,
+                isSelected: sidebarSelection == selectionValue
+            )
         }
+        .buttonStyle(.plain)
     }
 
     private func sidebarRow(title: String, isSelected: Bool, isMissing: Bool = false) -> some View {

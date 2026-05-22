@@ -63,14 +63,17 @@ final class PresentationFlowController: ObservableObject {
         previewDocument = document
     }
 
-    func setCurrentSlides(_ slides: [Slide], in session: PresentationSession, preferredSelection: Slide.ID? = nil) {
-        session.setSlides(slides)
-        if let preferredSelection,
-           slides.contains(where: { $0.id == preferredSelection }) {
-            session.currentSlideID = preferredSelection
-        } else if session.currentSlideID == nil || !slides.contains(where: { $0.id == session.currentSlideID }) {
-            session.currentSlideID = slides.first?.id
-        }
+    func setCurrentSlides(
+        _ slides: [Slide],
+        in session: PresentationSession,
+        preferredSelection: Slide.ID? = nil,
+        preferredSelectionIndex: Int? = nil
+    ) {
+        session.setSlides(
+            slides,
+            preferredSelection: preferredSelection,
+            preferredSelectionIndex: preferredSelectionIndex
+        )
     }
 
     func clearCurrentDocument(in session: PresentationSession) {

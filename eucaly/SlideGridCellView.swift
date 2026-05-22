@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreGraphics
 
 struct SlideGridCellView: View {
     let slide: Slide
@@ -56,8 +57,8 @@ struct SlideGridCellView: View {
             return lyricsSize
         }()
         Group {
-            if slide.captureWindowID != nil {
-                WindowCaptureThumbnailView(title: slide.label)
+            if let windowID = slide.captureWindowID {
+                WindowCaptureThumbnailView(windowID: windowID, title: slide.label)
             } else if let pdfURL = slide.pdfURL, let pageIndex = slide.pdfPageIndex {
                 PDFThumbnailView(url: pdfURL, pageIndex: pageIndex, size: pdfSize)
             } else if let webpageURL = slide.webpageURL {
@@ -76,9 +77,12 @@ struct SlideGridCellView: View {
 }
 
 private struct WindowCaptureThumbnailView: View {
+    let windowID: CGWindowID
     let title: String?
+    @ObservedObject private var captureManager = ScreenCaptureManager.shared
 
     var body: some View {
+        let isWindowAvailable = captureManager.hasPickedWindow(windowID)
         ZStack {
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .fill(Color(nsColor: .controlBackgroundColor))
@@ -90,13 +94,18 @@ private struct WindowCaptureThumbnailView: View {
             VStack(spacing: 8) {
                 Image(systemName: "macwindow")
                     .font(.system(size: 36))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(isWindowAvailable ? .secondary : .tertiary)
                 Text(title ?? "Window Capture")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 8)
+                if !isWindowAvailable {
+                    Label("Unavailable", systemImage: "exclamationmark.triangle")
+                        .font(.caption2)
+                        .foregroundStyle(.yellow)
+                }
             }
         }
     }

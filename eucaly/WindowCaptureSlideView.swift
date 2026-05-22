@@ -6,9 +6,10 @@ import CoreMedia
 import CoreImage
 import Combine
 
-@available(macOS 12.3, *)
+@available(macOS 14.0, *)
 struct WindowCaptureSlideView: View {
     let windowID: CGWindowID
+    @ObservedObject private var captureManager = ScreenCaptureManager.shared
     @StateObject private var streamOutput = WindowStreamOutput()
     @State private var error: Error?
     @State private var activeCaptureWindowID: CGWindowID?
@@ -16,20 +17,14 @@ struct WindowCaptureSlideView: View {
     @State private var captureOwnerID = UUID()
 
     var body: some View {
+        let isWindowAvailable = captureManager.hasPickedWindow(windowID)
         ZStack {
             Color.black
 
-            if let error = error {
-                VStack {
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.system(size: 48))
-                        .foregroundColor(.yellow)
-                    Text("Capture Error")
-                        .font(.headline)
-                    Text(error.localizedDescription)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
+            if !isWindowAvailable {
+                unavailableWindowView
+            } else if let error = error {
+                captureErrorView(error)
             } else if let image = streamOutput.currentFrame {
                 Image(nsImage: image)
                     .resizable()
@@ -40,7 +35,12 @@ struct WindowCaptureSlideView: View {
                 ProgressView("Starting capture...")
             }
         }
-        .task(id: windowID) {
+        .task(id: "\(windowID)-\(isWindowAvailable)") {
+            guard isWindowAvailable else {
+                error = nil
+                streamOutput.clearFrame()
+                return
+            }
             captureOwnerID = UUID()
             let ownerID = captureOwnerID
             await switchCapture(to: windowID, ownerID: ownerID)
@@ -53,6 +53,34 @@ struct WindowCaptureSlideView: View {
                     await tearDownCapture(windowID: windowID, ownerID: ownerID)
                 }
             }
+        }
+    }
+
+    private var unavailableWindowView: some View {
+        VStack {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 48))
+                .foregroundColor(.yellow)
+            Text("Window Unavailable")
+                .font(.headline)
+            Text("Load the newly picked window to Current, or pick this window again.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .padding()
+    }
+
+    private func captureErrorView(_ error: Error) -> some View {
+        VStack {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 48))
+                .foregroundColor(.yellow)
+            Text("Capture Error")
+                .font(.headline)
+            Text(error.localizedDescription)
+                .font(.caption)
+                .foregroundColor(.secondary)
         }
     }
 
@@ -94,7 +122,7 @@ struct WindowCaptureSlideView: View {
 
 // MARK: - Stream Output Handler
 
-@available(macOS 12.3, *)
+@available(macOS 14.0, *)
 final class WindowStreamOutput: NSObject, ObservableObject, SCStreamOutput {
     @MainActor @Published private(set) var currentFrame: NSImage?
     private let context = CIContext(options: nil)

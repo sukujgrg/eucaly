@@ -48,6 +48,7 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
         windows = []
         captureFilters = [:]
         stopAvailabilityMonitorIfIdle()
+        deactivatePickerIfIdle()
     }
 
     @MainActor
@@ -56,6 +57,7 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
         if activeStreams[windowID] != nil {
             Task { @MainActor in
                 try? await stopCapture(windowID: windowID)
+                deactivatePickerIfIdle()
             }
         }
     }
@@ -124,6 +126,20 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
     }
 
     @MainActor
+    func clearWindowSelectionAndDeactivatePicker() async {
+        await stopAllCaptures()
+        windows = []
+        captureFilters = [:]
+        stopAvailabilityMonitorIfIdle()
+        deactivatePickerIfIdle()
+    }
+
+    @MainActor
+    func hasPickedWindow(_ windowID: CGWindowID) -> Bool {
+        windows.contains { $0.windowID == windowID }
+    }
+
+    @MainActor
     private func configurePickerIfNeeded() {
         guard !pickerConfigured else { return }
         if !pickerObserverRegistered {
@@ -140,7 +156,7 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
     }
 
     @MainActor
-    private func updatePickedWindows(_ pickedWindows: [CapturedWindow], filter: SCContentFilter) {
+    private func updatePickedWindows(_ pickedWindows: [CapturedWindow], filter: SCContentFilter) async {
         windows = pickedWindows
 
         var nextFilters: [CGWindowID: SCContentFilter] = [:]
@@ -148,6 +164,13 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
             nextFilters[window.windowID] = filter
         }
         captureFilters = nextFilters
+
+        let pickedWindowIDs = Set(pickedWindows.map(\.windowID))
+        let staleActiveWindowIDs = activeStreams.keys.filter { !pickedWindowIDs.contains($0) }
+        for windowID in staleActiveWindowIDs {
+            try? await stopCapture(windowID: windowID)
+        }
+
         ensureAvailabilityMonitorIfNeeded()
         stopAvailabilityMonitorIfIdle()
     }
@@ -157,6 +180,7 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
         windows.removeAll { $0.windowID == windowID }
         captureFilters.removeValue(forKey: windowID)
         stopAvailabilityMonitorIfIdle()
+        deactivatePickerIfIdle()
     }
 
     @MainActor
@@ -180,6 +204,14 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
         guard windows.isEmpty && activeStreams.isEmpty else { return }
         availabilityMonitorTask?.cancel()
         availabilityMonitorTask = nil
+    }
+
+    @MainActor
+    private func deactivatePickerIfIdle() {
+        guard windows.isEmpty && activeStreams.isEmpty else { return }
+        guard pickerConfigured else { return }
+        SCContentSharingPicker.shared.isActive = false
+        pickerConfigured = false
     }
 
     @MainActor
@@ -268,14 +300,15 @@ enum ScreenCaptureError: LocalizedError {
 extension ScreenCaptureManager: SCContentSharingPickerObserver {
     func contentSharingPicker(_ picker: SCContentSharingPicker, didCancelFor stream: SCStream?) {
         // Keep previous picked window list on cancel.
+        Task { @MainActor in
+            deactivatePickerIfIdle()
+        }
     }
 
     func contentSharingPicker(_ picker: SCContentSharingPicker, didUpdateWith filter: SCContentFilter, for stream: SCStream?) {
         Task {
             let pickedWindows = await resolvePickedWindows(from: filter)
-            await MainActor.run {
-                updatePickedWindows(pickedWindows, filter: filter)
-            }
+            await updatePickedWindows(pickedWindows, filter: filter)
         }
     }
 

@@ -77,11 +77,6 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
             NotificationCenter.default.removeObserver(backgroundAudioEndObserver)
         }
         screenRepositionWorkItem?.cancel()
-        if #available(macOS 12.3, *) {
-            Task { @MainActor in
-                await ScreenCaptureManager.shared.stopAllCaptures()
-            }
-        }
     }
 
     var overlayMode: OverlayMode { overlay.mode }
@@ -99,10 +94,28 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
         return FileManager.default.fileExists(atPath: url.path)
     }
 
-    func setSlides(_ slides: [Slide]) {
+    func setSlides(
+        _ slides: [Slide],
+        preferredSelection: Slide.ID? = nil,
+        preferredSelectionIndex: Int? = nil
+    ) {
+        let preservedSelection = preferredSelection ?? currentSlideID
         self.slides = slides
-        currentSlideID = slides.first?.id
+        if let preservedSelection,
+           slides.contains(where: { $0.id == preservedSelection }) {
+            currentSlideID = preservedSelection
+        } else if let preferredSelectionIndex,
+                  slides.indices.contains(preferredSelectionIndex) {
+            currentSlideID = slides[preferredSelectionIndex].id
+        } else {
+            currentSlideID = slides.first?.id
+        }
         resetVideoPlaybackProgress()
+    }
+
+    func setPreferredPresentationScreen(_ screen: NSScreen?) {
+        preferredPresentationScreenID = screen?.displayID
+        schedulePresentationWindowReposition()
     }
 
     func clearSlides() {
@@ -269,6 +282,7 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
         screenRepositionWorkItem = nil
         window = nil
         isPresenting = false
+        stopWindowCapturesForShutdown()
     }
 
     private func schedulePresentationWindowReposition() {
@@ -291,14 +305,27 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     private func resolvePreferredPresentationScreen() -> NSScreen? {
-        if let preferredPresentationScreenID,
-           let exactMatch = NSScreen.screens.first(where: { $0.displayID == preferredPresentationScreenID }) {
+        let requestedDisplayID = preferredPresentationScreenID
+        if let requestedDisplayID,
+           let exactMatch = NSScreen.screens.first(where: { $0.displayID == requestedDisplayID }) {
             return exactMatch
         }
 
         let fallbackScreen = NSScreen.screens.count > 1 ? NSScreen.screens[1] : NSScreen.main
-        preferredPresentationScreenID = fallbackScreen?.displayID
+        let fallbackDisplayID = fallbackScreen?.displayID
+        preferredPresentationScreenID = fallbackDisplayID
+
+        if let requestedDisplayID, requestedDisplayID != fallbackDisplayID {
+            NotificationCenter.default.post(name: .projectionScreenFellBackToAuto, object: nil)
+        }
+
         return fallbackScreen
+    }
+
+    private func stopWindowCapturesForShutdown() {
+        Task { @MainActor in
+            await ScreenCaptureManager.shared.stopAllCaptures()
+        }
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -613,7 +640,7 @@ struct PresentationView: View {
             VStack(spacing: 28) {
                 if session.areSlidesVisible, let slide = currentSlide {
                     Group {
-                        if #available(macOS 12.3, *), let windowID = slide.captureWindowID {
+                        if let windowID = slide.captureWindowID {
                             WindowCaptureSlideView(windowID: windowID)
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                         } else if let videoURL = slide.videoURL {
