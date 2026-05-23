@@ -104,6 +104,7 @@ final class AppUpdateViewModel: ObservableObject {
         ]
 
         try process.run()
+        AppDelegate.isInstallingUpdate = true
         isInstalling = true
         NSApp.terminate(nil)
     }

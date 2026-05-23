@@ -9,6 +9,8 @@ import SwiftUI
 import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    static var isInstallingUpdate = false
+
     private var isTerminatingAfterCaptureCleanup = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -33,18 +35,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return .terminateNow
         }
 
-        if #available(macOS 14.0, *) {
-            Task { @MainActor in
-                await ScreenCaptureManager.shared.stopAllCaptures()
-                closePresentationWindows(in: sender)
-                isTerminatingAfterCaptureCleanup = true
-                sender.reply(toApplicationShouldTerminate: true)
-            }
-            return .terminateLater
+        if Self.isInstallingUpdate {
+            closePresentationWindows(in: sender)
+            Task { await ScreenCaptureManager.shared.stopAllCaptures() }
+            return .terminateNow
         }
 
-        closePresentationWindows(in: sender)
-        return .terminateNow
+        Task { @MainActor in
+            await ScreenCaptureManager.shared.stopAllCaptures()
+            closePresentationWindows(in: sender)
+            isTerminatingAfterCaptureCleanup = true
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     private func closePresentationWindows(in application: NSApplication) {

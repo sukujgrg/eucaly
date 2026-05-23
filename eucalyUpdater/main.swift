@@ -67,8 +67,18 @@ private func parseArguments() throws -> UpdaterArguments {
     )
 }
 
-private func waitForParentToExit(_ processID: pid_t) {
+private func waitForParentToExit(_ processID: pid_t, timeout: TimeInterval = 30) {
+    let deadline = Date().addingTimeInterval(timeout)
+
     while kill(processID, 0) == 0 {
+        if Date() >= deadline {
+            kill(processID, SIGTERM)
+            usleep(500_000)
+            if kill(processID, 0) == 0 {
+                kill(processID, SIGKILL)
+            }
+            break
+        }
         usleep(200_000)
     }
 }
