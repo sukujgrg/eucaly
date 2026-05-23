@@ -27,6 +27,7 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     @Published var currentSlideID: Slide.ID?
     @Published var isPresenting = false
     @Published var videoMuted = false
+    // Current and projection webpage mute state; Preview keeps a separate local mute state.
     @Published var webpageMuted = false
     @Published var videoPaused = false
     @Published var videoLoop = false

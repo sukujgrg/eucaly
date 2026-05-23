@@ -57,6 +57,7 @@ public struct ContentView: View {
     @State private var selectedWebpageURL: URL? = nil
     @State private var currentWebpageSourceURL: URL? = nil
     @State private var currentWebpageNavigationRevision: Int = 0
+    // Preview mute is intentionally local; Current and projection share session.webpageMuted.
     @State private var previewWebpageMuted: Bool = false
     @State private var librarySearchResults: [LibraryTextSearchIndex.SearchResult] = []
     @State private var librarySearchResultsQuery: String = ""
@@ -2352,59 +2353,39 @@ public struct ContentView: View {
         guard isSupportedWebpageURL(newURL) else { return }
         guard isPreviewTrackingWebpageCallback(previousURL: previousURL, newURL: newURL) else { return }
 
-        let sourceURL = previousURL
-        if sourceURL == newURL {
-            if !webpageURLs.contains(newURL) {
-                webpageURLs.append(newURL)
-            }
-            selectedWebpageURL = newURL
+        guard recordNavigatedWebpageURL(to: newURL, from: previousURL) else {
             return
         }
 
-        if let existingIndex = webpageURLs.firstIndex(of: sourceURL) {
-            webpageURLs[existingIndex] = newURL
-        } else if !webpageURLs.contains(newURL) {
-            webpageURLs.append(newURL)
-        }
-
-        var seenURLs = Set<URL>()
-        webpageURLs = webpageURLs.filter { seenURLs.insert($0).inserted }
-
-        if let existingTitle = webpageTitles[sourceURL], webpageTitles[newURL] == nil {
-            webpageTitles[newURL] = existingTitle
-        }
-        webpageTitles.removeValue(forKey: sourceURL)
-
-        selectedWebpageURL = newURL
         beginPreviewTransition(to: .web(newURL))
         setPreviewSlides(buildWebpageSlides(from: newURL))
-
-        if sidebarSelection == .web(sourceURL) {
-            setSidebarSelectionWithoutLoading(.web(newURL))
-        }
     }
 
     private func updateCurrentWebpageURL(to newURL: URL, from previousURL: URL) {
         guard isSupportedWebpageURL(newURL) else { return }
         guard isCurrentTrackingWebpageCallback(previousURL: previousURL, newURL: newURL) else { return }
 
-        let sourceURL = previousURL
-        if sourceURL == newURL {
+        recordNavigatedWebpageURL(to: newURL, from: previousURL)
+        let navigationRevision = currentWebpageNavigationRevision + 1
+        commitCurrentSlides(
+            buildWebpageSlides(
+                from: newURL,
+                navigationRevision: navigationRevision
+            )
+        )
+    }
+
+    @discardableResult
+    private func recordNavigatedWebpageURL(to newURL: URL, from previousURL: URL) -> Bool {
+        if previousURL == newURL {
             if !webpageURLs.contains(newURL) {
                 webpageURLs.append(newURL)
             }
-            let navigationRevision = currentWebpageNavigationRevision + 1
             selectedWebpageURL = newURL
-            commitCurrentSlides(
-                buildWebpageSlides(
-                    from: newURL,
-                    navigationRevision: navigationRevision
-                )
-            )
-            return
+            return false
         }
 
-        if let existingIndex = webpageURLs.firstIndex(of: sourceURL) {
+        if let existingIndex = webpageURLs.firstIndex(of: previousURL) {
             webpageURLs[existingIndex] = newURL
         } else if !webpageURLs.contains(newURL) {
             webpageURLs.append(newURL)
@@ -2413,23 +2394,18 @@ public struct ContentView: View {
         var seenURLs = Set<URL>()
         webpageURLs = webpageURLs.filter { seenURLs.insert($0).inserted }
 
-        if let existingTitle = webpageTitles[sourceURL], webpageTitles[newURL] == nil {
+        if let existingTitle = webpageTitles[previousURL], webpageTitles[newURL] == nil {
             webpageTitles[newURL] = existingTitle
         }
-        webpageTitles.removeValue(forKey: sourceURL)
+        webpageTitles.removeValue(forKey: previousURL)
 
-        let navigationRevision = currentWebpageNavigationRevision + 1
         selectedWebpageURL = newURL
-        commitCurrentSlides(
-            buildWebpageSlides(
-                from: newURL,
-                navigationRevision: navigationRevision
-            )
-        )
 
-        if sidebarSelection == .web(sourceURL) {
+        if sidebarSelection == .web(previousURL) {
             setSidebarSelectionWithoutLoading(.web(newURL))
         }
+
+        return true
     }
 
     private func setSidebarSelectionWithoutLoading(_ selection: SidebarSelection?) {
