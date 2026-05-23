@@ -124,22 +124,6 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
         resetVideoPlaybackProgress()
     }
 
-    func addWindowCaptureSlide(windowID: CGWindowID, windowTitle: String) {
-        let newSlide = Slide(
-            index: slides.count + 1,
-            lines: [],
-            label: "Window: \(windowTitle)",
-            videoURL: nil,
-            pdfURL: nil,
-            pdfPageIndex: nil,
-            imageURL: nil,
-            captureWindowID: windowID
-        )
-
-        slides.append(newSlide)
-        currentSlideID = newSlide.id
-    }
-
     func startPresentation(preferredScreen: NSScreen?, slidesVisible: Bool = true) {
         guard window == nil else { return }
         let screen = preferredScreen ?? NSScreen.main
@@ -306,12 +290,11 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
 
     private func resolvePreferredPresentationScreen() -> NSScreen? {
         let requestedDisplayID = preferredPresentationScreenID
-        if let requestedDisplayID,
-           let exactMatch = NSScreen.screens.first(where: { $0.displayID == requestedDisplayID }) {
+        if let exactMatch = ProjectionScreenResolver.exactScreen(displayID: requestedDisplayID) {
             return exactMatch
         }
 
-        let fallbackScreen = NSScreen.screens.count > 1 ? NSScreen.screens[1] : NSScreen.main
+        let fallbackScreen = ProjectionScreenResolver.resolve(displayID: nil)
         let fallbackDisplayID = fallbackScreen?.displayID
         preferredPresentationScreenID = fallbackDisplayID
 
@@ -1887,14 +1870,5 @@ final class PresentationWindow: NSWindow {
         DispatchQueue.main.async { [weak self] in
             self?.session?.moveSelection(direction: direction)
         }
-    }
-}
-
-private extension NSScreen {
-    var displayID: CGDirectDisplayID? {
-        guard let number = deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
-            return nil
-        }
-        return CGDirectDisplayID(number.uint32Value)
     }
 }

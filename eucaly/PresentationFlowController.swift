@@ -86,15 +86,6 @@ final class PresentationFlowController: ObservableObject {
         }
     }
 
-    func movePreviewToCurrent(in session: PresentationSession, force: Bool) {
-        let slides = previewSlides
-        guard !slides.isEmpty else { return }
-        guard force || session.slides.isEmpty else { return }
-        setCurrentSlides(slides, in: session, preferredSelection: previewSelectionID)
-        clearPreviewDocument()
-        isCurrentCollapsed = false
-    }
-
     func selectCurrentSlideForPresentationStart(in session: PresentationSession) {
         if let selection = session.currentSlideID,
            session.slides.contains(where: { $0.id == selection }) {
@@ -114,7 +105,6 @@ final class PresentationFlowController: ObservableObject {
             return
         }
 
-        movePreviewToCurrent(in: session, force: false)
         guard !session.slides.isEmpty || session.hasAvailableBackgroundVisual else { return }
 
         selectCurrentSlideForPresentationStart(in: session)

@@ -366,6 +366,23 @@ final class PresentationFlowTests: XCTestCase {
         XCTAssertNotNil(result.backgroundURL)
     }
 
+    func testToggleSlidesVisibilityDoesNotPromotePreviewWhenCurrentIsEmpty() async {
+        let result = await MainActor.run { () -> (currentCount: Int, previewCount: Int, isPresenting: Bool) in
+            let flow = PresentationFlowController()
+            let session = PresentationSession()
+            let slides = makeTestSlides(count: 2)
+
+            flow.setPreviewSlides(slides)
+            flow.toggleSlidesVisibility(in: session, preferredScreen: nil)
+
+            return (session.slides.count, flow.previewSlides.count, session.isPresenting)
+        }
+
+        XCTAssertEqual(result.currentCount, 0)
+        XCTAssertEqual(result.previewCount, 2)
+        XCTAssertFalse(result.isPresenting)
+    }
+
     private func assertGridNavigationTargets(
         layout: ThumbnailGridLayout,
         itemCount: Int,

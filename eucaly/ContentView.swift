@@ -549,16 +549,11 @@ public struct ContentView: View {
     }
 
     private func handleToggleSlidesVisibilityNotification(_ notification: Notification) {
-        let currentWasEmpty = session.slides.isEmpty
-        let lyricsSourceURL = previewLyricsSourceURL()
         deferSessionChange {
             flow.toggleSlidesVisibility(
                 in: session,
                 preferredScreen: preferredProjectionScreen()
             )
-            if currentWasEmpty, !session.slides.isEmpty {
-                currentLyricsSourceURL = lyricsSourceURL
-            }
         }
     }
 
@@ -730,11 +725,13 @@ public struct ContentView: View {
         }
     }
 
-    private func setCurrentSlides(
+    private func commitCurrentSlides(
         _ slides: [Slide],
+        lyricsSourceURL: URL? = nil,
         preferredSelection: Slide.ID? = nil,
         preferredSelectionIndex: Int? = nil
     ) {
+        currentLyricsSourceURL = lyricsSourceURL
         syncCurrentWebpageSource(with: slides)
         flow.setCurrentSlides(
             slides,
@@ -785,10 +782,13 @@ public struct ContentView: View {
 
     private func handleLoadPreviewToCurrent() {
         guard !flow.previewSlides.isEmpty else { return }
-        let lyricsSourceURL = previewLyricsSourceURL()
-        flow.movePreviewToCurrent(in: session, force: true)
-        currentLyricsSourceURL = lyricsSourceURL
-        syncCurrentWebpageSource(with: session.slides)
+        commitCurrentSlides(
+            flow.previewSlides,
+            lyricsSourceURL: previewLyricsSourceURL(),
+            preferredSelection: flow.previewSelectionID
+        )
+        clearPreviewDocument()
+        flow.isCurrentCollapsed = false
         isPreviewCollapsed = true
         focusedDetailTarget = session.slides.contains { $0.webpageURL != nil }
             ? nil
@@ -796,16 +796,11 @@ public struct ContentView: View {
     }
 
     private func toggleSlidesFromUI() {
-        let currentWasEmpty = session.slides.isEmpty
-        let lyricsSourceURL = previewLyricsSourceURL()
         DispatchQueue.main.async {
             flow.toggleSlidesVisibility(
                 in: session,
                 preferredScreen: preferredProjectionScreen()
             )
-            if currentWasEmpty, !session.slides.isEmpty {
-                currentLyricsSourceURL = lyricsSourceURL
-            }
         }
     }
 
@@ -818,21 +813,18 @@ public struct ContentView: View {
     }
 
     private func preferredProjectionScreen() -> NSScreen? {
-        let activeScreens = NSScreen.screens.filter { $0.frame.width > 0 && $0.frame.height > 0 }
-        if projectionScreenDisplayID != 0,
-           let exactMatch = activeScreens.first(where: { screenDisplayID($0) == projectionScreenDisplayID }) {
-            return exactMatch
-        }
-        return activeScreens.count > 1 ? activeScreens[1] : NSScreen.main
+        let displayID = projectionScreenDisplayID == 0
+            ? nil
+            : CGDirectDisplayID(projectionScreenDisplayID)
+        return ProjectionScreenResolver.resolve(displayID: displayID)
     }
 
     private func refreshProjectionScreenOptions() {
-        let activeScreens = NSScreen.screens
-            .filter { $0.frame.width > 0 && $0.frame.height > 0 }
+        let activeScreens = ProjectionScreenResolver.activeScreens()
             .map { screen in
                 (
                     name: screen.localizedName,
-                    displayID: screenDisplayID(screen),
+                    displayID: screen.displayID,
                     width: Int(screen.frame.width.rounded()),
                     height: Int(screen.frame.height.rounded())
                 )
@@ -842,15 +834,16 @@ public struct ContentView: View {
             .mapValues(\.count)
 
         projectionScreenOptions = activeScreens.compactMap { screen in
-            guard screen.displayID != 0 else { return nil }
+            guard let displayID = screen.displayID, displayID != 0 else { return nil }
+            let displayIDValue = Int(displayID)
             let hasDuplicateName = (countsByName[screen.name] ?? 0) > 1
             let label: String
             if hasDuplicateName {
-                label = "\(screen.name) • \(screen.width)x\(screen.height) • #\(screen.displayID)"
+                label = "\(screen.name) • \(screen.width)x\(screen.height) • #\(displayIDValue)"
             } else {
                 label = "\(screen.name) • \(screen.width)x\(screen.height)"
             }
-            return ProjectionScreenOption(displayID: screen.displayID, label: label)
+            return ProjectionScreenOption(displayID: displayIDValue, label: label)
         }
 
         if projectionScreenDisplayID != 0,
@@ -872,13 +865,6 @@ public struct ContentView: View {
         }
     }
 
-    private func screenDisplayID(_ screen: NSScreen) -> Int {
-        guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
-            return 0
-        }
-        return number.intValue
-    }
-
     private var canEditSelection: Bool {
         guard !isCurrentSelectionMediaFile, let url = currentSelectedURL else { return false }
         return isLyricsFile(url)
@@ -890,7 +876,7 @@ public struct ContentView: View {
     }
 
     private var canToggleSlides: Bool {
-        session.isPresenting || !session.slides.isEmpty || !flow.previewSlides.isEmpty || session.hasAvailableBackgroundVisual
+        session.isPresenting || !session.slides.isEmpty || session.hasAvailableBackgroundVisual
     }
 
     private func buildPDFSlides(from document: PDFDocument, url: URL) -> [Slide] {
@@ -2409,7 +2395,7 @@ public struct ContentView: View {
             }
             let navigationRevision = currentWebpageNavigationRevision + 1
             selectedWebpageURL = newURL
-            setCurrentSlides(
+            commitCurrentSlides(
                 buildWebpageSlides(
                     from: newURL,
                     navigationRevision: navigationRevision
@@ -2434,7 +2420,7 @@ public struct ContentView: View {
 
         let navigationRevision = currentWebpageNavigationRevision + 1
         selectedWebpageURL = newURL
-        setCurrentSlides(
+        commitCurrentSlides(
             buildWebpageSlides(
                 from: newURL,
                 navigationRevision: navigationRevision
@@ -2566,9 +2552,9 @@ public struct ContentView: View {
         let restoredSelection = currentSlideID.flatMap { slideID in
             slides.contains(where: { $0.id == slideID }) ? slideID : nil
         }
-        flow.setCurrentSlides(
+        commitCurrentSlides(
             slides,
-            in: session,
+            lyricsSourceURL: currentLyricsSourceURL,
             preferredSelection: restoredSelection,
             preferredSelectionIndex: currentSlideIndex
         )
