@@ -57,6 +57,21 @@ ensure_developer_id_identity() {
   fi
 }
 
+resolve_export_team_id() {
+  if [[ -n "$TEAM_ID" ]]; then
+    return 0
+  fi
+
+  local identities
+  identities="$(security find-identity -v -p codesigning 2>/dev/null || true)"
+  local developer_id_line
+  developer_id_line="$(grep -F "Developer ID Application:" <<< "$identities" | head -1)"
+
+  if [[ "$developer_id_line" =~ \(([A-Z0-9]{10})\) ]]; then
+    TEAM_ID="${BASH_REMATCH[1]}"
+  fi
+}
+
 PROJECT="eucaly.xcodeproj"
 SCHEME="eucaly"
 CONFIGURATION="Release"
@@ -322,6 +337,7 @@ require_command shasum
 require_command security
 
 ensure_developer_id_identity
+resolve_export_team_id
 
 if [[ "$PUBLISH_GITHUB" == true ]]; then
   require_command gh
@@ -387,7 +403,6 @@ ARCHIVE_CMD=(
   -configuration "$CONFIGURATION"
   -archivePath "$ARCHIVE_PATH"
   archive
-  SKIP_INSTALL=NO
   STRIP_INSTALLED_PRODUCT=YES
   COPY_PHASE_STRIP=YES
 )
