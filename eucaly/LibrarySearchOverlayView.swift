@@ -386,7 +386,7 @@ private struct LibrarySearchActionRow: View {
         HStack(spacing: 10) {
             Image(systemName: action.systemImage)
                 .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(AccentColorProvider.color)
                 .frame(width: 18)
 
             VStack(alignment: .leading, spacing: 2) {
@@ -517,11 +517,11 @@ private struct LibrarySearchResultRow: View {
             Button(action: onAddToPlaylist) {
                 Image(systemName: "plus")
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(isSelected ? .white : Color.accentColor)
+                    .foregroundStyle(isSelected ? .white : AccentColorProvider.color)
                     .frame(width: 22, height: 22)
                     .background(
                         Circle()
-                            .fill(isSelected ? Color.white.opacity(0.18) : Color.accentColor.opacity(0.12))
+                            .fill(isSelected ? Color.white.opacity(0.18) : AccentColorProvider.color.opacity(0.12))
                     )
             }
             .buttonStyle(.plain)
@@ -533,7 +533,7 @@ private struct LibrarySearchResultRow: View {
         .padding(.vertical, 8)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(isSelected ? Color.accentColor.opacity(0.82) : Color.clear)
+                .fill(isSelected ? AccentColorProvider.color.opacity(0.82) : Color.clear)
         )
         .contentShape(Rectangle())
     }

@@ -830,11 +830,11 @@ struct SidebarView: View {
             } label: {
                 Image(systemName: "plus")
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(AccentColorProvider.color)
                     .frame(width: 20, height: 20)
                     .background(
                         Circle()
-                            .fill(Color.accentColor.opacity(0.12))
+                            .fill(AccentColorProvider.color.opacity(0.12))
                     )
             }
             .buttonStyle(.plain)

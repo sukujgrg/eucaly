@@ -12,7 +12,7 @@ class CacheManager: ObservableObject {
     // MARK: - Configuration
 
     private let maxMemoryCacheSize = 50 // thumbnails
-    private let maxDiskCacheSize = 200 // thumbnails
+    private let maxDiskCacheSize = 1_000 // thumbnails
     private let cacheValidityDays = 30 // Auto-cleanup after 30 days
     private let maxDiskCacheSizeMB = 100 // Max 100MB on disk
 
@@ -32,6 +32,7 @@ class CacheManager: ObservableObject {
     // File modification tracking
     private var fileModificationDates: [String: Date] = [:]
     private var modificationDatesSaveTask: Task<Void, Never>?
+    private var cleanupTask: Task<Void, Never>?
 
     // MARK: - Initialization
 
@@ -39,7 +40,7 @@ class CacheManager: ObservableObject {
         memoryImageCache.countLimit = maxMemoryCacheSize
         createCacheDirectory()
         loadFileModificationDates()
-        cleanupOldCaches()
+        cleanupOldCaches(debounce: false)
     }
 
     private func createCacheDirectory() {
@@ -125,6 +126,26 @@ class CacheManager: ObservableObject {
             let fileURL = url.appendingPathComponent(cacheKey)
             try? pngData.write(to: fileURL)
         }
+        cleanupOldCaches(debounce: true)
+    }
+
+    /// Cache a thumbnail when PNG encoding has already been done off the main actor.
+    func cacheThumbnail(_ image: NSImage, pngData: Data, for url: URL, type: ThumbnailType, pageIndex: Int? = nil, size: CGSize? = nil) {
+        let cacheKey = makeCacheKey(url: url, type: type, pageIndex: pageIndex, size: size)
+
+        if let modDate = fileModificationDate(url: url) {
+            fileModificationDates[cacheKey] = modDate
+            scheduleSaveFileModificationDates()
+        }
+
+        cacheInMemory(image: image, key: cacheKey)
+
+        let url = diskCacheURL
+        Task.detached(priority: .utility) { [cacheKey, pngData] in
+            let fileURL = url.appendingPathComponent(cacheKey)
+            try? pngData.write(to: fileURL)
+        }
+        cleanupOldCaches(debounce: true)
     }
 
     /// Invalidate thumbnail when file changes
@@ -228,7 +249,12 @@ class CacheManager: ObservableObject {
         } else {
             sizePart = "auto"
         }
-        let rawKey = "\(type.rawValue)|\(standardizedPath)|\(pagePart)|\(sizePart)"
+        let rawKey: String
+        if type == .pdf {
+            rawKey = "pdf-aspect-v2|\(type.rawValue)|\(standardizedPath)|\(pagePart)|\(sizePart)"
+        } else {
+            rawKey = "\(type.rawValue)|\(standardizedPath)|\(pagePart)|\(sizePart)"
+        }
         let digest = SHA256.hash(data: Data(rawKey.utf8))
         let hash = digest.map { String(format: "%02x", $0) }.joined()
         return "\(type.rawValue)_\(hash).png"
@@ -296,22 +322,41 @@ class CacheManager: ObservableObject {
     // MARK: - Cleanup
 
     /// Clean up old caches on app launch
-    private func cleanupOldCaches() {
+    private func cleanupOldCaches(debounce: Bool) {
+        guard cleanupTask == nil else {
+            return
+        }
+
         let url = diskCacheURL
         let days = cacheValidityDays
         let maxMB = maxDiskCacheSizeMB
         let maxFiles = maxDiskCacheSize
-        Task.detached(priority: .utility) {
-            await Self.performCleanup(diskURL: url, days: days, maxMB: maxMB, maxFiles: maxFiles)
+
+        cleanupTask = Task {
+            if debounce {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard !Task.isCancelled else { return }
+            }
+
+            let remainingCacheKeys = await Task.detached(priority: .utility) {
+                await Self.performCleanup(diskURL: url, days: days, maxMB: maxMB, maxFiles: maxFiles)
+            }.value
+
+            guard !Task.isCancelled else { return }
+
+            if let remainingCacheKeys {
+                pruneModificationDates(keeping: remainingCacheKeys)
+            }
+            cleanupTask = nil
         }
     }
 
-    private static func performCleanup(diskURL: URL, days: Int, maxMB: Int, maxFiles: Int) async {
+    private static func performCleanup(diskURL: URL, days: Int, maxMB: Int, maxFiles: Int) async -> Set<String>? {
         let fileManager = FileManager.default
         guard let allFiles = try? fileManager.contentsOfDirectory(
             at: diskURL,
             includingPropertiesForKeys: [.creationDateKey, .contentModificationDateKey, .fileSizeKey]
-        ) else { return }
+        ) else { return nil }
 
         let files = allFiles.filter { $0.lastPathComponent != "modification_dates.json" }
 
@@ -383,11 +428,22 @@ class CacheManager: ObservableObject {
 
         let freedMB = Double(deletedBytes) / 1024.0 / 1024.0
         print("Cache cleanup: Deleted \(filesToDelete.count) files, freed ~\(String(format: "%.1f", freedMB))MB")
+        return Set(files.filter { !filesToDelete.contains($0) }.map(\.lastPathComponent))
+    }
+
+    private func pruneModificationDates(keeping cacheKeys: Set<String>) {
+        let originalCount = fileModificationDates.count
+        fileModificationDates = fileModificationDates.filter { cacheKeys.contains($0.key) }
+        if fileModificationDates.count != originalCount {
+            scheduleSaveFileModificationDates()
+        }
     }
 
     /// Manually clear all caches
     func clearAllCaches() {
         modificationDatesSaveTask?.cancel()
+        cleanupTask?.cancel()
+        cleanupTask = nil
         // Clear memory
         memoryImageCache.removeAllObjects()
         memoryCacheKeys.removeAll()
