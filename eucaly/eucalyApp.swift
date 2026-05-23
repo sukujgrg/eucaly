@@ -63,6 +63,10 @@ private enum AppLinks {
 struct EucalyApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
+    init() {
+        SandboxPreferencesMigration.migrateIfNeeded()
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()
@@ -73,6 +77,11 @@ struct EucalyApp: App {
             AppSettingsView()
         }
         .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates...") {
+                    NotificationCenter.default.post(name: .checkForUpdates, object: nil)
+                }
+            }
             CommandGroup(replacing: .newItem) {
                 Button("New Lyrics") {
                     NotificationCenter.default.post(name: .newLyrics, object: nil)
@@ -150,6 +159,7 @@ struct EucalyApp: App {
 }
 
 extension Notification.Name {
+    static let checkForUpdates = Notification.Name("checkForUpdates")
     static let newLyrics = Notification.Name("newLyrics")
     static let stopProjection = Notification.Name("stopProjection")
     static let toggleSlidesVisibility = Notification.Name("toggleSlidesVisibility")

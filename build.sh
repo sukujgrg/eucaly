@@ -21,7 +21,6 @@ done
 
 TMP="$(mktemp -d "${TMPDIR%/}/eucaly.XXXXXX")"
 ARCHIVE_PATH="$TMP/eucaly.xcarchive"
-EXPORT_PLIST="$TMP/eucaly-export.plist"
 EXPORT_PATH="$HOME/Applications"
 CURRENT_ARCH="$(uname -m)"
 
@@ -54,23 +53,11 @@ fi
 
 xcodebuild "${xcodebuild_args[@]}"
 
-cat > "$EXPORT_PLIST" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>method</key><string>mac-application</string>
-  <key>signingStyle</key><string>manual</string>
-  <key>stripSwiftSymbols</key><true/>
-  <key>compileBitcode</key><false/>
-  <key>signingCertificate</key><string></string>
-  <key>provisioningProfiles</key><dict/>
-</dict>
-</plist>
-PLIST
+APP_PATH="$ARCHIVE_PATH/Products/Applications/eucaly.app"
+if [[ ! -d "$APP_PATH" ]]; then
+  echo "Expected archived app at $APP_PATH" >&2
+  exit 1
+fi
 
-xcodebuild \
-  -exportArchive \
-  -archivePath "$ARCHIVE_PATH" \
-  -exportPath "$EXPORT_PATH" \
-  -exportOptionsPlist "$EXPORT_PLIST"
+rm -rf "$EXPORT_PATH/eucaly.app"
+cp -R "$APP_PATH" "$EXPORT_PATH/eucaly.app"

@@ -78,6 +78,7 @@ public struct ContentView: View {
     @State private var securityScopedBackgroundVisual: URL? = nil
     @State private var securityScopedBackgroundAudio: URL? = nil
     @StateObject private var screenCaptureManager = ScreenCaptureManager.shared
+    @StateObject private var appUpdateViewModel = AppUpdateViewModel()
     @State private var librarySearchIndex = LibraryTextSearchIndex()
     @State private var isPreviewCollapsed: Bool = false
     private let playlistDirectoryName = "Playlist"
@@ -164,7 +165,18 @@ public struct ContentView: View {
     }
 
     private var rootSplitView: some View {
+        rootSplitWithAppUpdateAlert
+    }
+
+    private var rootSplitWithAppUpdateAlert: some View {
         rootSplitWithLibrarySearchOverlay
+            .alert(item: $appUpdateViewModel.checkAlert) { alert in
+                Alert(
+                    title: Text(alert.title),
+                    message: Text(alert.message),
+                    dismissButton: .default(Text("OK"))
+                )
+            }
     }
 
     private var rootSplitBase: some View {
@@ -297,6 +309,9 @@ public struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: .toggleBackgroundVisibility), perform: handleToggleBackgroundVisibilityNotification)
             .onReceive(NotificationCenter.default.publisher(for: .toggleBackgroundAudio), perform: handleToggleBackgroundAudioNotification)
             .onReceive(NotificationCenter.default.publisher(for: .clearAllLayers), perform: handleClearAllLayersNotification)
+        .onReceive(NotificationCenter.default.publisher(for: .checkForUpdates)) { _ in
+            appUpdateViewModel.checkForUpdates()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .clearBackgroundVisual), perform: handleClearBackgroundVisualNotification)
         .onReceive(NotificationCenter.default.publisher(for: .clearBackgroundAudio), perform: handleClearBackgroundAudioNotification)
         .onReceive(NotificationCenter.default.publisher(for: .newLyrics), perform: handleNewLyricsNotification)
@@ -395,6 +410,7 @@ public struct ContentView: View {
         }
 
         ToolbarItemGroup(placement: .primaryAction) {
+            AppUpdateToolbarButton(viewModel: appUpdateViewModel)
             backgroundSettingsButton
             timerSettingsButton
             appearanceSettingsButton
@@ -493,6 +509,7 @@ public struct ContentView: View {
         refreshBackgroundAudioAccess()
         restoreWebpageState()
         loadPlaylists()
+        appUpdateViewModel.checkForUpdatesIfNeeded()
         overlayScaleDraft = overlayScale
         backgroundAudioVolumeDraft = backgroundAudioVolume
         deferSessionChange {

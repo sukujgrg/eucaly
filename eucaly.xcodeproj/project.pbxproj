@@ -7,6 +7,13 @@
 	objects = {
 
 /* Begin PBXContainerItemProxy section */
+		A11000012F50000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = B20C407D2F31E99F0006903E /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A11000092F50000000000009;
+			remoteInfo = eucalyUpdater;
+		};
 		B2C9AF8A2F37CCEE001697D2 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = B20C407D2F31E99F0006903E /* Project object */;
@@ -16,12 +23,36 @@
 		};
 /* End PBXContainerItemProxy section */
 
+/* Begin PBXBuildFile section */
+		A11000032F50000000000003 /* eucalyUpdater in Copy Files */ = {isa = PBXBuildFile; fileRef = A11000042F50000000000004 /* eucalyUpdater */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		A11000022F50000000000002 /* Copy Updater */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 6;
+			files = (
+				A11000032F50000000000003 /* eucalyUpdater in Copy Files */,
+			);
+			name = "Copy Updater";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
+		A11000042F50000000000004 /* eucalyUpdater */ = {isa = PBXFileReference; explicitFileType = compiled.mach-o.executable; includeInIndex = 0; path = eucalyUpdater; sourceTree = BUILT_PRODUCTS_DIR; };
 		B20C40852F31E99F0006903E /* eucaly.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = eucaly.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B2C9AF862F37CCEE001697D2 /* eucalyTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = eucalyTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		A11000052F50000000000005 /* eucalyUpdater */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = eucalyUpdater;
+			sourceTree = "<group>";
+		};
 		B20C40872F31E99F0006903E /* eucaly */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = eucaly;
@@ -56,6 +87,7 @@
 			isa = PBXGroup;
 			children = (
 				B20C40872F31E99F0006903E /* eucaly */,
+				A11000052F50000000000005 /* eucalyUpdater */,
 				B2C9AF872F37CCEE001697D2 /* eucalyTests */,
 				B20C40862F31E99F0006903E /* Products */,
 			);
@@ -65,6 +97,7 @@
 			isa = PBXGroup;
 			children = (
 				B20C40852F31E99F0006903E /* eucaly.app */,
+				A11000042F50000000000004 /* eucalyUpdater */,
 				B2C9AF862F37CCEE001697D2 /* eucalyTests.xctest */,
 			);
 			name = Products;
@@ -80,10 +113,12 @@
 				B20C40812F31E99F0006903E /* Sources */,
 				B20C40822F31E99F0006903E /* Frameworks */,
 				B20C40832F31E99F0006903E /* Resources */,
+				A11000022F50000000000002 /* Copy Updater */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				A11000062F50000000000006 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				B20C40872F31E99F0006903E /* eucaly */,
@@ -94,6 +129,27 @@
 			productName = eucaly;
 			productReference = B20C40852F31E99F0006903E /* eucaly.app */;
 			productType = "com.apple.product-type.application";
+		};
+		A11000092F50000000000009 /* eucalyUpdater */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A110000A2F5000000000000A /* Build configuration list for PBXNativeTarget "eucalyUpdater" */;
+			buildPhases = (
+				A11000072F50000000000007 /* Sources */,
+				A11000082F50000000000008 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				A11000052F50000000000005 /* eucalyUpdater */,
+			);
+			name = eucalyUpdater;
+			packageProductDependencies = (
+			);
+			productName = eucalyUpdater;
+			productReference = A11000042F50000000000004 /* eucalyUpdater */;
+			productType = "com.apple.product-type.tool";
 		};
 		B2C9AF852F37CCEE001697D2 /* eucalyTests */ = {
 			isa = PBXNativeTarget;
@@ -131,6 +187,9 @@
 					B20C40842F31E99F0006903E = {
 						CreatedOnToolsVersion = 26.0.1;
 					};
+					A11000092F50000000000009 = {
+						CreatedOnToolsVersion = 26.0.1;
+					};
 					B2C9AF852F37CCEE001697D2 = {
 						CreatedOnToolsVersion = 26.0.1;
 						TestTargetID = B20C40842F31E99F0006903E;
@@ -154,6 +213,7 @@
 			projectRoot = "";
 			targets = (
 				B20C40842F31E99F0006903E /* eucaly */,
+				A11000092F50000000000009 /* eucalyUpdater */,
 				B2C9AF852F37CCEE001697D2 /* eucalyTests */,
 			);
 		};
@@ -177,6 +237,13 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		A11000072F50000000000007 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		B20C40812F31E99F0006903E /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -193,7 +260,22 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXFrameworksBuildPhase section */
+		A11000082F50000000000008 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
 /* Begin PBXTargetDependency section */
+		A11000062F50000000000006 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A11000092F50000000000009 /* eucalyUpdater */;
+			targetProxy = A11000012F50000000000001 /* PBXContainerItemProxy */;
+		};
 		B2C9AF8B2F37CCEE001697D2 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = B20C40842F31E99F0006903E /* eucaly */;
@@ -202,6 +284,50 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		A110000B2F5000000000000B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "Apple Development";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 260208.0706;
+				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_TEAM = E5N29VFW8T;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.20;
+				PRODUCT_BUNDLE_IDENTIFIER = com.suku.eucalyUpdater;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		A110000C2F5000000000000C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "Apple Development";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 260208.0706;
+				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_TEAM = E5N29VFW8T;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.20;
+				PRODUCT_BUNDLE_IDENTIFIER = com.suku.eucalyUpdater;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
 		B20C408E2F31E9A00006903E /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -340,21 +466,8 @@
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = E5N29VFW8T;
 				EMBED_ASSET_PACKS_IN_PRODUCT_BUNDLE = NO;
-				ENABLE_APP_SANDBOX = YES;
-				ENABLE_FILE_ACCESS_DOWNLOADS_FOLDER = readonly;
 				ENABLE_HARDENED_RUNTIME = YES;
-				ENABLE_INCOMING_NETWORK_CONNECTIONS = NO;
-				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
-				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
-				ENABLE_RESOURCE_ACCESS_BLUETOOTH = NO;
-				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
-				ENABLE_RESOURCE_ACCESS_CAMERA = NO;
-				ENABLE_RESOURCE_ACCESS_CONTACTS = NO;
-				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
-				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
-				ENABLE_RESOURCE_ACCESS_USB = NO;
-				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleHelpBookFolder = eucaly.help;
 				INFOPLIST_KEY_CFBundleHelpBookName = "eucaly Help";
@@ -365,12 +478,11 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.20;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = com.suku.eucaly;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
-				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
@@ -394,21 +506,8 @@
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = E5N29VFW8T;
 				EMBED_ASSET_PACKS_IN_PRODUCT_BUNDLE = YES;
-				ENABLE_APP_SANDBOX = YES;
-				ENABLE_FILE_ACCESS_DOWNLOADS_FOLDER = readonly;
 				ENABLE_HARDENED_RUNTIME = YES;
-				ENABLE_INCOMING_NETWORK_CONNECTIONS = NO;
-				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
-				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
-				ENABLE_RESOURCE_ACCESS_BLUETOOTH = NO;
-				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
-				ENABLE_RESOURCE_ACCESS_CAMERA = NO;
-				ENABLE_RESOURCE_ACCESS_CONTACTS = NO;
-				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
-				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
-				ENABLE_RESOURCE_ACCESS_USB = NO;
-				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleHelpBookFolder = eucaly.help;
 				INFOPLIST_KEY_CFBundleHelpBookName = "eucaly Help";
@@ -419,11 +518,10 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.20;
 				PRODUCT_BUNDLE_IDENTIFIER = com.suku.eucaly;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
-				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
@@ -480,6 +578,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		A110000A2F5000000000000A /* Build configuration list for PBXNativeTarget "eucalyUpdater" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A110000B2F5000000000000B /* Debug */,
+				A110000C2F5000000000000C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		B20C40802F31E99F0006903E /* Build configuration list for PBXProject "eucaly" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
