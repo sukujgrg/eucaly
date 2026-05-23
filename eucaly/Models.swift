@@ -137,7 +137,7 @@ nonisolated struct SlideLine: Identifiable, Hashable {
 }
 
 nonisolated struct Slide: Identifiable {
-    let id = UUID()
+    let id: UUID
     let index: Int
     let lines: [SlideLine]
     let label: String?
@@ -152,6 +152,7 @@ nonisolated struct Slide: Identifiable {
     var title: String { label ?? "Slide \(index)" }
 
     init(
+        id: UUID = UUID(),
         index: Int,
         lines: [SlideLine],
         label: String?,
@@ -163,6 +164,7 @@ nonisolated struct Slide: Identifiable {
         webpageNavigationRevision: Int = 0,
         captureWindowID: CGWindowID? = nil
     ) {
+        self.id = id
         self.index = index
         self.lines = lines
         self.label = label

@@ -6,18 +6,68 @@ import AppKit
 final class PresentationFlowController: ObservableObject {
     struct PreviewDocumentState {
         var slides: [Slide]
+        var pdfSource: PDFSlideSource?
         var selectedSlideID: Slide.ID?
+
+        var isEmpty: Bool {
+            slides.isEmpty && pdfSource == nil
+        }
+
+        var slideCount: Int {
+            pdfSource?.pageCount ?? slides.count
+        }
+
+        func slide(at index: Int) -> Slide {
+            if let pdfSource {
+                return PDFSlideCatalog.slide(url: pdfSource.url, pageIndex: index)
+            }
+            return slides[index]
+        }
+
+        func index(of slideID: Slide.ID) -> Int? {
+            if let pdfSource {
+                return PDFSlideCatalog.pageIndex(fromStableSlideID: slideID, url: pdfSource.url)
+            }
+            return slides.firstIndex { $0.id == slideID }
+        }
     }
 
     @Published private(set) var previewDocument: PreviewDocumentState?
     @Published var isCurrentCollapsed: Bool = true
 
+    var previewPDFSource: PDFSlideSource? {
+        previewDocument?.pdfSource
+    }
+
+    var previewIsEmpty: Bool {
+        previewDocument?.isEmpty ?? true
+    }
+
+    var previewSlideCount: Int {
+        previewDocument?.slideCount ?? 0
+    }
+
+    /// Materialized slide array for small documents only.
+    /// Virtual PDFs (`pdfSource != nil`) return `[]`; use `previewSlide(at:)` or `previewSlideCount` instead.
     var previewSlides: [Slide] {
-        previewDocument?.slides ?? []
+        guard let previewDocument else { return [] }
+        if previewDocument.pdfSource != nil {
+            return []
+        }
+        return previewDocument.slides
     }
 
     var previewSelectionID: Slide.ID? {
         previewDocument?.selectedSlideID
+    }
+
+    func previewSlide(at index: Int) -> Slide? {
+        guard let previewDocument, previewDocument.slideCount > index else { return nil }
+        return previewDocument.slide(at: index)
+    }
+
+    func previewSlideIndex(for slideID: Slide.ID) -> Int? {
+        previewDocument?.index(of: slideID)
     }
 
     func setPreviewSlides(
@@ -36,7 +86,22 @@ final class PresentationFlowController: ObservableObject {
             slides.indices.contains(index) ? slides[index].id : nil
         }
         let selected = selectedByID ?? selectedByIndex ?? slides.first?.id
-        previewDocument = PreviewDocumentState(slides: slides, selectedSlideID: selected)
+        previewDocument = PreviewDocumentState(slides: slides, pdfSource: nil, selectedSlideID: selected)
+    }
+
+    func setPreviewPDFSource(
+        _ source: PDFSlideSource,
+        preferredSelectionIndex: Int? = nil
+    ) {
+        guard source.pageCount > 0 else {
+            clearPreviewDocument()
+            return
+        }
+        let selectedIndex = preferredSelectionIndex.flatMap { index in
+            (0..<source.pageCount).contains(index) ? index : nil
+        } ?? 0
+        let selected = PDFSlideCatalog.slide(url: source.url, pageIndex: selectedIndex).id
+        previewDocument = PreviewDocumentState(slides: [], pdfSource: source, selectedSlideID: selected)
     }
 
     func clearPreviewDocument() {
@@ -50,16 +115,16 @@ final class PresentationFlowController: ObservableObject {
     }
 
     func movePreviewSelection(delta: Int) {
-        guard var document = previewDocument, !document.slides.isEmpty else { return }
+        guard var document = previewDocument, document.slideCount > 0 else { return }
         guard let selectedSlideID = document.selectedSlideID,
-              let index = document.slides.firstIndex(where: { $0.id == selectedSlideID }) else {
-            document.selectedSlideID = document.slides.first?.id
+              let index = document.index(of: selectedSlideID) else {
+            document.selectedSlideID = document.slide(at: 0).id
             previewDocument = document
             return
         }
 
-        let nextIndex = max(0, min(document.slides.count - 1, index + delta))
-        document.selectedSlideID = document.slides[nextIndex].id
+        let nextIndex = max(0, min(document.slideCount - 1, index + delta))
+        document.selectedSlideID = document.slide(at: nextIndex).id
         previewDocument = document
     }
 
@@ -71,6 +136,19 @@ final class PresentationFlowController: ObservableObject {
     ) {
         session.setSlides(
             slides,
+            preferredSelection: preferredSelection,
+            preferredSelectionIndex: preferredSelectionIndex
+        )
+    }
+
+    func setCurrentPDFSource(
+        _ source: PDFSlideSource,
+        in session: PresentationSession,
+        preferredSelection: Slide.ID? = nil,
+        preferredSelectionIndex: Int? = nil
+    ) {
+        session.setPDFSlideSource(
+            source,
             preferredSelection: preferredSelection,
             preferredSelectionIndex: preferredSelectionIndex
         )
@@ -88,10 +166,10 @@ final class PresentationFlowController: ObservableObject {
 
     func selectCurrentSlideForPresentationStart(in session: PresentationSession) {
         if let selection = session.currentSlideID,
-           session.slides.contains(where: { $0.id == selection }) {
+           session.containsSlide(id: selection) {
             return
         }
-        session.currentSlideID = session.slides.first?.id
+        session.currentSlideID = session.firstSlideID
     }
 
     func toggleSlidesVisibility(in session: PresentationSession, preferredScreen: NSScreen?) {
@@ -105,7 +183,7 @@ final class PresentationFlowController: ObservableObject {
             return
         }
 
-        guard !session.slides.isEmpty || session.hasAvailableBackgroundVisual else { return }
+        guard !session.isEmpty || session.hasAvailableBackgroundVisual else { return }
 
         selectCurrentSlideForPresentationStart(in: session)
         session.showSlides(preferredScreen: preferredScreen)

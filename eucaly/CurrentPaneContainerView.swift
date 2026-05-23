@@ -26,9 +26,15 @@ struct CurrentPaneContainerView: View {
         let slides = session.slides
         let isCollapsed = flow.isCurrentCollapsed
         let selectedWebpageURL = currentWebpageURL(from: slides)
+        let allowsPDFThumbnailRendering: Bool = {
+            if let pdfSource = session.pdfSlideSource {
+                return shouldRenderPDFThumbnails(pageCount: pdfSource.pageCount)
+            }
+            return shouldRenderPDFThumbnails(for: slides)
+        }()
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                if session.isPresenting || !slides.isEmpty {
+                if session.isPresenting || !session.isEmpty {
                     Button(action: toggleCollapsed) {
                         HStack(spacing: 4) {
                             Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
@@ -64,7 +70,7 @@ struct CurrentPaneContainerView: View {
 
                 Spacer()
 
-                if !slides.isEmpty {
+                if !session.isEmpty {
                     Button("Edit", action: onEditCurrentLyrics)
                         .buttonStyle(.bordered)
                         .controlSize(.small)
@@ -81,7 +87,7 @@ struct CurrentPaneContainerView: View {
             .padding(.vertical, 6)
 
             if !isCollapsed {
-                if slides.isEmpty {
+                if session.isEmpty {
                     VStack(spacing: 12) {
                         Image(systemName: "doc.text")
                             .font(.system(size: 48))
@@ -152,18 +158,37 @@ struct CurrentPaneContainerView: View {
                         ScrollViewReader { scrollProxy in
                             ScrollView {
                                 LazyVGrid(columns: layout.columns, spacing: layout.spacing) {
-                                    ForEach(slides) { slide in
-                                        SlideGridCellView(
-                                            slide: slide,
-                                            itemWidth: layout.itemWidth,
-                                            itemHeight: layout.itemHeight,
-                                            isSelected: slide.id == session.currentSlideID,
-                                            onTap: {
-                                                focusCurrentThumbnails()
-                                                flow.selectCurrentSlide(slide.id, in: session)
-                                            }
-                                        )
-                                        .id(slide.id)
+                                    if let pdfSource = session.pdfSlideSource {
+                                        ForEach(0..<pdfSource.pageCount, id: \.self) { pageIndex in
+                                            let slide = PDFSlideCatalog.slide(url: pdfSource.url, pageIndex: pageIndex)
+                                            SlideGridCellView(
+                                                slide: slide,
+                                                itemWidth: layout.itemWidth,
+                                                itemHeight: layout.itemHeight,
+                                                isSelected: slide.id == session.currentSlideID,
+                                                allowsPDFThumbnailRendering: allowsPDFThumbnailRendering,
+                                                onTap: {
+                                                    focusCurrentThumbnails()
+                                                    flow.selectCurrentSlide(slide.id, in: session)
+                                                }
+                                            )
+                                            .id(slide.id)
+                                        }
+                                    } else {
+                                        ForEach(slides) { slide in
+                                            SlideGridCellView(
+                                                slide: slide,
+                                                itemWidth: layout.itemWidth,
+                                                itemHeight: layout.itemHeight,
+                                                isSelected: slide.id == session.currentSlideID,
+                                                allowsPDFThumbnailRendering: allowsPDFThumbnailRendering,
+                                                onTap: {
+                                                    focusCurrentThumbnails()
+                                                    flow.selectCurrentSlide(slide.id, in: session)
+                                                }
+                                            )
+                                            .id(slide.id)
+                                        }
                                     }
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -234,7 +259,7 @@ struct CurrentPaneContainerView: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(.separator, lineWidth: 1)
         )
-        .animation(loadAnimation, value: slides.count)
+        .animation(loadAnimation, value: session.slideCount)
         .layoutPriority(selectedWebpageURL == nil ? 0 : 1)
         .onChange(of: session.videoCurrentTime) { _, newValue in
             guard !isSeekingVideo else { return }
@@ -328,7 +353,7 @@ struct CurrentPaneContainerView: View {
     }
 
     private func focusCurrentThumbnails() {
-        guard !flow.isCurrentCollapsed, !session.slides.isEmpty else { return }
+        guard !flow.isCurrentCollapsed, !session.isEmpty else { return }
         focusedDetailTarget = .currentThumbnails
     }
 
@@ -338,7 +363,7 @@ struct CurrentPaneContainerView: View {
     ) -> KeyPress.Result {
         // No check for isPresenting - allow control during presentation too
         // This provides an alternative way to navigate when PresentationWindow loses focus
-        guard !session.slides.isEmpty else { return .ignored }
+        guard !session.isEmpty else { return .ignored }
         session.setCurrentThumbnailColumnCount(layout.columnCount)
         session.moveSelection(direction: direction)
         return .handled
@@ -389,6 +414,8 @@ struct CurrentPaneContainerView: View {
     }
 
     private func currentWebpageURL(from slides: [Slide]) -> URL? {
+        guard session.pdfSlideSource == nil else { return nil }
+
         if let selectionID = session.currentSlideID,
            let selectedSlide = slides.first(where: { $0.id == selectionID }),
            let webpageURL = selectedSlide.webpageURL {

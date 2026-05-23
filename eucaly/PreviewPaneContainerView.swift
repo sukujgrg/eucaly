@@ -1,5 +1,124 @@
 import SwiftUI
 
+private struct PreviewThumbnailGrid: View {
+    @ObservedObject var flow: PresentationFlowController
+    let thumbnailScale: Double
+    @FocusState.Binding var isFocused: Bool
+
+    var body: some View {
+        GeometryReader { proxy in
+            let horizontalInset: CGFloat = 10
+            let layout = ThumbnailGridLayout.make(
+                for: proxy.size.width - (horizontalInset * 2),
+                thumbnailScale: thumbnailScale
+            )
+            let allowsPDFThumbnailRendering = thumbnailRenderingIsAllowed
+
+            ScrollViewReader { scrollProxy in
+                ScrollView {
+                    LazyVGrid(columns: layout.columns, spacing: layout.spacing) {
+                        if let pdfSource = flow.previewPDFSource {
+                            ForEach(0..<pdfSource.pageCount, id: \.self) { pageIndex in
+                                let slide = PDFSlideCatalog.slide(url: pdfSource.url, pageIndex: pageIndex)
+                                SlideGridCellView(
+                                    slide: slide,
+                                    itemWidth: layout.itemWidth,
+                                    itemHeight: layout.itemHeight,
+                                    isSelected: slide.id == flow.previewSelectionID,
+                                    allowsPDFThumbnailRendering: allowsPDFThumbnailRendering,
+                                    onTap: {
+                                        flow.selectPreviewSlide(slide.id)
+                                    }
+                                )
+                                .id(slide.id)
+                            }
+                        } else {
+                            ForEach(flow.previewSlides) { slide in
+                                SlideGridCellView(
+                                    slide: slide,
+                                    itemWidth: layout.itemWidth,
+                                    itemHeight: layout.itemHeight,
+                                    isSelected: slide.id == flow.previewSelectionID,
+                                    allowsPDFThumbnailRendering: allowsPDFThumbnailRendering,
+                                    onTap: {
+                                        flow.selectPreviewSlide(slide.id)
+                                    }
+                                )
+                                .id(slide.id)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 4)
+                    .padding(.horizontal, horizontalInset)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .focusable()
+                .focused($isFocused)
+                .focusEffectDisabled()
+                .onKeyPress(.upArrow) {
+                    handleArrowKey(direction: .previousRow, layout: layout)
+                }
+                .onKeyPress(.downArrow) {
+                    handleArrowKey(direction: .nextRow, layout: layout)
+                }
+                .onKeyPress(.leftArrow) {
+                    handleArrowKey(direction: .previousItem, layout: layout)
+                }
+                .onKeyPress(.rightArrow) {
+                    handleArrowKey(direction: .nextItem, layout: layout)
+                }
+                .onTapGesture {
+                    isFocused = true
+                }
+                .onChange(of: flow.previewSelectionID) { _, newValue in
+                    scrollToSelectedSlide(newValue, with: scrollProxy)
+                }
+            }
+        }
+    }
+
+    private var thumbnailRenderingIsAllowed: Bool {
+        if let pdfSource = flow.previewPDFSource {
+            return shouldRenderPDFThumbnails(pageCount: pdfSource.pageCount)
+        }
+        return shouldRenderPDFThumbnails(for: flow.previewSlides)
+    }
+
+    private func handleArrowKey(
+        direction: ThumbnailGridNavigationDirection,
+        layout: ThumbnailGridLayout
+    ) -> KeyPress.Result {
+        guard flow.previewSlideCount > 0 else { return .ignored }
+        guard
+            let selectionID = flow.previewSelectionID,
+            let currentIndex = flow.previewSlideIndex(for: selectionID)
+        else {
+            if let firstSlide = flow.previewSlide(at: 0) {
+                flow.selectPreviewSlide(firstSlide.id)
+            }
+            return .handled
+        }
+
+        let targetIndex = layout.selectionTargetIndex(
+            from: currentIndex,
+            itemCount: flow.previewSlideCount,
+            direction: direction
+        )
+        if let targetSlide = flow.previewSlide(at: targetIndex) {
+            flow.selectPreviewSlide(targetSlide.id)
+        }
+        return .handled
+    }
+
+    private func scrollToSelectedSlide(_ slideID: Slide.ID?, with proxy: ScrollViewProxy) {
+        guard let slideID else { return }
+        withAnimation(.easeInOut(duration: 0.12)) {
+            proxy.scrollTo(slideID, anchor: .center)
+        }
+    }
+}
+
 struct PreviewPaneContainerView: View {
     @ObservedObject var flow: PresentationFlowController
     @Binding var isCollapsed: Bool
@@ -36,7 +155,7 @@ struct PreviewPaneContainerView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                if !slides.isEmpty {
+                if !flow.previewIsEmpty {
                     Button(action: onLoadToCurrent) {
                         HStack(spacing: 6) {
                             Image(systemName: "arrow.down.circle.fill")
@@ -54,7 +173,7 @@ struct PreviewPaneContainerView: View {
 
             if !isCollapsed {
                 Group {
-                    if slides.isEmpty {
+                    if flow.previewIsEmpty {
                         VStack(spacing: 12) {
                             Image(systemName: "doc.text.magnifyingglass")
                                 .font(.system(size: 48))
@@ -116,68 +235,11 @@ struct PreviewPaneContainerView: View {
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                         }
                     } else {
-                        GeometryReader { proxy in
-                            let horizontalInset: CGFloat = 10
-                            let layout = ThumbnailGridLayout.make(
-                                for: proxy.size.width - (horizontalInset * 2),
-                                thumbnailScale: thumbnailScale
-                            )
-                            ScrollViewReader { scrollProxy in
-                                ScrollView {
-                                    LazyVGrid(columns: layout.columns, spacing: layout.spacing) {
-                                        ForEach(slides) { slide in
-                                            SlideGridCellView(
-                                                slide: slide,
-                                                itemWidth: layout.itemWidth,
-                                                itemHeight: layout.itemHeight,
-                                                isSelected: slide.id == flow.previewSelectionID,
-                                                onTap: {
-                                                    flow.selectPreviewSlide(slide.id)
-                                                }
-                                            )
-                                            .id(slide.id)
-                                        }
-                                    }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.vertical, 4)
-                                    .padding(.horizontal, horizontalInset)
-                                }
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                .focusable()
-                                .focused($isFocused)
-                                .focusEffectDisabled()
-                                .onKeyPress(.upArrow) {
-                                    return handleArrowKey(
-                                        direction: .previousRow,
-                                        layout: layout
-                                    )
-                                }
-                                .onKeyPress(.downArrow) {
-                                    return handleArrowKey(
-                                        direction: .nextRow,
-                                        layout: layout
-                                    )
-                                }
-                                .onKeyPress(.leftArrow) {
-                                    return handleArrowKey(
-                                        direction: .previousItem,
-                                        layout: layout
-                                    )
-                                }
-                                .onKeyPress(.rightArrow) {
-                                    return handleArrowKey(
-                                        direction: .nextItem,
-                                        layout: layout
-                                    )
-                                }
-                                .onTapGesture {
-                                    isFocused = true
-                                }
-                                .onChange(of: flow.previewSelectionID) { _, newValue in
-                                    scrollToSelectedSlide(newValue, with: scrollProxy)
-                                }
-                            }
-                        }
+                        PreviewThumbnailGrid(
+                            flow: flow,
+                            thumbnailScale: thumbnailScale,
+                            isFocused: $isFocused
+                        )
                     }
                 }
             }
@@ -202,7 +264,7 @@ struct PreviewPaneContainerView: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(.separator, lineWidth: 1)
         )
-        .animation(loadAnimation, value: slides.count)
+        .animation(loadAnimation, value: flow.previewSlideCount)
     }
 
     private func toggleCollapsed() {
@@ -211,39 +273,9 @@ struct PreviewPaneContainerView: View {
         }
     }
 
-    private func handleArrowKey(
-        direction: ThumbnailGridNavigationDirection,
-        layout: ThumbnailGridLayout
-    ) -> KeyPress.Result {
-        let slides = flow.previewSlides
-        guard !slides.isEmpty else { return .ignored }
-        guard
-            let selectionID = flow.previewSelectionID,
-            let currentIndex = slides.firstIndex(where: { $0.id == selectionID })
-        else {
-            if let firstSlideID = slides.first?.id {
-                flow.selectPreviewSlide(firstSlideID)
-            }
-            return .handled
-        }
-
-        let targetIndex = layout.selectionTargetIndex(
-            from: currentIndex,
-            itemCount: slides.count,
-            direction: direction
-        )
-        flow.selectPreviewSlide(slides[targetIndex].id)
-        return .handled
-    }
-
-    private func scrollToSelectedSlide(_ slideID: Slide.ID?, with proxy: ScrollViewProxy) {
-        guard let slideID else { return }
-        withAnimation(.easeInOut(duration: 0.12)) {
-            proxy.scrollTo(slideID, anchor: .center)
-        }
-    }
-
     private func previewWebpageURL(from slides: [Slide]) -> URL? {
+        guard flow.previewPDFSource == nil else { return nil }
+
         if let selectionID = flow.previewSelectionID,
            let selectedSlide = slides.first(where: { $0.id == selectionID }),
            let webpageURL = selectedSlide.webpageURL {

@@ -24,6 +24,7 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     @Published var slides: [Slide] = []
+    @Published private(set) var pdfSlideSource: PDFSlideSource?
     @Published var currentSlideID: Slide.ID?
     @Published var isPresenting = false
     @Published var videoMuted = false
@@ -87,7 +88,50 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
 
     var currentSlide: Slide? {
         guard let currentSlideID else { return nil }
+        if let pdfSlideSource {
+            guard let pageIndex = PDFSlideCatalog.pageIndex(fromStableSlideID: currentSlideID, url: pdfSlideSource.url) else {
+                return nil
+            }
+            return PDFSlideCatalog.slide(url: pdfSlideSource.url, pageIndex: pageIndex)
+        }
         return slides.first { $0.id == currentSlideID }
+    }
+
+    var isEmpty: Bool {
+        slides.isEmpty && pdfSlideSource == nil
+    }
+
+    var slideCount: Int {
+        pdfSlideSource?.pageCount ?? slides.count
+    }
+
+    var firstSlideID: Slide.ID? {
+        if let pdfSlideSource {
+            return PDFSlideCatalog.slide(url: pdfSlideSource.url, pageIndex: 0).id
+        }
+        return slides.first?.id
+    }
+
+    func containsSlide(id: Slide.ID) -> Bool {
+        if let pdfSlideSource {
+            return PDFSlideCatalog.pageIndex(fromStableSlideID: id, url: pdfSlideSource.url) != nil
+        }
+        return slides.contains { $0.id == id }
+    }
+
+    func slide(at index: Int) -> Slide? {
+        guard index >= 0, index < slideCount else { return nil }
+        if let pdfSlideSource {
+            return PDFSlideCatalog.slide(url: pdfSlideSource.url, pageIndex: index)
+        }
+        return slides[index]
+    }
+
+    func slideIndex(for slideID: Slide.ID) -> Int? {
+        if let pdfSlideSource {
+            return PDFSlideCatalog.pageIndex(fromStableSlideID: slideID, url: pdfSlideSource.url)
+        }
+        return slides.firstIndex { $0.id == slideID }
     }
 
     var hasAvailableBackgroundVisual: Bool {
@@ -101,6 +145,7 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
         preferredSelectionIndex: Int? = nil
     ) {
         let preservedSelection = preferredSelection ?? currentSlideID
+        pdfSlideSource = nil
         self.slides = slides
         if let preservedSelection,
            slides.contains(where: { $0.id == preservedSelection }) {
@@ -112,6 +157,28 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
             currentSlideID = slides.first?.id
         }
         resetVideoPlaybackProgress()
+        syncPDFDocumentCache()
+    }
+
+    func setPDFSlideSource(
+        _ source: PDFSlideSource,
+        preferredSelection: Slide.ID? = nil,
+        preferredSelectionIndex: Int? = nil
+    ) {
+        slides = []
+        pdfSlideSource = source
+
+        if let preferredSelection,
+           PDFSlideCatalog.pageIndex(fromStableSlideID: preferredSelection, url: source.url) != nil {
+            currentSlideID = preferredSelection
+        } else if let preferredSelectionIndex,
+                  (0..<source.pageCount).contains(preferredSelectionIndex) {
+            currentSlideID = PDFSlideCatalog.slide(url: source.url, pageIndex: preferredSelectionIndex).id
+        } else {
+            currentSlideID = PDFSlideCatalog.slide(url: source.url, pageIndex: 0).id
+        }
+        resetVideoPlaybackProgress()
+        syncPDFDocumentCache()
     }
 
     func setPreferredPresentationScreen(_ screen: NSScreen?) {
@@ -121,8 +188,23 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
 
     func clearSlides() {
         slides = []
+        pdfSlideSource = nil
         currentSlideID = nil
         resetVideoPlaybackProgress()
+        syncPDFDocumentCache()
+    }
+
+    private func syncPDFDocumentCache() {
+        var retainedURLs = Set<URL>()
+        if let pdfSlideSource {
+            retainedURLs.insert(pdfSlideSource.url)
+        }
+        for slide in slides {
+            if let pdfURL = slide.pdfURL {
+                retainedURLs.insert(pdfURL)
+            }
+        }
+        PDFDocumentCache.shared.releaseDocuments(notIn: retainedURLs)
     }
 
     func startPresentation(preferredScreen: NSScreen?, slidesVisible: Bool = true) {
@@ -211,12 +293,12 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             guard let currentID = self.currentSlideID,
-                  let index = self.slides.firstIndex(where: { $0.id == currentID }) else {
-                self.currentSlideID = self.slides.first?.id
+                  let index = self.slideIndex(for: currentID) else {
+                self.currentSlideID = self.firstSlideID
                 return
             }
-            let nextIndex = max(0, min(self.slides.count - 1, index + delta))
-            self.currentSlideID = self.slides[nextIndex].id
+            let nextIndex = max(0, min(self.slideCount - 1, index + delta))
+            self.currentSlideID = self.slide(at: nextIndex)?.id
         }
     }
 
@@ -225,20 +307,20 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     func moveSelection(direction: ThumbnailGridNavigationDirection) {
-        guard !slides.isEmpty else { return }
+        guard slideCount > 0 else { return }
         guard let selectedSlideID = currentSlideID,
-              let currentIndex = slides.firstIndex(where: { $0.id == selectedSlideID }) else {
-            self.currentSlideID = slides.first?.id
+              let currentIndex = slideIndex(for: selectedSlideID) else {
+            currentSlideID = firstSlideID
             return
         }
 
         let layout = ThumbnailGridLayout.fixedColumnCount(currentThumbnailColumnCount)
         let targetIndex = layout.selectionTargetIndex(
             from: currentIndex,
-            itemCount: slides.count,
+            itemCount: slideCount,
             direction: direction
         )
-        self.currentSlideID = slides[targetIndex].id
+        currentSlideID = slide(at: targetIndex)?.id
     }
 
     func seekVideo(to seconds: Double) {
@@ -1174,18 +1256,17 @@ struct PDFSlideView: NSViewRepresentable {
         view.displaysPageBreaks = false
         view.pageBreakMargins = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
         view.displaysAsBook = false
-        if let document = PDFDocument(url: url) {
+        if let document = PDFDocumentCache.shared.document(for: url),
+           let page = document.page(at: pageIndex) {
             view.document = document
-            if let page = document.page(at: pageIndex) {
-                view.go(to: page)
-            }
+            view.go(to: page)
         }
         return view
     }
 
     func updateNSView(_ nsView: PDFView, context: Context) {
         if nsView.document?.documentURL != url {
-            nsView.document = PDFDocument(url: url)
+            nsView.document = PDFDocumentCache.shared.document(for: url)
         }
         nsView.backgroundColor = .clear
         nsView.displaysPageBreaks = false
@@ -1194,6 +1275,59 @@ struct PDFSlideView: NSViewRepresentable {
         if let document = nsView.document, let page = document.page(at: pageIndex) {
             nsView.go(to: page)
         }
+    }
+}
+
+@MainActor
+final class PDFDocumentCache {
+    static let shared = PDFDocumentCache()
+
+    private let maxCachedDocuments = 3
+    private var documents: [URL: PDFDocument] = [:]
+    private var accessOrder: [URL] = []
+
+    private init() {}
+
+    func document(for url: URL) -> PDFDocument? {
+        let key = url.standardizedFileURL
+        if let cached = documents[key] {
+            touch(key)
+            return cached
+        }
+
+        while documents.count >= maxCachedDocuments, let oldest = accessOrder.first {
+            documents.removeValue(forKey: oldest)
+            accessOrder.removeAll { $0 == oldest }
+        }
+
+        guard let document = PDFDocument(url: key) else { return nil }
+        documents[key] = document
+        touch(key)
+        return document
+    }
+
+    func releaseDocument(for url: URL) {
+        let key = url.standardizedFileURL
+        documents.removeValue(forKey: key)
+        accessOrder.removeAll { $0 == key }
+    }
+
+    func releaseDocuments(notIn retainedURLs: Set<URL>) {
+        let retained = Set(retainedURLs.map(\.standardizedFileURL))
+        for url in Array(documents.keys) where !retained.contains(url) {
+            documents.removeValue(forKey: url)
+            accessOrder.removeAll { $0 == url }
+        }
+    }
+
+    func clear() {
+        documents.removeAll()
+        accessOrder.removeAll()
+    }
+
+    private func touch(_ url: URL) {
+        accessOrder.removeAll { $0 == url }
+        accessOrder.append(url)
     }
 }
 

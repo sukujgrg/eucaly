@@ -15,6 +15,8 @@ class CacheManager: ObservableObject {
     private let maxDiskCacheSize = 1_000 // thumbnails
     private let cacheValidityDays = 30 // Auto-cleanup after 30 days
     private let maxDiskCacheSizeMB = 100 // Max 100MB on disk
+    private let maxQueuedDiskWriteCount = 64
+    private let maxQueuedDiskIOCount = 64
 
     // MARK: - Cache Storage
 
@@ -24,6 +26,8 @@ class CacheManager: ObservableObject {
     private var fontSizeCache: [FontCacheKey: CGFloat] = [:]
 
     // Disk cache directory
+    private let diskIOQueue = OperationQueue()
+
     private nonisolated var diskCacheURL: URL {
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
         return caches.appendingPathComponent("eucaly/Thumbnails", isDirectory: true)
@@ -38,6 +42,9 @@ class CacheManager: ObservableObject {
 
     private init() {
         memoryImageCache.countLimit = maxMemoryCacheSize
+        diskIOQueue.name = "eucaly.thumbnail-disk-io"
+        diskIOQueue.qualityOfService = .utility
+        diskIOQueue.maxConcurrentOperationCount = 1
         createCacheDirectory()
         loadFileModificationDates()
         cleanupOldCaches(debounce: false)
@@ -89,10 +96,14 @@ class CacheManager: ObservableObject {
         }
 
         let fileURL = diskCacheURL.appendingPathComponent(cacheKey)
-        let diskImage: NSImage? = await Task.detached(priority: .utility) { () -> NSImage? in
+        guard diskIOQueue.operationCount < maxQueuedDiskIOCount else {
+            return nil
+        }
+
+        let diskImage: NSImage? = await performOnDiskIOQueue {
             guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
             return NSImage(contentsOf: fileURL)
-        }.value
+        }
 
         if let diskImage {
             cacheInMemory(image: diskImage, key: cacheKey)
@@ -122,10 +133,7 @@ class CacheManager: ObservableObject {
             return
         }
 
-        Task.detached(priority: .utility) { [cacheKey, pngData] in
-            let fileURL = url.appendingPathComponent(cacheKey)
-            try? pngData.write(to: fileURL)
-        }
+        scheduleDiskWrite(cacheKey: cacheKey, pngData: pngData, diskURL: url)
         cleanupOldCaches(debounce: true)
     }
 
@@ -141,10 +149,7 @@ class CacheManager: ObservableObject {
         cacheInMemory(image: image, key: cacheKey)
 
         let url = diskCacheURL
-        Task.detached(priority: .utility) { [cacheKey, pngData] in
-            let fileURL = url.appendingPathComponent(cacheKey)
-            try? pngData.write(to: fileURL)
-        }
+        scheduleDiskWrite(cacheKey: cacheKey, pngData: pngData, diskURL: url)
         cleanupOldCaches(debounce: true)
     }
 
@@ -157,7 +162,7 @@ class CacheManager: ObservableObject {
         scheduleSaveFileModificationDates()
 
         let diskURL = diskCacheURL
-        Task.detached(priority: .utility) { [cacheKey] in
+        diskIOQueue.addOperation { [cacheKey] in
             try? FileManager.default.removeItem(at: diskURL.appendingPathComponent(cacheKey))
         }
     }
@@ -290,9 +295,13 @@ class CacheManager: ObservableObject {
             return false
         }
         let path = url.path
-        let currentDate = await Task.detached(priority: .utility) {
+        guard diskIOQueue.operationCount < maxQueuedDiskIOCount else {
+            return false
+        }
+
+        let currentDate: Date? = await performOnDiskIOQueue {
             try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate] as? Date
-        }.value
+        }
         guard let currentDate else { return false }
         return currentDate > cachedDate
     }
@@ -311,11 +320,13 @@ class CacheManager: ObservableObject {
         let snapshot = fileModificationDates
         let outputURL = diskCacheURL.appendingPathComponent("modification_dates.json")
 
-        modificationDatesSaveTask = Task.detached(priority: .utility) {
+        modificationDatesSaveTask = Task {
             try? await Task.sleep(nanoseconds: 300_000_000) // debounce bursts
             guard !Task.isCancelled else { return }
-            guard let data = try? JSONEncoder().encode(snapshot) else { return }
-            try? data.write(to: outputURL, options: .atomic)
+            diskIOQueue.addOperation {
+                guard let data = try? JSONEncoder().encode(snapshot) else { return }
+                try? data.write(to: outputURL, options: .atomic)
+            }
         }
     }
 
@@ -338,9 +349,13 @@ class CacheManager: ObservableObject {
                 guard !Task.isCancelled else { return }
             }
 
-            let remainingCacheKeys = await Task.detached(priority: .utility) {
-                await Self.performCleanup(diskURL: url, days: days, maxMB: maxMB, maxFiles: maxFiles)
-            }.value
+            let remainingCacheKeys: Set<String>? = if diskIOQueue.operationCount < maxQueuedDiskIOCount {
+                await performOnDiskIOQueue {
+                    Self.performCleanupSync(diskURL: url, days: days, maxMB: maxMB, maxFiles: maxFiles)
+                }
+            } else {
+                nil
+            }
 
             guard !Task.isCancelled else { return }
 
@@ -351,7 +366,7 @@ class CacheManager: ObservableObject {
         }
     }
 
-    private static func performCleanup(diskURL: URL, days: Int, maxMB: Int, maxFiles: Int) async -> Set<String>? {
+    private static nonisolated func performCleanupSync(diskURL: URL, days: Int, maxMB: Int, maxFiles: Int) -> Set<String>? {
         let fileManager = FileManager.default
         guard let allFiles = try? fileManager.contentsOfDirectory(
             at: diskURL,
@@ -439,11 +454,31 @@ class CacheManager: ObservableObject {
         }
     }
 
+    private func scheduleDiskWrite(cacheKey: String, pngData: Data, diskURL: URL) {
+        guard diskIOQueue.operationCount < maxQueuedDiskWriteCount else {
+            return
+        }
+
+        diskIOQueue.addOperation { [cacheKey, pngData] in
+            let fileURL = diskURL.appendingPathComponent(cacheKey)
+            try? pngData.write(to: fileURL)
+        }
+    }
+
+    private func performOnDiskIOQueue<T>(_ work: @escaping @Sendable () -> T) async -> T {
+        await withCheckedContinuation { continuation in
+            diskIOQueue.addOperation {
+                continuation.resume(returning: work())
+            }
+        }
+    }
+
     /// Manually clear all caches
     func clearAllCaches() {
         modificationDatesSaveTask?.cancel()
         cleanupTask?.cancel()
         cleanupTask = nil
+        diskIOQueue.cancelAllOperations()
         // Clear memory
         memoryImageCache.removeAllObjects()
         memoryCacheKeys.removeAll()
@@ -452,11 +487,9 @@ class CacheManager: ObservableObject {
 
         // Clear disk
         let diskURL = diskCacheURL
-        Task.detached(priority: .utility) {
+        diskIOQueue.addOperation {
             try? FileManager.default.removeItem(at: diskURL)
-            await MainActor.run {
-                try? FileManager.default.createDirectory(at: diskURL, withIntermediateDirectories: true)
-            }
+            try? FileManager.default.createDirectory(at: diskURL, withIntermediateDirectories: true)
         }
     }
 

@@ -1,7 +1,6 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
-import PDFKit
 import CoreGraphics
 import Combine
 
@@ -759,6 +758,21 @@ public struct ContentView: View {
         )
     }
 
+    private func commitCurrentPDFSource(
+        _ source: PDFSlideSource,
+        preferredSelection: Slide.ID? = nil,
+        preferredSelectionIndex: Int? = nil
+    ) {
+        currentLyricsSourceURL = nil
+        syncCurrentWebpageSource(with: [])
+        flow.setCurrentPDFSource(
+            source,
+            in: session,
+            preferredSelection: preferredSelection,
+            preferredSelectionIndex: preferredSelectionIndex
+        )
+    }
+
     private func clearPreviewDocument() {
         let clearedWindowFromPreview = flow.previewSlides.contains { $0.captureWindowID != nil }
         previewLoadToken = UUID()
@@ -799,12 +813,19 @@ public struct ContentView: View {
     }
 
     private func handleLoadPreviewToCurrent() {
-        guard !flow.previewSlides.isEmpty else { return }
-        commitCurrentSlides(
-            flow.previewSlides,
-            lyricsSourceURL: previewLyricsSourceURL(),
-            preferredSelection: flow.previewSelectionID
-        )
+        guard !flow.previewIsEmpty else { return }
+        if let pdfSource = flow.previewPDFSource {
+            commitCurrentPDFSource(
+                pdfSource,
+                preferredSelection: flow.previewSelectionID
+            )
+        } else {
+            commitCurrentSlides(
+                flow.previewSlides,
+                lyricsSourceURL: previewLyricsSourceURL(),
+                preferredSelection: flow.previewSelectionID
+            )
+        }
         clearPreviewDocument()
         flow.isCurrentCollapsed = false
         isPreviewCollapsed = true
@@ -894,23 +915,11 @@ public struct ContentView: View {
     }
 
     private var canToggleSlides: Bool {
-        session.isPresenting || !session.slides.isEmpty || session.hasAvailableBackgroundVisual
+        session.isPresenting || !session.isEmpty || session.hasAvailableBackgroundVisual
     }
 
-    private func buildPDFSlides(from document: PDFDocument, url: URL) -> [Slide] {
-        guard document.pageCount > 0 else { return [] }
-        return (0..<document.pageCount).map { index in
-            Slide(
-                index: index + 1,
-                lines: [],
-                label: "Page \(index + 1)",
-                videoURL: nil,
-                pdfURL: url,
-                pdfPageIndex: index,
-                imageURL: nil,
-                captureWindowID: nil
-            )
-        }
+    private func buildPDFSlides(pageCount: Int, url: URL) -> [Slide] {
+        PDFSlideCatalog.slides(url: url, pageCount: pageCount)
     }
 
     private func buildImageSlides(from url: URL) -> [Slide] {
@@ -1342,11 +1351,19 @@ public struct ContentView: View {
         DispatchQueue.global(qos: .userInitiated).async {
             switch kind {
             case .pdf:
-                guard let document = PDFDocument(url: url) else { return }
-                let slides = buildPDFSlides(from: document, url: url)
-                DispatchQueue.main.async {
-                    guard previewTransitionIsCurrent(token: token, source: source) else { return }
-                    applyPreviewMediaLoad(slides: slides)
+                guard let pageCount = PDFSlideCatalog.pageCount(for: url) else { return }
+                if PDFSlideCatalog.shouldUseVirtualCatalog(pageCount: pageCount) {
+                    let pdfSource = PDFSlideSource(url: url, pageCount: pageCount)
+                    DispatchQueue.main.async {
+                        guard previewTransitionIsCurrent(token: token, source: source) else { return }
+                        applyPreviewPDFLoad(source: pdfSource)
+                    }
+                } else {
+                    let slides = buildPDFSlides(pageCount: pageCount, url: url)
+                    DispatchQueue.main.async {
+                        guard previewTransitionIsCurrent(token: token, source: source) else { return }
+                        applyPreviewMediaLoad(slides: slides)
+                    }
                 }
             case .image:
                 let slides = buildImageSlides(from: url)
@@ -1383,6 +1400,14 @@ public struct ContentView: View {
         setPreviewSlides(slides)
     }
 
+    private func applyPreviewPDFLoad(source: PDFSlideSource) {
+        isEditingLyrics = false
+        editingSourceURL = nil
+        rawLyrics = ""
+        lastLoadedText = ""
+        setPreviewPDFSource(source)
+    }
+
     private func applyPreviewLyricsLoad(contents: String, slides: [Slide]) {
         isEditingLyrics = false
         editingSourceURL = nil
@@ -1406,9 +1431,10 @@ public struct ContentView: View {
             isPreviewCollapsed = false
         }
         let preservedCurrentSlides = session.slides
+        let preservedPDFSource = session.pdfSlideSource
         let preservedCurrentSlideID = session.currentSlideID
         let preservedCurrentSlideIndex = preservedCurrentSlideID.flatMap { slideID in
-            preservedCurrentSlides.firstIndex { $0.id == slideID }
+            session.slideIndex(for: slideID)
         }
 
         flow.setPreviewSlides(
@@ -1419,6 +1445,29 @@ public struct ContentView: View {
 
         restoreCurrentDocumentIfNeeded(
             slides: preservedCurrentSlides,
+            pdfSource: preservedPDFSource,
+            currentSlideID: preservedCurrentSlideID,
+            currentSlideIndex: preservedCurrentSlideIndex
+        )
+    }
+
+    private func setPreviewPDFSource(
+        _ source: PDFSlideSource,
+        preferredSelectionIndex: Int? = nil
+    ) {
+        isPreviewCollapsed = false
+        let preservedCurrentSlides = session.slides
+        let preservedPDFSource = session.pdfSlideSource
+        let preservedCurrentSlideID = session.currentSlideID
+        let preservedCurrentSlideIndex = preservedCurrentSlideID.flatMap { slideID in
+            session.slideIndex(for: slideID)
+        }
+
+        flow.setPreviewPDFSource(source, preferredSelectionIndex: preferredSelectionIndex)
+
+        restoreCurrentDocumentIfNeeded(
+            slides: preservedCurrentSlides,
+            pdfSource: preservedPDFSource,
             currentSlideID: preservedCurrentSlideID,
             currentSlideIndex: preservedCurrentSlideIndex
         )
@@ -1908,7 +1957,7 @@ public struct ContentView: View {
         switch selection {
         case .library(let url):
             if selectedFileURL == url, selectedPlaylistEntryID == nil {
-                if flow.previewSlides.isEmpty {
+                if flow.previewIsEmpty {
                     loadSelectedFile(url: url)
                 }
                 return
@@ -1920,7 +1969,7 @@ public struct ContentView: View {
         case .playlist(let id):
             guard let url = playlistStore.resolvedURL(for: id) else { return }
             if selectedPlaylistEntryID == id, selectedFileURL == nil {
-                if flow.previewSlides.isEmpty {
+                if flow.previewIsEmpty {
                     loadSelectedFile(url: url)
                 }
                 return
@@ -2519,7 +2568,7 @@ public struct ContentView: View {
     private func previewLyricsSourceURL() -> URL? {
         guard case .file(let url) = previewSource,
               LibraryFileKind(url: url).isEditableLyrics,
-              !flow.previewSlides.isEmpty else {
+              !flow.previewIsEmpty else {
             return nil
         }
         return url
@@ -2527,18 +2576,34 @@ public struct ContentView: View {
 
     private func currentPreviewSelectionIndex() -> Int? {
         guard let previewSelectionID = flow.previewSelectionID else { return nil }
-        return flow.previewSlides.firstIndex(where: { $0.id == previewSelectionID })
+        return flow.previewSlideIndex(for: previewSelectionID)
     }
 
     private func restoreCurrentDocumentIfNeeded(
         slides: [Slide],
+        pdfSource: PDFSlideSource?,
         currentSlideID: Slide.ID?,
         currentSlideIndex: Int?
     ) {
-        let preservedIDs = slides.map(\.id)
-        let currentIDs = session.slides.map(\.id)
+        let preservedUsesPDF = pdfSource != nil
+        let currentUsesPDF = session.pdfSlideSource != nil
+        let preservedSlideIDs = slides.map(\.id)
+        let currentSlideIDs = session.slides.map(\.id)
+        let pdfSourcesMatch = pdfSource == session.pdfSlideSource
 
-        guard preservedIDs != currentIDs || session.currentSlideID != currentSlideID else {
+        guard preservedSlideIDs != currentSlideIDs
+            || preservedUsesPDF != currentUsesPDF
+            || !pdfSourcesMatch
+            || session.currentSlideID != currentSlideID else {
+            return
+        }
+
+        if let pdfSource {
+            commitCurrentPDFSource(
+                pdfSource,
+                preferredSelection: currentSlideID,
+                preferredSelectionIndex: currentSlideIndex
+            )
             return
         }
 

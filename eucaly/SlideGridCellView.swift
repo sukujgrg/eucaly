@@ -1,11 +1,23 @@
 import SwiftUI
 import CoreGraphics
 
+let pdfThumbnailRenderPageLimit = 100
+
+func shouldRenderPDFThumbnails(pageCount: Int) -> Bool {
+    pageCount <= pdfThumbnailRenderPageLimit
+}
+
+func shouldRenderPDFThumbnails(for slides: [Slide]) -> Bool {
+    let pdfSlideCount = slides.filter { $0.pdfURL != nil }.count
+    return shouldRenderPDFThumbnails(pageCount: pdfSlideCount)
+}
+
 struct SlideGridCellView: View {
     let slide: Slide
     let itemWidth: CGFloat
     let itemHeight: CGFloat
     let isSelected: Bool
+    let allowsPDFThumbnailRendering: Bool
     let onTap: () -> Void
 
     var body: some View {
@@ -60,7 +72,11 @@ struct SlideGridCellView: View {
             if let windowID = slide.captureWindowID {
                 WindowCaptureThumbnailView(windowID: windowID, title: slide.label)
             } else if let pdfURL = slide.pdfURL, let pageIndex = slide.pdfPageIndex {
-                PDFThumbnailView(url: pdfURL, pageIndex: pageIndex, size: pdfSize)
+                if allowsPDFThumbnailRendering {
+                    PDFThumbnailView(url: pdfURL, pageIndex: pageIndex, size: pdfSize)
+                } else {
+                    PDFPagePlaceholderView(pageIndex: pageIndex, size: pdfSize)
+                }
             } else if let webpageURL = slide.webpageURL {
                 WebpageThumbnailView(url: webpageURL, title: slide.label)
             } else if let imageURL = slide.imageURL {
