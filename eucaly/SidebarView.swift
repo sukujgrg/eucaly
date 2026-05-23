@@ -195,6 +195,10 @@ struct SidebarView: View {
 
     @State private var collapsedLibraryFolders: Set<String> = []
 
+    @State private var expandedLibraryGroups: Set<LibraryFileGroup> = []
+
+    @State private var expandedLibraryFolders: Set<String> = []
+
     @State private var cachedLibraryKindSections: [LibraryFileGroupSection] = []
 
     @State private var cachedLibraryFolderSections: [LibraryFolderGroupSection] = []
@@ -958,15 +962,28 @@ struct SidebarView: View {
     private func toggleLibraryGroup(_ group: LibraryFileGroup) {
         if collapsedLibraryGroups.contains(group) {
             collapsedLibraryGroups.remove(group)
+            expandedLibraryGroups.insert(group)
         } else {
             collapsedLibraryGroups.insert(group)
+            expandedLibraryGroups.remove(group)
         }
     }
 
     private func toggleLibraryFolder(_ folderID: String) {
         if collapsedLibraryFolders.contains(folderID) {
             collapsedLibraryFolders.remove(folderID)
+            expandedLibraryFolders.insert(folderID)
         } else {
+            collapsedLibraryFolders.insert(folderID)
+            expandedLibraryFolders.remove(folderID)
+        }
+    }
+
+    private func applyDefaultLibraryGroupCollapse() {
+        for group in libraryKindGroups where !expandedLibraryGroups.contains(group) {
+            collapsedLibraryGroups.insert(group)
+        }
+        for folderID in libraryFolderIDs where !expandedLibraryFolders.contains(folderID) {
             collapsedLibraryFolders.insert(folderID)
         }
     }
@@ -1040,16 +1057,20 @@ struct SidebarView: View {
             guard !groups.isEmpty else { return }
             if allVisibleLibraryGroupsCollapsed {
                 collapsedLibraryGroups.subtract(groups)
+                expandedLibraryGroups.formUnion(groups)
             } else {
                 collapsedLibraryGroups.formUnion(groups)
+                expandedLibraryGroups.subtract(groups)
             }
         case .folder:
             let folderIDs = libraryFolderIDs
             guard !folderIDs.isEmpty else { return }
             if allVisibleLibraryGroupsCollapsed {
                 collapsedLibraryFolders.subtract(folderIDs)
+                expandedLibraryFolders.formUnion(folderIDs)
             } else {
                 collapsedLibraryFolders.formUnion(folderIDs)
+                expandedLibraryFolders.subtract(folderIDs)
             }
         case .none:
             return
@@ -1059,6 +1080,7 @@ struct SidebarView: View {
     private func rebuildLibraryCaches() {
         cachedLibraryKindSections = groupedLibrarySections(from: libraryFiles)
         cachedLibraryFolderSections = groupedLibraryFolderSections(from: libraryFiles)
+        applyDefaultLibraryGroupCollapse()
     }
 
     private func sidebarScrollableFileList(
@@ -1128,8 +1150,12 @@ struct SidebarView: View {
     private func prepareLibraryScroll(to url: URL, with proxy: ScrollViewProxy) {
         let targetURL = url.standardizedFileURL
         guard libraryFiles.contains(where: { $0.standardizedFileURL == targetURL }) else { return }
-        collapsedLibraryGroups.remove(LibraryFileGroup(url: targetURL))
-        collapsedLibraryFolders.remove(libraryFolderGroup(for: targetURL).sortKey)
+        let targetGroup = LibraryFileGroup(url: targetURL)
+        let targetFolderID = libraryFolderGroup(for: targetURL).sortKey
+        collapsedLibraryGroups.remove(targetGroup)
+        expandedLibraryGroups.insert(targetGroup)
+        collapsedLibraryFolders.remove(targetFolderID)
+        expandedLibraryFolders.insert(targetFolderID)
 
         pendingLibraryScrollTarget = targetURL
         Task { @MainActor in
