@@ -267,10 +267,7 @@ struct PreviewPaneContainerView: View {
             VisualEffectView(material: .contentBackground, blendingMode: .withinWindow)
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(.separator, lineWidth: 1)
-        )
+        .paneAccentRing(.preview, isEmphasized: !flow.previewIsEmpty && !isCollapsed)
         .animation(loadAnimation, value: flow.previewSlideCount)
     }
 

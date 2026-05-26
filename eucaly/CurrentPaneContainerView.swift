@@ -262,10 +262,7 @@ struct CurrentPaneContainerView: View {
             VisualEffectView(material: .contentBackground, blendingMode: .withinWindow)
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(.separator, lineWidth: 1)
-        )
+        .paneAccentRing(.current, isEmphasized: !session.isEmpty && !isCollapsed)
         .animation(loadAnimation, value: session.slideCount)
         .layoutPriority(selectedWebpageURL == nil ? 0 : 1)
         .onChange(of: session.videoCurrentTime) { _, newValue in
