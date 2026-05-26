@@ -1658,7 +1658,7 @@ struct WebpageViewRepresentable: NSViewRepresentable {
 
     let url: URL
     var isMuted: Bool = false
-    var onURLChange: ((URL) -> Void)? = nil
+    var onURLChange: ((_ newURL: URL, _ previousURL: URL) -> Void)? = nil
     var onTitleChange: ((String, URL) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
@@ -1699,6 +1699,7 @@ struct WebpageViewRepresentable: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: WebpageContainerNSView, context: Context) {
+        context.coordinator.updateCallbacks(onURLChange: onURLChange, onTitleChange: onTitleChange)
         context.coordinator.setMute(isMuted, in: nsView)
         context.coordinator.load(url: url, in: nsView)
     }
@@ -1712,15 +1713,23 @@ struct WebpageViewRepresentable: NSViewRepresentable {
         private var lastReportedURL: URL?
         private var isShowingFailure = false
         private var isMuted = false
-        private let onURLChange: ((URL) -> Void)?
-        private let onTitleChange: ((String, URL) -> Void)?
+        private var onURLChange: ((_ newURL: URL, _ previousURL: URL) -> Void)?
+        private var onTitleChange: ((String, URL) -> Void)?
         private var urlObservation: NSKeyValueObservation?
         private var titleObservation: NSKeyValueObservation?
         private weak var currentContainerView: WebpageContainerNSView?
 
         init(
-            onURLChange: ((URL) -> Void)? = nil,
+            onURLChange: ((_ newURL: URL, _ previousURL: URL) -> Void)? = nil,
             onTitleChange: ((String, URL) -> Void)? = nil
+        ) {
+            self.onURLChange = onURLChange
+            self.onTitleChange = onTitleChange
+        }
+
+        func updateCallbacks(
+            onURLChange: ((_ newURL: URL, _ previousURL: URL) -> Void)?,
+            onTitleChange: ((String, URL) -> Void)?
         ) {
             self.onURLChange = onURLChange
             self.onTitleChange = onTitleChange
@@ -1729,14 +1738,32 @@ struct WebpageViewRepresentable: NSViewRepresentable {
         func load(url: URL, in containerView: WebpageContainerNSView) {
             currentContainerView = containerView
             attachObservers(to: containerView.webView)
-            guard requestedURL != url || isShowingFailure else {
+            let webView = containerView.webView
+
+            if requestedURL == url && !isShowingFailure {
                 containerView.hideStatusOverlay()
                 return
             }
+
+            if !isShowingFailure,
+               !webView.isLoading,
+               let settledURL = webView.url,
+               isSupportedSidebarURL(settledURL),
+               urlsRepresentSamePage(settledURL, url) {
+                requestedURL = url
+                if !urlsRepresentSamePage(lastReportedURL, settledURL) {
+                    reportSettledURL(from: webView)
+                } else {
+                    containerView.hideStatusOverlay()
+                }
+                return
+            }
+
             containerView.showLoading(for: url)
             requestedURL = url
+            lastReportedURL = nil
             isShowingFailure = false
-            containerView.webView.load(URLRequest(url: url))
+            webView.load(URLRequest(url: url))
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -1757,9 +1784,10 @@ struct WebpageViewRepresentable: NSViewRepresentable {
         }
 
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-            guard let requestedURL else { return }
+            guard let requestedURL, let currentContainerView else { return }
             isShowingFailure = false
-            currentContainerView?.showLoading(for: requestedURL)
+            lastReportedURL = nil
+            currentContainerView.showLoading(for: requestedURL)
             webView.load(URLRequest(url: requestedURL))
         }
 
@@ -1790,13 +1818,15 @@ struct WebpageViewRepresentable: NSViewRepresentable {
             guard message.name == WebpageViewRepresentable.navigationMessageName,
                   let rawURL = message.body as? String,
                   let url = URL(string: rawURL),
-                  isSupportedSidebarURL(url) else {
+                  isSupportedSidebarURL(url),
+                  !urlsRepresentSamePage(lastReportedURL, url) else {
                 return
             }
 
+            let previousURL = lastReportedURL ?? requestedURL ?? url
             requestedURL = url
             lastReportedURL = url
-            onURLChange?(url)
+            onURLChange?(url, previousURL)
         }
 
         func teardown(_ containerView: WebpageContainerNSView) {
@@ -1857,10 +1887,16 @@ struct WebpageViewRepresentable: NSViewRepresentable {
 
         private func reportSettledURL(from webView: WKWebView) {
             guard let currentURL = webView.url, isSupportedSidebarURL(currentURL) else { return }
+            guard !urlsRepresentSamePage(lastReportedURL, currentURL) else { return }
+            let previousURL = lastReportedURL ?? requestedURL ?? currentURL
             requestedURL = currentURL
-            guard lastReportedURL != currentURL else { return }
             lastReportedURL = currentURL
-            onURLChange?(currentURL)
+            onURLChange?(currentURL, previousURL)
+        }
+
+        private func urlsRepresentSamePage(_ lhs: URL?, _ rhs: URL?) -> Bool {
+            guard let lhs, let rhs else { return false }
+            return lhs.absoluteString == rhs.absoluteString
         }
 
         @objc

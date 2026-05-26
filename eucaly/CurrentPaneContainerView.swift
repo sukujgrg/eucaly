@@ -132,9 +132,7 @@ struct CurrentPaneContainerView: View {
                         WebpageViewRepresentable(
                             url: selectedWebpageURL,
                             isMuted: session.webpageMuted,
-                            onURLChange: { currentURL in
-                                onWebpageNavigationChange(currentURL, selectedWebpageURL)
-                            },
+                            onURLChange: onWebpageNavigationChange,
                             onTitleChange: { title, currentURL in
                                 onWebpageTitleChange(title, currentURL)
                             }

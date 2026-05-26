@@ -218,9 +218,7 @@ struct PreviewPaneContainerView: View {
                             WebpageViewRepresentable(
                                 url: selectedWebpageURL,
                                 isMuted: isWebpageMuted,
-                                onURLChange: { currentURL in
-                                    onWebpageNavigationChange(currentURL, selectedWebpageURL)
-                                },
+                                onURLChange: onWebpageNavigationChange,
                                 onTitleChange: { title, currentURL in
                                     onWebpageTitleChange(title, currentURL)
                                 }

@@ -54,8 +54,6 @@ public struct ContentView: View {
     @State private var webpageURLs: [URL] = []
     @State private var webpageTitles: [URL: String] = [:]
     @State private var selectedWebpageURL: URL? = nil
-    @State private var currentWebpageSourceURL: URL? = nil
-    @State private var currentWebpageNavigationRevision: Int = 0
     // Preview mute is intentionally local; Current and projection share session.webpageMuted.
     @State private var previewWebpageMuted: Bool = false
     @State private var librarySearchResults: [LibraryTextSearchIndex.SearchResult] = []
@@ -749,7 +747,6 @@ public struct ContentView: View {
         preferredSelectionIndex: Int? = nil
     ) {
         currentLyricsSourceURL = lyricsSourceURL
-        syncCurrentWebpageSource(with: slides)
         flow.setCurrentSlides(
             slides,
             in: session,
@@ -764,7 +761,6 @@ public struct ContentView: View {
         preferredSelectionIndex: Int? = nil
     ) {
         currentLyricsSourceURL = nil
-        syncCurrentWebpageSource(with: [])
         flow.setCurrentPDFSource(
             source,
             in: session,
@@ -787,8 +783,6 @@ public struct ContentView: View {
         let clearedWindowFromCurrent = session.slides.contains { $0.captureWindowID != nil }
         flow.clearCurrentDocument(in: session)
         currentLyricsSourceURL = nil
-        currentWebpageSourceURL = nil
-        currentWebpageNavigationRevision = 0
         flow.isCurrentCollapsed = true
         if clearedWindowFromCurrent, case .window = sidebarSelection {
             sidebarSelection = nil
@@ -969,10 +963,15 @@ public struct ContentView: View {
         ]
     }
 
-    private func buildWebpageSlides(from url: URL, navigationRevision: Int = 0) -> [Slide] {
+    private func buildWebpageSlides(
+        from url: URL,
+        navigationRevision: Int = 0,
+        preservingSlideID: Slide.ID? = nil
+    ) -> [Slide] {
         let label = url.host(percentEncoded: false) ?? url.absoluteString
         return [
             Slide(
+                id: preservingSlideID ?? UUID(),
                 index: 1,
                 lines: [],
                 label: label,
@@ -2269,8 +2268,7 @@ public struct ContentView: View {
             clearPreviewDocument()
         }
 
-        if session.slides.contains(where: { $0.webpageURL == url })
-            || currentWebpageSourceURL == url {
+        if session.slides.contains(where: { $0.webpageURL == url }) {
             clearCurrentDocument()
         }
 
@@ -2417,61 +2415,42 @@ public struct ContentView: View {
 
     private func updatePreviewWebpageURL(to newURL: URL, from previousURL: URL) {
         guard isSupportedWebpageURL(newURL) else { return }
-        guard isPreviewTrackingWebpageCallback(previousURL: previousURL, newURL: newURL) else { return }
+        guard isPreviewWebpageNavigationActive else { return }
+        guard !urlsRepresentSameWebpage(newURL, previousURL) else { return }
 
-        guard recordNavigatedWebpageURL(to: newURL, from: previousURL) else {
-            return
-        }
-
+        let preservedSlideID = flow.previewSlides.first { $0.webpageURL != nil }?.id
         beginPreviewTransition(to: .web(newURL))
-        setPreviewSlides(buildWebpageSlides(from: newURL))
-    }
-
-    private func updateCurrentWebpageURL(to newURL: URL, from previousURL: URL) {
-        guard isSupportedWebpageURL(newURL) else { return }
-        guard isCurrentTrackingWebpageCallback(previousURL: previousURL, newURL: newURL) else { return }
-
-        recordNavigatedWebpageURL(to: newURL, from: previousURL)
-        let navigationRevision = currentWebpageNavigationRevision + 1
-        commitCurrentSlides(
+        setPreviewSlides(
             buildWebpageSlides(
                 from: newURL,
-                navigationRevision: navigationRevision
+                preservingSlideID: preservedSlideID
             )
         )
     }
 
-    @discardableResult
-    private func recordNavigatedWebpageURL(to newURL: URL, from previousURL: URL) -> Bool {
-        if previousURL == newURL {
-            if !webpageURLs.contains(newURL) {
-                webpageURLs.append(newURL)
-            }
-            selectedWebpageURL = newURL
-            return false
-        }
+    private func updateCurrentWebpageURL(to newURL: URL, from previousURL: URL) {
+        guard isSupportedWebpageURL(newURL) else { return }
+        guard session.slides.contains(where: { $0.webpageURL != nil }) else { return }
+        guard !urlsRepresentSameWebpage(newURL, previousURL) else { return }
 
-        if let existingIndex = webpageURLs.firstIndex(of: previousURL) {
-            webpageURLs[existingIndex] = newURL
-        } else if !webpageURLs.contains(newURL) {
-            webpageURLs.append(newURL)
-        }
+        let preservedSlideID = session.slides.first { $0.webpageURL != nil }?.id
+        let navigationRevision = webpageNavigationRevision(from: session.slides) + 1
+        commitCurrentSlides(
+            buildWebpageSlides(
+                from: newURL,
+                navigationRevision: navigationRevision,
+                preservingSlideID: preservedSlideID
+            )
+        )
+    }
 
-        var seenURLs = Set<URL>()
-        webpageURLs = webpageURLs.filter { seenURLs.insert($0).inserted }
+    private var isPreviewWebpageNavigationActive: Bool {
+        guard case .web = previewSource else { return false }
+        return flow.previewSlides.contains { $0.webpageURL != nil }
+    }
 
-        if let existingTitle = webpageTitles[previousURL], webpageTitles[newURL] == nil {
-            webpageTitles[newURL] = existingTitle
-        }
-        webpageTitles.removeValue(forKey: previousURL)
-
-        selectedWebpageURL = newURL
-
-        if sidebarSelection == .web(previousURL) {
-            setSidebarSelectionWithoutLoading(.web(newURL))
-        }
-
-        return true
+    private func urlsRepresentSameWebpage(_ lhs: URL, _ rhs: URL) -> Bool {
+        lhs.absoluteString == rhs.absoluteString
     }
 
     private func setSidebarSelectionWithoutLoading(_ selection: SidebarSelection?) {
@@ -2481,19 +2460,6 @@ public struct ContentView: View {
         }
         ignoresNextSidebarSelectionChange = true
         sidebarSelection = selection
-    }
-
-    private func isPreviewTrackingWebpageCallback(previousURL: URL, newURL: URL) -> Bool {
-        previewSource == .web(previousURL) || previewSource == .web(newURL)
-    }
-
-    private func isCurrentTrackingWebpageCallback(previousURL: URL, newURL: URL) -> Bool {
-        currentWebpageSourceURL == previousURL || currentWebpageSourceURL == newURL
-    }
-
-    private func syncCurrentWebpageSource(with slides: [Slide]) {
-        currentWebpageSourceURL = webpageURL(from: slides)
-        currentWebpageNavigationRevision = webpageNavigationRevision(from: slides)
     }
 
     private func webpageURL(from slides: [Slide]) -> URL? {

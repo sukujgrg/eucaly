@@ -95,8 +95,10 @@ If a new type cannot follow this contract, treat it as a design bug and refactor
 ### Webpages
 - Webpages are opened from `File > Quick Open...` / the command palette.
 - Opening a webpage creates a saved entry in the sidebar Web list and loads the page into **Preview**.
+- The sidebar Web list is **saved entries only**; link navigation in Preview or Current does not rewrite sidebar URLs.
 - Webpages are live and interactive in both **Preview** and **Current**.
-- Once a webpage is in **Current**, navigation inside Current updates Current/runtime state and the saved sidebar URL entry, but must not silently rebuild Preview.
+- Navigation inside Preview updates Preview slides only and must not silently rebuild Current.
+- Navigation inside Current updates Current/runtime state (`session.slides`, projection) only and must not silently rebuild Preview.
 - Preview webpage mute is local to Preview.
 - Current webpage mute is session-level (`session.webpageMuted`) and affects Current plus projection.
 
@@ -310,6 +312,7 @@ Window capture supports live streaming of a user-picked app window into a slide.
 - Extract heavy subtrees into focused views.
 - Narrow bindings and callback surfaces to reduce `body` recomputation.
 - Keep sidebar lists stable and driven by minimal inputs.
+- Very aggressive scrolling through large sidebar libraries can expose SwiftUI `LazyVStack` limits. If this becomes a real workflow issue, prefer a scoped native `NSOutlineView`/`NSTableView` wrapper for the library list over piling on more `LazyVStack` caching or row micro-optimizations.
 
 ### 7) Keyboard shortcut collision safety
 - Any new shortcut must be checked against standard macOS text-editing bindings before merge.
@@ -339,7 +342,8 @@ When changing behavior, verify:
 - Preview does not implicitly overwrite Current.
 - Load to Current works identically across media types.
 - Projection only renders Current.
-- Webpage navigation in Current updates Current and the sidebar Web entry without forcing Preview to reload.
+- Webpage navigation in Current updates Current/runtime state and projection without forcing Preview to reload.
+- Webpage navigation in Preview updates Preview only and does not rewrite sidebar saved entries.
 - Webpage mute affects Preview, Current, and projection consistently.
 - Background visual/audio remain independent from slides visibility.
 - Projection display picker selects the correct monitor across start/toggle/background actions.
