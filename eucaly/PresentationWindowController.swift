@@ -1341,7 +1341,7 @@ struct WebpageSlideView: View {
             url: url,
             isMuted: isMuted
         )
-            .id("\(url.absoluteString)#\(navigationRevision)")
+            .id(WebpageSlideCatalog.viewIdentity(url: url, navigationRevision: navigationRevision))
             .background(Color.white)
     }
 }
@@ -1748,10 +1748,10 @@ struct WebpageViewRepresentable: NSViewRepresentable {
             if !isShowingFailure,
                !webView.isLoading,
                let settledURL = webView.url,
-               isSupportedSidebarURL(settledURL),
-               urlsRepresentSamePage(settledURL, url) {
+               WebpageURLMatcher.isSupported(settledURL),
+               WebpageURLMatcher.representSamePage(settledURL, url) {
                 requestedURL = url
-                if !urlsRepresentSamePage(lastReportedURL, settledURL) {
+                if !WebpageURLMatcher.representSamePage(lastReportedURL, settledURL) {
                     reportSettledURL(from: webView)
                 } else {
                     containerView.hideStatusOverlay()
@@ -1771,6 +1771,19 @@ struct WebpageViewRepresentable: NSViewRepresentable {
             currentContainerView?.hideStatusOverlay()
             applyMute(in: webView)
             reportSettledURL(from: webView)
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            decidePolicyFor navigationAction: WKNavigationAction,
+            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+        ) {
+            if navigationAction.targetFrame == nil {
+                webView.load(navigationAction.request)
+                decisionHandler(.cancel)
+                return
+            }
+            decisionHandler(.allow)
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -1818,8 +1831,8 @@ struct WebpageViewRepresentable: NSViewRepresentable {
             guard message.name == WebpageViewRepresentable.navigationMessageName,
                   let rawURL = message.body as? String,
                   let url = URL(string: rawURL),
-                  isSupportedSidebarURL(url),
-                  !urlsRepresentSamePage(lastReportedURL, url) else {
+                  WebpageURLMatcher.isSupported(url),
+                  !WebpageURLMatcher.representSamePage(lastReportedURL, url) else {
                 return
             }
 
@@ -1857,7 +1870,7 @@ struct WebpageViewRepresentable: NSViewRepresentable {
             guard urlObservation == nil, titleObservation == nil else { return }
 
             urlObservation = webView.observe(\.url, options: [.initial, .new]) { [weak self] webView, _ in
-                guard let self, let currentURL = webView.url, self.isSupportedSidebarURL(currentURL) else { return }
+                guard let self, let currentURL = webView.url, WebpageURLMatcher.isSupported(currentURL) else { return }
                 guard !webView.isLoading else { return }
                 self.reportSettledURL(from: webView)
             }
@@ -1865,38 +1878,26 @@ struct WebpageViewRepresentable: NSViewRepresentable {
             titleObservation = webView.observe(\.title, options: [.new]) { [weak self] webView, _ in
                 guard let self,
                       let currentURL = webView.url,
-                      self.isSupportedSidebarURL(currentURL),
+                      WebpageURLMatcher.isSupported(currentURL),
                       let title = webView.title?.trimmingCharacters(in: .whitespacesAndNewlines),
                       !title.isEmpty else { return }
                 self.onTitleChange?(title, currentURL)
             }
         }
 
-        private func isSupportedSidebarURL(_ url: URL) -> Bool {
-            guard let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme) else {
-                return false
-            }
-            return url.host(percentEncoded: false)?.isEmpty == false
-        }
-
-        private func applyMute(in webView: WKWebView) {
-            webView.evaluateJavaScript(
-                "window.__eucalyApplyMute && window.__eucalyApplyMute(\(isMuted ? "true" : "false"));"
-            )
-        }
-
         private func reportSettledURL(from webView: WKWebView) {
-            guard let currentURL = webView.url, isSupportedSidebarURL(currentURL) else { return }
-            guard !urlsRepresentSamePage(lastReportedURL, currentURL) else { return }
+            guard let currentURL = webView.url, WebpageURLMatcher.isSupported(currentURL) else { return }
+            guard !WebpageURLMatcher.representSamePage(lastReportedURL, currentURL) else { return }
             let previousURL = lastReportedURL ?? requestedURL ?? currentURL
             requestedURL = currentURL
             lastReportedURL = currentURL
             onURLChange?(currentURL, previousURL)
         }
 
-        private func urlsRepresentSamePage(_ lhs: URL?, _ rhs: URL?) -> Bool {
-            guard let lhs, let rhs else { return false }
-            return lhs.absoluteString == rhs.absoluteString
+        private func applyMute(in webView: WKWebView) {
+            webView.evaluateJavaScript(
+                "window.__eucalyApplyMute && window.__eucalyApplyMute(\(isMuted ? "true" : "false"));"
+            )
         }
 
         @objc

@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		A11000032F50000000000003 /* eucalyUpdater in Copy Updater */ = {isa = PBXBuildFile; fileRef = A11000042F50000000000004 /* eucalyUpdater */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		A11000012F50000000000001 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -23,10 +27,6 @@
 		};
 /* End PBXContainerItemProxy section */
 
-/* Begin PBXBuildFile section */
-		A11000032F50000000000003 /* eucalyUpdater in Copy Files */ = {isa = PBXBuildFile; fileRef = A11000042F50000000000004 /* eucalyUpdater */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
-/* End PBXBuildFile section */
-
 /* Begin PBXCopyFilesBuildPhase section */
 		A11000022F50000000000002 /* Copy Updater */ = {
 			isa = PBXCopyFilesBuildPhase;
@@ -34,7 +34,7 @@
 			dstPath = "";
 			dstSubfolderSpec = 6;
 			files = (
-				A11000032F50000000000003 /* eucalyUpdater in Copy Files */,
+				A11000032F50000000000003 /* eucalyUpdater in Copy Updater */,
 			);
 			name = "Copy Updater";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -42,7 +42,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		A11000042F50000000000004 /* eucalyUpdater */ = {isa = PBXFileReference; explicitFileType = compiled.mach-o.executable; includeInIndex = 0; path = eucalyUpdater; sourceTree = BUILT_PRODUCTS_DIR; };
+		A11000042F50000000000004 /* eucalyUpdater */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = eucalyUpdater; sourceTree = BUILT_PRODUCTS_DIR; };
 		B20C40852F31E99F0006903E /* eucaly.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = eucaly.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B2C9AF862F37CCEE001697D2 /* eucalyTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = eucalyTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -66,6 +66,13 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		A11000082F50000000000008 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		B20C40822F31E99F0006903E /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -106,6 +113,27 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		A11000092F50000000000009 /* eucalyUpdater */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A110000A2F5000000000000A /* Build configuration list for PBXNativeTarget "eucalyUpdater" */;
+			buildPhases = (
+				A11000072F50000000000007 /* Sources */,
+				A11000082F50000000000008 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				A11000052F50000000000005 /* eucalyUpdater */,
+			);
+			name = eucalyUpdater;
+			packageProductDependencies = (
+			);
+			productName = eucalyUpdater;
+			productReference = A11000042F50000000000004 /* eucalyUpdater */;
+			productType = "com.apple.product-type.tool";
+		};
 		B20C40842F31E99F0006903E /* eucaly */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = B20C40902F31E9A00006903E /* Build configuration list for PBXNativeTarget "eucaly" */;
@@ -129,27 +157,6 @@
 			productName = eucaly;
 			productReference = B20C40852F31E99F0006903E /* eucaly.app */;
 			productType = "com.apple.product-type.application";
-		};
-		A11000092F50000000000009 /* eucalyUpdater */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = A110000A2F5000000000000A /* Build configuration list for PBXNativeTarget "eucalyUpdater" */;
-			buildPhases = (
-				A11000072F50000000000007 /* Sources */,
-				A11000082F50000000000008 /* Frameworks */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-			);
-			fileSystemSynchronizedGroups = (
-				A11000052F50000000000005 /* eucalyUpdater */,
-			);
-			name = eucalyUpdater;
-			packageProductDependencies = (
-			);
-			productName = eucalyUpdater;
-			productReference = A11000042F50000000000004 /* eucalyUpdater */;
-			productType = "com.apple.product-type.tool";
 		};
 		B2C9AF852F37CCEE001697D2 /* eucalyTests */ = {
 			isa = PBXNativeTarget;
@@ -184,10 +191,10 @@
 				LastSwiftUpdateCheck = 2600;
 				LastUpgradeCheck = 2630;
 				TargetAttributes = {
-					B20C40842F31E99F0006903E = {
+					A11000092F50000000000009 = {
 						CreatedOnToolsVersion = 26.0.1;
 					};
-					A11000092F50000000000009 = {
+					B20C40842F31E99F0006903E = {
 						CreatedOnToolsVersion = 26.0.1;
 					};
 					B2C9AF852F37CCEE001697D2 = {
@@ -259,16 +266,6 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
-
-/* Begin PBXFrameworksBuildPhase section */
-		A11000082F50000000000008 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXTargetDependency section */
 		A11000062F50000000000006 /* PBXTargetDependency */ = {

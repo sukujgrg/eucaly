@@ -53,6 +53,8 @@ public struct ContentView: View {
     @State private var libraryScrollRequest: LibraryScrollRequest?
     @State private var webpageURLs: [URL] = []
     @State private var webpageTitles: [URL: String] = [:]
+    @State private var liveWebpageTitles: [URL: String] = [:]
+    @State private var liveWebpageTitleOrder: [URL] = []
     @State private var selectedWebpageURL: URL? = nil
     // Preview mute is intentionally local; Current and projection share session.webpageMuted.
     @State private var previewWebpageMuted: Bool = false
@@ -667,6 +669,13 @@ public struct ContentView: View {
         sidebarSelection = state.sidebarSelection
     }
 
+    private var sidebarSelectedWebpageURL: URL? {
+        if case .web(let url) = sidebarSelection {
+            return url
+        }
+        return nil
+    }
+
     public init() {}
 
     private var detailView: some View {
@@ -687,6 +696,7 @@ public struct ContentView: View {
                 paneToggleAnimation: paneToggleAnimation,
                 loadAnimation: loadAnimation,
                 titleForWebpage: webpageTitle(for:),
+                savedWebpageEntryURL: sidebarSelectedWebpageURL,
                 onWebpageNavigationChange: updatePreviewWebpageURL(to:from:),
                 onWebpageTitleChange: updateWebpageTitle(_:for:),
                 onEdit: beginLyricsEditing,
@@ -699,6 +709,7 @@ public struct ContentView: View {
                 paneToggleAnimation: paneToggleAnimation,
                 loadAnimation: loadAnimation,
                 titleForWebpage: webpageTitle(for:),
+                savedWebpageEntryURL: sidebarSelectedWebpageURL,
                 onWebpageNavigationChange: updateCurrentWebpageURL(to:from:),
                 onWebpageTitleChange: updateWebpageTitle(_:for:),
                 canEditCurrentLyrics: canEditCurrentLyrics,
@@ -959,28 +970,6 @@ public struct ContentView: View {
                 pdfPageIndex: nil,
                 imageURL: nil,
                 captureWindowID: window.windowID
-            )
-        ]
-    }
-
-    private func buildWebpageSlides(
-        from url: URL,
-        navigationRevision: Int = 0,
-        preservingSlideID: Slide.ID? = nil
-    ) -> [Slide] {
-        let label = url.host(percentEncoded: false) ?? url.absoluteString
-        return [
-            Slide(
-                id: preservingSlideID ?? UUID(),
-                index: 1,
-                lines: [],
-                label: label,
-                videoURL: nil,
-                pdfURL: nil,
-                pdfPageIndex: nil,
-                imageURL: nil,
-                webpageURL: url,
-                webpageNavigationRevision: navigationRevision
             )
         ]
     }
@@ -2282,7 +2271,7 @@ public struct ContentView: View {
     }
 
     private func openWebpageFromSidebar(_ rawValue: String) -> Bool {
-        guard let url = normalizedWebpageURL(from: rawValue) else {
+        guard let url = WebpageURLMatcher.normalizedURL(from: rawValue) else {
             return false
         }
 
@@ -2324,11 +2313,19 @@ public struct ContentView: View {
         }
         selectedWebpageURL = url
         beginPreviewTransition(to: .web(url))
-        applyPreviewMediaLoad(slides: buildWebpageSlides(from: url))
+        applyPreviewMediaLoad(slides: WebpageSlideCatalog.initialSlides(from: url))
     }
 
     private func webpageTitle(for url: URL) -> String {
-        let cachedTitle = webpageTitles[url]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if let liveTitle = LiveWebpageTitleCache.title(for: url, in: liveWebpageTitles)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !liveTitle.isEmpty {
+            return liveTitle
+        }
+
+        let cachedTitle = WebpageURLMatcher.matchingURL(in: webpageURLs, for: url)
+            .flatMap { webpageTitles[$0] }?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !cachedTitle.isEmpty {
             return cachedTitle
         }
@@ -2340,9 +2337,17 @@ public struct ContentView: View {
         let resolvedTitle = normalizedTitle.isEmpty
             ? (url.host(percentEncoded: false) ?? url.absoluteString)
             : normalizedTitle
-        if webpageTitles[url] != resolvedTitle {
-            webpageTitles[url] = resolvedTitle
-        }
+
+        LiveWebpageTitleCache.store(
+            resolvedTitle,
+            for: url,
+            titles: &liveWebpageTitles,
+            accessOrder: &liveWebpageTitleOrder
+        )
+
+        guard let savedEntryURL = WebpageURLMatcher.matchingURL(in: webpageURLs, for: url) else { return }
+        guard webpageTitles[savedEntryURL] != resolvedTitle else { return }
+        webpageTitles[savedEntryURL] = resolvedTitle
     }
 
     private func restoreWebpageState() {
@@ -2394,7 +2399,7 @@ public struct ContentView: View {
 
         var seen = Set<URL>()
         return strings.compactMap { value in
-            guard let url = URL(string: value), isSupportedWebpageURL(url), seen.insert(url).inserted else {
+            guard let url = URL(string: value), WebpageURLMatcher.isSupported(url), seen.insert(url).inserted else {
                 return nil
             }
             return url
@@ -2414,43 +2419,34 @@ public struct ContentView: View {
     }
 
     private func updatePreviewWebpageURL(to newURL: URL, from previousURL: URL) {
-        guard isSupportedWebpageURL(newURL) else { return }
         guard isPreviewWebpageNavigationActive else { return }
-        guard !urlsRepresentSameWebpage(newURL, previousURL) else { return }
+        guard let slides = WebpageSlideCatalog.navigatedSlides(
+            in: flow.previewSlides,
+            to: newURL,
+            from: previousURL
+        ) else {
+            return
+        }
 
-        let preservedSlideID = flow.previewSlides.first { $0.webpageURL != nil }?.id
         beginPreviewTransition(to: .web(newURL))
-        setPreviewSlides(
-            buildWebpageSlides(
-                from: newURL,
-                preservingSlideID: preservedSlideID
-            )
-        )
+        setPreviewSlides(slides)
     }
 
     private func updateCurrentWebpageURL(to newURL: URL, from previousURL: URL) {
-        guard isSupportedWebpageURL(newURL) else { return }
-        guard session.slides.contains(where: { $0.webpageURL != nil }) else { return }
-        guard !urlsRepresentSameWebpage(newURL, previousURL) else { return }
+        guard let slides = WebpageSlideCatalog.navigatedSlides(
+            in: session.slides,
+            to: newURL,
+            from: previousURL
+        ) else {
+            return
+        }
 
-        let preservedSlideID = session.slides.first { $0.webpageURL != nil }?.id
-        let navigationRevision = webpageNavigationRevision(from: session.slides) + 1
-        commitCurrentSlides(
-            buildWebpageSlides(
-                from: newURL,
-                navigationRevision: navigationRevision,
-                preservingSlideID: preservedSlideID
-            )
-        )
+        commitCurrentSlides(slides)
     }
 
     private var isPreviewWebpageNavigationActive: Bool {
         guard case .web = previewSource else { return false }
         return flow.previewSlides.contains { $0.webpageURL != nil }
-    }
-
-    private func urlsRepresentSameWebpage(_ lhs: URL, _ rhs: URL) -> Bool {
-        lhs.absoluteString == rhs.absoluteString
     }
 
     private func setSidebarSelectionWithoutLoading(_ selection: SidebarSelection?) {
@@ -2460,14 +2456,6 @@ public struct ContentView: View {
         }
         ignoresNextSidebarSelectionChange = true
         sidebarSelection = selection
-    }
-
-    private func webpageURL(from slides: [Slide]) -> URL? {
-        slides.first { $0.webpageURL != nil }?.webpageURL
-    }
-
-    private func webpageNavigationRevision(from slides: [Slide]) -> Int {
-        slides.first { $0.webpageURL != nil }?.webpageNavigationRevision ?? 0
     }
 
     private func loadWindowPreview(for windowID: CGWindowID) {
@@ -2564,6 +2552,13 @@ public struct ContentView: View {
             return
         }
 
+        if WebpageSlideCatalog.shouldPreserveCurrentWebpageOverRestore(
+            preservedSlides: slides,
+            currentSlides: session.slides
+        ) {
+            return
+        }
+
         if let pdfSource {
             commitCurrentPDFSource(
                 pdfSource,
@@ -2582,51 +2577,6 @@ public struct ContentView: View {
             preferredSelection: restoredSelection,
             preferredSelectionIndex: currentSlideIndex
         )
-    }
-
-    private func isSupportedWebpageURL(_ url: URL) -> Bool {
-        guard let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme) else {
-            return false
-        }
-        return url.host(percentEncoded: false)?.isEmpty == false
-    }
-
-    private func normalizedWebpageURL(from rawValue: String) -> URL? {
-        let trimmedValue = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedValue.isEmpty else {
-            return nil
-        }
-
-        if let url = URL(string: trimmedValue), isSupportedWebpageURL(url) {
-            return url
-        }
-
-        let defaultScheme = shouldDefaultWebpageURLToHTTP(trimmedValue) ? "http" : "https"
-        let prefixedValue = "\(defaultScheme)://\(trimmedValue)"
-        guard let prefixedURL = URL(string: prefixedValue), isSupportedWebpageURL(prefixedURL) else {
-            return nil
-        }
-
-        return prefixedURL
-    }
-
-    private func shouldDefaultWebpageURLToHTTP(_ rawValue: String) -> Bool {
-        guard
-            let url = URL(string: "http://\(rawValue)"),
-            let host = url.host(percentEncoded: false)?.lowercased()
-        else {
-            return false
-        }
-
-        if url.port != nil {
-            return true
-        }
-
-        return host == "localhost"
-            || host == "127.0.0.1"
-            || host == "0.0.0.0"
-            || host == "::1"
-            || host.hasSuffix(".local")
     }
 }
 

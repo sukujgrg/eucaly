@@ -128,6 +128,7 @@ struct PreviewPaneContainerView: View {
     let paneToggleAnimation: Animation
     let loadAnimation: Animation
     let titleForWebpage: (URL) -> String
+    let savedWebpageEntryURL: URL?
     let onWebpageNavigationChange: (URL, URL) -> Void
     let onWebpageTitleChange: (String, URL) -> Void
     let onEdit: () -> Void
@@ -214,6 +215,14 @@ struct PreviewPaneContainerView: View {
                                 .controlSize(.small)
                             }
                             .padding(.horizontal, 10)
+
+                            if let savedWebpageEntryURL,
+                               !WebpageURLMatcher.representSamePage(savedWebpageEntryURL, selectedWebpageURL) {
+                                Text("Showing a navigated page, not the saved sidebar URL.")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 10)
+                            }
 
                             WebpageViewRepresentable(
                                 url: selectedWebpageURL,

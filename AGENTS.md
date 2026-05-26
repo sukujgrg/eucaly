@@ -99,6 +99,9 @@ If a new type cannot follow this contract, treat it as a design bug and refactor
 - Webpages are live and interactive in both **Preview** and **Current**.
 - Navigation inside Preview updates Preview slides only and must not silently rebuild Current.
 - Navigation inside Current updates Current/runtime state (`session.slides`, projection) only and must not silently rebuild Preview.
+- Preview, Current, and projection share the same webpage navigation model: slide `webpageURL` plus `webpageNavigationRevision`, updated via `WebpageSlideCatalog` helpers in `WebpageNavigation.swift`.
+- Projection recreates its read-only webpage view from `webpageNavigationRevision`; Preview and Current keep a persistent interactive `WKWebView` and update through `updateNSView`.
+- Sidebar Web list entries are saved bookmarks only; live navigated URLs are tracked in Preview/Current slides, not by rewriting sidebar rows.
 - Preview webpage mute is local to Preview.
 - Current webpage mute is session-level (`session.webpageMuted`) and affects Current plus projection.
 
