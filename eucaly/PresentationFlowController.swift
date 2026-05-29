@@ -3,11 +3,15 @@ import Combine
 import AppKit
 
 @MainActor
+final class PreviewSelectionState: ObservableObject {
+    @Published var selectedSlideID: Slide.ID?
+}
+
+@MainActor
 final class PresentationFlowController: ObservableObject {
     struct PreviewDocumentState {
         var slides: [Slide]
         var pdfSource: PDFSlideSource?
-        var selectedSlideID: Slide.ID?
 
         var isEmpty: Bool {
             slides.isEmpty && pdfSource == nil
@@ -34,6 +38,7 @@ final class PresentationFlowController: ObservableObject {
 
     @Published private(set) var previewDocument: PreviewDocumentState?
     @Published var isCurrentCollapsed: Bool = true
+    let previewSelection = PreviewSelectionState()
 
     var previewPDFSource: PDFSlideSource? {
         previewDocument?.pdfSource
@@ -58,7 +63,7 @@ final class PresentationFlowController: ObservableObject {
     }
 
     var previewSelectionID: Slide.ID? {
-        previewDocument?.selectedSlideID
+        previewSelection.selectedSlideID
     }
 
     func previewSlide(at index: Int) -> Slide? {
@@ -86,7 +91,8 @@ final class PresentationFlowController: ObservableObject {
             slides.indices.contains(index) ? slides[index].id : nil
         }
         let selected = selectedByID ?? selectedByIndex ?? slides.first?.id
-        previewDocument = PreviewDocumentState(slides: slides, pdfSource: nil, selectedSlideID: selected)
+        previewDocument = PreviewDocumentState(slides: slides, pdfSource: nil)
+        previewSelection.selectedSlideID = selected
     }
 
     func setPreviewPDFSource(
@@ -101,31 +107,30 @@ final class PresentationFlowController: ObservableObject {
             (0..<source.pageCount).contains(index) ? index : nil
         } ?? 0
         let selected = PDFSlideCatalog.slide(url: source.url, pageIndex: selectedIndex).id
-        previewDocument = PreviewDocumentState(slides: [], pdfSource: source, selectedSlideID: selected)
+        previewDocument = PreviewDocumentState(slides: [], pdfSource: source)
+        previewSelection.selectedSlideID = selected
     }
 
     func clearPreviewDocument() {
         previewDocument = nil
+        previewSelection.selectedSlideID = nil
     }
 
     func selectPreviewSlide(_ slideID: Slide.ID) {
-        guard var document = previewDocument else { return }
-        document.selectedSlideID = slideID
-        previewDocument = document
+        guard previewDocument?.index(of: slideID) != nil else { return }
+        previewSelection.selectedSlideID = slideID
     }
 
     func movePreviewSelection(delta: Int) {
-        guard var document = previewDocument, document.slideCount > 0 else { return }
-        guard let selectedSlideID = document.selectedSlideID,
+        guard let document = previewDocument, document.slideCount > 0 else { return }
+        guard let selectedSlideID = previewSelection.selectedSlideID,
               let index = document.index(of: selectedSlideID) else {
-            document.selectedSlideID = document.slide(at: 0).id
-            previewDocument = document
+            previewSelection.selectedSlideID = document.slide(at: 0).id
             return
         }
 
         let nextIndex = max(0, min(document.slideCount - 1, index + delta))
-        document.selectedSlideID = document.slide(at: nextIndex).id
-        previewDocument = document
+        previewSelection.selectedSlideID = document.slide(at: nextIndex).id
     }
 
     func setCurrentSlides(

@@ -42,6 +42,7 @@ class CacheManager: ObservableObject {
 
     private init() {
         memoryImageCache.countLimit = maxMemoryCacheSize
+        memoryImageCache.totalCostLimit = 96 * 1024 * 1024
         diskIOQueue.name = "eucaly.thumbnail-disk-io"
         diskIOQueue.qualityOfService = .utility
         diskIOQueue.maxConcurrentOperationCount = 1
@@ -56,31 +57,6 @@ class CacheManager: ObservableObject {
     }
 
     // MARK: - Thumbnail Caching (Images, Videos, PDFs)
-
-    /// Get cached thumbnail, checking memory first, then disk
-    func getCachedThumbnail(for url: URL, type: ThumbnailType, pageIndex: Int? = nil, size: CGSize? = nil) -> NSImage? {
-        let cacheKey = makeCacheKey(url: url, type: type, pageIndex: pageIndex, size: size)
-
-        // Check if file has been modified since cached
-        if hasFileBeenModified(url: url, cacheKey: cacheKey) {
-            invalidateThumbnail(for: url, type: type, pageIndex: pageIndex, size: size)
-            return nil
-        }
-
-        // 1. Check memory cache first (fastest)
-        if let cached = memoryImageCache.object(forKey: cacheKey as NSString) {
-            return cached
-        }
-
-        // 2. Check disk cache (fast, persists across launches)
-        if let diskImage = loadFromDisk(cacheKey: cacheKey) {
-            // Load into memory cache for next time
-            cacheInMemory(image: diskImage, key: cacheKey)
-            return diskImage
-        }
-
-        return nil
-    }
 
     /// Async variant that avoids disk decode work on the main actor.
     func getCachedThumbnailAsync(for url: URL, type: ThumbnailType, pageIndex: Int? = nil, size: CGSize? = nil) async -> NSImage? {
@@ -109,32 +85,6 @@ class CacheManager: ObservableObject {
             cacheInMemory(image: diskImage, key: cacheKey)
         }
         return diskImage
-    }
-
-    /// Cache thumbnail in both memory and disk
-    func cacheThumbnail(_ image: NSImage, for url: URL, type: ThumbnailType, pageIndex: Int? = nil, size: CGSize? = nil) {
-        let cacheKey = makeCacheKey(url: url, type: type, pageIndex: pageIndex, size: size)
-
-        // Store file modification date for invalidation
-        if let modDate = fileModificationDate(url: url) {
-            fileModificationDates[cacheKey] = modDate
-            scheduleSaveFileModificationDates()
-        }
-
-        // Cache in memory
-        cacheInMemory(image: image, key: cacheKey)
-
-        // Cache on disk (async to avoid blocking)
-        // Convert to data synchronously before async task to avoid sendability issues
-        let url = diskCacheURL
-        guard let tiffData = image.tiffRepresentation,
-              let bitmapImage = NSBitmapImageRep(data: tiffData),
-              let pngData = bitmapImage.representation(using: .png, properties: [:]) else {
-            return
-        }
-
-        scheduleDiskWrite(cacheKey: cacheKey, pngData: pngData, diskURL: url)
-        cleanupOldCaches(debounce: true)
     }
 
     /// Cache a thumbnail when PNG encoding has already been done off the main actor.
@@ -266,14 +216,21 @@ class CacheManager: ObservableObject {
     }
 
     private func cacheInMemory(image: NSImage, key: String) {
-        memoryImageCache.setObject(image, forKey: key as NSString)
+        memoryImageCache.setObject(image, forKey: key as NSString, cost: memoryCost(for: image))
         memoryCacheKeys.insert(key)
     }
 
-    private func loadFromDisk(cacheKey: String) -> NSImage? {
-        let fileURL = diskCacheURL.appendingPathComponent(cacheKey)
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
-        return NSImage(contentsOf: fileURL)
+    private func memoryCost(for image: NSImage) -> Int {
+        let representationCost = image.representations.reduce(0) { total, representation in
+            total + max(1, representation.pixelsWide) * max(1, representation.pixelsHigh) * 4
+        }
+        if representationCost > 0 {
+            return representationCost
+        }
+
+        return max(1, Int(image.size.width.rounded(.up)))
+            * max(1, Int(image.size.height.rounded(.up)))
+            * 4
     }
 
     // MARK: - File Modification Tracking

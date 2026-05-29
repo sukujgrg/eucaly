@@ -90,7 +90,7 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
         )
         config.width = max(1, Int((Double(sourceWidth) / scaleDown).rounded(.down)))
         config.height = max(1, Int((Double(sourceHeight) / scaleDown).rounded(.down)))
-        let fps = Self.normalizedFrameRate(preferredFrameRate)
+        let fps = normalizedPreferredFrameRate
         config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
         config.queueDepth = 6
         config.showsCursor = true
@@ -271,13 +271,13 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private static func normalizedFrameRate(_ value: Int) -> Int {
-        switch value {
-        case 24, 30, 60:
-            return value
-        default:
-            return 60
-        }
+    @MainActor
+    var normalizedPreferredFrameRate: Int {
+        Self.normalizedFrameRate(preferredFrameRate)
+    }
+
+    static func normalizedFrameRate(_ value: Int) -> Int {
+        WindowCaptureFrameRate.normalized(value)
     }
 
 }

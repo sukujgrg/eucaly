@@ -7,6 +7,51 @@ import PDFKit
 import WebKit
 
 @MainActor
+final class PlaybackProgressStore: ObservableObject {
+    @Published private(set) var videoCurrentTime: Double = 0
+    @Published private(set) var videoDuration: Double = 0
+    @Published private(set) var backgroundAudioCurrentTime: Double = 0
+    @Published private(set) var backgroundAudioDuration: Double = 0
+
+    func updateVideo(currentTime: Double, duration: Double) {
+        let normalizedDuration = duration.isFinite && duration > 0 ? duration : 0
+        let normalizedTime = currentTime.isFinite && currentTime >= 0 ? currentTime : 0
+        videoDuration = normalizedDuration
+        videoCurrentTime = min(normalizedTime, max(normalizedDuration, normalizedTime))
+    }
+
+    func resetVideo() {
+        videoCurrentTime = 0
+        videoDuration = 0
+    }
+
+    func seekVideo(to seconds: Double) {
+        videoCurrentTime = seconds
+    }
+
+    func updateBackgroundAudio(currentTime: Double, duration: Double) {
+        let normalizedTime = currentTime.isFinite ? max(0, currentTime) : 0
+        let normalizedDuration = duration.isFinite && duration > 0 ? duration : 0
+
+        if abs(backgroundAudioCurrentTime - normalizedTime) > 0.05 {
+            backgroundAudioCurrentTime = normalizedTime
+        }
+        if abs(backgroundAudioDuration - normalizedDuration) > 0.05 {
+            backgroundAudioDuration = normalizedDuration
+        }
+    }
+
+    func resetBackgroundAudio() {
+        backgroundAudioCurrentTime = 0
+        backgroundAudioDuration = 0
+    }
+
+    func seekBackgroundAudio(to seconds: Double) {
+        backgroundAudioCurrentTime = seconds
+    }
+}
+
+@MainActor
 final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     enum OverlayMode: String, CaseIterable, Identifiable {
         case hidden = "Hidden"
@@ -33,24 +78,22 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     @Published var videoPaused = false
     @Published var videoLoop = false
     @Published var videoFill = false
-    @Published private(set) var videoCurrentTime: Double = 0
-    @Published private(set) var videoDuration: Double = 0
     @Published private(set) var videoSeekRevision = 0
     private(set) var videoSeekTarget: Double = 0
+    let playbackProgress = PlaybackProgressStore()
     @Published private(set) var backgroundVisualURL: URL? = nil
     @Published var isBackgroundVisualVisible = true
     @Published private(set) var backgroundAudioURL: URL? = nil
     @Published private(set) var isBackgroundAudioPlaying = false
     @Published private(set) var backgroundAudioLoop = true
     @Published private(set) var backgroundAudioVolume: Double = 1.0
-    @Published private(set) var backgroundAudioCurrentTime: Double = 0
-    @Published private(set) var backgroundAudioDuration: Double = 0
     @Published var areSlidesVisible = true
     @Published private(set) var overlay = OverlayState()
     private var countdownToken = UUID()
 
     private var backgroundAudioPlayer: AVPlayer?
     private var backgroundAudioEndObserver: NSObjectProtocol?
+    private var backgroundAudioTimeObserver: Any?
 
     private var window: NSWindow?
     private var preferredPresentationScreenID: CGDirectDisplayID?
@@ -77,6 +120,9 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
         }
         if let backgroundAudioEndObserver {
             NotificationCenter.default.removeObserver(backgroundAudioEndObserver)
+        }
+        if let backgroundAudioTimeObserver, let backgroundAudioPlayer {
+            backgroundAudioPlayer.removeTimeObserver(backgroundAudioTimeObserver)
         }
         screenRepositionWorkItem?.cancel()
     }
@@ -326,20 +372,32 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     func seekVideo(to seconds: Double) {
         let clamped = min(max(seconds, 0), max(videoDuration, 0))
         videoSeekTarget = clamped
-        videoCurrentTime = clamped
+        playbackProgress.seekVideo(to: clamped)
         videoSeekRevision += 1
     }
 
+    var videoCurrentTime: Double {
+        playbackProgress.videoCurrentTime
+    }
+
+    var videoDuration: Double {
+        playbackProgress.videoDuration
+    }
+
+    var backgroundAudioCurrentTime: Double {
+        playbackProgress.backgroundAudioCurrentTime
+    }
+
+    var backgroundAudioDuration: Double {
+        playbackProgress.backgroundAudioDuration
+    }
+
     func updateVideoPlaybackProgress(currentTime: Double, duration: Double) {
-        let normalizedDuration = duration.isFinite && duration > 0 ? duration : 0
-        let normalizedTime = currentTime.isFinite && currentTime >= 0 ? currentTime : 0
-        videoDuration = normalizedDuration
-        videoCurrentTime = min(normalizedTime, max(normalizedDuration, normalizedTime))
+        playbackProgress.updateVideo(currentTime: currentTime, duration: duration)
     }
 
     func resetVideoPlaybackProgress() {
-        videoCurrentTime = 0
-        videoDuration = 0
+        playbackProgress.resetVideo()
         videoSeekTarget = 0
         videoSeekRevision += 1
     }
@@ -510,15 +568,16 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     func stopBackgroundAudioPlayback() {
         backgroundAudioPlayer?.pause()
         backgroundAudioPlayer?.seek(to: .zero)
-        backgroundAudioCurrentTime = 0
+        playbackProgress.seekBackgroundAudio(to: 0)
         isBackgroundAudioPlaying = false
     }
 
     func clearBackgroundAudio() {
         stopBackgroundAudioPlayback()
+        removeBackgroundAudioTimeObserver()
         backgroundAudioPlayer = nil
         backgroundAudioURL = nil
-        backgroundAudioDuration = 0
+        playbackProgress.resetBackgroundAudio()
         removeBackgroundAudioEndObserver()
     }
 
@@ -535,32 +594,18 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     func seekBackgroundAudio(to time: Double) {
         guard let player = backgroundAudioPlayer else { return }
         let clamped = min(max(time, 0), backgroundAudioDuration)
-        backgroundAudioCurrentTime = clamped
+        playbackProgress.seekBackgroundAudio(to: clamped)
         player.seek(to: CMTime(seconds: clamped, preferredTimescale: 600))
     }
 
     func refreshBackgroundAudioProgress() {
         guard let player = backgroundAudioPlayer else {
-            if backgroundAudioCurrentTime != 0 {
-                backgroundAudioCurrentTime = 0
-            }
-            if backgroundAudioDuration != 0 {
-                backgroundAudioDuration = 0
-            }
+            playbackProgress.resetBackgroundAudio()
             return
         }
         let current = player.currentTime().seconds
-        if current.isFinite {
-            let clampedCurrent = max(0, current)
-            if abs(backgroundAudioCurrentTime - clampedCurrent) > 0.05 {
-                backgroundAudioCurrentTime = clampedCurrent
-            }
-        }
-        if let duration = player.currentItem?.duration.seconds, duration.isFinite, duration > 0 {
-            if abs(backgroundAudioDuration - duration) > 0.05 {
-                backgroundAudioDuration = duration
-            }
-        }
+        let duration = player.currentItem?.duration.seconds ?? 0
+        playbackProgress.updateBackgroundAudio(currentTime: current, duration: duration)
     }
 
     func overlayTintColor(remaining: Int) -> Color {
@@ -595,10 +640,10 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
 
     private func configureBackgroundAudioPlayer(for url: URL?, autoplay: Bool) {
         backgroundAudioPlayer?.pause()
+        removeBackgroundAudioTimeObserver()
         backgroundAudioPlayer = nil
         isBackgroundAudioPlaying = false
-        backgroundAudioCurrentTime = 0
-        backgroundAudioDuration = 0
+        playbackProgress.resetBackgroundAudio()
         removeBackgroundAudioEndObserver()
 
         guard let url else { return }
@@ -617,6 +662,7 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
                 }
             }
         }
+        configureBackgroundAudioTimeObserver()
         refreshBackgroundAudioProgress()
         if autoplay {
             player.play()
@@ -628,7 +674,7 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
         guard let player = backgroundAudioPlayer else { return }
         if backgroundAudioLoop {
             player.seek(to: .zero)
-            backgroundAudioCurrentTime = 0
+            playbackProgress.seekBackgroundAudio(to: 0)
             player.play()
             isBackgroundAudioPlaying = true
         } else {
@@ -642,6 +688,26 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
             NotificationCenter.default.removeObserver(backgroundAudioEndObserver)
             self.backgroundAudioEndObserver = nil
         }
+    }
+
+    private func configureBackgroundAudioTimeObserver() {
+        removeBackgroundAudioTimeObserver()
+        guard let backgroundAudioPlayer else { return }
+        let interval = CMTime(seconds: 0.5, preferredTimescale: 600)
+        backgroundAudioTimeObserver = backgroundAudioPlayer.addPeriodicTimeObserver(
+            forInterval: interval,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refreshBackgroundAudioProgress()
+            }
+        }
+    }
+
+    private func removeBackgroundAudioTimeObserver() {
+        guard let backgroundAudioTimeObserver, let backgroundAudioPlayer else { return }
+        backgroundAudioPlayer.removeTimeObserver(backgroundAudioTimeObserver)
+        self.backgroundAudioTimeObserver = nil
     }
 
 }

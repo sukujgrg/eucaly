@@ -321,9 +321,6 @@ public struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .refreshLibrary)) { _ in
             refreshLibrary()
         }
-        .onReceive(Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()) { _ in
-            session.refreshBackgroundAudioProgress()
-        }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification), perform: handleMainWindowWillCloseNotification)
     }
 
@@ -331,6 +328,7 @@ public struct ContentView: View {
     private var sidebarPane: some View {
         SidebarView(
             session: session,
+            playbackProgress: session.playbackProgress,
             isWindowCaptureSupported: isWindowCaptureSupported,
             libraryFiles: previewLibraryFiles,
             audioFiles: backgroundAudioLibraryFiles,
@@ -704,6 +702,7 @@ public struct ContentView: View {
             ),
             currentPane: CurrentPaneContainerView(
                 session: session,
+                playbackProgress: session.playbackProgress,
                 flow: flow,
                 thumbnailScale: thumbnailScale,
                 paneToggleAnimation: paneToggleAnimation,

@@ -8,6 +8,7 @@ enum DetailFocusTarget: Hashable {
 
 struct CurrentPaneContainerView: View {
     @ObservedObject var session: PresentationSession
+    @ObservedObject var playbackProgress: PlaybackProgressStore
     @ObservedObject var flow: PresentationFlowController
     let thumbnailScale: Double
     let paneToggleAnimation: Animation
@@ -265,12 +266,12 @@ struct CurrentPaneContainerView: View {
         .paneAccentRing(.current, isEmphasized: !session.isEmpty && !isCollapsed)
         .animation(loadAnimation, value: session.slideCount)
         .layoutPriority(selectedWebpageURL == nil ? 0 : 1)
-        .onChange(of: session.videoCurrentTime) { _, newValue in
+        .onChange(of: playbackProgress.videoCurrentTime) { _, newValue in
             guard !isSeekingVideo else { return }
             videoSeekDraft = newValue
         }
         .onChange(of: session.currentSlide?.videoURL) { _, _ in
-            videoSeekDraft = session.videoCurrentTime
+            videoSeekDraft = playbackProgress.videoCurrentTime
             isSeekingVideo = false
         }
         .task(id: session.currentSlide?.videoURL) {
@@ -314,19 +315,19 @@ struct CurrentPaneContainerView: View {
                     get: { videoSeekDraft },
                     set: { newValue in
                         videoSeekDraft = newValue
-                        if session.videoDuration > 0 {
+                        if playbackProgress.videoDuration > 0 {
                             session.seekVideo(to: newValue)
                         }
                     }
                 ),
-                in: 0...max(session.videoDuration, 0.01),
+                in: 0...max(playbackProgress.videoDuration, 0.01),
                 onEditingChanged: { isEditing in
                     isSeekingVideo = isEditing
                 }
             )
-            .disabled(session.videoDuration <= 0)
+            .disabled(playbackProgress.videoDuration <= 0)
 
-            Text(formattedVideoTime(session.videoDuration))
+            Text(formattedVideoTime(playbackProgress.videoDuration))
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
                 .frame(width: 48, alignment: .leading)
@@ -409,7 +410,7 @@ struct CurrentPaneContainerView: View {
             }
 
             session.updateVideoPlaybackProgress(
-                currentTime: session.videoCurrentTime,
+                currentTime: playbackProgress.videoCurrentTime,
                 duration: seconds
             )
         } catch {

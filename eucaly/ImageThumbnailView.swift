@@ -1,10 +1,12 @@
 import SwiftUI
 import AppKit
+import ImageIO
 
 struct ImageThumbnailView: View {
     let url: URL
     let size: CGSize
     @State private var thumbnail: NSImage?
+    @State private var thumbnailTask: Task<Void, Never>?
 
     var body: some View {
         Group {
@@ -40,63 +42,92 @@ struct ImageThumbnailView: View {
             }
         }
         .onAppear {
-            loadThumbnail()
+            scheduleThumbnailLoad()
+        }
+        .onDisappear {
+            thumbnailTask?.cancel()
+            thumbnailTask = nil
+        }
+        .onChange(of: url) {
+            resetAndLoad()
+        }
+        .onChange(of: size) {
+            resetAndLoad()
         }
     }
 
-    private func loadThumbnail() {
-        // Check cache first
-        Task {
+    private func resetAndLoad() {
+        thumbnail = nil
+        scheduleThumbnailLoad()
+    }
+
+    private func scheduleThumbnailLoad() {
+        thumbnailTask?.cancel()
+        thumbnailTask = Task {
             if let cached = await CacheManager.shared.getCachedThumbnailAsync(for: url, type: .image, size: size) {
-                await MainActor.run { self.thumbnail = cached }
+                guard !Task.isCancelled else { return }
+                thumbnail = cached
                 return
             }
 
-            // Generate if not cached
-            DispatchQueue.global(qos: .userInitiated).async { [url, size] in
-                guard let image = NSImage(contentsOf: url) else { return }
+            let result = await Task.detached(priority: .userInitiated) {
+                Self.makeDownsampledThumbnail(url: url, targetSize: size)
+            }.value
 
-                // Create thumbnail at target size for performance
-                let thumbnailSize = self.calculateThumbnailSize(for: image.size, targetSize: size)
-
-                guard let thumbnail = self.createThumbnail(from: image, size: thumbnailSize) else {
-                    DispatchQueue.main.async {
-                        CacheManager.shared.cacheThumbnail(image, for: url, type: .image, size: size)
-                        self.thumbnail = image
-                    }
-                    return
-                }
-
-                DispatchQueue.main.async {
-                    CacheManager.shared.cacheThumbnail(thumbnail, for: url, type: .image, size: size)
-                    self.thumbnail = thumbnail
-                }
+            guard !Task.isCancelled, let result else {
+                return
             }
+            CacheManager.shared.cacheThumbnail(
+                result.image,
+                pngData: result.pngData,
+                for: url,
+                type: .image,
+                size: size
+            )
+            thumbnail = result.image
         }
     }
 
-    private func calculateThumbnailSize(for imageSize: CGSize, targetSize: CGSize) -> CGSize {
-        let widthRatio = targetSize.width / imageSize.width
-        let heightRatio = targetSize.height / imageSize.height
-        let ratio = max(widthRatio, heightRatio)
-        return CGSize(
-            width: imageSize.width * ratio,
-            height: imageSize.height * ratio
-        )
+    private final class ThumbnailData: @unchecked Sendable {
+        let image: NSImage
+        let pngData: Data
+
+        nonisolated init(image: NSImage, pngData: Data) {
+            self.image = image
+            self.pngData = pngData
+        }
     }
 
-    private func createThumbnail(from image: NSImage, size: CGSize) -> NSImage? {
-        let thumbnail = NSImage(size: size)
-        thumbnail.lockFocus()
-        defer { thumbnail.unlockFocus() }
-
-        image.draw(
-            in: NSRect(origin: .zero, size: size),
-            from: NSRect(origin: .zero, size: image.size),
-            operation: .copy,
-            fraction: 1.0
+    private nonisolated static func makeDownsampledThumbnail(url: URL, targetSize: CGSize) -> ThumbnailData? {
+        let maxPixelSize = max(
+            1,
+            Int(max(targetSize.width, targetSize.height).rounded(.up)) * 2
         )
+        let sourceOptions: CFDictionary = [
+            kCGImageSourceShouldCache: false
+        ] as CFDictionary
+        let thumbnailOptions: CFDictionary = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
+        ] as CFDictionary
 
-        return thumbnail
+        guard
+            let source = CGImageSourceCreateWithURL(url as CFURL, sourceOptions),
+            let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions)
+        else {
+            return nil
+        }
+
+        let image = NSImage(
+            cgImage: cgImage,
+            size: CGSize(width: cgImage.width, height: cgImage.height)
+        )
+        let bitmap = NSBitmapImageRep(cgImage: cgImage)
+        guard let pngData = bitmap.representation(using: .png, properties: [:]) else {
+            return nil
+        }
+        return ThumbnailData(image: image, pngData: pngData)
     }
 }

@@ -1,7 +1,8 @@
 import SwiftUI
 
 private struct PreviewThumbnailGrid: View {
-    @ObservedObject var flow: PresentationFlowController
+    let flow: PresentationFlowController
+    @ObservedObject var selection: PreviewSelectionState
     let thumbnailScale: Double
     @FocusState.Binding var isFocused: Bool
 
@@ -24,7 +25,7 @@ private struct PreviewThumbnailGrid: View {
                                     slide: slide,
                                     itemWidth: layout.itemWidth,
                                     itemHeight: layout.itemHeight,
-                                    isSelected: slide.id == flow.previewSelectionID,
+                                    isSelected: slide.id == selection.selectedSlideID,
                                     allowsPDFThumbnailRendering: allowsPDFThumbnailRendering,
                                     onTap: {
                                         flow.selectPreviewSlide(slide.id)
@@ -38,7 +39,7 @@ private struct PreviewThumbnailGrid: View {
                                     slide: slide,
                                     itemWidth: layout.itemWidth,
                                     itemHeight: layout.itemHeight,
-                                    isSelected: slide.id == flow.previewSelectionID,
+                                    isSelected: slide.id == selection.selectedSlideID,
                                     allowsPDFThumbnailRendering: allowsPDFThumbnailRendering,
                                     onTap: {
                                         flow.selectPreviewSlide(slide.id)
@@ -71,7 +72,7 @@ private struct PreviewThumbnailGrid: View {
                 .onTapGesture {
                     isFocused = true
                 }
-                .onChange(of: flow.previewSelectionID) { _, newValue in
+                .onChange(of: selection.selectedSlideID) { _, newValue in
                     scrollToSelectedSlide(newValue, with: scrollProxy)
                 }
             }
@@ -244,6 +245,7 @@ struct PreviewPaneContainerView: View {
                     } else {
                         PreviewThumbnailGrid(
                             flow: flow,
+                            selection: flow.previewSelection,
                             thumbnailScale: thumbnailScale,
                             isFocused: $isFocused
                         )

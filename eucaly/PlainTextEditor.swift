@@ -69,17 +69,45 @@ struct PlainTextEditor: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
-            applySectionStyling(to: textView)
+            applySectionStylingToEditedParagraphs(in: textView)
             text.wrappedValue = textView.string
         }
 
         func applySectionStyling(to textView: NSTextView) {
+            guard !isApplyingAttributes else { return }
+            let fullRange = NSRange(location: 0, length: (textView.string as NSString).length)
+            applySectionStyling(to: textView, range: fullRange)
+        }
+
+        private func applySectionStylingToEditedParagraphs(in textView: NSTextView) {
+            guard
+                let textStorage = textView.textStorage,
+                !isApplyingAttributes
+            else {
+                return
+            }
+
+            let string = textView.string as NSString
+            let editedRange = textStorage.editedRange
+            let candidateRange = editedRange.location != NSNotFound
+                ? editedRange
+                : textView.selectedRange()
+            let boundedLocation = min(candidateRange.location, string.length)
+            let boundedLength = min(candidateRange.length, max(0, string.length - boundedLocation))
+            let boundedRange = NSRange(location: boundedLocation, length: boundedLength)
+            let paragraphRange = string.paragraphRange(for: boundedRange)
+            applySectionStyling(to: textView, range: paragraphRange)
+        }
+
+        private func applySectionStyling(to textView: NSTextView, range requestedRange: NSRange) {
             guard !isApplyingAttributes else { return }
             isApplyingAttributes = true
             defer { isApplyingAttributes = false }
 
             let string = textView.string as NSString
             let fullRange = NSRange(location: 0, length: string.length)
+            let range = NSIntersectionRange(requestedRange, fullRange)
+            guard range.length > 0 || fullRange.length == 0 else { return }
             let paragraphStyle = textView.defaultParagraphStyle ?? NSParagraphStyle.default
             let baseFont = textView.font ?? NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)
 
@@ -88,9 +116,9 @@ struct PlainTextEditor: NSViewRepresentable {
                 .foregroundColor: NSColor.labelColor,
                 .font: baseFont,
                 .paragraphStyle: paragraphStyle
-            ], range: fullRange)
+            ], range: range)
 
-            string.enumerateSubstrings(in: fullRange, options: [.byLines, .substringNotRequired]) { _, lineRange, _, _ in
+            string.enumerateSubstrings(in: range, options: [.byLines, .substringNotRequired]) { _, lineRange, _, _ in
                 let line = string.substring(with: lineRange).trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !line.isEmpty else { return }
 

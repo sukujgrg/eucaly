@@ -124,6 +124,7 @@ private struct LibraryFolderGroupKey: Hashable {
 
 struct SidebarView: View {
     @ObservedObject var session: PresentationSession
+    @ObservedObject var playbackProgress: PlaybackProgressStore
     let isWindowCaptureSupported: Bool
     let libraryFiles: [URL]
     let audioFiles: [URL]
@@ -650,23 +651,23 @@ struct SidebarView: View {
             }
 
             HStack(spacing: 8) {
-                Text(audioTimeLabel(session.backgroundAudioCurrentTime))
+                Text(audioTimeLabel(playbackProgress.backgroundAudioCurrentTime))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
                     .frame(width: 42, alignment: .trailing)
 
                 Slider(
                     value: Binding(
-                        get: { session.backgroundAudioCurrentTime },
+                        get: { playbackProgress.backgroundAudioCurrentTime },
                         set: { onSeekBackgroundAudio($0) }
                     ),
-                    in: 0...max(session.backgroundAudioDuration, 1),
+                    in: 0...max(playbackProgress.backgroundAudioDuration, 1),
                     step: 0.25
                 )
                 .controlSize(.small)
-                .disabled(session.backgroundAudioURL == nil || session.backgroundAudioDuration <= 0)
+                .disabled(session.backgroundAudioURL == nil || playbackProgress.backgroundAudioDuration <= 0)
 
-                Text(audioTimeLabel(session.backgroundAudioDuration))
+                Text(audioTimeLabel(playbackProgress.backgroundAudioDuration))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
                     .frame(width: 42, alignment: .leading)

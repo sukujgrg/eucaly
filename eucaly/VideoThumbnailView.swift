@@ -6,6 +6,7 @@ struct VideoThumbnailView: View {
     let url: URL
     let size: CGSize
     @State private var thumbnail: NSImage?
+    @State private var thumbnailTask: Task<Void, Never>?
 
     var body: some View {
         Group {
@@ -47,49 +48,82 @@ struct VideoThumbnailView: View {
             }
         }
         .onAppear {
-            loadThumbnail()
+            scheduleThumbnailLoad()
+        }
+        .onDisappear {
+            thumbnailTask?.cancel()
+            thumbnailTask = nil
+        }
+        .onChange(of: url) {
+            resetAndLoad()
+        }
+        .onChange(of: size) {
+            resetAndLoad()
         }
     }
 
-    private func loadThumbnail() {
-        // Check cache first
-        Task {
+    private func resetAndLoad() {
+        thumbnail = nil
+        scheduleThumbnailLoad()
+    }
+
+    private func scheduleThumbnailLoad() {
+        thumbnailTask?.cancel()
+        thumbnailTask = Task {
             if let cached = await CacheManager.shared.getCachedThumbnailAsync(for: url, type: .video, size: size) {
-                await MainActor.run { self.thumbnail = cached }
+                guard !Task.isCancelled else { return }
+                thumbnail = cached
                 return
             }
 
-            // Generate if not cached
-            DispatchQueue.global(qos: .userInitiated).async { [url] in
-                if let image = self.generateVideoThumbnail(url: url) {
-                    DispatchQueue.main.async {
-                        CacheManager.shared.cacheThumbnail(image, for: url, type: .video, size: size)
-                        self.thumbnail = image
-                    }
-                } else {
-                    // Fallback to a generic video placeholder
-                    let placeholder = self.createPlaceholderImage()
-                    DispatchQueue.main.async {
-                        self.thumbnail = placeholder
-                    }
-                }
+            let result = await Task.detached(priority: .userInitiated) {
+                Self.generateVideoThumbnail(url: url, size: size)
+            }.value
+
+            guard !Task.isCancelled else { return }
+            if let result {
+                CacheManager.shared.cacheThumbnail(
+                    result.image,
+                    pngData: result.pngData,
+                    for: url,
+                    type: .video,
+                    size: size
+                )
+                thumbnail = result.image
+            } else {
+                thumbnail = createPlaceholderImage()
             }
         }
     }
 
-    private func generateVideoThumbnail(url: URL) -> NSImage? {
+    private final class ThumbnailData: @unchecked Sendable {
+        let image: NSImage
+        let pngData: Data
+
+        nonisolated init(image: NSImage, pngData: Data) {
+            self.image = image
+            self.pngData = pngData
+        }
+    }
+
+    private nonisolated static func generateVideoThumbnail(url: URL, size: CGSize) -> ThumbnailData? {
         let asset = AVURLAsset(url: url)
         let imageGenerator = AVAssetImageGenerator(asset: asset)
         imageGenerator.appliesPreferredTrackTransform = true
         imageGenerator.maximumSize = CGSize(width: size.width * 2, height: size.height * 2)
-        imageGenerator.requestedTimeToleranceBefore = .zero
-        imageGenerator.requestedTimeToleranceAfter = .zero
+        imageGenerator.requestedTimeToleranceBefore = .positiveInfinity
+        imageGenerator.requestedTimeToleranceAfter = .positiveInfinity
 
         do {
             // Try to get frame at 0.1 seconds (first frame might be black)
             let time = CMTime(seconds: 0.1, preferredTimescale: 600)
             let cgImage = try imageGenerator.copyCGImage(at: time, actualTime: nil)
-            return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+            let image = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+            let bitmap = NSBitmapImageRep(cgImage: cgImage)
+            guard let pngData = bitmap.representation(using: .png, properties: [:]) else {
+                return nil
+            }
+            return ThumbnailData(image: image, pngData: pngData)
         } catch {
             print("Failed to generate video thumbnail: \(error.localizedDescription)")
             return nil
