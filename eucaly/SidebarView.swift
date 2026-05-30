@@ -124,7 +124,6 @@ private struct LibraryFolderGroupKey: Hashable {
 
 struct SidebarView: View {
     @ObservedObject var session: PresentationSession
-    @ObservedObject var playbackProgress: PlaybackProgressStore
     let isWindowCaptureSupported: Bool
     let libraryFiles: [URL]
     let audioFiles: [URL]
@@ -570,135 +569,23 @@ struct SidebarView: View {
     }
 
     private func audioControls(maxListHeight: CGFloat) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 6) {
-                Button {
-                    onImportToAudio()
-                } label: {
-                    Label("Import...", systemImage: "square.and.arrow.down")
-                }
-                .sidebarActionStyle(primary: true)
-                .disabled(libraryRootURL == nil)
-                .help("Import audio or video files for background audio")
-
-                Button {
-                    onPlayPauseBackgroundAudio()
-                } label: {
-                    Label(session.isBackgroundAudioPlaying ? "Pause" : "Play",
-                          systemImage: session.isBackgroundAudioPlaying ? "pause.fill" : "play.fill")
-                }
-                .labelStyle(.iconOnly)
-                .sidebarActionStyle()
-                .disabled(session.backgroundAudioURL == nil)
-                .help(session.isBackgroundAudioPlaying ? "Pause" : "Play")
-
-                Button {
-                    onStopBackgroundAudio()
-                } label: {
-                    Label("Stop", systemImage: "stop.fill")
-                }
-                .labelStyle(.iconOnly)
-                .sidebarActionStyle()
-                .disabled(session.backgroundAudioURL == nil)
-                .help("Stop")
-
-                Button {
-                    onClearBackgroundAudio()
-                } label: {
-                    Label("Clear", systemImage: "xmark.circle")
-                }
-                .labelStyle(.iconOnly)
-                .sidebarActionStyle()
-                .disabled(session.backgroundAudioURL == nil)
-                .help("Clear audio")
-
-                Toggle(isOn: $backgroundAudioLoop) {
-                    Label("Loop", systemImage: "repeat")
-                }
-                .labelStyle(.iconOnly)
-                .toggleStyle(.button)
-                .controlSize(.small)
-                .disabled(session.backgroundAudioURL == nil)
-                .help("Loop")
-            }
-
-            if audioFiles.isEmpty {
-                Text("No audio or video files in Library")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            } else {
-                ScrollView {
-                    sidebarAudioList
-                }
-                .frame(maxWidth: .infinity, maxHeight: maxListHeight, alignment: .topLeading)
-            }
-
-            HStack(spacing: 8) {
-                Text("\(Int(backgroundAudioVolumeDraft * 100))%")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .frame(width: 42, alignment: .trailing)
-
-                Slider(value: $backgroundAudioVolumeDraft, in: 0.0...1.0, step: 0.01)
-                    .controlSize(.small)
-                    .disabled(session.backgroundAudioURL == nil)
-                    .onChange(of: backgroundAudioVolumeDraft) { _, newValue in
-                        onApplyBackgroundAudioVolume(newValue)
-                    }
-
-                Text("")
-                    .frame(width: 42)
-            }
-
-            HStack(spacing: 8) {
-                Text(audioTimeLabel(playbackProgress.backgroundAudioCurrentTime))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .frame(width: 42, alignment: .trailing)
-
-                Slider(
-                    value: Binding(
-                        get: { playbackProgress.backgroundAudioCurrentTime },
-                        set: { onSeekBackgroundAudio($0) }
-                    ),
-                    in: 0...max(playbackProgress.backgroundAudioDuration, 1),
-                    step: 0.25
-                )
-                .controlSize(.small)
-                .disabled(session.backgroundAudioURL == nil || playbackProgress.backgroundAudioDuration <= 0)
-
-                Text(audioTimeLabel(playbackProgress.backgroundAudioDuration))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .frame(width: 42, alignment: .leading)
-            }
-        }
-    }
-
-    private var sidebarAudioList: some View {
-        LazyVStack(alignment: .leading, spacing: 0) {
-            ForEach(audioFiles, id: \.standardizedFileURL) { url in
-                let isSelected = session.backgroundAudioURL?.standardizedFileURL == url.standardizedFileURL
-                Button {
-                    isSidebarFocused = true
-                    onSelectBackgroundAudio(url)
-                } label: {
-                    sidebarRow(title: displayName(url), isSelected: isSelected)
-                }
-                .buttonStyle(.plain)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-                .contextMenu {
-                    revealInFinderButton(for: url)
-                }
-            }
-        }
-    }
-
-    private func audioTimeLabel(_ time: Double) -> String {
-        guard time.isFinite, time > 0 else { return "0:00" }
-        let totalSeconds = Int(time.rounded(.down))
-        return "\(totalSeconds / 60):\(String(format: "%02d", totalSeconds % 60))"
+        SidebarAudioControlsView(
+            session: session,
+            audioFiles: audioFiles,
+            maxListHeight: maxListHeight,
+            libraryRootURL: libraryRootURL,
+            backgroundAudioLoop: $backgroundAudioLoop,
+            backgroundAudioVolumeDraft: $backgroundAudioVolumeDraft,
+            isSidebarFocused: $isSidebarFocused,
+            displayName: displayName,
+            onImportToAudio: onImportToAudio,
+            onSelectBackgroundAudio: onSelectBackgroundAudio,
+            onPlayPauseBackgroundAudio: onPlayPauseBackgroundAudio,
+            onStopBackgroundAudio: onStopBackgroundAudio,
+            onClearBackgroundAudio: onClearBackgroundAudio,
+            onApplyBackgroundAudioVolume: onApplyBackgroundAudioVolume,
+            onSeekBackgroundAudio: onSeekBackgroundAudio
+        )
     }
 
     private func sidebarSectionHeader(
@@ -815,54 +702,26 @@ struct SidebarView: View {
 
     private func sidebarFileRow(_ url: URL, selection: @escaping (URL) -> SidebarSelection) -> some View {
         let selectionValue = selection(url)
-        return HStack(spacing: 6) {
-            Button {
+        return SidebarLibraryRowView(
+            url: url,
+            title: displayName(url),
+            isSelected: sidebarSelection == selectionValue,
+            onSelect: {
                 isSidebarFocused = true
                 if sidebarSelection == selectionValue {
                     onSelectionChange(selectionValue)
                 } else {
                     sidebarSelection = selectionValue
                 }
-            } label: {
-                sidebarRow(title: displayName(url), isSelected: sidebarSelection == selectionValue)
-            }
-            .buttonStyle(.plain)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-
-            Button {
+            },
+            onAddToPlaylist: {
                 onAddLibraryItemToPlaylist(url)
-            } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(AccentColorProvider.color)
-                    .frame(width: 20, height: 20)
-                    .background(
-                        Circle()
-                            .fill(AccentColorProvider.color.opacity(0.12))
-                    )
+            },
+            onRevealInFinder: {
+                revealInFinder(url)
             }
-            .buttonStyle(.plain)
-            .help("Add to Playlist")
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .contextMenu {
-            Button {
-                onAddLibraryItemToPlaylist(url)
-            } label: {
-                Label("Add to Playlist", systemImage: "plus")
-            }
-
-            revealInFinderButton(for: url)
-        }
-    }
-
-    private func revealInFinderButton(for url: URL) -> some View {
-        Button {
-            revealInFinder(url)
-        } label: {
-            Label("Reveal in Finder", systemImage: "folder")
-        }
+        )
+        .equatable()
     }
 
     private func revealInFinder(_ url: URL) {
@@ -1235,25 +1094,7 @@ struct SidebarView: View {
     }
 
     private func sidebarRow(title: String, isSelected: Bool, isMissing: Bool = false) -> some View {
-        let selectionShape = RoundedRectangle(cornerRadius: 6, style: .continuous)
-        return Text(title)
-            .font(.system(size: 14))
-            .foregroundStyle(isMissing ? Color.secondary : Color.primary)
-            .lineLimit(1)
-            .truncationMode(.middle)
-            .frame(height: 22, alignment: .leading)
-            .padding(.horizontal, 10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                selectionShape
-                    .fill(isSelected ? AccentColorProvider.color.opacity(0.22) : Color.clear)
-            )
-            .overlay(
-                selectionShape
-                    .stroke(isSelected ? AccentColorProvider.color.opacity(0.7) : Color.clear, lineWidth: 1)
-            )
-            .contentShape(Rectangle())
-            .focusEffectDisabled()
+        SidebarRowLabel(title: title, isSelected: isSelected, isMissing: isMissing)
     }
 
     private var sidebarSelectableItems: [SidebarSelection] {

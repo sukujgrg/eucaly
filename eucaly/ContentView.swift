@@ -48,8 +48,7 @@ public struct ContentView: View {
     @State private var previewLoadToken = UUID()
     @State private var previewSource: PreviewSource = .none
     @State private var isEditingLyrics: Bool = false
-    @State private var librarySearchQuery: String = ""
-    @State private var librarySearchScopeFiles: [URL] = []
+    @State private var librarySearch = LibrarySearchModel()
     @State private var libraryScrollRequest: LibraryScrollRequest?
     @State private var webpageURLs: [URL] = []
     @State private var webpageTitles: [URL: String] = [:]
@@ -58,12 +57,7 @@ public struct ContentView: View {
     @State private var selectedWebpageURL: URL? = nil
     // Preview mute is intentionally local; Current and projection share session.webpageMuted.
     @State private var previewWebpageMuted: Bool = false
-    @State private var librarySearchResults: [LibraryTextSearchIndex.SearchResult] = []
-    @State private var librarySearchResultsQuery: String = ""
     @State private var isLibrarySearchPresented: Bool = false
-    @State private var selectedLibrarySearchResult: URL? = nil
-    @State private var isLibrarySearchIndexing: Bool = false
-    @State private var librarySearchDebounceTask: Task<Void, Never>? = nil
     @State private var libraryLoadTask: Task<Void, Never>? = nil
     @State private var isLibraryLoading: Bool = false
     @State private var libraryRevision: Int = 0
@@ -78,12 +72,10 @@ public struct ContentView: View {
     @State private var securityScopedBackgroundAudio: URL? = nil
     @StateObject private var screenCaptureManager = ScreenCaptureManager.shared
     @StateObject private var appUpdateViewModel = AppUpdateViewModel()
-    @State private var librarySearchIndex = LibraryTextSearchIndex()
     @State private var isPreviewCollapsed: Bool = false
     private let playlistDirectoryName = "Playlist"
     private let paneToggleAnimation = Animation.easeOut(duration: 0.12)
     private let loadAnimation = Animation.easeInOut(duration: 0.24)
-    private let librarySearchMinimumCharacterCount = 3
     private let windowCaptureFrameRateOptions = [24, 30, 60]
     private let libraryFileScanner = LibraryFileScannerService()
 
@@ -197,15 +189,10 @@ public struct ContentView: View {
             rootSplitWithNotificationObservers
 
             if isLibrarySearchPresented {
-                LibrarySearchOverlayView(
-                    query: $librarySearchQuery,
-                    selectedResult: $selectedLibrarySearchResult,
-                    actions: matchingLibrarySearchActions,
-                    results: filteredLibrarySearchResults,
-                    minimumCharacterCount: librarySearchMinimumCharacterCount,
-                    isIndexing: isLibrarySearchIndexing,
+                LibrarySearchOverlayContainerView(
+                    model: librarySearch,
+                    currentSelectedURL: currentSelectedURL,
                     displayName: { displayName(for: $0) },
-                    snippet: librarySearchSnippet(for:),
                     onRunAction: runLibrarySearchAction,
                     onClose: dismissLibrarySearch,
                     onOpenResult: previewLibrarySearchResult,
@@ -260,9 +247,6 @@ public struct ContentView: View {
         .onChange(of: windowCaptureFrameRate) { _, _ in
             syncWindowCaptureFrameRate()
         }
-        .onChange(of: librarySearchQuery) { _, newValue in
-            handleLibrarySearchQueryChange(newValue)
-        }
         .onChange(of: webpageURLs) { _, _ in
             persistWebpageState()
         }
@@ -279,10 +263,10 @@ public struct ContentView: View {
     }
 
     private func handleRootOnDisappear() {
-        librarySearchDebounceTask?.cancel()
+        librarySearch.cancelDebounce()
         libraryLoadTask?.cancel()
         isLibraryLoading = false
-        isLibrarySearchIndexing = false
+        librarySearch.setIndexing(false)
         releaseSecurityScopedAccess()
         stopWindowCapturesForShutdown()
     }
@@ -328,7 +312,6 @@ public struct ContentView: View {
     private var sidebarPane: some View {
         SidebarView(
             session: session,
-            playbackProgress: session.playbackProgress,
             isWindowCaptureSupported: isWindowCaptureSupported,
             libraryFiles: previewLibraryFiles,
             audioFiles: backgroundAudioLibraryFiles,
@@ -1222,13 +1205,13 @@ public struct ContentView: View {
         refreshLibrarySearchScope: Bool = false,
         refreshSearchResults: Bool = false
     ) {
-        let previousSearchScopeFiles = librarySearchScopeFiles
+        let previousSearchScopeFiles = librarySearch.scopeFilesSnapshot
         let scanner = libraryFileScanner
-        let index = librarySearchIndex
+        let index = librarySearch.index
 
         libraryLoadTask?.cancel()
         isLibraryLoading = true
-        isLibrarySearchIndexing = true
+        librarySearch.setIndexing(true)
         libraryLoadTask = Task.detached(priority: .userInitiated) {
             let cachedMetadata = await index.cachedLibraryMetadata(root: folder)
             if !cachedMetadata.isEmpty {
@@ -1253,11 +1236,11 @@ public struct ContentView: View {
             guard !Task.isCancelled else { return }
 
             let currentQuery = await MainActor.run {
-                librarySearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+                librarySearch.trimmedQuery
             }
 
             let refreshedResults: [LibraryTextSearchIndex.SearchResult]
-            if currentQuery.count >= librarySearchMinimumCharacterCount {
+            if currentQuery.count >= LibrarySearchModel.minimumCharacterCount {
                 refreshedResults = await index.search(query: currentQuery)
             } else {
                 refreshedResults = []
@@ -1272,12 +1255,15 @@ public struct ContentView: View {
                     refreshLibrarySearchScope: refreshLibrarySearchScope
                 )
                 isLibraryLoading = false
-                isLibrarySearchIndexing = false
+                librarySearch.setIndexing(false)
 
                 if refreshSearchResults || !haveSameStandardizedURLs(previousSearchScopeFiles, searchScopeFiles) {
-                    librarySearchResults = filterSearchResultsToCurrentLibrary(refreshedResults)
-                    librarySearchResultsQuery = currentQuery
-                    syncSelectedLibrarySearchResult(preferFirstResult: true)
+                    librarySearch.applySearchResults(
+                        refreshedResults,
+                        query: currentQuery,
+                        currentSelectedURL: currentSelectedURL,
+                        preferFirstResult: true
+                    )
                 }
             }
         }
@@ -1308,7 +1294,7 @@ public struct ContentView: View {
         markdownFiles = files
         previewLibraryFiles = previewFiles
         backgroundAudioLibraryFiles = backgroundAudioFiles
-        librarySearchScopeFiles = searchScopeFiles
+        librarySearch.setScopeFiles(searchScopeFiles)
         fileDisplayNames.merge(displayNames) { _, new in new }
         libraryRevision &+= 1
         return searchScopeFiles
@@ -1621,99 +1607,17 @@ public struct ContentView: View {
         return url.lastPathComponent
     }
 
-    private func librarySearchSnippet(for url: URL) -> String? {
-        let standardizedURL = url.standardizedFileURL
-        guard let snippet = filteredLibrarySearchResults.first(where: { $0.url == standardizedURL })?.snippet,
-              !snippet.isEmpty else {
-            return nil
-        }
-        return snippet
-    }
-
     private var playlistResolvedURLs: [URL] {
         playlistStore.entries.compactMap { playlistStore.resolvedURL(for: $0) }
     }
 
     @MainActor
-    private func handleLibrarySearchQueryChange(_ newQuery: String) {
-        librarySearchDebounceTask?.cancel()
-
-        let trimmed = newQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.count >= librarySearchMinimumCharacterCount else {
-            librarySearchResults = []
-            librarySearchResultsQuery = ""
-            selectedLibrarySearchResult = nil
-            return
-        }
-
-        let index = librarySearchIndex
-        librarySearchDebounceTask = Task {
-            try? await Task.sleep(nanoseconds: 220_000_000)
-            guard !Task.isCancelled else { return }
-
-            let results = await index.search(query: trimmed)
-            guard !Task.isCancelled else { return }
-
-            await MainActor.run {
-                let currentQuery = librarySearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard currentQuery == trimmed else { return }
-                librarySearchResults = filterSearchResultsToCurrentLibrary(results)
-                librarySearchResultsQuery = trimmed
-                syncSelectedLibrarySearchResult(preferFirstResult: true)
-            }
-        }
-    }
-
-    private var filteredLibrarySearchResults: [LibraryTextSearchIndex.SearchResult] {
-        let currentQuery = librarySearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard currentQuery == librarySearchResultsQuery else { return [] }
-        return filterSearchResultsToCurrentLibrary(librarySearchResults)
-    }
-
-    private var matchingLibrarySearchActions: [LibraryCommandPaletteAction] {
-        LibraryCommandPaletteAction.allCases.filter {
-            $0.matches(librarySearchQuery)
-        }
-    }
-
-    private func filterSearchResultsToCurrentLibrary(
-        _ results: [LibraryTextSearchIndex.SearchResult]
-    ) -> [LibraryTextSearchIndex.SearchResult] {
-        let available = Set(librarySearchScopeFiles.map(\.standardizedFileURL))
-        return results
-            .map { result in
-                LibraryTextSearchIndex.SearchResult(
-                    url: result.url.standardizedFileURL,
-                    snippet: result.snippet
-                )
-            }
-            .filter { available.contains($0.url) }
-    }
-
-    @MainActor
-    private func syncSelectedLibrarySearchResult(preferFirstResult: Bool = false) {
-        let resultURLs = filteredLibrarySearchResults.map(\.url)
-        if preferFirstResult {
-            selectedLibrarySearchResult = resultURLs.first
-            return
-        }
-        if let selectedLibrarySearchResult, resultURLs.contains(selectedLibrarySearchResult) {
-            return
-        }
-        if let currentSelectedURL {
-            let standardizedCurrentURL = currentSelectedURL.standardizedFileURL
-            if resultURLs.contains(standardizedCurrentURL) {
-                selectedLibrarySearchResult = standardizedCurrentURL
-                return
-            }
-        }
-        selectedLibrarySearchResult = resultURLs.first
-    }
-
-    @MainActor
     private func presentLibrarySearch() {
         isLibrarySearchPresented = true
-        syncSelectedLibrarySearchResult(preferFirstResult: true)
+        librarySearch.syncSelectedResult(
+            currentSelectedURL: currentSelectedURL,
+            preferFirstResult: true
+        )
     }
 
     @MainActor
@@ -1752,25 +1656,12 @@ public struct ContentView: View {
 
     @MainActor
     private func commitLibrarySearchQuery() {
-        let trimmed = librarySearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.count >= librarySearchMinimumCharacterCount else { return }
-
-        librarySearchDebounceTask?.cancel()
-        let index = librarySearchIndex
         Task {
-            let results = await index.search(query: trimmed)
-            await MainActor.run {
-                let currentQuery = librarySearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard isLibrarySearchPresented, currentQuery == trimmed else { return }
-
-                librarySearchResults = filterSearchResultsToCurrentLibrary(results)
-                librarySearchResultsQuery = trimmed
-                syncSelectedLibrarySearchResult(preferFirstResult: true)
-
-                if let url = selectedLibrarySearchResult ?? filteredLibrarySearchResults.first?.url {
-                    previewLibrarySearchResult(url)
-                }
+            let url = await librarySearch.searchImmediately(currentSelectedURL: currentSelectedURL)
+            guard isLibrarySearchPresented, let url else {
+                return
             }
+            previewLibrarySearchResult(url)
         }
     }
 
