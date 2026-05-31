@@ -49,8 +49,11 @@ struct PlainTextEditor: NSViewRepresentable {
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         guard let textView = nsView.documentView as? NSTextView else { return }
         if textView.string != text {
-            textView.string = text
-            context.coordinator.applySectionStyling(to: textView)
+            context.coordinator.replaceTextPreservingEditorState(
+                text,
+                in: textView,
+                scrollView: nsView
+            )
         }
         textView.textContainer?.containerSize = NSSize(width: nsView.contentSize.width, height: .greatestFiniteMagnitude)
     }
@@ -65,6 +68,24 @@ struct PlainTextEditor: NSViewRepresentable {
 
         init(text: Binding<String>) {
             self.text = text
+        }
+
+        func replaceTextPreservingEditorState(
+            _ newText: String,
+            in textView: NSTextView,
+            scrollView: NSScrollView
+        ) {
+            let selectedRange = textView.selectedRange()
+            let visibleOrigin = scrollView.contentView.bounds.origin
+
+            textView.string = newText
+            applySectionStyling(to: textView)
+            restoreEditorState(
+                selectedRange: selectedRange,
+                visibleOrigin: visibleOrigin,
+                in: textView,
+                scrollView: scrollView
+            )
         }
 
         func textDidChange(_ notification: Notification) {
@@ -133,6 +154,44 @@ struct PlainTextEditor: NSViewRepresentable {
                 textView.textStorage?.addAttribute(.font, value: NSFont.monospacedSystemFont(ofSize: 14, weight: .semibold), range: lineRange)
             }
             textView.textStorage?.endEditing()
+        }
+
+        private func restoreEditorState(
+            selectedRange: NSRange,
+            visibleOrigin: NSPoint,
+            in textView: NSTextView,
+            scrollView: NSScrollView
+        ) {
+            let textLength = (textView.string as NSString).length
+            let location = min(selectedRange.location, textLength)
+            let length = min(selectedRange.length, max(0, textLength - location))
+            textView.setSelectedRange(NSRange(location: location, length: length))
+
+            if let textContainer = textView.textContainer {
+                textView.layoutManager?.ensureLayout(for: textContainer)
+            }
+            textView.layoutSubtreeIfNeeded()
+            restoreVisibleOrigin(visibleOrigin, in: scrollView)
+
+            DispatchQueue.main.async {
+                self.restoreVisibleOrigin(visibleOrigin, in: scrollView)
+            }
+        }
+
+        private func restoreVisibleOrigin(_ visibleOrigin: NSPoint, in scrollView: NSScrollView) {
+            guard let documentView = scrollView.documentView else { return }
+
+            let documentBounds = documentView.bounds
+            let clipBounds = scrollView.contentView.bounds
+            let maxX = max(0, documentBounds.width - clipBounds.width)
+            let maxY = max(0, documentBounds.height - clipBounds.height)
+            let restoredOrigin = NSPoint(
+                x: min(max(visibleOrigin.x, 0), maxX),
+                y: min(max(visibleOrigin.y, 0), maxY)
+            )
+
+            scrollView.contentView.scroll(to: restoredOrigin)
+            scrollView.reflectScrolledClipView(scrollView.contentView)
         }
 
         private func color(for kind: SectionKind) -> NSColor {
