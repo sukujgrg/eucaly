@@ -152,26 +152,36 @@ struct PreviewPaneContainerView: View {
                         Text("(Selected file)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-
-                        Spacer()
                     }
                     .padding(.vertical, 6)
                     .foregroundStyle(.primary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
 
                 if !flow.previewIsEmpty {
-                    Button(action: onLoadToCurrent) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "arrow.down.circle.fill")
-                            Text("Load to Current")
+                    HStack(spacing: 6) {
+                        Button("Edit", action: onEdit)
+                            .paneHeaderActionStyle()
+                            .disabled(!canEditSelection)
+
+                        Button(action: onLoadToCurrent) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "arrow.down.circle.fill")
+                                Text("Load to Current")
+                            }
                         }
+                        .paneHeaderActionStyle(primary: true)
+                        .help("Load to Current area")
                     }
-                    .primaryActionStyle(fixedWidth: 170)
-                    .help("Load to Current area")
                 }
+
+                Rectangle()
+                    .fill(.clear)
+                    .frame(height: 28)
+                    .frame(maxWidth: .infinity)
+                    .contentShape(Rectangle())
+                    .onTapGesture(perform: toggleCollapsed)
             }
             .padding(.horizontal, 4)
 
@@ -255,15 +265,6 @@ struct PreviewPaneContainerView: View {
                 }
             }
 
-            if !isCollapsed {
-                HStack(spacing: 10) {
-                    Button("Edit", action: onEdit)
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .disabled(!canEditSelection)
-                    Spacer()
-                }
-            }
         }
         .padding(10)
         .frame(maxWidth: .infinity, maxHeight: isCollapsed ? nil : .infinity, alignment: .top)

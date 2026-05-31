@@ -9,14 +9,19 @@ final class AppUpdateViewModel: ObservableObject {
     @Published private(set) var isDownloading = false
     @Published private(set) var isInstalling = false
 
-    private let service: GitHubReleaseUpdateService
+    private let service: any AppUpdateServicing
+    private let runUpdaterAction: (URL) throws -> Void
     private let logger = Logger(subsystem: "com.suku.eucaly", category: "AppUpdate")
     private var hasChecked = false
     private var checkTask: Task<Void, Never>?
     private var downloadTask: Task<Void, Never>?
 
-    init(service: GitHubReleaseUpdateService = GitHubReleaseUpdateService()) {
+    init(
+        service: any AppUpdateServicing = GitHubReleaseUpdateService(),
+        installUpdateAction: ((URL) throws -> Void)? = nil
+    ) {
         self.service = service
+        self.runUpdaterAction = installUpdateAction ?? AppUpdateViewModel.runUpdater
     }
 
     func checkForUpdatesIfNeeded() {
@@ -46,7 +51,8 @@ final class AppUpdateViewModel: ObservableObject {
                 if reportsResult {
                     checkAlert = AppUpdateCheckAlert(
                         title: "Unable to check for updates",
-                        message: "Try again later, or check the GitHub releases page manually."
+                        message: "Try again later, or check the GitHub releases page manually.",
+                        releaseURL: AppUpdateRelease.releasesPageURL
                     )
                 }
             }
@@ -73,12 +79,27 @@ final class AppUpdateViewModel: ObservableObject {
                 try installUpdate(from: download.archiveURL)
             } catch {
                 logger.error("Update install preparation failed: \(error.localizedDescription, privacy: .public)")
-                NSWorkspace.shared.open(release.releaseURL)
+                checkAlert = AppUpdateCheckAlert(
+                    title: "Unable to install update",
+                    message: """
+                    \(error.localizedDescription)
+
+                    You can download eucaly \(release.version) from the release page.
+                    """,
+                    releaseURL: release.releaseURL
+                )
             }
         }
     }
 
     private func installUpdate(from archiveURL: URL) throws {
+        try runUpdaterAction(archiveURL)
+        AppDelegate.isInstallingUpdate = true
+        isInstalling = true
+        NSApp.terminate(nil)
+    }
+
+    private static func runUpdater(with archiveURL: URL) throws {
         guard let helperURL = Bundle.main.url(
             forResource: "eucalyUpdater",
             withExtension: nil,
@@ -104,18 +125,29 @@ final class AppUpdateViewModel: ObservableObject {
         ]
 
         try process.run()
-        AppDelegate.isInstallingUpdate = true
-        isInstalling = true
-        NSApp.terminate(nil)
     }
 }
 
-enum AppUpdateInstallError: Error {
+enum AppUpdateInstallError: Error, LocalizedError {
     case missingUpdater
+
+    var errorDescription: String? {
+        switch self {
+        case .missingUpdater:
+            return "This installed copy of eucaly does not include the updater helper."
+        }
+    }
 }
 
 struct AppUpdateCheckAlert: Identifiable {
     let id = UUID()
     let title: String
     let message: String
+    let releaseURL: URL?
+
+    init(title: String, message: String, releaseURL: URL? = nil) {
+        self.title = title
+        self.message = message
+        self.releaseURL = releaseURL
+    }
 }

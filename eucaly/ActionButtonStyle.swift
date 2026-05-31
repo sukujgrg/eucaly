@@ -1,19 +1,39 @@
 import SwiftUI
 
 struct PrimaryActionButtonStyle: ViewModifier {
-    let fixedWidth: CGFloat?
-
     func body(content: Content) -> some View {
         content
             .buttonStyle(.borderedProminent)
             .controlSize(.regular)
             .fontWeight(.semibold)
-            .frame(width: fixedWidth)
+    }
+}
+
+struct PaneHeaderActionButtonStyle: ViewModifier {
+    let isPrimary: Bool
+
+    func body(content: Content) -> some View {
+        Group {
+            if isPrimary {
+                content
+                    .buttonStyle(.borderedProminent)
+                    .fontWeight(.semibold)
+            } else {
+                content
+                    .buttonStyle(.bordered)
+                    .fontWeight(.regular)
+            }
+        }
+        .controlSize(.regular)
     }
 }
 
 extension View {
-    func primaryActionStyle(fixedWidth: CGFloat? = nil) -> some View {
-        modifier(PrimaryActionButtonStyle(fixedWidth: fixedWidth))
+    func primaryActionStyle() -> some View {
+        modifier(PrimaryActionButtonStyle())
+    }
+
+    func paneHeaderActionStyle(primary: Bool = false) -> some View {
+        modifier(PaneHeaderActionButtonStyle(isPrimary: primary))
     }
 }

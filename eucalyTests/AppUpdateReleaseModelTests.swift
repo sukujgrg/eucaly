@@ -21,6 +21,25 @@ final class AppUpdateReleaseModelTests: XCTestCase {
         XCTAssertEqual(release.primaryDownloadAsset?.name, "eucaly-1.21-notarized.zip")
     }
 
+    func testPrimaryDownloadAssetIgnoresDmgBecauseUpdaterRequiresZip() throws {
+        let release = GitHubReleaseResponseModel(
+            tagName: "v1.21",
+            htmlURL: try XCTUnwrap(URL(string: "https://example.com/releases/v1.21")),
+            assets: [
+                GitHubReleaseAssetModel(
+                    name: "eucaly-1.21-notarized.dmg",
+                    downloadURL: try XCTUnwrap(URL(string: "https://example.com/eucaly.dmg"))
+                ),
+                GitHubReleaseAssetModel(
+                    name: "eucaly-1.21-notarized.zip",
+                    downloadURL: try XCTUnwrap(URL(string: "https://example.com/eucaly.zip"))
+                )
+            ]
+        )
+
+        XCTAssertEqual(release.primaryDownloadAsset?.name, "eucaly-1.21-notarized.zip")
+    }
+
     func testPrimaryChecksumAssetSelectsMatchingChecksum() throws {
         let release = GitHubReleaseResponseModel(
             tagName: "v1.21",

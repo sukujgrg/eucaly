@@ -162,11 +162,22 @@ public struct ContentView: View {
     private var rootSplitWithAppUpdateAlert: some View {
         rootSplitWithLibrarySearchOverlay
             .alert(item: $appUpdateViewModel.checkAlert) { alert in
-                Alert(
-                    title: Text(alert.title),
-                    message: Text(alert.message),
-                    dismissButton: .default(Text("OK"))
-                )
+                if let releaseURL = alert.releaseURL {
+                    Alert(
+                        title: Text(alert.title),
+                        message: Text(alert.message),
+                        primaryButton: .default(Text("Open Release")) {
+                            NSWorkspace.shared.open(releaseURL)
+                        },
+                        secondaryButton: .cancel(Text("OK"))
+                    )
+                } else {
+                    Alert(
+                        title: Text(alert.title),
+                        message: Text(alert.message),
+                        dismissButton: .default(Text("OK"))
+                    )
+                }
             }
     }
 
@@ -893,7 +904,8 @@ public struct ContentView: View {
 
     private var canEditSelection: Bool {
         guard !isCurrentSelectionMediaFile, let url = currentSelectedURL else { return false }
-        return isLyricsFile(url)
+        guard isLyricsFile(url) else { return false }
+        return !isEditingLyrics || editorSourceURL != url
     }
 
     private var canEditCurrentLyrics: Bool {
@@ -2383,9 +2395,17 @@ public struct ContentView: View {
     }
 
     private func beginLyricsEditing() {
-        guard canEditSelection else { return }
-        editingSourceURL = currentSelectedURL
+        guard canEditSelection, let url = currentSelectedURL else { return }
+        guard let contents = try? String(contentsOf: url, encoding: .utf8) else {
+            newFileWarning = "Could not open lyrics for editing."
+            return
+        }
+
+        rawLyrics = contents
+        lastLoadedText = contents
+        editingSourceURL = url
         isEditingLyrics = true
+        newFileWarning = nil
     }
 
     private func beginCurrentLyricsEditing() {

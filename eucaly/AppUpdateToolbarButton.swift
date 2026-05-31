@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct AppUpdateToolbarButton: View {
@@ -5,18 +6,29 @@ struct AppUpdateToolbarButton: View {
 
     var body: some View {
         if let release = viewModel.availableRelease {
-            Button {
-                viewModel.downloadAndInstallUpdate()
-            } label: {
-                Label(
-                    buttonTitle,
-                    systemImage: viewModel.isDownloading ? "arrow.down.circle.dotted" : "arrow.down.circle"
-                )
+            if release.isInstallable {
+                Button {
+                    viewModel.downloadAndInstallUpdate()
+                } label: {
+                    Label(
+                        buttonTitle,
+                        systemImage: viewModel.isDownloading ? "arrow.down.circle.dotted" : "arrow.down.circle"
+                    )
+                }
+                .labelStyle(.titleAndIcon)
+                .buttonStyle(.borderedProminent)
+                .disabled(viewModel.isDownloading || viewModel.isInstalling)
+                .help("Install eucaly \(release.version)")
+            } else {
+                Button {
+                    NSWorkspace.shared.open(release.releaseURL)
+                } label: {
+                    Label("Release", systemImage: "safari")
+                }
+                .labelStyle(.titleAndIcon)
+                .buttonStyle(.bordered)
+                .help("Open eucaly \(release.version) release")
             }
-            .labelStyle(.titleAndIcon)
-            .buttonStyle(.borderedProminent)
-            .disabled(viewModel.isDownloading || viewModel.isInstalling)
-            .help("Install eucaly \(release.version)")
         }
     }
 

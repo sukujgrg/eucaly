@@ -1,7 +1,12 @@
 import Foundation
 import CryptoKit
 
-actor GitHubReleaseUpdateService {
+nonisolated protocol AppUpdateServicing: Sendable {
+    func checkForUpdate() async throws -> AppUpdateRelease?
+    func downloadUpdate(_ release: AppUpdateRelease) async throws -> AppDownloadedUpdate
+}
+
+actor GitHubReleaseUpdateService: AppUpdateServicing {
     private let session: URLSession
     private let latestReleaseURL: URL
     private let currentVersionProvider: @Sendable () -> String
@@ -25,7 +30,7 @@ actor GitHubReleaseUpdateService {
         guard let httpResponse = response as? HTTPURLResponse,
               (200..<300).contains(httpResponse.statusCode)
         else {
-            return nil
+            throw AppUpdateError.updateCheckFailed
         }
 
         let release = try JSONDecoder().decode(GitHubReleaseResponseModel.self, from: data)
@@ -121,10 +126,16 @@ actor GitHubReleaseUpdateService {
 }
 
 nonisolated struct AppUpdateRelease: Equatable {
+    static let releasesPageURL = URL(string: "https://github.com/sukujgrg/eucaly/releases")!
+
     let version: String
     let releaseURL: URL
     let asset: GitHubReleaseAssetModel?
     let checksumAsset: GitHubReleaseAssetModel?
+
+    var isInstallable: Bool {
+        asset != nil && checksumAsset != nil
+    }
 }
 
 nonisolated struct AppDownloadedUpdate: Equatable {
@@ -138,8 +149,6 @@ nonisolated struct GitHubReleaseResponseModel: Decodable {
 
     var primaryDownloadAsset: GitHubReleaseAssetModel? {
         assets.first { asset in
-            asset.name.hasSuffix(".dmg")
-        } ?? assets.first { asset in
             asset.name.hasSuffix(".zip") && !asset.name.hasSuffix(".sha256")
         }
     }
@@ -173,13 +182,33 @@ nonisolated struct GitHubReleaseAssetModel: Decodable, Equatable {
     }
 }
 
-nonisolated enum AppUpdateError: Error {
+nonisolated enum AppUpdateError: Error, LocalizedError {
+    case updateCheckFailed
     case missingReleaseAsset
     case downloadFailed
     case missingChecksumAsset
     case checksumDownloadFailed
     case invalidChecksum
     case checksumMismatch
+
+    var errorDescription: String? {
+        switch self {
+        case .updateCheckFailed:
+            return "The update check failed."
+        case .missingReleaseAsset:
+            return "The latest release does not include a supported zip download."
+        case .downloadFailed:
+            return "The update download failed."
+        case .missingChecksumAsset:
+            return "The latest release does not include a checksum file."
+        case .checksumDownloadFailed:
+            return "The checksum download failed."
+        case .invalidChecksum:
+            return "The checksum file could not be read."
+        case .checksumMismatch:
+            return "The downloaded update did not match its checksum."
+        }
+    }
 }
 
 nonisolated struct AppUpdateChecksumParser {

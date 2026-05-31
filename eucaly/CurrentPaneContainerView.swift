@@ -55,12 +55,9 @@ struct CurrentPaneContainerView: View {
                             Text(statusText)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-
-                            Spacer()
                         }
                         .padding(.vertical, 6)
                         .foregroundStyle(.primary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -77,24 +74,32 @@ struct CurrentPaneContainerView: View {
                         Text(statusText)
                             .font(.caption)
                             .foregroundStyle(.secondary)
-
-                        Spacer()
                     }
                     .padding(.vertical, 6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
                 if !session.isEmpty {
-                    Button("Edit", action: onEditCurrentLyrics)
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .disabled(!canEditCurrentLyrics)
-                        .help("Edit Current lyrics in Preview")
+                    HStack(spacing: 6) {
+                        Button("Edit", action: onEditCurrentLyrics)
+                            .paneHeaderActionStyle()
+                            .disabled(!canEditCurrentLyrics)
+                            .help("Edit Current lyrics in Preview")
 
-                    Button("Clear", action: clearSlides)
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-                        .help("Clear Current area")
+                        Button("Clear", role: .destructive, action: clearSlides)
+                            .paneHeaderActionStyle()
+                            .help("Clear Current area")
+                    }
+                }
+
+                if session.isPresenting || !session.isEmpty {
+                    Rectangle()
+                        .fill(.clear)
+                        .frame(height: 28)
+                        .frame(maxWidth: .infinity)
+                        .contentShape(Rectangle())
+                        .onTapGesture(perform: toggleCollapsed)
+                } else {
+                    Spacer()
                 }
             }
             .padding(.horizontal, 4)
