@@ -148,14 +148,19 @@ struct PreviewPaneContainerView: View {
                         Text("Preview")
                             .font(.headline)
                             .fontWeight(.semibold)
+
+                        Text("(Selected file)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        Spacer()
                     }
+                    .padding(.vertical, 6)
                     .foregroundStyle(.primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-
-                Text("(Selected file)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
 
                 if !flow.previewIsEmpty {
                     Button(action: onLoadToCurrent) {
@@ -167,11 +172,8 @@ struct PreviewPaneContainerView: View {
                     .primaryActionStyle(fixedWidth: 170)
                     .help("Load to Current area")
                 }
-
-                Spacer()
             }
             .padding(.horizontal, 4)
-            .padding(.vertical, 6)
 
             if !isCollapsed {
                 Group {

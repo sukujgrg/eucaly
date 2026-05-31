@@ -36,6 +36,13 @@ struct CurrentPaneContainerView: View {
         }()
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
+                let statusText: String = {
+                    if session.isPresenting {
+                        return session.areSlidesVisible ? "(Presenting)" : "(Slides hidden)"
+                    }
+                    return slides.isEmpty ? "(Not presenting)" : "(Loaded)"
+                }()
+
                 if session.isPresenting || !session.isEmpty {
                     Button(action: toggleCollapsed) {
                         HStack(spacing: 4) {
@@ -44,8 +51,17 @@ struct CurrentPaneContainerView: View {
                             Text("Current")
                                 .font(.headline)
                                 .fontWeight(.semibold)
+
+                            Text(statusText)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+
+                            Spacer()
                         }
+                        .padding(.vertical, 6)
                         .foregroundStyle(.primary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 } else {
@@ -57,20 +73,16 @@ struct CurrentPaneContainerView: View {
                             .font(.headline)
                             .fontWeight(.semibold)
                             .foregroundStyle(.secondary)
+
+                        Text(statusText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        Spacer()
                     }
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-
-                let statusText: String = {
-                    if session.isPresenting {
-                        return session.areSlidesVisible ? "(Presenting)" : "(Slides hidden)"
-                    }
-                    return slides.isEmpty ? "(Not presenting)" : "(Loaded)"
-                }()
-                Text(statusText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Spacer()
 
                 if !session.isEmpty {
                     Button("Edit", action: onEditCurrentLyrics)
@@ -86,7 +98,6 @@ struct CurrentPaneContainerView: View {
                 }
             }
             .padding(.horizontal, 4)
-            .padding(.vertical, 6)
 
             if !isCollapsed {
                 if session.isEmpty {
