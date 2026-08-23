@@ -222,19 +222,17 @@ struct PlainTextEditor: NSViewRepresentable {
         }
 
         private func markerColor(for rawLine: String) -> NSColor? {
-            let normalized = rawLine
-                .trimmingCharacters(in: CharacterSet(charactersIn: ":"))
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .lowercased()
-            switch normalized {
-            case "meaning":
-                return .systemPurple
-            case "transliteration":
-                return .systemIndigo
-            case "translation", "transalation":
-                return .systemBrown
-            default:
+            guard let companion = LyricsSectionCatalog.parseCompanionHeader(rawLine) else {
                 return nil
+            }
+
+            switch companion {
+            case .meaning:
+                return .systemPurple
+            case .transliteration:
+                return .systemIndigo
+            case .translation:
+                return .systemBrown
             }
         }
     }

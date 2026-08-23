@@ -2089,43 +2089,17 @@ public struct ContentView: View {
 
     private func isLyricsHeader(_ line: String) -> Bool {
         if LyricsSectionCatalog.isHeader(line) { return true }
-        return canonicalCompanionHeader(line: line) != nil
+        return LyricsSectionCatalog.parseCompanionHeader(line) != nil
     }
 
     private func normalizeHeader(line: String) -> String {
         if let canonical = LyricsSectionCatalog.canonicalHeaderLine(line) {
             return canonical
         }
-        if let companion = canonicalCompanionHeader(line: line) {
+        if let companion = LyricsSectionCatalog.canonicalCompanionHeaderLine(line) {
             return companion
         }
         return line
-    }
-
-    private func canonicalCompanionHeader(line: String) -> String? {
-        var normalized = line
-            .trimmingCharacters(in: CharacterSet(charactersIn: ":"))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if normalized.first == "[", normalized.last == "]" {
-            normalized.removeFirst()
-            normalized.removeLast()
-            normalized = normalized
-                .trimmingCharacters(in: CharacterSet(charactersIn: ":"))
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-
-        if normalized.caseInsensitiveCompare("Meaning") == .orderedSame {
-            return "Meaning"
-        }
-        if normalized.caseInsensitiveCompare("Translation") == .orderedSame ||
-            normalized.caseInsensitiveCompare("Transalation") == .orderedSame {
-            return "Translation"
-        }
-        if normalized.caseInsensitiveCompare("Transliteration") == .orderedSame {
-            return "Transliteration"
-        }
-        return nil
     }
 
     private func saveCurrentFile() {
