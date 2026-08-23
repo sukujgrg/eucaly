@@ -153,6 +153,81 @@ final class LyricsParserTests: XCTestCase {
         XCTAssertEqual(doc.slides[1].label, "Chorus")
     }
 
+    func testInvisibleCharactersDoNotPreventSectionHeaderRecognition() {
+        let raw = """
+        \u{FEFF}Ver\u{034F}se\u{200B} 1\u{2060}
+        line a
+
+        \u{0007}Cho\u{FE0F}r\u{200D}us\u{0008}
+        line b
+        """
+
+        let doc = LyricsParser.parseDocument(raw, fileName: "test.txt")
+
+        XCTAssertEqual(doc.slides.count, 2)
+        XCTAssertEqual(doc.slides[0].label, "Verse 1")
+        XCTAssertEqual(doc.slides[0].lines.first?.text, "line a")
+        XCTAssertEqual(doc.slides[1].label, "Chorus")
+        XCTAssertEqual(doc.slides[1].lines.first?.text, "line b")
+    }
+
+    func testInvisibleCharactersDoNotPreventCompanionMarkerRecognition() {
+        let raw = """
+        Verse
+        original line
+
+        \u{FEFF}Trans\u{200B}lation:\u{2060}
+        translated line
+        """
+
+        let doc = LyricsParser.parseDocument(raw, fileName: "test.txt")
+
+        XCTAssertEqual(doc.slides.count, 1)
+        XCTAssertEqual(doc.slides[0].lines.count, 2)
+        XCTAssertEqual(doc.slides[0].lines[1].languageTag, "Translation")
+        XCTAssertEqual(doc.slides[0].lines[1].text, "translated line")
+    }
+
+    func testUnicodeWhitespaceIsAcceptedInsideMultiwordHeader() {
+        let raw = """
+        Pre\u{00A0}Chorus 2
+        line
+        """
+
+        let doc = LyricsParser.parseDocument(raw, fileName: "test.txt")
+
+        XCTAssertEqual(doc.slides.count, 1)
+        XCTAssertEqual(doc.slides[0].label, "Pre-Chorus 2")
+        XCTAssertEqual(doc.slides[0].lines.first?.text, "line")
+    }
+
+    func testInvisibleCharactersInLyricsArePreserved() {
+        let lyric = "keep\u{200D}together"
+        let doc = LyricsParser.parseDocument("Verse\n\(lyric)", fileName: "test.txt")
+
+        XCTAssertEqual(doc.slides.first?.lines.first?.text, lyric)
+    }
+
+    func testBracketedCompanionMarkerUsesSharedRecognition() {
+        let raw = """
+        Verse
+        original line
+
+        [Trans\u{FE0F}lation:]
+        translated line
+        """
+
+        let doc = LyricsParser.parseDocument(raw, fileName: "test.txt")
+
+        XCTAssertEqual(doc.slides.count, 1)
+        XCTAssertEqual(doc.slides[0].lines.count, 2)
+        XCTAssertEqual(doc.slides[0].lines[1].languageTag, "Translation")
+        XCTAssertEqual(
+            LyricsSectionCatalog.canonicalCompanionHeaderLine("[Trans\u{FE0F}lation:]"),
+            "Translation"
+        )
+    }
+
     func testCommonSectionHeadings() {
         let headings = [
             ("Intro", "Intro"),
@@ -219,6 +294,35 @@ final class LyricsParserTests: XCTestCase {
         XCTAssertEqual(doc.slides.count, 1)
         XCTAssertEqual(doc.slides[0].lines.first?.text, "line a")
         XCTAssertNil(doc.slides.first { $0.lines.contains(where: { $0.text.contains("Reuben") }) })
+    }
+
+    func testCCLIMatchingPreservesOriginalMetadataValues() {
+        let author = "Author\u{200D} Name"
+        let copyright = "© 2026 Music\u{200D} Works"
+        let claim = "Copyright\u{200D} claim"
+        let rights = "For use solely with Song\u{200D}Select Terms of Use. www.ccli.com"
+        let raw = """
+        Verse
+        line a
+
+        \(author)
+        C\u{034F}CLI Song #12345
+        \(copyright)
+        \(claim)
+        \(rights)
+        CCLI License #67890
+        """
+
+        let doc = LyricsParser.parseDocument(raw, fileName: "test.txt")
+
+        XCTAssertEqual(doc.metadata["authors"], author)
+        XCTAssertEqual(doc.metadata["ccli-songnumber"], "12345")
+        XCTAssertEqual(doc.metadata["copyright"], copyright)
+        XCTAssertEqual(doc.metadata["copyright-claim"], claim)
+        XCTAssertEqual(doc.metadata["rights"], rights)
+        XCTAssertEqual(doc.metadata["ccli-licensenumber"], "67890")
+        XCTAssertEqual(doc.slides.count, 1)
+        XCTAssertEqual(doc.slides[0].lines.first?.text, "line a")
     }
 
     func testCCLILineInsideLyricsDoesNotStripContent() {

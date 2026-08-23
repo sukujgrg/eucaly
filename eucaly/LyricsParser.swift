@@ -178,35 +178,18 @@ nonisolated enum LyricsParser {
 
     private static func inlineSectionMarker(for line: String, defaultKind: SectionKind) -> InlineSectionMarker? {
         guard !line.isEmpty else { return nil }
-        let normalized = normalizedSectionToken(line)
 
-        if normalized.caseInsensitiveCompare("Meaning") == .orderedSame {
-            return InlineSectionMarker(kind: defaultKind, languageTag: "Meaning", suggestedSlideLabel: nil)
-        }
-        if let translationTag = canonicalTranslationTag(for: normalized) {
-            return InlineSectionMarker(kind: defaultKind, languageTag: translationTag, suggestedSlideLabel: nil)
+        if let companion = LyricsSectionCatalog.parseCompanionHeader(line) {
+            return InlineSectionMarker(
+                kind: defaultKind,
+                languageTag: companion.rawValue,
+                suggestedSlideLabel: nil
+            )
         }
         if let header = LyricsSectionCatalog.parseHeader(line), !header.isMeaning {
             return InlineSectionMarker(kind: header.kind, languageTag: "", suggestedSlideLabel: header.label)
         }
 
-        return nil
-    }
-
-    private static func normalizedSectionToken(_ raw: String) -> String {
-        raw
-            .trimmingCharacters(in: CharacterSet(charactersIn: ":"))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private static func canonicalTranslationTag(for normalized: String) -> String? {
-        if normalized.caseInsensitiveCompare("Translation") == .orderedSame ||
-            normalized.caseInsensitiveCompare("Transalation") == .orderedSame {
-            return "Translation"
-        }
-        if normalized.caseInsensitiveCompare("Transliteration") == .orderedSame {
-            return "Transliteration"
-        }
         return nil
     }
 
@@ -279,26 +262,30 @@ nonisolated enum LyricsParser {
     private static func extractCCLIMetadata(lines: [String]) -> [String: String] {
         var metadata: [String: String] = [:]
         let trimmedLines = lines.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        let matchingLines = trimmedLines.map {
+            LyricsSectionCatalog.normalizedMarkerText($0)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
 
-        if let songNumberIndex = trimmedLines.firstIndex(where: { $0.lowercased().hasPrefix("ccli song #") }) {
+        if let songNumberIndex = matchingLines.firstIndex(where: { $0.lowercased().hasPrefix("ccli song #") }) {
             if songNumberIndex > 0 {
                 let authors = trimmedLines[songNumberIndex - 1]
                 if !authors.isEmpty { metadata["authors"] = authors }
             }
-            let songNumber = trimmedLines[songNumberIndex]
+            let songNumber = matchingLines[songNumberIndex]
                 .replacingOccurrences(of: "CCLI Song #", with: "", options: .caseInsensitive)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if !songNumber.isEmpty { metadata["ccli-songnumber"] = songNumber }
         }
 
-        if let licenseIndex = trimmedLines.firstIndex(where: { $0.lowercased().hasPrefix("ccli license #") }) {
-            let license = trimmedLines[licenseIndex]
+        if let licenseIndex = matchingLines.firstIndex(where: { $0.lowercased().hasPrefix("ccli license #") }) {
+            let license = matchingLines[licenseIndex]
                 .replacingOccurrences(of: "CCLI License #", with: "", options: .caseInsensitive)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if !license.isEmpty { metadata["ccli-licensenumber"] = license }
         }
 
-        if let copyrightIndex = trimmedLines.firstIndex(where: { $0.hasPrefix("©") }) {
+        if let copyrightIndex = matchingLines.firstIndex(where: { $0.hasPrefix("©") }) {
             metadata["copyright"] = trimmedLines[copyrightIndex]
             if copyrightIndex + 1 < trimmedLines.count {
                 let claim = trimmedLines[copyrightIndex + 1]
@@ -306,7 +293,7 @@ nonisolated enum LyricsParser {
             }
         }
 
-        if let rightsIndex = trimmedLines.firstIndex(where: { isCCLIRightsLine($0.lowercased()) }) {
+        if let rightsIndex = matchingLines.firstIndex(where: { isCCLIRightsLine($0.lowercased()) }) {
             let rights = trimmedLines[rightsIndex]
             if !rights.isEmpty { metadata["rights"] = rights }
         }
@@ -315,7 +302,10 @@ nonisolated enum LyricsParser {
     }
 
     private static func stripCCLITrailer(from lines: [String], metadata: [String: String]) -> [String] {
-        let trimmed = lines.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        let trimmed = lines.map {
+            LyricsSectionCatalog.normalizedMarkerText($0)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         guard let firstMetadataIndex = trimmed.firstIndex(where: { isCCLIMetadataLine($0) }) else {
             return lines
         }
@@ -354,7 +344,8 @@ nonisolated enum LyricsParser {
     }
 
     private static func isCCLIMetadataLine(_ line: String) -> Bool {
-        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = LyricsSectionCatalog.normalizedMarkerText(line)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
         let lower = trimmed.lowercased()
 

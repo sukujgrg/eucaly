@@ -277,22 +277,8 @@ actor LibraryTextSearchIndex {
     }
 
     private static func isSnippetHeading(_ line: String) -> Bool {
-        LyricsSectionCatalog.isHeader(line) || isSecondarySectionHeading(line)
-    }
-
-    private static func isSecondarySectionHeading(_ line: String) -> Bool {
-        [
-            "meaning",
-            "translation",
-            "transalation",
-            "transliteration"
-        ].contains(normalizedHeading(line))
-    }
-
-    private static func normalizedHeading(_ line: String) -> String {
-        line.trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: ":"))
-            .lowercased()
+        LyricsSectionCatalog.isHeader(line) ||
+            LyricsSectionCatalog.parseCompanionHeader(line) != nil
     }
 
     private func indexedContent(for url: URL) -> String {
