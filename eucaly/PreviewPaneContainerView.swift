@@ -122,7 +122,8 @@ private struct PreviewThumbnailGrid: View {
 
 struct PreviewPaneContainerView: View {
     @ObservedObject var flow: PresentationFlowController
-    let isCollapsed: Bool
+    let isEditorPreviewAreaCollapsed: Bool
+    let hasEditorPane: Bool
     @Binding var isWebpageMuted: Bool
     let canEditSelection: Bool
     let canLoadToCurrent: Bool
@@ -137,7 +138,7 @@ struct PreviewPaneContainerView: View {
     let onWebpageTitleChange: (String, URL) -> Void
     let onEdit: () -> Void
     let onLoadToCurrent: () -> Void
-    let onToggleCollapsed: () -> Void
+    let onToggleEditorPreviewArea: () -> Void
     @FocusState private var isFocused: Bool
 
     var body: some View {
@@ -145,11 +146,11 @@ struct PreviewPaneContainerView: View {
         let selectedWebpageURL = previewWebpageURL(from: slides)
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Button(action: toggleCollapsed) {
+                Button(action: onToggleEditorPreviewArea) {
                     HStack(spacing: 4) {
-                        Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                        Image(systemName: isEditorPreviewAreaCollapsed ? "chevron.right" : "chevron.down")
                             .font(.system(size: 11, weight: .semibold))
-                        Text("Preview")
+                        Text(editorPreviewAreaTitle)
                             .font(.headline)
                             .fontWeight(.semibold)
 
@@ -162,6 +163,8 @@ struct PreviewPaneContainerView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .help(editorPreviewAreaToggleLabel)
+                .accessibilityLabel(editorPreviewAreaToggleLabel)
 
                 if !flow.previewIsEmpty || canLoadToCurrent || isLoading {
                     HStack(spacing: 6) {
@@ -193,7 +196,7 @@ struct PreviewPaneContainerView: View {
                     .frame(height: 28)
                     .frame(maxWidth: .infinity)
                     .contentShape(Rectangle())
-                    .onTapGesture(perform: toggleCollapsed)
+                    .onTapGesture(perform: onToggleEditorPreviewArea)
             }
             .padding(.horizontal, 4)
 
@@ -205,7 +208,7 @@ struct PreviewPaneContainerView: View {
                     .padding(.horizontal, 8)
             }
 
-            if !isCollapsed {
+            if !isEditorPreviewAreaCollapsed {
                 Group {
                     if flow.previewIsEmpty {
                         VStack(spacing: 12) {
@@ -287,17 +290,29 @@ struct PreviewPaneContainerView: View {
 
         }
         .padding(10)
-        .frame(maxWidth: .infinity, maxHeight: isCollapsed ? nil : .infinity, alignment: .top)
+        .frame(
+            maxWidth: .infinity,
+            maxHeight: isEditorPreviewAreaCollapsed ? nil : .infinity,
+            alignment: .top
+        )
         .background(
             VisualEffectView(material: .contentBackground, blendingMode: .withinWindow)
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         )
-        .paneAccentRing(.preview, isEmphasized: !flow.previewIsEmpty && !isCollapsed)
+        .paneAccentRing(
+            .preview,
+            isEmphasized: !flow.previewIsEmpty && !isEditorPreviewAreaCollapsed
+        )
         .animation(loadAnimation, value: flow.previewSlideCount)
     }
 
-    private func toggleCollapsed() {
-        onToggleCollapsed()
+    private var editorPreviewAreaTitle: String {
+        hasEditorPane ? "Editor & Preview" : "Preview"
+    }
+
+    private var editorPreviewAreaToggleLabel: String {
+        let action = isEditorPreviewAreaCollapsed ? "Expand" : "Collapse"
+        return "\(action) \(editorPreviewAreaTitle)"
     }
 
     private var previewStatusText: String {

@@ -68,7 +68,7 @@ public struct ContentView: View {
     @State private var securityScopedBackgroundAudio: URL? = nil
     @StateObject private var screenCaptureManager = ScreenCaptureManager.shared
     @StateObject private var appUpdateViewModel = AppUpdateViewModel()
-    @State private var isPreviewCollapsed: Bool = false
+    @State private var isEditorPreviewAreaCollapsed: Bool = false
     private let playlistDirectoryName = "Playlist"
     private let paneToggleAnimation = Animation.easeOut(duration: 0.12)
     private let loadAnimation = Animation.easeInOut(duration: 0.24)
@@ -92,7 +92,6 @@ public struct ContentView: View {
     private enum EditorExitAction: Equatable {
         case closeEditor
         case newLyrics
-        case collapsePreview
         case sidebarSelection(SidebarSelectionRequest)
         case editLyrics(URL)
         case editCurrentLyrics(URL)
@@ -662,7 +661,7 @@ public struct ContentView: View {
         NewLyricsAction.apply(state: &state, clearPreview: clearPreviewDocument)
         lyricsEditor = state.editor
         setSidebarSelectionWithoutLoading(state.sidebarSelection)
-        isPreviewCollapsed = false
+        isEditorPreviewAreaCollapsed = false
         newFileWarning = nil
     }
 
@@ -686,7 +685,8 @@ public struct ContentView: View {
             ),
             previewPane: PreviewPaneContainerView(
                 flow: flow,
-                isCollapsed: isPreviewCollapsed,
+                isEditorPreviewAreaCollapsed: isEditorPreviewAreaCollapsed,
+                hasEditorPane: hasActiveEditorPane,
                 isWebpageMuted: $previewWebpageMuted,
                 canEditSelection: canEditSelection && !isPreviewLoading && previewLoadError == nil,
                 canLoadToCurrent: canLoadPreviewToCurrent,
@@ -701,7 +701,7 @@ public struct ContentView: View {
                 onWebpageTitleChange: updateWebpageTitle(_:for:),
                 onEdit: beginLyricsEditing,
                 onLoadToCurrent: handleLoadPreviewToCurrent,
-                onToggleCollapsed: handlePreviewCollapseToggle
+                onToggleEditorPreviewArea: toggleEditorPreviewArea
             ),
             currentPane: CurrentPaneContainerView(
                 session: session,
@@ -719,8 +719,13 @@ public struct ContentView: View {
                 onClearCurrent: clearCurrentDocument,
                 focusedDetailTarget: $focusedDetailTarget
             ),
-            showEditorAndPreview: lyricsEditor.isEditing && !isCurrentSelectionMediaFile && !isPreviewCollapsed
+            hasEditorPane: hasActiveEditorPane,
+            isEditorPreviewAreaCollapsed: isEditorPreviewAreaCollapsed
         )
+    }
+
+    private var hasActiveEditorPane: Bool {
+        lyricsEditor.isEditing && !isCurrentSelectionMediaFile
     }
 
     private var saveButtonTitle: String {
@@ -761,7 +766,7 @@ public struct ContentView: View {
         case .save:
             guard saveEditorDraft() else { return false }
         case .discard:
-            if action == .closeEditor || action == .collapsePreview {
+            if action == .closeEditor {
                 restoreSavedEditorPreview()
             }
         case .cancel:
@@ -799,10 +804,6 @@ public struct ContentView: View {
             break
         case .newLyrics:
             beginNewLyrics()
-        case .collapsePreview:
-            withAnimation(paneToggleAnimation) {
-                isPreviewCollapsed = true
-            }
         case .sidebarSelection(let request):
             commitSidebarSelection(request)
         case .editLyrics(let url):
@@ -812,17 +813,9 @@ public struct ContentView: View {
         }
     }
 
-    private func handlePreviewCollapseToggle() {
-        if isPreviewCollapsed {
-            withAnimation(paneToggleAnimation) {
-                isPreviewCollapsed = false
-            }
-        } else if lyricsEditor.isEditing {
-            requestEditorExit(.collapsePreview)
-        } else {
-            withAnimation(paneToggleAnimation) {
-                isPreviewCollapsed = true
-            }
+    private func toggleEditorPreviewArea() {
+        withAnimation(paneToggleAnimation) {
+            isEditorPreviewAreaCollapsed.toggle()
         }
     }
 
@@ -936,7 +929,7 @@ public struct ContentView: View {
         }
         clearPreviewDocument()
         flow.isCurrentCollapsed = false
-        isPreviewCollapsed = true
+        isEditorPreviewAreaCollapsed = true
         focusedDetailTarget = session.slides.contains { $0.webpageURL != nil }
             ? nil
             : .currentThumbnails
@@ -1539,7 +1532,7 @@ public struct ContentView: View {
         preferredSelectionIndex: Int?
     ) {
         if !slides.isEmpty {
-            isPreviewCollapsed = false
+            isEditorPreviewAreaCollapsed = false
         }
         let preservedCurrentSlides = session.slides
         let preservedPDFSource = session.pdfSlideSource
@@ -1566,7 +1559,7 @@ public struct ContentView: View {
         _ source: PDFSlideSource,
         preferredSelectionIndex: Int? = nil
     ) {
-        isPreviewCollapsed = false
+        isEditorPreviewAreaCollapsed = false
         let preservedCurrentSlides = session.slides
         let preservedPDFSource = session.pdfSlideSource
         let preservedCurrentSlideID = session.currentSlideID
@@ -2619,7 +2612,7 @@ public struct ContentView: View {
         }
 
         lyricsEditor.beginEditing(text: contents, sourceURL: url)
-        isPreviewCollapsed = false
+        isEditorPreviewAreaCollapsed = false
         newFileWarning = nil
     }
 
@@ -2642,7 +2635,7 @@ public struct ContentView: View {
         setPreviewSource(.file(url))
         setSidebarSelectionWithoutLoading(.library(url))
         lyricsEditor.beginEditing(text: contents, sourceURL: url)
-        isPreviewCollapsed = false
+        isEditorPreviewAreaCollapsed = false
         newFileWarning = nil
         setPreviewSlides(doc.slides)
     }
