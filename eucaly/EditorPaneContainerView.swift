@@ -12,6 +12,7 @@ struct EditorPaneContainerView: View {
     @Binding var rawLyrics: String
     let saveButtonTitle: String
     let canSave: Bool
+    let focusController: PlainTextEditorFocusController
     let onAction: (EditorPaneAction) -> Void
 
     var body: some View {
@@ -27,7 +28,10 @@ struct EditorPaneContainerView: View {
                     .padding(.horizontal, 6)
             }
 
-            PlainTextEditor(text: $rawLyrics)
+            PlainTextEditor(
+                text: $rawLyrics,
+                focusController: focusController
+            )
                 .frame(minHeight: 220)
                 .background(
                     VisualEffectView(material: .contentBackground, blendingMode: .withinWindow)

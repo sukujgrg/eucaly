@@ -1,8 +1,34 @@
 import SwiftUI
 import AppKit
 
+@MainActor
+final class PlainTextEditorFocusController {
+    private weak var textView: NSTextView?
+
+    private var ownsFirstResponder: Bool {
+        guard let textView, let window = textView.window else { return false }
+        return window.firstResponder === textView
+    }
+
+    func attach(_ textView: NSTextView) {
+        self.textView = textView
+    }
+
+    func detach(_ textView: NSTextView) {
+        guard self.textView === textView else { return }
+        self.textView = nil
+    }
+
+    @discardableResult
+    func resignFocus() -> Bool {
+        guard ownsFirstResponder, let window = textView?.window else { return false }
+        return window.makeFirstResponder(nil)
+    }
+}
+
 struct PlainTextEditor: NSViewRepresentable {
     @Binding var text: String
+    let focusController: PlainTextEditorFocusController
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
@@ -28,6 +54,7 @@ struct PlainTextEditor: NSViewRepresentable {
         textView.font = NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)
         textView.delegate = context.coordinator
         textView.string = text
+        context.coordinator.focusController.attach(textView)
 
         let paragraphStyle = NSMutableParagraphStyle()
         paragraphStyle.lineSpacing = 6
@@ -65,15 +92,22 @@ struct PlainTextEditor: NSViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text)
+        Coordinator(text: $text, focusController: focusController)
+    }
+
+    static func dismantleNSView(_ nsView: NSScrollView, coordinator: Coordinator) {
+        guard let textView = nsView.documentView as? NSTextView else { return }
+        coordinator.focusController.detach(textView)
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var text: Binding<String>
+        let focusController: PlainTextEditorFocusController
         private var isApplyingAttributes = false
 
-        init(text: Binding<String>) {
+        init(text: Binding<String>, focusController: PlainTextEditorFocusController) {
             self.text = text
+            self.focusController = focusController
         }
 
         func replaceTextPreservingEditorState(

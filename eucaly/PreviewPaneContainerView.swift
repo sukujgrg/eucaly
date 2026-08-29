@@ -140,13 +140,14 @@ struct PreviewPaneContainerView: View {
     let onLoadToCurrent: () -> Void
     let onToggleEditorPreviewArea: () -> Void
     @FocusState private var isFocused: Bool
+    @FocusState private var isEditorPreviewAreaToggleFocused: Bool
 
     var body: some View {
         let slides = flow.previewSlides
         let selectedWebpageURL = previewWebpageURL(from: slides)
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Button(action: onToggleEditorPreviewArea) {
+                Button(action: toggleEditorPreviewArea) {
                     HStack(spacing: 4) {
                         Image(systemName: isEditorPreviewAreaCollapsed ? "chevron.right" : "chevron.down")
                             .font(.system(size: 11, weight: .semibold))
@@ -163,6 +164,7 @@ struct PreviewPaneContainerView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .focused($isEditorPreviewAreaToggleFocused)
                 .help(editorPreviewAreaToggleLabel)
                 .accessibilityLabel(editorPreviewAreaToggleLabel)
 
@@ -196,7 +198,7 @@ struct PreviewPaneContainerView: View {
                     .frame(height: 28)
                     .frame(maxWidth: .infinity)
                     .contentShape(Rectangle())
-                    .onTapGesture(perform: onToggleEditorPreviewArea)
+                    .onTapGesture(perform: toggleEditorPreviewArea)
             }
             .padding(.horizontal, 4)
 
@@ -308,6 +310,14 @@ struct PreviewPaneContainerView: View {
 
     private var editorPreviewAreaTitle: String {
         hasEditorPane ? "Editor & Preview" : "Preview"
+    }
+
+    private func toggleEditorPreviewArea() {
+        let isCollapsing = !isEditorPreviewAreaCollapsed
+        onToggleEditorPreviewArea()
+        if isCollapsing {
+            isEditorPreviewAreaToggleFocused = true
+        }
     }
 
     private var editorPreviewAreaToggleLabel: String {

@@ -6,6 +6,7 @@ import Combine
 
 public struct ContentView: View {
     @State private var lyricsEditor = LyricsEditorSession()
+    @State private var lyricsEditorFocusController = PlainTextEditorFocusController()
     @StateObject private var session = PresentationSession()
     @StateObject private var flow = PresentationFlowController()
     @State private var folderURL: URL?
@@ -681,6 +682,7 @@ public struct ContentView: View {
                 rawLyrics: $lyricsEditor.draft,
                 saveButtonTitle: saveButtonTitle,
                 canSave: canSaveEditorContent,
+                focusController: lyricsEditorFocusController,
                 onAction: handleEditorAction
             ),
             previewPane: PreviewPaneContainerView(
@@ -814,6 +816,9 @@ public struct ContentView: View {
     }
 
     private func toggleEditorPreviewArea() {
+        if !isEditorPreviewAreaCollapsed {
+            lyricsEditorFocusController.resignFocus()
+        }
         withAnimation(paneToggleAnimation) {
             isEditorPreviewAreaCollapsed.toggle()
         }
