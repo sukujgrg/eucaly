@@ -134,9 +134,8 @@ struct SidebarView: View {
     let captureWindows: [ScreenCaptureManager.CapturedWindow]
     let webpageURLs: [URL]
     let libraryScrollRequest: LibraryScrollRequest?
-    @Binding var selectedPlaylistEntryID: UUID?
-    @Binding var selectedPlaylistEntryIDs: Set<UUID>
-    @Binding var sidebarSelection: SidebarSelection?
+    let selectedPlaylistEntryIDs: Set<UUID>
+    let sidebarSelection: SidebarSelection?
     @Binding var backgroundAudioLoop: Bool
     @Binding var backgroundAudioVolumeDraft: Double
     @Binding var windowCaptureFrameRate: Int
@@ -157,7 +156,7 @@ struct SidebarView: View {
     let onClearBackgroundAudio: () -> Void
     let onApplyBackgroundAudioVolume: (Double) -> Void
     let onSeekBackgroundAudio: (Double) -> Void
-    let onSelectionChange: (SidebarSelection?) -> Void
+    let onSelectionRequest: (SidebarSelection?, Set<UUID>) -> Void
     let onOpenWebpageAddress: (String) -> Bool
     let onRemoveWebpage: (URL) -> Void
     let onPickWindow: () -> Void
@@ -180,8 +179,6 @@ struct SidebarView: View {
 
     @AppStorage("sidebar.libraryGrouping")
     private var libraryGrouping = LibraryGrouping.kind
-
-    @State private var playlistSelectionAnchor: UUID?
 
     @State private var webpageAddressDraft: String = ""
 
@@ -297,9 +294,6 @@ struct SidebarView: View {
                     handleSidebarMoveCommand(direction)
                 }
         )
-        .onChange(of: sidebarSelection) { _, newValue in
-            onSelectionChange(newValue)
-        }
         .onAppear {
             displayedLibraryGrouping = libraryGrouping
             rebuildLibraryCaches()
@@ -436,11 +430,7 @@ struct SidebarView: View {
                     Button {
                         isSidebarFocused = true
                         let selectionValue = SidebarSelection.web(url)
-                        if sidebarSelection == selectionValue {
-                            onSelectionChange(selectionValue)
-                        } else {
-                            sidebarSelection = selectionValue
-                        }
+                        onSelectionRequest(selectionValue, [])
                     } label: {
                         sidebarRow(
                             title: titleForWebpage(url),
@@ -708,11 +698,7 @@ struct SidebarView: View {
             isSelected: sidebarSelection == selectionValue,
             onSelect: {
                 isSidebarFocused = true
-                if sidebarSelection == selectionValue {
-                    onSelectionChange(selectionValue)
-                } else {
-                    sidebarSelection = selectionValue
-                }
+                onSelectionRequest(selectionValue, [])
             },
             onAddToPlaylist: {
                 onAddLibraryItemToPlaylist(url)
@@ -1076,12 +1062,8 @@ struct SidebarView: View {
         let rowTitle = window.title == window.appName ? window.appName : "\(window.appName): \(window.title)"
         return Button {
             isSidebarFocused = true
-            if sidebarSelection == selectionValue {
-                // Re-load the same picked window after Current gets cleared.
-                onSelectionChange(selectionValue)
-            } else {
-                sidebarSelection = selectionValue
-            }
+            // Re-load the same picked window after Current gets cleared.
+            onSelectionRequest(selectionValue, [])
         } label: {
             sidebarRow(
                 title: rowTitle,
@@ -1142,59 +1124,55 @@ struct SidebarView: View {
         let selectionValue = SidebarSelection.playlist(id)
 
         if isShift,
-           let anchor = playlistSelectionAnchor,
+           let anchor = acceptedPlaylistAnchor,
            let anchorIndex = playlistItems.firstIndex(where: { $0.id == anchor }),
            let tappedIndex = playlistItems.firstIndex(where: { $0.id == id }) {
             let range = anchorIndex <= tappedIndex ? anchorIndex...tappedIndex : tappedIndex...anchorIndex
-            selectedPlaylistEntryIDs = Set(playlistItems[range].map(\.id))
-            sidebarSelection = selectionValue
+            let proposedIDs = Set(playlistItems[range].map(\.id))
+            onSelectionRequest(selectionValue, proposedIDs)
             return
         }
 
         if isCommand {
-            if selectedPlaylistEntryIDs.contains(id) {
-                selectedPlaylistEntryIDs.remove(id)
+            var proposedIDs = selectedPlaylistEntryIDs
+            let proposedSelection: SidebarSelection?
+            if proposedIDs.remove(id) != nil {
                 if case .playlist(let currentID) = sidebarSelection, currentID == id {
-                    sidebarSelection = selectedPlaylistEntryIDs.first.map { .playlist($0) }
+                    proposedSelection = proposedIDs.first.map { .playlist($0) }
+                } else {
+                    proposedSelection = sidebarSelection
                 }
             } else {
-                selectedPlaylistEntryIDs.insert(id)
-                sidebarSelection = .playlist(id)
+                proposedIDs.insert(id)
+                proposedSelection = .playlist(id)
             }
-            playlistSelectionAnchor = selectedPlaylistEntryIDs.first ?? id
+            onSelectionRequest(proposedSelection, proposedIDs)
             return
         }
 
-        if sidebarSelection == selectionValue {
-            selectedPlaylistEntryIDs = [id]
-            playlistSelectionAnchor = id
-            onSelectionChange(selectionValue)
-            return
-        }
-
-        selectedPlaylistEntryIDs = [id]
-        sidebarSelection = selectionValue
-        playlistSelectionAnchor = id
+        onSelectionRequest(selectionValue, [id])
     }
 
     private func applyKeyboardSelection(_ selection: SidebarSelection?) {
         guard let selection else { return }
-        sidebarSelection = selection
         switch selection {
         case .library(let url):
-            selectedPlaylistEntryID = nil
-            selectedPlaylistEntryIDs = []
+            onSelectionRequest(selection, [])
             keyboardLibraryScrollTarget = url.standardizedFileURL
         case .playlist(let id):
-            selectedPlaylistEntryIDs = [id]
-            playlistSelectionAnchor = id
+            onSelectionRequest(selection, [id])
         case .web:
-            selectedPlaylistEntryID = nil
-            selectedPlaylistEntryIDs = []
+            onSelectionRequest(selection, [])
         case .window:
-            selectedPlaylistEntryID = nil
-            selectedPlaylistEntryIDs = []
+            onSelectionRequest(selection, [])
         }
+    }
+
+    private var acceptedPlaylistAnchor: UUID? {
+        if case .playlist(let id) = sidebarSelection {
+            return id
+        }
+        return selectedPlaylistEntryIDs.first
     }
 
     private func submitWebpageAddress() {

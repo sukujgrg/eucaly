@@ -9,7 +9,7 @@ struct PlainTextEditor: NSViewRepresentable {
         scrollView.hasVerticalScroller = true
         scrollView.drawsBackground = false
 
-        let textView = NSTextView()
+        let textView = NSTextView(frame: NSRect(origin: .zero, size: scrollView.contentSize))
         textView.isRichText = false
         textView.isEditable = true
         textView.isSelectable = true
@@ -37,8 +37,14 @@ struct PlainTextEditor: NSViewRepresentable {
 
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
+        textView.minSize = NSSize(width: 0, height: scrollView.contentSize.height)
+        textView.maxSize = NSSize(
+            width: CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude
+        )
         textView.autoresizingMask = [.width]
         textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.heightTracksTextView = false
         textView.textContainer?.containerSize = NSSize(width: scrollView.contentSize.width, height: .greatestFiniteMagnitude)
         context.coordinator.applySectionStyling(to: textView)
 
@@ -131,6 +137,10 @@ struct PlainTextEditor: NSViewRepresentable {
             guard range.length > 0 || fullRange.length == 0 else { return }
             let paragraphStyle = textView.defaultParagraphStyle ?? NSParagraphStyle.default
             let baseFont = textView.font ?? NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)
+            let markerFont = NSFont.monospacedSystemFont(ofSize: baseFont.pointSize, weight: .semibold)
+            let markerParagraphStyle = paragraphStyle.mutableCopy() as? NSMutableParagraphStyle
+            markerParagraphStyle?.paragraphSpacingBefore = max(paragraphStyle.paragraphSpacingBefore, 8)
+            markerParagraphStyle?.paragraphSpacing = 4
 
             textView.textStorage?.beginEditing()
             textView.textStorage?.setAttributes([
@@ -143,17 +153,80 @@ struct PlainTextEditor: NSViewRepresentable {
                 let line = string.substring(with: lineRange).trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !line.isEmpty else { return }
 
-                if let markerColor = self.markerColor(for: line) {
-                    textView.textStorage?.addAttribute(.foregroundColor, value: markerColor, range: lineRange)
-                    textView.textStorage?.addAttribute(.font, value: NSFont.monospacedSystemFont(ofSize: 14, weight: .semibold), range: lineRange)
+                if let markerColor = self.companionMarkerColor(for: line) {
+                    self.applyMarkerStyle(
+                        color: markerColor,
+                        lineRange: lineRange,
+                        in: string,
+                        textView: textView,
+                        font: markerFont,
+                        paragraphStyle: markerParagraphStyle
+                    )
                     return
                 }
 
                 guard let match = LyricsSectionCatalog.parseHeader(line), !match.isMeaning else { return }
-                textView.textStorage?.addAttribute(.foregroundColor, value: self.color(for: match.kind), range: lineRange)
-                textView.textStorage?.addAttribute(.font, value: NSFont.monospacedSystemFont(ofSize: 14, weight: .semibold), range: lineRange)
+                self.applyMarkerStyle(
+                    color: .controlAccentColor,
+                    lineRange: lineRange,
+                    in: string,
+                    textView: textView,
+                    font: markerFont,
+                    paragraphStyle: markerParagraphStyle
+                )
             }
             textView.textStorage?.endEditing()
+        }
+
+        private func applyMarkerStyle(
+            color: NSColor,
+            lineRange: NSRange,
+            in string: NSString,
+            textView: NSTextView,
+            font: NSFont,
+            paragraphStyle: NSParagraphStyle?
+        ) {
+            guard let textStorage = textView.textStorage else { return }
+
+            if let paragraphStyle {
+                textStorage.addAttribute(.paragraphStyle, value: paragraphStyle, range: lineRange)
+            }
+
+            let markerRange = trimmedContentRange(in: lineRange, string: string)
+            guard markerRange.length > 0 else { return }
+            textStorage.addAttributes([
+                .foregroundColor: color,
+                .backgroundColor: color.withAlphaComponent(0.14),
+                .font: font,
+                .kern: 0.1
+            ], range: markerRange)
+        }
+
+        private func trimmedContentRange(in lineRange: NSRange, string: NSString) -> NSRange {
+            let line = string.substring(with: lineRange) as NSString
+            let contentCharacters = CharacterSet.whitespacesAndNewlines.inverted
+            let first = line.rangeOfCharacter(from: contentCharacters)
+            guard first.location != NSNotFound else {
+                return NSRange(location: lineRange.location, length: 0)
+            }
+
+            let remainingRange = NSRange(
+                location: first.location,
+                length: line.length - first.location
+            )
+            let last = line.rangeOfCharacter(
+                from: contentCharacters,
+                options: .backwards,
+                range: remainingRange
+            )
+            guard last.location != NSNotFound else {
+                return NSRange(location: lineRange.location, length: 0)
+            }
+
+            return NSRange(
+                location: lineRange.location + first.location,
+                length: NSMaxRange(last) - first.location
+            )
         }
 
         private func restoreEditorState(
@@ -194,45 +267,18 @@ struct PlainTextEditor: NSViewRepresentable {
             scrollView.reflectScrolledClipView(scrollView.contentView)
         }
 
-        private func color(for kind: SectionKind) -> NSColor {
-            switch kind {
-            case .intro:
-                return .systemPurple
-            case .verse:
-                return .systemBlue
-            case .chorus:
-                return .systemGreen
-            case .preChorus:
-                return .systemTeal
-            case .postChorus:
-                return .systemGreen
-            case .bridge:
-                return .systemOrange
-            case .instrumental:
-                return .systemGray
-            case .vamp:
-                return .systemRed
-            case .coda:
-                return .systemBrown
-            case .ending, .outro:
-                return .systemPink
-            case .tag:
-                return .systemPink
-            }
-        }
-
-        private func markerColor(for rawLine: String) -> NSColor? {
+        private func companionMarkerColor(for rawLine: String) -> NSColor? {
             guard let companion = LyricsSectionCatalog.parseCompanionHeader(rawLine) else {
                 return nil
             }
 
             switch companion {
             case .meaning:
-                return .systemPurple
+                return .secondaryLabelColor
             case .transliteration:
-                return .systemIndigo
+                return .secondaryLabelColor
             case .translation:
-                return .systemBrown
+                return .secondaryLabelColor
             }
         }
     }
