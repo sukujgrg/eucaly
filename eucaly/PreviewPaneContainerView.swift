@@ -122,11 +122,15 @@ private struct PreviewThumbnailGrid: View {
 
 struct PreviewPaneContainerView: View {
     @ObservedObject var flow: PresentationFlowController
-    @Binding var isCollapsed: Bool
+    let isEditorPreviewAreaCollapsed: Bool
+    let hasEditorPane: Bool
     @Binding var isWebpageMuted: Bool
     let canEditSelection: Bool
+    let canLoadToCurrent: Bool
+    let loadToCurrentHelp: String
+    let isLoading: Bool
+    let loadError: String?
     let thumbnailScale: Double
-    let paneToggleAnimation: Animation
     let loadAnimation: Animation
     let titleForWebpage: (URL) -> String
     let savedWebpageEntryURL: URL?
@@ -134,22 +138,24 @@ struct PreviewPaneContainerView: View {
     let onWebpageTitleChange: (String, URL) -> Void
     let onEdit: () -> Void
     let onLoadToCurrent: () -> Void
+    let onToggleEditorPreviewArea: () -> Void
     @FocusState private var isFocused: Bool
+    @FocusState private var isEditorPreviewAreaToggleFocused: Bool
 
     var body: some View {
         let slides = flow.previewSlides
         let selectedWebpageURL = previewWebpageURL(from: slides)
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Button(action: toggleCollapsed) {
+                Button(action: toggleEditorPreviewArea) {
                     HStack(spacing: 4) {
-                        Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                        Image(systemName: isEditorPreviewAreaCollapsed ? "chevron.right" : "chevron.down")
                             .font(.system(size: 11, weight: .semibold))
-                        Text("Preview")
+                        Text(editorPreviewAreaTitle)
                             .font(.headline)
                             .fontWeight(.semibold)
 
-                        Text("(Selected file)")
+                        Text(previewStatusText)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -158,12 +164,22 @@ struct PreviewPaneContainerView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .focused($isEditorPreviewAreaToggleFocused)
+                .help(editorPreviewAreaToggleLabel)
+                .accessibilityLabel(editorPreviewAreaToggleLabel)
 
-                if !flow.previewIsEmpty {
+                if !flow.previewIsEmpty || canLoadToCurrent || isLoading {
                     HStack(spacing: 6) {
-                        Button("Edit", action: onEdit)
-                            .paneHeaderActionStyle()
-                            .disabled(!canEditSelection)
+                        if isLoading {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+
+                        if !flow.previewIsEmpty {
+                            Button("Edit", action: onEdit)
+                                .paneHeaderActionStyle()
+                                .disabled(!canEditSelection)
+                        }
 
                         Button(action: onLoadToCurrent) {
                             HStack(spacing: 6) {
@@ -172,7 +188,8 @@ struct PreviewPaneContainerView: View {
                             }
                         }
                         .paneHeaderActionStyle(primary: true)
-                        .help("Load to Current area")
+                        .disabled(!canLoadToCurrent)
+                        .help(loadToCurrentHelp)
                     }
                 }
 
@@ -181,11 +198,19 @@ struct PreviewPaneContainerView: View {
                     .frame(height: 28)
                     .frame(maxWidth: .infinity)
                     .contentShape(Rectangle())
-                    .onTapGesture(perform: toggleCollapsed)
+                    .onTapGesture(perform: toggleEditorPreviewArea)
             }
             .padding(.horizontal, 4)
 
-            if !isCollapsed {
+            if let loadError {
+                Label(loadError, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 8)
+            }
+
+            if !isEditorPreviewAreaCollapsed {
                 Group {
                     if flow.previewIsEmpty {
                         VStack(spacing: 12) {
@@ -267,19 +292,43 @@ struct PreviewPaneContainerView: View {
 
         }
         .padding(10)
-        .frame(maxWidth: .infinity, maxHeight: isCollapsed ? nil : .infinity, alignment: .top)
+        .frame(
+            maxWidth: .infinity,
+            maxHeight: isEditorPreviewAreaCollapsed ? nil : .infinity,
+            alignment: .top
+        )
         .background(
             VisualEffectView(material: .contentBackground, blendingMode: .withinWindow)
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         )
-        .paneAccentRing(.preview, isEmphasized: !flow.previewIsEmpty && !isCollapsed)
+        .paneAccentRing(
+            .preview,
+            isEmphasized: !flow.previewIsEmpty && !isEditorPreviewAreaCollapsed
+        )
         .animation(loadAnimation, value: flow.previewSlideCount)
     }
 
-    private func toggleCollapsed() {
-        withAnimation(paneToggleAnimation) {
-            isCollapsed.toggle()
+    private var editorPreviewAreaTitle: String {
+        hasEditorPane ? "Editor & Preview" : "Preview"
+    }
+
+    private func toggleEditorPreviewArea() {
+        let isCollapsing = !isEditorPreviewAreaCollapsed
+        onToggleEditorPreviewArea()
+        if isCollapsing {
+            isEditorPreviewAreaToggleFocused = true
         }
+    }
+
+    private var editorPreviewAreaToggleLabel: String {
+        let action = isEditorPreviewAreaCollapsed ? "Expand" : "Collapse"
+        return "\(action) \(editorPreviewAreaTitle)"
+    }
+
+    private var previewStatusText: String {
+        if isLoading { return "(Loading…)" }
+        if loadError != nil { return "(Load failed)" }
+        return "(Selected file)"
     }
 
     private func previewWebpageURL(from slides: [Slide]) -> URL? {

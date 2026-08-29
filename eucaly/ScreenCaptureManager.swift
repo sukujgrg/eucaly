@@ -18,6 +18,7 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
     @MainActor private var activeStreams: [CGWindowID: ActiveCapture] = [:]
     @MainActor private var captureFilters: [CGWindowID: SCContentFilter] = [:]
     @MainActor @Published var windows: [CapturedWindow] = []
+    @MainActor let windowPickerSelections = PassthroughSubject<CGWindowID, Never>()
     @MainActor private var availabilityMonitorTask: Task<Void, Never>?
     private var pickerConfigured = false
     private var pickerObserverRegistered = false
@@ -164,6 +165,10 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
             nextFilters[window.windowID] = filter
         }
         captureFilters = nextFilters
+
+        if let pickedWindow = pickedWindows.first {
+            windowPickerSelections.send(pickedWindow.windowID)
+        }
 
         let pickedWindowIDs = Set(pickedWindows.map(\.windowID))
         let staleActiveWindowIDs = activeStreams.keys.filter { !pickedWindowIDs.contains($0) }

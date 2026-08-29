@@ -35,6 +35,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return .terminateNow
         }
 
+        guard ApplicationTerminationCoordinator.shared.confirmApplicationTermination() else {
+            return .terminateCancel
+        }
+
         if Self.isInstallingUpdate {
             closePresentationWindows(in: sender)
             Task { await ScreenCaptureManager.shared.stopAllCaptures() }
