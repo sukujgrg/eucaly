@@ -4,11 +4,12 @@ import SwiftUI
 struct SidebarAudioControlsView: View {
     @ObservedObject var session: PresentationSession
     let audioFiles: [URL]
+    let libraryRevision: Int
     let maxListHeight: CGFloat
     let libraryRootURL: URL?
+    let outlineExpansionStore: SidebarOutlineExpansionStore
     @Binding var backgroundAudioLoop: Bool
     @Binding var backgroundAudioVolumeDraft: Double
-    @FocusState.Binding var isSidebarFocused: Bool
 
     let displayName: (URL) -> String
     let onImportToAudio: () -> Void
@@ -94,14 +95,39 @@ struct SidebarAudioControlsView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         } else {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(audioFiles, id: \.standardizedFileURL) { url in
-                        audioRow(url)
-                    }
+            SidebarOutlineView(
+                contentRevision: AnyHashable(libraryRevision),
+                modelBuilder: {
+                    SidebarOutlineModel(
+                        roots: audioFiles.map { sourceURL in
+                            let url = sourceURL.standardizedFileURL
+                            return SidebarOutlineItem(
+                                id: .audio(url),
+                                title: displayName(url),
+                                contextActions: [.revealInFinder]
+                            )
+                        }
+                    )
+                },
+                selectedItemIDs: selectedAudioItemID.map { [$0] } ?? [],
+                primarySelectedItemID: selectedAudioItemID,
+                expansionStore: outlineExpansionStore,
+                onSelectionChange: { _, primaryID in
+                    guard case .audio(let url) = primaryID else { return false }
+                    onSelectBackgroundAudio(url)
+                    return true
+                },
+                onAction: { itemID, action in
+                    guard case .audio(let url) = itemID, action == .revealInFinder else { return }
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
                 }
-            }
-            .frame(maxWidth: .infinity, maxHeight: maxListHeight, alignment: .topLeading)
+            )
+            .frame(
+                height: min(
+                    maxListHeight,
+                    max(26, CGFloat(audioFiles.count) * 26)
+                )
+            )
         }
     }
 
@@ -124,28 +150,7 @@ struct SidebarAudioControlsView: View {
         }
     }
 
-    private func audioRow(_ url: URL) -> some View {
-        let isSelected = session.backgroundAudioURL?.standardizedFileURL == url.standardizedFileURL
-        return Button {
-            isSidebarFocused = true
-            onSelectBackgroundAudio(url)
-        } label: {
-            SidebarRowLabel(title: displayName(url), isSelected: isSelected)
-        }
-        .buttonStyle(.plain)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
-        .contextMenu {
-            Button {
-                revealInFinder(url)
-            } label: {
-                Label("Reveal in Finder", systemImage: "folder")
-            }
-        }
+    private var selectedAudioItemID: SidebarOutlineItemID? {
+        session.backgroundAudioURL.map { .audio($0.standardizedFileURL) }
     }
-
-    private func revealInFinder(_ url: URL) {
-        NSWorkspace.shared.activateFileViewerSelecting([url])
-    }
-
 }

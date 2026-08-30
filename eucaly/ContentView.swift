@@ -62,7 +62,6 @@ public struct ContentView: View {
     @State private var isTimerSettingsPresented: Bool = false
     @State private var isAppearanceSettingsPresented: Bool = false
     @State private var isBackgroundSettingsPresented: Bool = false
-    @FocusState private var isSidebarFocused: Bool
     @FocusState private var focusedDetailTarget: DetailFocusTarget?
     @State private var securityScopedRoot: URL? = nil
     @State private var securityScopedBackgroundVisual: URL? = nil
@@ -353,7 +352,6 @@ public struct ContentView: View {
             backgroundAudioLoop: $backgroundAudioLoop,
             backgroundAudioVolumeDraft: $backgroundAudioVolumeDraft,
             windowCaptureFrameRate: $windowCaptureFrameRate,
-            isSidebarFocused: $isSidebarFocused,
             displayName: { displayName(for: $0) },
             titleForWebpage: webpageTitle(for:),
             onImportToLibrary: importFilesToLibrary,
@@ -370,7 +368,7 @@ public struct ContentView: View {
             onApplyBackgroundAudioVolume: handleBackgroundAudioVolumeDraftChange,
             onSeekBackgroundAudio: seekBackgroundAudio,
             onSelectionRequest: { selection, playlistEntryIDs in
-                _ = handleSidebarSelectionRequest(
+                handleSidebarSelectionRequest(
                     selection,
                     playlistEntryIDs: playlistEntryIDs
                 )
@@ -1629,16 +1627,16 @@ public struct ContentView: View {
 
     private func refreshBackgroundAudioAccess() {
         guard !backgroundAudioBookmark.isEmpty else {
-            updateBackgroundAudioSelection(nil, autoplay: false)
+            restoreBackgroundAudioSelection(nil)
             return
         }
         if let result = SecurityScopedBookmarks.resolve(backgroundAudioBookmark) {
             if let updated = result.updatedBookmark {
                 backgroundAudioBookmark = updated
             }
-            updateBackgroundAudioSelection(result.url, autoplay: false)
+            restoreBackgroundAudioSelection(result.url)
         } else {
-            updateBackgroundAudioSelection(nil, autoplay: false)
+            restoreBackgroundAudioSelection(nil)
         }
     }
 
@@ -1674,7 +1672,7 @@ public struct ContentView: View {
         securityScopedBackgroundAudio = nil
     }
 
-    private func updateBackgroundAudioSelection(_ url: URL?, autoplay: Bool) {
+    private func updateBackgroundAudioAccess(_ url: URL?) {
         let didChangeAccess = securityScopedBackgroundAudio != url
         if didChangeAccess {
             securityScopedBackgroundAudio?.stopAccessingSecurityScopedResource()
@@ -1683,18 +1681,27 @@ public struct ContentView: View {
         if didChangeAccess, let url {
             _ = url.startAccessingSecurityScopedResource()
         }
+    }
+
+    private func applyBackgroundAudioSelection(_ url: URL?, autoplay: Bool) {
+        session.setBackgroundAudioLoop(backgroundAudioLoop)
+        session.setBackgroundAudioVolume(backgroundAudioVolume)
+        session.setBackgroundAudio(url: url, autoplay: autoplay)
+    }
+
+    private func restoreBackgroundAudioSelection(_ url: URL?) {
+        updateBackgroundAudioAccess(url)
         deferSessionChange {
-            session.setBackgroundAudioLoop(backgroundAudioLoop)
-            session.setBackgroundAudioVolume(backgroundAudioVolume)
-            session.setBackgroundAudio(url: url, autoplay: autoplay)
+            applyBackgroundAudioSelection(url, autoplay: false)
         }
     }
 
     private func selectBackgroundAudio(_ url: URL) {
+        updateBackgroundAudioAccess(url)
+        applyBackgroundAudioSelection(url, autoplay: true)
         if let bookmark = SecurityScopedBookmarks.createBookmark(for: url) {
             backgroundAudioBookmark = bookmark
         }
-        updateBackgroundAudioSelection(url, autoplay: true)
     }
 
     private func clearBackgroundVisual() {
@@ -1703,7 +1710,8 @@ public struct ContentView: View {
     }
 
     private func clearBackgroundAudio() {
-        updateBackgroundAudioSelection(nil, autoplay: false)
+        updateBackgroundAudioAccess(nil)
+        applyBackgroundAudioSelection(nil, autoplay: false)
         backgroundAudioBookmark = ""
     }
 
