@@ -4,7 +4,7 @@
 #   git push && git tag -a vX.Y.Z -m "eucaly X.Y.Z" && git push origin vX.Y.Z
 #   make release-github NOTARY_PROFILE=<profile> TAG=vX.Y.Z
 
-NOTARY_PROFILE ?= ViewTheWordNotary
+NOTARY_PROFILE ?= eucalyNotary
 GH_REPO ?= sukujgrg/eucaly
 TAG ?=
 NOTES_FILE ?=
