@@ -118,12 +118,7 @@ struct LibrarySearchOverlayView: View {
                 onSubmit: performPrimaryAction,
                 onClose: onClose
             )
-            .padding(.horizontal, 12)
-            .frame(height: 38)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color(NSColor.controlBackgroundColor).opacity(0.8))
-            )
+            .frame(height: 28)
 
             Text(statusText)
                 .font(.caption)
@@ -305,12 +300,12 @@ private struct LibrarySearchFieldView: NSViewRepresentable {
         let searchField = InitialFocusSearchField()
         searchField.placeholderString = "Search songs or commands"
         searchField.font = .systemFont(ofSize: NSFont.systemFontSize)
-        searchField.isBezeled = false
-        searchField.drawsBackground = false
-        searchField.focusRingType = .none
+        searchField.controlSize = .large
         searchField.sendsSearchStringImmediately = true
         searchField.sendsWholeSearchString = false
         searchField.delegate = context.coordinator
+        searchField.target = context.coordinator
+        searchField.action = #selector(Coordinator.performSearchFieldAction(_:))
         context.coordinator.searchField = searchField
         commandRouter.register(searchField: searchField)
         return searchField
@@ -330,6 +325,8 @@ private struct LibrarySearchFieldView: NSViewRepresentable {
     ) {
         coordinator.commandRouter.unregister(searchField: searchField)
         searchField.delegate = nil
+        searchField.target = nil
+        searchField.action = nil
         coordinator.searchField = nil
     }
 
@@ -363,6 +360,18 @@ private struct LibrarySearchFieldView: NSViewRepresentable {
 
         func controlTextDidChange(_ notification: Notification) {
             guard let searchField else { return }
+            synchronizeText(from: searchField)
+        }
+
+        func searchFieldDidEndSearching(_ sender: NSSearchField) {
+            synchronizeText(from: sender)
+        }
+
+        @objc fileprivate func performSearchFieldAction(_ sender: NSSearchField) {
+            synchronizeText(from: sender)
+        }
+
+        private func synchronizeText(from searchField: NSSearchField) {
             if text.wrappedValue != searchField.stringValue {
                 text.wrappedValue = searchField.stringValue
             }
