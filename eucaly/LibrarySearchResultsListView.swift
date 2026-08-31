@@ -62,14 +62,15 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
         tableView.allowsEmptySelection = true
         tableView.allowsMultipleSelection = false
         tableView.allowsTypeSelect = false
+        tableView.refusesFirstResponder = true
         tableView.focusRingType = .none
         tableView.backgroundColor = .clear
         tableView.style = .plain
+        tableView.selectionHighlightStyle = .regular
         tableView.dataSource = context.coordinator
         tableView.delegate = context.coordinator
         tableView.target = context.coordinator
         tableView.action = #selector(Coordinator.performClickedRowAction(_:))
-        tableView.doubleAction = #selector(Coordinator.performClickedRowAction(_:))
 
         let scrollView = NSScrollView()
         scrollView.documentView = tableView
@@ -95,7 +96,6 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
         coordinator.tableView?.dataSource = nil
         coordinator.tableView?.target = nil
         coordinator.tableView?.action = nil
-        coordinator.tableView?.doubleAction = nil
         coordinator.tableView = nil
     }
 
@@ -145,6 +145,10 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
             rows.indices.contains(row) && rows[row].isSelectable
         }
 
+        func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+            LibrarySearchRowView()
+        }
+
         func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
             guard rows.indices.contains(row) else { return 36 }
             switch rows[row].content {
@@ -175,6 +179,9 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
                     subtitle: action.subtitle,
                     systemImage: action.systemImage,
                     showsPlaylistButton: false,
+                    onActivate: { [weak self] in
+                        self?.onRunAction(action)
+                    },
                     onAddToPlaylist: nil
                 )
                 return cell
@@ -185,8 +192,8 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
                     subtitle: snippet,
                     systemImage: "doc.text",
                     showsPlaylistButton: true,
+                    onActivate: nil,
                     onAddToPlaylist: { [weak self] in
-                        self?.selectedResult.wrappedValue = url
                         self?.onAddResultToPlaylist(url)
                     }
                 )
@@ -221,9 +228,28 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
         }
 
         @objc fileprivate func performClickedRowAction(_ sender: NSTableView) {
+            guard !clickIsInsideEmbeddedControl(in: sender) else { return }
             let row = sender.clickedRow
             guard rows.indices.contains(row) else { return }
             performDefaultAction(for: rows[row])
+        }
+
+        private func clickIsInsideEmbeddedControl(in tableView: NSTableView) -> Bool {
+            guard let event = NSApp.currentEvent,
+                  event.window === tableView.window
+            else {
+                return false
+            }
+
+            let point = tableView.convert(event.locationInWindow, from: nil)
+            var hitView = tableView.hitTest(point)
+            while let view = hitView, view !== tableView {
+                if view is LibrarySearchEmbeddedButton {
+                    return true
+                }
+                hitView = view.superview
+            }
+            return false
         }
 
         private func performDefaultAction(for row: Row) {
@@ -245,23 +271,16 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
         ) -> Bool {
             guard let tableView else { return false }
 
-            switch command {
-            case .previous:
-                return moveResultSelection(direction: -1, in: tableView)
-            case .next:
-                return moveResultSelection(direction: 1, in: tableView)
-            case .pageUp:
-                return scrollPage(up: true, sender: sender, tableView: tableView)
-            case .pageDown:
-                return scrollPage(up: false, sender: sender, tableView: tableView)
-            case .scrollToBeginning:
+            switch command.operation {
+            case .moveResultSelection(let direction):
+                return moveResultSelection(direction: direction, in: tableView)
+            case .scrollPage(let up):
+                return scrollPage(up: up, sender: sender, tableView: tableView)
+            case .scrollToBoundary(let beginning):
                 return tableView.tryToPerform(
-                    #selector(NSResponder.scrollToBeginningOfDocument(_:)),
-                    with: sender
-                )
-            case .scrollToEnd:
-                return tableView.tryToPerform(
-                    #selector(NSResponder.scrollToEndOfDocument(_:)),
+                    beginning
+                        ? #selector(NSResponder.scrollToBeginningOfDocument(_:))
+                        : #selector(NSResponder.scrollToEndOfDocument(_:)),
                     with: sender
                 )
             }
@@ -272,28 +291,14 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
             in tableView: NSTableView
         ) -> Bool {
             let resultRows = rows.indices.filter { row in
-                if case .result = rows[row].content {
-                    return true
-                }
-                return false
+                rows[row].role == .result
             }
-            guard !resultRows.isEmpty else { return false }
-
             let currentRow = currentResultRow(in: tableView, resultRows: resultRows)
-            let targetRow: Int
-            if direction < 0 {
-                targetRow = adjacentResultRow(
-                    before: currentRow,
-                    in: resultRows,
-                    fallback: resultRows.last!
-                )
-            } else {
-                targetRow = adjacentResultRow(
-                    after: currentRow,
-                    in: resultRows,
-                    fallback: resultRows.first!
-                )
-            }
+            guard let targetRow = LibrarySearchResultNavigator.targetRow(
+                resultRows: resultRows,
+                currentRow: currentRow,
+                direction: direction
+            ) else { return false }
 
             selectResultRow(targetRow, in: tableView)
             return true
@@ -323,32 +328,6 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
                 guard case .result(let url, _, _) = rows[row].content else { return false }
                 return url == selectedURL
             }
-        }
-
-        private func adjacentResultRow(
-            before currentRow: Int?,
-            in resultRows: [Int],
-            fallback: Int
-        ) -> Int {
-            guard let currentRow,
-                  let position = resultRows.firstIndex(of: currentRow)
-            else {
-                return fallback
-            }
-            return resultRows[max(position - 1, resultRows.startIndex)]
-        }
-
-        private func adjacentResultRow(
-            after currentRow: Int?,
-            in resultRows: [Int],
-            fallback: Int
-        ) -> Int {
-            guard let currentRow,
-                  let position = resultRows.firstIndex(of: currentRow)
-            else {
-                return fallback
-            }
-            return resultRows[min(position + 1, resultRows.index(before: resultRows.endIndex))]
         }
 
         private func selectResultRow(_ row: Int, in tableView: NSTableView) {
@@ -453,8 +432,21 @@ nonisolated enum LibrarySearchNavigationCommand: Equatable {
     case scrollToBeginning
     case scrollToEnd
 
-    var changesSelection: Bool {
-        self == .previous || self == .next
+    var operation: LibrarySearchNavigationOperation {
+        switch self {
+        case .previous:
+            return .moveResultSelection(direction: -1)
+        case .next:
+            return .moveResultSelection(direction: 1)
+        case .pageUp:
+            return .scrollPage(up: true)
+        case .pageDown:
+            return .scrollPage(up: false)
+        case .scrollToBeginning:
+            return .scrollToBoundary(beginning: true)
+        case .scrollToEnd:
+            return .scrollToBoundary(beginning: false)
+        }
     }
 
     init?(selector: Selector) {
@@ -479,6 +471,48 @@ nonisolated enum LibrarySearchNavigationCommand: Equatable {
     }
 }
 
+nonisolated enum LibrarySearchNavigationOperation: Equatable {
+    case moveResultSelection(direction: Int)
+    case scrollPage(up: Bool)
+    case scrollToBoundary(beginning: Bool)
+}
+
+nonisolated enum LibrarySearchRowRole: Equatable {
+    case section
+    case action
+    case result
+
+    var isSelectable: Bool {
+        self == .result
+    }
+}
+
+nonisolated enum LibrarySearchResultNavigator {
+    static func targetRow(
+        resultRows: [Int],
+        currentRow: Int?,
+        direction: Int
+    ) -> Int? {
+        guard let firstRow = resultRows.first,
+              let lastRow = resultRows.last
+        else {
+            return nil
+        }
+
+        guard let currentRow,
+              let currentIndex = resultRows.firstIndex(of: currentRow)
+        else {
+            return direction < 0 ? lastRow : firstRow
+        }
+
+        let targetIndex = min(
+            max(currentIndex + (direction < 0 ? -1 : 1), resultRows.startIndex),
+            resultRows.index(before: resultRows.endIndex)
+        )
+        return resultRows[targetIndex]
+    }
+}
+
 private struct Row: Hashable {
     enum ID: Hashable {
         case section(String)
@@ -495,11 +529,53 @@ private struct Row: Hashable {
     let id: ID
     let content: Content
 
-    var isSelectable: Bool {
-        if case .section = content {
-            return false
+    var role: LibrarySearchRowRole {
+        switch content {
+        case .section:
+            return .section
+        case .action:
+            return .action
+        case .result:
+            return .result
         }
-        return true
+    }
+
+    var isSelectable: Bool {
+        role.isSelectable
+    }
+}
+
+private final class LibrarySearchRowView: NSTableRowView {
+    override var isSelected: Bool {
+        didSet {
+            needsDisplay = true
+            updateCellBackgroundStyles()
+        }
+    }
+
+    override var interiorBackgroundStyle: NSView.BackgroundStyle {
+        isSelected ? .emphasized : .normal
+    }
+
+    override func didAddSubview(_ subview: NSView) {
+        super.didAddSubview(subview)
+        (subview as? NSTableCellView)?.backgroundStyle = interiorBackgroundStyle
+    }
+
+    override func drawSelection(in dirtyRect: NSRect) {
+        guard isSelected else { return }
+        NSColor.controlAccentColor.withAlphaComponent(0.86).setFill()
+        NSBezierPath(
+            roundedRect: bounds.insetBy(dx: 4, dy: 1),
+            xRadius: 8,
+            yRadius: 8
+        ).fill()
+    }
+
+    private func updateCellBackgroundStyles() {
+        for case let cell as NSTableCellView in subviews {
+            cell.backgroundStyle = interiorBackgroundStyle
+        }
     }
 }
 
@@ -543,12 +619,23 @@ private final class LibrarySearchSectionCellView: NSTableCellView {
     }
 }
 
+private final class LibrarySearchEmbeddedButton: NSButton {}
+
 private final class LibrarySearchItemCellView: NSTableCellView {
     private let symbolView = NSImageView()
     private let titleField = NSTextField(labelWithString: "")
     private let subtitleField = NSTextField(wrappingLabelWithString: "")
-    private let playlistButton = NSButton()
+    private let playlistButton = LibrarySearchEmbeddedButton()
+    private let activationButton = LibrarySearchEmbeddedButton()
     private var onAddToPlaylist: (() -> Void)?
+    private var onActivate: (() -> Void)?
+    private var showsPlaylistButton = false
+
+    override var backgroundStyle: NSView.BackgroundStyle {
+        didSet {
+            updateColors()
+        }
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -570,7 +657,7 @@ private final class LibrarySearchItemCellView: NSTableCellView {
         subtitleField.font = .systemFont(ofSize: 11)
         subtitleField.textColor = .secondaryLabelColor
         subtitleField.lineBreakMode = .byTruncatingTail
-        subtitleField.maximumNumberOfLines = 4
+        subtitleField.maximumNumberOfLines = 2
         addSubview(subtitleField)
 
         playlistButton.translatesAutoresizingMaskIntoConstraints = false
@@ -580,11 +667,23 @@ private final class LibrarySearchItemCellView: NSTableCellView {
         )
         playlistButton.imagePosition = .imageOnly
         playlistButton.isBordered = false
+        playlistButton.refusesFirstResponder = true
+        playlistButton.focusRingType = .none
         playlistButton.contentTintColor = .controlAccentColor
         playlistButton.toolTip = "Add to Playlist"
         playlistButton.target = self
         playlistButton.action = #selector(performAddToPlaylist)
         addSubview(playlistButton)
+
+        activationButton.translatesAutoresizingMaskIntoConstraints = false
+        activationButton.title = ""
+        activationButton.isBordered = false
+        activationButton.refusesFirstResponder = true
+        activationButton.focusRingType = .none
+        activationButton.target = self
+        activationButton.action = #selector(performActivation)
+        activationButton.isHidden = true
+        addSubview(activationButton)
 
         NSLayoutConstraint.activate([
             symbolView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
@@ -604,7 +703,12 @@ private final class LibrarySearchItemCellView: NSTableCellView {
             playlistButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             playlistButton.centerYAnchor.constraint(equalTo: centerYAnchor),
             playlistButton.widthAnchor.constraint(equalToConstant: 24),
-            playlistButton.heightAnchor.constraint(equalToConstant: 24)
+            playlistButton.heightAnchor.constraint(equalToConstant: 24),
+
+            activationButton.leadingAnchor.constraint(equalTo: leadingAnchor),
+            activationButton.trailingAnchor.constraint(equalTo: trailingAnchor),
+            activationButton.topAnchor.constraint(equalTo: topAnchor),
+            activationButton.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
     }
 
@@ -618,6 +722,7 @@ private final class LibrarySearchItemCellView: NSTableCellView {
         subtitle: String,
         systemImage: String,
         showsPlaylistButton: Bool,
+        onActivate: (() -> Void)?,
         onAddToPlaylist: (() -> Void)?
     ) {
         titleField.stringValue = title
@@ -625,12 +730,37 @@ private final class LibrarySearchItemCellView: NSTableCellView {
         subtitleField.stringValue = subtitle
         subtitleField.isHidden = subtitle.isEmpty
         symbolView.image = NSImage(systemSymbolName: systemImage, accessibilityDescription: nil)
-        symbolView.contentTintColor = showsPlaylistButton ? .secondaryLabelColor : .controlAccentColor
+        self.showsPlaylistButton = showsPlaylistButton
         playlistButton.isHidden = !showsPlaylistButton
+        activationButton.isHidden = onActivate == nil
+        activationButton.setAccessibilityLabel(title)
+        self.onActivate = onActivate
         self.onAddToPlaylist = onAddToPlaylist
+        updateColors()
+    }
+
+    @objc private func performActivation() {
+        onActivate?()
     }
 
     @objc private func performAddToPlaylist() {
         onAddToPlaylist?()
+    }
+
+    private func updateColors() {
+        if backgroundStyle == .emphasized {
+            let selectedColor = NSColor.alternateSelectedControlTextColor
+            titleField.textColor = selectedColor
+            subtitleField.textColor = selectedColor.withAlphaComponent(0.78)
+            symbolView.contentTintColor = selectedColor.withAlphaComponent(0.84)
+            playlistButton.contentTintColor = selectedColor
+        } else {
+            titleField.textColor = .labelColor
+            subtitleField.textColor = .secondaryLabelColor
+            symbolView.contentTintColor = showsPlaylistButton
+                ? .secondaryLabelColor
+                : .controlAccentColor
+            playlistButton.contentTintColor = .controlAccentColor
+        }
     }
 }

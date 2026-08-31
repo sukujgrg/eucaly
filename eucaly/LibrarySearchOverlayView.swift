@@ -366,10 +366,12 @@ private struct LibrarySearchFieldView: NSViewRepresentable {
 
         func searchFieldDidEndSearching(_ sender: NSSearchField) {
             synchronizeText(from: sender)
+            commandRouter.restoreSearchFocus()
         }
 
         @objc fileprivate func performSearchFieldAction(_ sender: NSSearchField) {
             synchronizeText(from: sender)
+            commandRouter.restoreSearchFocus()
         }
 
         private func synchronizeText(from searchField: NSSearchField) {

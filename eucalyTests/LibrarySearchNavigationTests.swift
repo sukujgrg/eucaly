@@ -45,12 +45,98 @@ final class LibrarySearchNavigationTests: XCTestCase {
         )
     }
 
-    func testOnlyArrowCommandsChangeResultSelection() {
-        XCTAssertTrue(LibrarySearchNavigationCommand.previous.changesSelection)
-        XCTAssertTrue(LibrarySearchNavigationCommand.next.changesSelection)
-        XCTAssertFalse(LibrarySearchNavigationCommand.pageUp.changesSelection)
-        XCTAssertFalse(LibrarySearchNavigationCommand.pageDown.changesSelection)
-        XCTAssertFalse(LibrarySearchNavigationCommand.scrollToBeginning.changesSelection)
-        XCTAssertFalse(LibrarySearchNavigationCommand.scrollToEnd.changesSelection)
+    func testOnlyResultRowsParticipateInSelection() {
+        XCTAssertFalse(LibrarySearchRowRole.section.isSelectable)
+        XCTAssertFalse(LibrarySearchRowRole.action.isSelectable)
+        XCTAssertTrue(LibrarySearchRowRole.result.isSelectable)
+    }
+
+    func testArrowNavigationSkipsNonResultRows() {
+        let resultRows = [2, 5, 9]
+
+        XCTAssertEqual(
+            LibrarySearchResultNavigator.targetRow(
+                resultRows: resultRows,
+                currentRow: 2,
+                direction: 1
+            ),
+            5
+        )
+        XCTAssertEqual(
+            LibrarySearchResultNavigator.targetRow(
+                resultRows: resultRows,
+                currentRow: 9,
+                direction: -1
+            ),
+            5
+        )
+    }
+
+    func testArrowNavigationClampsAtResultBoundaries() {
+        let resultRows = [2, 5, 9]
+
+        XCTAssertEqual(
+            LibrarySearchResultNavigator.targetRow(
+                resultRows: resultRows,
+                currentRow: 2,
+                direction: -1
+            ),
+            2
+        )
+        XCTAssertEqual(
+            LibrarySearchResultNavigator.targetRow(
+                resultRows: resultRows,
+                currentRow: 9,
+                direction: 1
+            ),
+            9
+        )
+    }
+
+    func testArrowNavigationUsesDirectionalFallbackWithoutSelection() {
+        let resultRows = [2, 5, 9]
+
+        XCTAssertEqual(
+            LibrarySearchResultNavigator.targetRow(
+                resultRows: resultRows,
+                currentRow: nil,
+                direction: -1
+            ),
+            9
+        )
+        XCTAssertEqual(
+            LibrarySearchResultNavigator.targetRow(
+                resultRows: resultRows,
+                currentRow: nil,
+                direction: 1
+            ),
+            2
+        )
+        XCTAssertNil(
+            LibrarySearchResultNavigator.targetRow(
+                resultRows: [],
+                currentRow: nil,
+                direction: 1
+            )
+        )
+    }
+
+    func testPageAndBoundaryKeysOnlyScroll() {
+        XCTAssertEqual(
+            LibrarySearchNavigationCommand.pageUp.operation,
+            .scrollPage(up: true)
+        )
+        XCTAssertEqual(
+            LibrarySearchNavigationCommand.pageDown.operation,
+            .scrollPage(up: false)
+        )
+        XCTAssertEqual(
+            LibrarySearchNavigationCommand.scrollToBeginning.operation,
+            .scrollToBoundary(beginning: true)
+        )
+        XCTAssertEqual(
+            LibrarySearchNavigationCommand.scrollToEnd.operation,
+            .scrollToBoundary(beginning: false)
+        )
     }
 }
