@@ -30,7 +30,7 @@ final class LibraryOutlineModelStore: NSObject, ObservableObject {
     private var cachedSourceItems: [LibraryOutlineSourceItem] = []
     private var cachedModels: [LibraryGrouping: SidebarOutlineModel] = [:]
     private var inFlightBuilds: [LibraryGrouping: InFlightBuild] = [:]
-    private var preparationGeneration = 0
+    private var presentationRequestGeneration = 0
     private let modelBuilder: ModelBuilder
 
     override init() {
@@ -57,10 +57,10 @@ final class LibraryOutlineModelStore: NSObject, ObservableObject {
             return
         }
 
-        // Every new request invalidates an older in-flight build, including a
-        // request that can be satisfied immediately from the grouping cache.
-        preparationGeneration &+= 1
-        let generation = preparationGeneration
+        // Builds may finish and populate their grouping cache out of order. Only
+        // the most recent request is allowed to replace the visible presentation.
+        presentationRequestGeneration &+= 1
+        let requestGeneration = presentationRequestGeneration
 
         let sourceRevision = SourceRevision(
             libraryRevision: revision.libraryRevision,
@@ -104,7 +104,11 @@ final class LibraryOutlineModelStore: NSObject, ObservableObject {
             inFlightBuilds.removeValue(forKey: grouping)
         }
         cachedModels[grouping] = model
-        guard !Task.isCancelled, generation == preparationGeneration else { return }
+        guard !Task.isCancelled,
+              requestGeneration == presentationRequestGeneration
+        else {
+            return
+        }
         presentation = Presentation(revision: revision, model: model)
     }
 }
