@@ -81,7 +81,7 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
         tableView.dataSource = context.coordinator
         tableView.delegate = context.coordinator
         tableView.target = context.coordinator
-        tableView.action = #selector(Coordinator.performClickedRowAction(_:))
+        tableView.doubleAction = #selector(Coordinator.performClickedRowAction(_:))
 
         let scrollView = NSScrollView()
         scrollView.documentView = tableView
@@ -106,7 +106,7 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
         coordinator.tableView?.delegate = nil
         coordinator.tableView?.dataSource = nil
         coordinator.tableView?.target = nil
-        coordinator.tableView?.action = nil
+        coordinator.tableView?.doubleAction = nil
         coordinator.tableView = nil
     }
 
@@ -115,6 +115,7 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
         static let columnIdentifier = NSUserInterfaceItemIdentifier("LibrarySearchColumn")
         private static let sectionCellIdentifier = NSUserInterfaceItemIdentifier("LibrarySearchSectionCell")
         private static let itemCellIdentifier = NSUserInterfaceItemIdentifier("LibrarySearchItemCell")
+        static let rowViewIdentifier = NSUserInterfaceItemIdentifier("LibrarySearchRowView")
 
         fileprivate weak var tableView: NSTableView?
 
@@ -157,7 +158,16 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
         }
 
         func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
-            LibrarySearchRowView()
+            if let reused = tableView.makeView(
+                withIdentifier: Self.rowViewIdentifier,
+                owner: self
+            ) as? LibrarySearchRowView {
+                return reused
+            }
+
+            let rowView = LibrarySearchRowView()
+            rowView.identifier = Self.rowViewIdentifier
+            return rowView
         }
 
         func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
@@ -654,6 +664,7 @@ private final class LibrarySearchItemCellView: NSTableCellView {
         symbolView.translatesAutoresizingMaskIntoConstraints = false
         symbolView.imageScaling = .scaleProportionallyDown
         symbolView.contentTintColor = .controlAccentColor
+        symbolView.setAccessibilityHidden(true)
         addSubview(symbolView)
 
         titleField.translatesAutoresizingMaskIntoConstraints = false
@@ -675,9 +686,16 @@ private final class LibrarySearchItemCellView: NSTableCellView {
         playlistButton.image = NSImage(
             systemSymbolName: "plus",
             accessibilityDescription: "Add to Playlist"
+        )?.withSymbolConfiguration(
+            NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
         )
         playlistButton.imagePosition = .imageOnly
-        playlistButton.isBordered = false
+        playlistButton.imageScaling = .scaleProportionallyDown
+        playlistButton.isBordered = true
+        playlistButton.bezelStyle = .circular
+        playlistButton.controlSize = .small
+        playlistButton.setButtonType(.momentaryPushIn)
+        playlistButton.ignoresMultiClick = true
         playlistButton.refusesFirstResponder = true
         playlistButton.focusRingType = .none
         playlistButton.contentTintColor = .controlAccentColor
@@ -689,6 +707,7 @@ private final class LibrarySearchItemCellView: NSTableCellView {
         activationButton.translatesAutoresizingMaskIntoConstraints = false
         activationButton.title = ""
         activationButton.isBordered = false
+        activationButton.ignoresMultiClick = true
         activationButton.refusesFirstResponder = true
         activationButton.focusRingType = .none
         activationButton.target = self
@@ -713,8 +732,8 @@ private final class LibrarySearchItemCellView: NSTableCellView {
 
             playlistButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             playlistButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            playlistButton.widthAnchor.constraint(equalToConstant: 24),
-            playlistButton.heightAnchor.constraint(equalToConstant: 24),
+            playlistButton.widthAnchor.constraint(equalToConstant: 26),
+            playlistButton.heightAnchor.constraint(equalToConstant: 26),
 
             activationButton.leadingAnchor.constraint(equalTo: leadingAnchor),
             activationButton.trailingAnchor.constraint(equalTo: trailingAnchor),
@@ -743,8 +762,18 @@ private final class LibrarySearchItemCellView: NSTableCellView {
         symbolView.image = NSImage(systemSymbolName: systemImage, accessibilityDescription: nil)
         self.showsPlaylistButton = showsPlaylistButton
         playlistButton.isHidden = !showsPlaylistButton
-        activationButton.isHidden = onActivate == nil
-        activationButton.setAccessibilityLabel(title)
+        playlistButton.setAccessibilityHidden(!showsPlaylistButton)
+        playlistButton.setAccessibilityLabel("Add \(title) to Playlist")
+
+        let isAction = onActivate != nil
+        activationButton.isHidden = !isAction
+        activationButton.setAccessibilityHidden(!isAction)
+        activationButton.setAccessibilityLabel(isAction ? title : nil)
+        activationButton.setAccessibilityHelp(
+            isAction && !subtitle.isEmpty ? subtitle : nil
+        )
+        titleField.setAccessibilityHidden(isAction)
+        subtitleField.setAccessibilityHidden(isAction)
         self.onActivate = onActivate
         self.onAddToPlaylist = onAddToPlaylist
         updateColors()

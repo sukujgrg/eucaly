@@ -4,6 +4,21 @@ import XCTest
 
 final class LibrarySearchNavigationTests: XCTestCase {
     @MainActor
+    func testCustomRowViewHasAReuseIdentifier() throws {
+        let tableView = NSTableView()
+        let coordinator = LibrarySearchResultsListView.Coordinator()
+
+        let rowView = try XCTUnwrap(
+            coordinator.tableView(tableView, rowViewForRow: 0)
+        )
+
+        XCTAssertEqual(
+            rowView.identifier,
+            LibrarySearchResultsListView.Coordinator.rowViewIdentifier
+        )
+    }
+
+    @MainActor
     func testRestoringExistingSearchFocusPreservesInsertionPoint() async throws {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 320, height: 80),
