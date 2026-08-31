@@ -1,12 +1,44 @@
 import AppKit
 import SwiftUI
 
+@MainActor
+final class LibrarySearchCommandRouter {
+    fileprivate weak var resultsCoordinator: LibrarySearchResultsListView.Coordinator?
+    private weak var searchField: NSSearchField?
+
+    func register(searchField: NSSearchField) {
+        self.searchField = searchField
+    }
+
+    func unregister(searchField: NSSearchField) {
+        if self.searchField === searchField {
+            self.searchField = nil
+        }
+    }
+
+    func perform(_ selector: Selector, sender: Any?) -> Bool {
+        guard let command = LibrarySearchNavigationCommand(selector: selector) else {
+            return false
+        }
+        return resultsCoordinator?.perform(command, sender: sender) ?? false
+    }
+
+    func restoreSearchFocus() {
+        guard let searchField else { return }
+        DispatchQueue.main.async { [weak searchField] in
+            guard let searchField else { return }
+            searchField.window?.makeFirstResponder(searchField)
+        }
+    }
+}
+
 /// AppKit-backed result list for Quick Open. Keeping the scrolling and cell
 /// reuse in `NSTableView` prevents large search result sets from rebuilding a
 /// SwiftUI row hierarchy for every keystroke.
 struct LibrarySearchResultsListView: NSViewRepresentable {
     @Binding var selectedResult: URL?
 
+    let commandRouter: LibrarySearchCommandRouter
     let actions: [LibraryCommandPaletteAction]
     let results: [LibraryTextSearchIndex.SearchResult]
     let displayName: (URL) -> String
@@ -49,7 +81,6 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
         scrollView.contentInsets = NSEdgeInsets(top: 6, left: 10, bottom: 6, right: 10)
 
         context.coordinator.tableView = tableView
-        context.coordinator.installNavigationMonitor()
         context.coordinator.update(from: self, forceReload: true)
         return scrollView
     }
@@ -59,7 +90,7 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
-        coordinator.removeNavigationMonitor()
+        coordinator.unregisterCommandRouter()
         coordinator.tableView?.delegate = nil
         coordinator.tableView?.dataSource = nil
         coordinator.tableView?.target = nil
@@ -78,14 +109,14 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
 
         private var rows: [Row] = []
         private var isSynchronizingSelection = false
-        private var navigationMonitor: Any?
+        private weak var commandRouter: LibrarySearchCommandRouter?
         private var selectedResult: Binding<URL?> = .constant(nil)
         private var onRunAction: (LibraryCommandPaletteAction) -> Void = { _ in }
         private var onOpenResult: (URL) -> Void = { _ in }
         private var onAddResultToPlaylist: (URL) -> Void = { _ in }
 
         func update(from view: LibrarySearchResultsListView, forceReload: Bool = false) {
-            installNavigationMonitor()
+            registerCommandRouter(view.commandRouter)
             selectedResult = view.$selectedResult
             onRunAction = view.onRunAction
             onOpenResult = view.onOpenResult
@@ -174,18 +205,19 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
             selectedResult.wrappedValue = url
         }
 
-        fileprivate func installNavigationMonitor() {
-            guard navigationMonitor == nil else { return }
-            navigationMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-                self?.handleNavigationEvent(event) ?? event
+        fileprivate func registerCommandRouter(_ router: LibrarySearchCommandRouter) {
+            if commandRouter !== router {
+                unregisterCommandRouter()
+                commandRouter = router
             }
+            router.resultsCoordinator = self
         }
 
-        fileprivate func removeNavigationMonitor() {
-            if let navigationMonitor {
-                NSEvent.removeMonitor(navigationMonitor)
-                self.navigationMonitor = nil
+        fileprivate func unregisterCommandRouter() {
+            if commandRouter?.resultsCoordinator === self {
+                commandRouter?.resultsCoordinator = nil
             }
+            commandRouter = nil
         }
 
         @objc fileprivate func performClickedRowAction(_ sender: NSTableView) {
@@ -206,22 +238,37 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
             }
         }
 
-        private func handleNavigationEvent(_ event: NSEvent) -> NSEvent? {
-            guard let tableView,
-                  tableView.window?.isKeyWindow == true,
-                  event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
-                  let command = LibrarySearchNavigationCommand(keyCode: event.keyCode)
-            else {
-                return event
-            }
+        @discardableResult
+        fileprivate func perform(
+            _ command: LibrarySearchNavigationCommand,
+            sender: Any?
+        ) -> Bool {
+            guard let tableView else { return false }
 
-            guard moveSelection(command, in: tableView) else { return event }
-            return nil
+            switch command {
+            case .previous:
+                return moveResultSelection(direction: -1, in: tableView)
+            case .next:
+                return moveResultSelection(direction: 1, in: tableView)
+            case .pageUp:
+                return scrollPage(up: true, sender: sender, tableView: tableView)
+            case .pageDown:
+                return scrollPage(up: false, sender: sender, tableView: tableView)
+            case .scrollToBeginning:
+                return tableView.tryToPerform(
+                    #selector(NSResponder.scrollToBeginningOfDocument(_:)),
+                    with: sender
+                )
+            case .scrollToEnd:
+                return tableView.tryToPerform(
+                    #selector(NSResponder.scrollToEndOfDocument(_:)),
+                    with: sender
+                )
+            }
         }
 
-        @discardableResult
-        private func moveSelection(
-            _ command: LibrarySearchNavigationCommand,
+        private func moveResultSelection(
+            direction: Int,
             in tableView: NSTableView
         ) -> Bool {
             let resultRows = rows.indices.filter { row in
@@ -234,41 +281,34 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
 
             let currentRow = currentResultRow(in: tableView, resultRows: resultRows)
             let targetRow: Int
-            switch command {
-            case .previous:
+            if direction < 0 {
                 targetRow = adjacentResultRow(
                     before: currentRow,
                     in: resultRows,
                     fallback: resultRows.last!
                 )
-            case .next:
+            } else {
                 targetRow = adjacentResultRow(
                     after: currentRow,
                     in: resultRows,
                     fallback: resultRows.first!
                 )
-            case .pageUp:
-                targetRow = pageResultRow(
-                    from: currentRow ?? resultRows.last!,
-                    direction: -1,
-                    in: resultRows,
-                    tableView: tableView
-                )
-            case .pageDown:
-                targetRow = pageResultRow(
-                    from: currentRow ?? resultRows.first!,
-                    direction: 1,
-                    in: resultRows,
-                    tableView: tableView
-                )
-            case .first:
-                targetRow = resultRows.first!
-            case .last:
-                targetRow = resultRows.last!
             }
 
             selectResultRow(targetRow, in: tableView)
             return true
+        }
+
+        private func scrollPage(
+            up: Bool,
+            sender: Any?,
+            tableView: NSTableView
+        ) -> Bool {
+            guard let scrollView = tableView.enclosingScrollView else { return false }
+            let selector = up
+                ? #selector(NSResponder.pageUp(_:))
+                : #selector(NSResponder.pageDown(_:))
+            return scrollView.tryToPerform(selector, with: sender)
         }
 
         private func currentResultRow(
@@ -309,24 +349,6 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
                 return fallback
             }
             return resultRows[min(position + 1, resultRows.index(before: resultRows.endIndex))]
-        }
-
-        private func pageResultRow(
-            from currentRow: Int,
-            direction: CGFloat,
-            in resultRows: [Int],
-            tableView: NSTableView
-        ) -> Int {
-            let currentRect = tableView.rect(ofRow: currentRow)
-            let pageDistance = max(
-                tableView.visibleRect.height - currentRect.height,
-                currentRect.height
-            )
-            let desiredMidY = currentRect.midY + (direction * pageDistance)
-            return resultRows.min { lhs, rhs in
-                abs(tableView.rect(ofRow: lhs).midY - desiredMidY)
-                    < abs(tableView.rect(ofRow: rhs).midY - desiredMidY)
-            } ?? currentRow
         }
 
         private func selectResultRow(_ row: Int, in tableView: NSTableView) {
@@ -428,23 +450,29 @@ nonisolated enum LibrarySearchNavigationCommand: Equatable {
     case next
     case pageUp
     case pageDown
-    case first
-    case last
+    case scrollToBeginning
+    case scrollToEnd
 
-    init?(keyCode: UInt16) {
-        switch keyCode {
-        case 126:
+    var changesSelection: Bool {
+        self == .previous || self == .next
+    }
+
+    init?(selector: Selector) {
+        switch selector {
+        case #selector(NSResponder.moveUp(_:)):
             self = .previous
-        case 125:
+        case #selector(NSResponder.moveDown(_:)):
             self = .next
-        case 116:
+        case #selector(NSResponder.pageUp(_:)),
+             #selector(NSResponder.scrollPageUp(_:)):
             self = .pageUp
-        case 121:
+        case #selector(NSResponder.pageDown(_:)),
+             #selector(NSResponder.scrollPageDown(_:)):
             self = .pageDown
-        case 115:
-            self = .first
-        case 119:
-            self = .last
+        case #selector(NSResponder.scrollToBeginningOfDocument(_:)):
+            self = .scrollToBeginning
+        case #selector(NSResponder.scrollToEndOfDocument(_:)):
+            self = .scrollToEnd
         default:
             return nil
         }
