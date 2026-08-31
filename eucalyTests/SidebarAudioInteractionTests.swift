@@ -38,7 +38,7 @@ final class SidebarAudioInteractionTests: XCTestCase {
     func testSpaceTogglesActiveTrack() {
         XCTAssertEqual(
             AudioSidebarInteraction.toggleAction(
-                targetURL: firstURL,
+                selectedURL: firstURL,
                 activeURL: firstURL
             ),
             .togglePlayback
@@ -48,10 +48,30 @@ final class SidebarAudioInteractionTests: XCTestCase {
     func testSpaceLoadsAndPlaysDifferentTrack() {
         XCTAssertEqual(
             AudioSidebarInteraction.toggleAction(
-                targetURL: secondURL,
+                selectedURL: secondURL,
                 activeURL: firstURL
             ),
             .selectAndPlay(secondURL)
+        )
+    }
+
+    func testSpaceWithoutHighlightTogglesLoadedTrack() {
+        XCTAssertEqual(
+            AudioSidebarInteraction.toggleAction(
+                selectedURL: nil,
+                activeURL: firstURL
+            ),
+            .togglePlayback
+        )
+    }
+
+    func testSpaceWithoutHighlightOrLoadedTrackDoesNothing() {
+        XCTAssertEqual(
+            AudioSidebarInteraction.toggleAction(
+                selectedURL: nil,
+                activeURL: nil
+            ),
+            .none
         )
     }
 }

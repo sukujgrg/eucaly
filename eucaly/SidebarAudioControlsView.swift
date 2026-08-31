@@ -21,10 +21,12 @@ nonisolated struct AudioSidebarInteraction {
     }
 
     static func toggleAction(
-        targetURL: URL,
+        selectedURL: URL?,
         activeURL: URL?
     ) -> AudioSidebarPlaybackIntent {
-        let targetURL = targetURL.standardizedFileURL
+        guard let targetURL = (selectedURL ?? activeURL)?.standardizedFileURL else {
+            return .none
+        }
         guard targetURL == activeURL?.standardizedFileURL else {
             return .selectAndPlay(targetURL)
         }
@@ -77,7 +79,7 @@ struct SidebarAudioControlsView: View {
             .help("Import audio or video files for background audio")
 
             Button {
-                togglePlayback(for: playbackTargetURL)
+                togglePlayback(for: selectedAudioURL)
             } label: {
                 Label(
                     isPlaybackTargetPlaying ? "Pause" : "Play",
@@ -155,14 +157,17 @@ struct SidebarAudioControlsView: View {
                     selectedAudioURL = url.standardizedFileURL
                     return true
                 },
-                onActivate: { itemID, activation in
+                onDefaultAction: { itemID in
                     guard case .audio(let url) = itemID else { return }
                     selectedAudioURL = url.standardizedFileURL
-                    switch activation {
-                    case .defaultAction:
-                        playIfNeeded(url)
-                    case .space:
+                    playIfNeeded(url)
+                },
+                onSpaceAction: { itemID in
+                    if case .audio(let url) = itemID {
+                        selectedAudioURL = url.standardizedFileURL
                         togglePlayback(for: url)
+                    } else {
+                        togglePlayback(for: nil)
                     }
                 },
                 onAction: { itemID, action in
@@ -230,11 +235,10 @@ struct SidebarAudioControlsView: View {
         ]
     }
 
-    private func togglePlayback(for url: URL?) {
-        guard let url else { return }
+    private func togglePlayback(for selectedURL: URL?) {
         perform(
             AudioSidebarInteraction.toggleAction(
-                targetURL: url,
+                selectedURL: selectedURL,
                 activeURL: activeAudioURL
             )
         )

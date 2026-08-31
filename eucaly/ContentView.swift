@@ -41,6 +41,7 @@ public struct ContentView: View {
     @State private var newFileWarning: String? = nil
     @State private var currentLyricsSourceURL: URL? = nil
     @State private var sidebarSelection: SidebarSelection? = nil
+    @State private var selectedAudioURL: URL? = nil
     @State private var previewLoadToken = UUID()
     @State private var previewSource: PreviewSource = .none
     @State private var pendingPreviewSource: PreviewSource? = nil
@@ -257,6 +258,9 @@ public struct ContentView: View {
         .onChange(of: backgroundAudioBookmark) { _, _ in
             refreshBackgroundAudioAccess()
         }
+        .onChange(of: session.backgroundAudioURL) { _, newValue in
+            selectedAudioURL = newValue?.standardizedFileURL
+        }
         .onChange(of: overlayScale) { _, newValue in
             handleOverlayScaleChange(newValue)
         }
@@ -349,6 +353,7 @@ public struct ContentView: View {
             libraryScrollRequest: libraryScrollRequest,
             selectedPlaylistEntryIDs: selectedPlaylistEntryIDs,
             sidebarSelection: sidebarSelection,
+            selectedAudioURL: $selectedAudioURL,
             backgroundAudioLoop: $backgroundAudioLoop,
             backgroundAudioVolumeDraft: $backgroundAudioVolumeDraft,
             windowCaptureFrameRate: $windowCaptureFrameRate,

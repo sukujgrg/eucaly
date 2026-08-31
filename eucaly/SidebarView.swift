@@ -52,6 +52,7 @@ struct SidebarView: View {
     let libraryScrollRequest: LibraryScrollRequest?
     let selectedPlaylistEntryIDs: Set<UUID>
     let sidebarSelection: SidebarSelection?
+    @Binding var selectedAudioURL: URL?
     @Binding var backgroundAudioLoop: Bool
     @Binding var backgroundAudioVolumeDraft: Double
     @Binding var windowCaptureFrameRate: Int
@@ -98,8 +99,6 @@ struct SidebarView: View {
     @State private var webpageAddressDraft: String = ""
 
     @State private var webpageAddressError: String? = nil
-
-    @State private var selectedAudioURL: URL?
 
     @State private var libraryExpansionState = SidebarOutlineExpansionState.empty
 
@@ -193,12 +192,6 @@ struct SidebarView: View {
             if libraryScrollRequest != nil {
                 isLibrarySectionExpanded = true
             }
-        }
-        .onAppear {
-            selectedAudioURL = session.backgroundAudioURL?.standardizedFileURL
-        }
-        .onChange(of: session.backgroundAudioURL) { _, newValue in
-            selectedAudioURL = newValue?.standardizedFileURL
         }
         .onChange(of: libraryRevision) { _, _ in
             reconcileAudioSelection()

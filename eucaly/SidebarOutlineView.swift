@@ -71,11 +71,6 @@ nonisolated enum SidebarOutlineItemStatus: Hashable, Sendable {
     }
 }
 
-nonisolated enum SidebarOutlineActivation: Hashable, Sendable {
-    case defaultAction
-    case space
-}
-
 // The outline snapshot is assembled off-main, then read by AppKit on the main
 // actor. Items are immutable after initialization, so crossing that boundary is safe.
 nonisolated final class SidebarOutlineItem: NSObject, @unchecked Sendable {
@@ -281,7 +276,8 @@ struct SidebarOutlineView: NSViewRepresentable {
     let allowsMultipleSelection: Bool
     let allowsEmptySelection: Bool
     let onSelectionChange: (Set<SidebarOutlineItemID>, SidebarOutlineItemID?) -> Bool
-    let onActivate: ((SidebarOutlineItemID, SidebarOutlineActivation) -> Void)?
+    let onDefaultAction: ((SidebarOutlineItemID) -> Void)?
+    let onSpaceAction: ((SidebarOutlineItemID?) -> Void)?
     let onAction: (SidebarOutlineItemID, SidebarOutlineAction) -> Void
     let onExpansionStateChange: (SidebarOutlineExpansionState) -> Void
 
@@ -300,7 +296,8 @@ struct SidebarOutlineView: NSViewRepresentable {
         allowsMultipleSelection: Bool = false,
         allowsEmptySelection: Bool = false,
         onSelectionChange: @escaping (Set<SidebarOutlineItemID>, SidebarOutlineItemID?) -> Bool,
-        onActivate: ((SidebarOutlineItemID, SidebarOutlineActivation) -> Void)? = nil,
+        onDefaultAction: ((SidebarOutlineItemID) -> Void)? = nil,
+        onSpaceAction: ((SidebarOutlineItemID?) -> Void)? = nil,
         onAction: @escaping (SidebarOutlineItemID, SidebarOutlineAction) -> Void = { _, _ in },
         onExpansionStateChange: @escaping (SidebarOutlineExpansionState) -> Void = { _ in }
     ) {
@@ -318,7 +315,8 @@ struct SidebarOutlineView: NSViewRepresentable {
         self.allowsMultipleSelection = allowsMultipleSelection
         self.allowsEmptySelection = allowsEmptySelection
         self.onSelectionChange = onSelectionChange
-        self.onActivate = onActivate
+        self.onDefaultAction = onDefaultAction
+        self.onSpaceAction = onSpaceAction
         self.onAction = onAction
         self.onExpansionStateChange = onExpansionStateChange
     }
@@ -361,7 +359,10 @@ struct SidebarOutlineView: NSViewRepresentable {
             coordinator?.toggleGroup(item)
         }
         outlineView.spaceActionHandler = { [weak coordinator = context.coordinator] in
-            coordinator?.activateCurrentSelection(.space) ?? false
+            coordinator?.performSpaceAction() ?? false
+        }
+        outlineView.defaultActionHandler = { [weak coordinator = context.coordinator] in
+            coordinator?.performKeyboardDefaultAction() ?? false
         }
         outlineView.menuProvider = { [weak coordinator = context.coordinator] row in
             coordinator?.contextMenu(forRow: row)
@@ -382,6 +383,7 @@ struct SidebarOutlineView: NSViewRepresentable {
         coordinator.outlineView?.dataSource = nil
         coordinator.outlineView?.groupToggleHandler = nil
         coordinator.outlineView?.spaceActionHandler = nil
+        coordinator.outlineView?.defaultActionHandler = nil
         coordinator.outlineView?.menuProvider = nil
         coordinator.outlineView?.boundaryMoveHandler = nil
         coordinator.outlineView?.target = nil
@@ -415,7 +417,8 @@ struct SidebarOutlineView: NSViewRepresentable {
         private var isProcessingExpansion = false
 
         private var onSelectionChange: (Set<SidebarOutlineItemID>, SidebarOutlineItemID?) -> Bool = { _, _ in true }
-        private var onActivate: ((SidebarOutlineItemID, SidebarOutlineActivation) -> Void)?
+        private var onDefaultAction: ((SidebarOutlineItemID) -> Void)?
+        private var onSpaceAction: ((SidebarOutlineItemID?) -> Void)?
         private var onAction: (SidebarOutlineItemID, SidebarOutlineAction) -> Void = { _, _ in }
         private var onExpansionStateChange: (SidebarOutlineExpansionState) -> Void = { _ in }
 
@@ -425,7 +428,8 @@ struct SidebarOutlineView: NSViewRepresentable {
 
         func update(from view: SidebarOutlineView, forceReload: Bool = false) {
             onSelectionChange = view.onSelectionChange
-            onActivate = view.onActivate
+            onDefaultAction = view.onDefaultAction
+            onSpaceAction = view.onSpaceAction
             onAction = view.onAction
             onExpansionStateChange = view.onExpansionStateChange
             let itemStatusesChanged = itemStatuses != view.itemStatuses
@@ -550,21 +554,47 @@ struct SidebarOutlineView: NSViewRepresentable {
         }
 
         @objc fileprivate func performDefaultAction(_ sender: NSOutlineView) {
-            _ = activateCurrentSelection(.defaultAction)
+            _ = activateDefaultAction(preferClickedRow: true)
         }
 
         @discardableResult
-        fileprivate func activateCurrentSelection(_ activation: SidebarOutlineActivation) -> Bool {
+        fileprivate func performKeyboardDefaultAction() -> Bool {
+            activateDefaultAction(preferClickedRow: false)
+        }
+
+        @discardableResult
+        fileprivate func performSpaceAction() -> Bool {
             guard !isSynchronizingSelection,
                   !isProcessingExpansion,
-                  let outlineView,
-                  let onActivate
+                  let onSpaceAction
             else {
                 return false
             }
 
+            onSpaceAction(selectedLeafItemID(preferClickedRow: false))
+            return true
+        }
+
+        private func activateDefaultAction(preferClickedRow: Bool) -> Bool {
+            guard !isSynchronizingSelection,
+                  !isProcessingExpansion,
+                  let onDefaultAction
+            else {
+                return false
+            }
+
+            guard let itemID = selectedLeafItemID(preferClickedRow: preferClickedRow) else {
+                // This outline owns the default action, but there is no row to act on.
+                return true
+            }
+            onDefaultAction(itemID)
+            return true
+        }
+
+        private func selectedLeafItemID(preferClickedRow: Bool) -> SidebarOutlineItemID? {
+            guard let outlineView else { return nil }
             let row: Int
-            if activation == .defaultAction, outlineView.clickedRow >= 0 {
+            if preferClickedRow, outlineView.clickedRow >= 0 {
                 row = outlineView.clickedRow
             } else {
                 row = outlineView.selectedRow
@@ -573,10 +603,9 @@ struct SidebarOutlineView: NSViewRepresentable {
                   let item = outlineView.item(atRow: row) as? SidebarOutlineItem,
                   item.groupID == nil
             else {
-                return false
+                return nil
             }
-            onActivate(item.id, activation)
-            return true
+            return item.id
         }
 
         fileprivate func moveAcrossBoundary(_ direction: SidebarOutlineNavigationDirection) -> Bool {
@@ -916,6 +945,7 @@ struct SidebarOutlineView: NSViewRepresentable {
 private final class ReusableSidebarNSOutlineView: NSOutlineView {
     var groupToggleHandler: ((SidebarOutlineItem) -> Void)?
     var spaceActionHandler: (() -> Bool)?
+    var defaultActionHandler: (() -> Bool)?
     var menuProvider: ((Int) -> NSMenu?)?
     var boundaryMoveHandler: ((SidebarOutlineNavigationDirection) -> Bool)?
     fileprivate var activeInteractionItemID: SidebarOutlineItemID?
@@ -932,10 +962,14 @@ private final class ReusableSidebarNSOutlineView: NSOutlineView {
 
     override func keyDown(with event: NSEvent) {
         let disallowedModifiers: NSEvent.ModifierFlags = [.command, .control, .option, .shift]
-        if event.keyCode == 49,
-           event.modifierFlags.intersection(disallowedModifiers).isEmpty,
-           spaceActionHandler?() == true {
-            return
+        if event.modifierFlags.intersection(disallowedModifiers).isEmpty {
+            if event.keyCode == 49, spaceActionHandler?() == true {
+                return
+            }
+            if (event.keyCode == 36 || event.keyCode == 76),
+               defaultActionHandler?() == true {
+                return
+            }
         }
         super.keyDown(with: event)
     }
