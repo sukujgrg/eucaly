@@ -22,7 +22,6 @@ struct LibrarySearchOverlayContainerView: View {
             minimumCharacterCount: LibrarySearchModel.minimumCharacterCount,
             isIndexing: model.isIndexing,
             displayName: displayName,
-            snippet: model.snippet(for:),
             onRunAction: onRunAction,
             onClose: onClose,
             onOpenResult: onOpenResult,

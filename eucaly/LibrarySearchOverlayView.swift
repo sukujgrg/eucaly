@@ -66,15 +66,14 @@ struct LibrarySearchOverlayView: View {
     let minimumCharacterCount: Int
     let isIndexing: Bool
     let displayName: (URL) -> String
-    let snippet: (URL) -> String?
     let onRunAction: (LibraryCommandPaletteAction) -> Void
     let onClose: () -> Void
     let onOpenResult: (URL) -> Void
     let onAddResultToPlaylist: (URL) -> Void
     let onCommitQuery: () -> Void
 
-    @FocusState
-    private var isQueryFieldFocused: Bool
+    @State
+    private var commandRouter = LibrarySearchCommandRouter()
 
     var body: some View {
         ZStack {
@@ -83,15 +82,6 @@ struct LibrarySearchOverlayView: View {
                 .onTapGesture {
                     onClose()
                 }
-
-            LibrarySearchKeyboardCaptureView(
-                onMoveSelection: { delta in
-                    _ = moveSelection(delta: delta)
-                },
-                onSubmit: performPrimaryAction,
-                onClose: onClose
-            )
-            .frame(width: 0, height: 0)
 
             VStack(alignment: .leading, spacing: 0) {
                 header
@@ -115,12 +105,6 @@ struct LibrarySearchOverlayView: View {
                     .stroke(Color.white.opacity(0.08), lineWidth: 1)
             )
         }
-        .onAppear {
-            Task { @MainActor in
-                await Task.yield()
-                isQueryFieldFocused = true
-            }
-        }
         .onExitCommand {
             onClose()
         }
@@ -128,39 +112,13 @@ struct LibrarySearchOverlayView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-
-                TextField("Search songs or commands", text: $query)
-                    .textFieldStyle(.plain)
-                    .focused($isQueryFieldFocused)
-                    .onSubmit {
-                        performPrimaryAction()
-                    }
-                    .onKeyPress(.downArrow) {
-                        moveSelection(delta: 1)
-                    }
-                    .onKeyPress(.upArrow) {
-                        moveSelection(delta: -1)
-                    }
-
-                if !query.isEmpty {
-                    Button {
-                        query = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 12)
-            .frame(height: 38)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color(NSColor.controlBackgroundColor).opacity(0.8))
+            LibrarySearchFieldView(
+                text: $query,
+                commandRouter: commandRouter,
+                onSubmit: performPrimaryAction,
+                onClose: onClose
             )
+            .frame(height: 28)
 
             Text(statusText)
                 .font(.caption)
@@ -183,59 +141,20 @@ struct LibrarySearchOverlayView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 6) {
-                        if !actions.isEmpty {
-                            paletteSectionHeader("Actions")
-
-                            ForEach(actions) { action in
-                                Button {
-                                    onRunAction(action)
-                                } label: {
-                                    LibrarySearchActionRow(action: action)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-
-                        if !results.isEmpty {
-                            if !actions.isEmpty {
-                                Divider()
-                                    .padding(.vertical, 8)
-                            }
-
-                            paletteSectionHeader("Songs")
-
-                            ForEach(results, id: \.url) { result in
-                                let url = result.url
-                                LibrarySearchResultRow(
-                                    title: displayName(url),
-                                    previewText: snippet(url),
-                                    isSelected: selectedResult == url,
-                                    onPreview: {
-                                        selectedResult = url
-                                        onOpenResult(url)
-                                    },
-                                    onAddToPlaylist: {
-                                        selectedResult = url
-                                        onAddResultToPlaylist(url)
-                                        isQueryFieldFocused = true
-                                    }
-                                )
-                                .id(url)
-                            }
-                        }
-                    }
-                    .padding(12)
+            LibrarySearchResultsListView(
+                selectedResult: $selectedResult,
+                commandRouter: commandRouter,
+                actions: actions,
+                results: results,
+                displayName: displayName,
+                onRunAction: onRunAction,
+                onOpenResult: onOpenResult,
+                onAddResultToPlaylist: { url in
+                    selectedResult = url
+                    onAddResultToPlaylist(url)
+                    commandRouter.restoreSearchFocus()
                 }
-                .onChange(of: selectedResult) { _, newValue in
-                    guard let newValue else { return }
-                    withAnimation(.easeInOut(duration: 0.12)) {
-                        proxy.scrollTo(newValue, anchor: .center)
-                    }
-                }
-            }
+            )
         }
     }
 
@@ -275,16 +194,6 @@ struct LibrarySearchOverlayView: View {
         }
 
         onCommitQuery()
-    }
-
-    private func moveSelection(delta: Int) -> KeyPress.Result {
-        guard !results.isEmpty else { return .ignored }
-        let urls = results.map(\.url)
-        let currentIndex = selectedResult.flatMap { urls.firstIndex(of: $0) } ?? 0
-        let nextIndex = min(max(currentIndex + delta, 0), urls.count - 1)
-        guard urls.indices.contains(nextIndex) else { return .ignored }
-        selectedResult = urls[nextIndex]
-        return .handled
     }
 
     private var trimmedQuery: String {
@@ -369,172 +278,136 @@ struct LibrarySearchOverlayView: View {
         return "\(totalCount) item\(totalCount == 1 ? "" : "s")"
     }
 
-    private func paletteSectionHeader(_ title: String) -> some View {
-        Text(title)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .textCase(.uppercase)
-            .padding(.horizontal, 12)
-            .padding(.bottom, 4)
-    }
 }
 
-private struct LibrarySearchActionRow: View {
-    let action: LibraryCommandPaletteAction
+private struct LibrarySearchFieldView: NSViewRepresentable {
+    @Binding var text: String
 
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: action.systemImage)
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(AccentColorProvider.color)
-                .frame(width: 18)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(action.title)
-                    .font(.headline)
-                    .foregroundStyle(.primary)
-
-                Text(action.subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-            }
-
-            Spacer(minLength: 0)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color(NSColor.controlBackgroundColor).opacity(0.45))
-        )
-        .contentShape(Rectangle())
-    }
-}
-
-private struct LibrarySearchKeyboardCaptureView: NSViewRepresentable {
-    let onMoveSelection: (Int) -> Void
+    let commandRouter: LibrarySearchCommandRouter
     let onSubmit: () -> Void
     let onClose: () -> Void
 
-    func makeNSView(context: Context) -> KeyboardCaptureNSView {
-        let view = KeyboardCaptureNSView()
-        view.onMoveSelection = onMoveSelection
-        view.onSubmit = onSubmit
-        view.onClose = onClose
-        view.installMonitor()
-        return view
-    }
-
-    func updateNSView(_ nsView: KeyboardCaptureNSView, context: Context) {
-        nsView.onMoveSelection = onMoveSelection
-        nsView.onSubmit = onSubmit
-        nsView.onClose = onClose
-        nsView.installMonitor()
-    }
-
-    static func dismantleNSView(_ nsView: KeyboardCaptureNSView, coordinator: ()) {
-        nsView.removeMonitor()
-    }
-
-    final class KeyboardCaptureNSView: NSView {
-        var onMoveSelection: ((Int) -> Void)?
-        var onSubmit: (() -> Void)?
-        var onClose: (() -> Void)?
-        private var monitor: Any?
-
-        func installMonitor() {
-            guard monitor == nil else { return }
-            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-                self?.handle(event) ?? event
-            }
-        }
-
-        func removeMonitor() {
-            if let monitor {
-                NSEvent.removeMonitor(monitor)
-                self.monitor = nil
-            }
-        }
-
-        private func handle(_ event: NSEvent) -> NSEvent? {
-            let modifierMask = event.modifierFlags.intersection([.command, .control, .option])
-            guard modifierMask.isEmpty else { return event }
-
-            switch event.keyCode {
-            case 36, 76:
-                onSubmit?()
-                return nil
-            case 53:
-                onClose?()
-                return nil
-            case 125:
-                onMoveSelection?(1)
-                return nil
-            case 126:
-                onMoveSelection?(-1)
-                return nil
-            default:
-                return event
-            }
-        }
-    }
-}
-
-private struct LibrarySearchResultRow: View {
-    let title: String
-    let previewText: String?
-    let isSelected: Bool
-    let onPreview: () -> Void
-    let onAddToPlaylist: () -> Void
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Button(action: onPreview) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(title)
-                        .font(.headline)
-                        .foregroundStyle(isSelected ? .white : .primary)
-                        .lineLimit(1)
-
-                    if let previewText, !previewText.isEmpty {
-                        Text(previewText)
-                            .font(.caption)
-                            .foregroundStyle(isSelected ? .white.opacity(0.8) : .secondary)
-                            .lineLimit(4)
-                            .multilineTextAlignment(.leading)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .focusable(false)
-
-            Button(action: onAddToPlaylist) {
-                Image(systemName: "plus")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(isSelected ? .white : AccentColorProvider.color)
-                    .frame(width: 22, height: 22)
-                    .background(
-                        Circle()
-                            .fill(isSelected ? Color.white.opacity(0.18) : AccentColorProvider.color.opacity(0.12))
-                    )
-            }
-            .buttonStyle(.plain)
-            .focusable(false)
-            .help("Add to Playlist")
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(isSelected ? AccentColorProvider.color.opacity(0.82) : Color.clear)
+    func makeCoordinator() -> Coordinator {
+        Coordinator(
+            text: $text,
+            commandRouter: commandRouter,
+            onSubmit: onSubmit,
+            onClose: onClose
         )
-        .contentShape(Rectangle())
+    }
+
+    func makeNSView(context: Context) -> InitialFocusSearchField {
+        let searchField = InitialFocusSearchField()
+        searchField.placeholderString = "Search songs or commands"
+        searchField.font = .systemFont(ofSize: NSFont.systemFontSize)
+        searchField.controlSize = .large
+        searchField.focusRingType = .none
+        searchField.sendsSearchStringImmediately = true
+        searchField.sendsWholeSearchString = false
+        searchField.delegate = context.coordinator
+        searchField.target = context.coordinator
+        searchField.action = #selector(Coordinator.performSearchFieldAction(_:))
+        context.coordinator.searchField = searchField
+        commandRouter.register(searchField: searchField)
+        return searchField
+    }
+
+    func updateNSView(_ searchField: InitialFocusSearchField, context: Context) {
+        context.coordinator.update(from: self)
+        if searchField.stringValue != text {
+            searchField.stringValue = text
+        }
+        commandRouter.register(searchField: searchField)
+    }
+
+    static func dismantleNSView(
+        _ searchField: InitialFocusSearchField,
+        coordinator: Coordinator
+    ) {
+        coordinator.commandRouter.unregister(searchField: searchField)
+        searchField.delegate = nil
+        searchField.target = nil
+        searchField.action = nil
+        coordinator.searchField = nil
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, NSSearchFieldDelegate {
+        fileprivate weak var searchField: NSSearchField?
+        fileprivate var commandRouter: LibrarySearchCommandRouter
+
+        private var text: Binding<String>
+        private var onSubmit: () -> Void
+        private var onClose: () -> Void
+
+        init(
+            text: Binding<String>,
+            commandRouter: LibrarySearchCommandRouter,
+            onSubmit: @escaping () -> Void,
+            onClose: @escaping () -> Void
+        ) {
+            self.text = text
+            self.commandRouter = commandRouter
+            self.onSubmit = onSubmit
+            self.onClose = onClose
+        }
+
+        func update(from view: LibrarySearchFieldView) {
+            text = view.$text
+            commandRouter = view.commandRouter
+            onSubmit = view.onSubmit
+            onClose = view.onClose
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let searchField else { return }
+            synchronizeText(from: searchField)
+        }
+
+        func searchFieldDidEndSearching(_ sender: NSSearchField) {
+            synchronizeText(from: sender)
+            commandRouter.restoreSearchFocus()
+        }
+
+        @objc fileprivate func performSearchFieldAction(_ sender: NSSearchField) {
+            synchronizeText(from: sender)
+        }
+
+        private func synchronizeText(from searchField: NSSearchField) {
+            if text.wrappedValue != searchField.stringValue {
+                text.wrappedValue = searchField.stringValue
+            }
+        }
+
+        func control(
+            _ control: NSControl,
+            textView: NSTextView,
+            doCommandBy commandSelector: Selector
+        ) -> Bool {
+            switch commandSelector {
+            case #selector(NSResponder.insertNewline(_:)):
+                onSubmit()
+                return true
+            case #selector(NSResponder.cancelOperation(_:)):
+                onClose()
+                return true
+            default:
+                return commandRouter.perform(commandSelector, sender: control)
+            }
+        }
+    }
+
+    final class InitialFocusSearchField: NSSearchField {
+        private var needsInitialFocus = true
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard needsInitialFocus, window != nil else { return }
+            needsInitialFocus = false
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.window?.makeFirstResponder(self)
+            }
+        }
     }
 }

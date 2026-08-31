@@ -140,6 +140,31 @@ final class LibrarySearchModelTests: XCTestCase {
         XCTAssertEqual(model.filteredResults.map(\.url), [firstURL.standardizedFileURL])
     }
 
+    func testScopeExpansionRestoresMatchesWithoutAnotherIndexSearch() {
+        let model = LibrarySearchModel()
+        let firstURL = URL(fileURLWithPath: "/tmp/eucaly-tests/first.txt")
+        let secondURL = URL(fileURLWithPath: "/tmp/eucaly-tests/second.txt")
+
+        model.setScopeFiles([firstURL])
+        model.setQuery("song", currentSelectedURL: nil)
+        model.applySearchResults(
+            [
+                LibraryTextSearchIndex.SearchResult(url: firstURL, snippet: "first"),
+                LibraryTextSearchIndex.SearchResult(url: secondURL, snippet: "second")
+            ],
+            query: "song",
+            currentSelectedURL: nil,
+            preferFirstResult: true
+        )
+
+        model.setScopeFiles([firstURL, secondURL])
+
+        XCTAssertEqual(
+            model.filteredResults.map(\.url),
+            [firstURL.standardizedFileURL, secondURL.standardizedFileURL]
+        )
+    }
+
     func testShortQueryClearsResultsAndSelection() {
         let model = LibrarySearchModel()
         let fileURL = URL(fileURLWithPath: "/tmp/eucaly-tests/song.txt")

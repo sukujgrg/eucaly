@@ -8,12 +8,14 @@ final class LibrarySearchModel: ObservableObject {
     let index: LibraryTextSearchIndex
 
     @Published private(set) var query: String = ""
-    @Published private(set) var results: [LibraryTextSearchIndex.SearchResult] = []
-    @Published private(set) var resultsQuery: String = ""
+    private(set) var results: [LibraryTextSearchIndex.SearchResult] = []
+    private(set) var resultsQuery: String = ""
+    @Published private(set) var filteredResults: [LibraryTextSearchIndex.SearchResult] = []
     @Published var selectedResult: URL?
     @Published var isIndexing: Bool = false
 
     private var scopeFiles: [URL] = []
+    private var scopeFileSet: Set<URL> = []
     private var debounceTask: Task<Void, Never>?
 
     init(index: LibraryTextSearchIndex = LibraryTextSearchIndex()) {
@@ -26,11 +28,6 @@ final class LibrarySearchModel: ObservableObject {
 
     var trimmedQuery: String {
         query.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    var filteredResults: [LibraryTextSearchIndex.SearchResult] {
-        guard trimmedQuery == resultsQuery else { return [] }
-        return filterToCurrentScope(results)
     }
 
     var scopeFilesSnapshot: [URL] {
@@ -46,11 +43,17 @@ final class LibrarySearchModel: ObservableObject {
     func setQuery(_ newQuery: String, currentSelectedURL: URL?) {
         guard query != newQuery else { return }
         query = newQuery
+        refreshFilteredResults()
         scheduleSearch(currentSelectedURL: currentSelectedURL)
     }
 
     func setScopeFiles(_ files: [URL]) {
-        scopeFiles = files
+        scopeFiles = files.map(\.standardizedFileURL)
+        scopeFileSet = Set(scopeFiles)
+        refreshFilteredResults()
+        if let selectedResult, !filteredResults.contains(where: { $0.url == selectedResult }) {
+            self.selectedResult = filteredResults.first?.url
+        }
     }
 
     func setIndexing(_ isIndexing: Bool) {
@@ -68,8 +71,14 @@ final class LibrarySearchModel: ObservableObject {
         currentSelectedURL: URL?,
         preferFirstResult: Bool
     ) {
-        results = filterToCurrentScope(searchResults)
+        results = searchResults.map { result in
+            LibraryTextSearchIndex.SearchResult(
+                url: result.url.standardizedFileURL,
+                snippet: result.snippet
+            )
+        }
         resultsQuery = searchQuery
+        refreshFilteredResults()
         syncSelectedResult(
             currentSelectedURL: currentSelectedURL,
             preferFirstResult: preferFirstResult
@@ -98,15 +107,6 @@ final class LibrarySearchModel: ObservableObject {
         selectedResult = resultURLs.first
     }
 
-    func snippet(for url: URL) -> String? {
-        let standardizedURL = url.standardizedFileURL
-        guard let snippet = filteredResults.first(where: { $0.url == standardizedURL })?.snippet,
-              !snippet.isEmpty else {
-            return nil
-        }
-        return snippet
-    }
-
     func searchImmediately(currentSelectedURL: URL?) async -> URL? {
         let searchQuery = trimmedQuery
         guard searchQuery.count >= Self.minimumCharacterCount else { return nil }
@@ -131,6 +131,7 @@ final class LibrarySearchModel: ObservableObject {
         guard searchQuery.count >= Self.minimumCharacterCount else {
             results = []
             resultsQuery = ""
+            filteredResults = []
             selectedResult = nil
             return
         }
@@ -158,14 +159,15 @@ final class LibrarySearchModel: ObservableObject {
     private func filterToCurrentScope(
         _ searchResults: [LibraryTextSearchIndex.SearchResult]
     ) -> [LibraryTextSearchIndex.SearchResult] {
-        let available = Set(scopeFiles.map(\.standardizedFileURL))
         return searchResults
-            .map { result in
-                LibraryTextSearchIndex.SearchResult(
-                    url: result.url.standardizedFileURL,
-                    snippet: result.snippet
-                )
-            }
-            .filter { available.contains($0.url) }
+            .filter { scopeFileSet.contains($0.url) }
+    }
+
+    private func refreshFilteredResults() {
+        guard trimmedQuery == resultsQuery else {
+            filteredResults = []
+            return
+        }
+        filteredResults = filterToCurrentScope(results)
     }
 }
