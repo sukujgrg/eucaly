@@ -24,11 +24,22 @@ final class LibrarySearchCommandRouter {
     }
 
     func restoreSearchFocus() {
-        guard let searchField else { return }
+        guard let searchField,
+              !Self.isActivelyEditing(searchField)
+        else { return }
+
         DispatchQueue.main.async { [weak searchField] in
-            guard let searchField else { return }
+            guard let searchField,
+                  !Self.isActivelyEditing(searchField)
+            else { return }
+
             searchField.window?.makeFirstResponder(searchField)
         }
+    }
+
+    private static func isActivelyEditing(_ searchField: NSSearchField) -> Bool {
+        guard let fieldEditor = searchField.currentEditor() else { return false }
+        return searchField.window?.firstResponder === fieldEditor
     }
 }
 

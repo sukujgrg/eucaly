@@ -371,7 +371,6 @@ private struct LibrarySearchFieldView: NSViewRepresentable {
 
         @objc fileprivate func performSearchFieldAction(_ sender: NSSearchField) {
             synchronizeText(from: sender)
-            commandRouter.restoreSearchFocus()
         }
 
         private func synchronizeText(from searchField: NSSearchField) {

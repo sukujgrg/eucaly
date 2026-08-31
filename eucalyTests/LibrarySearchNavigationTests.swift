@@ -3,6 +3,31 @@ import XCTest
 @testable import eucaly
 
 final class LibrarySearchNavigationTests: XCTestCase {
+    @MainActor
+    func testRestoringExistingSearchFocusPreservesInsertionPoint() async throws {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 80),
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        let searchField = NSSearchField(frame: NSRect(x: 10, y: 20, width: 300, height: 28))
+        window.contentView?.addSubview(searchField)
+        searchField.stringValue = "grace"
+
+        XCTAssertTrue(window.makeFirstResponder(searchField))
+        let fieldEditor = try XCTUnwrap(searchField.currentEditor() as? NSTextView)
+        fieldEditor.selectedRange = NSRange(location: 5, length: 0)
+
+        let router = LibrarySearchCommandRouter()
+        router.register(searchField: searchField)
+        router.restoreSearchFocus()
+        await Task.yield()
+
+        XCTAssertTrue(window.firstResponder === fieldEditor)
+        XCTAssertEqual(fieldEditor.selectedRange, NSRange(location: 5, length: 0))
+    }
+
     func testAppKitSelectorsMapToQuickOpenCommands() {
         XCTAssertEqual(
             LibrarySearchNavigationCommand(selector: #selector(NSResponder.moveUp(_:))),
