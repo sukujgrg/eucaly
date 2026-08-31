@@ -1,6 +1,6 @@
 import Foundation
 
-enum LibraryGrouping: String, CaseIterable, Identifiable {
+nonisolated enum LibraryGrouping: String, CaseIterable, Identifiable, Sendable {
     case kind
     case folder
     case none
@@ -19,7 +19,7 @@ enum LibraryGrouping: String, CaseIterable, Identifiable {
     }
 }
 
-enum LibraryFileGroup: Int, CaseIterable, Identifiable {
+nonisolated enum LibraryFileGroup: Int, CaseIterable, Identifiable, Sendable {
     case lyrics
     case pdfs
     case images
@@ -64,13 +64,18 @@ struct LibraryScrollRequest: Equatable {
     let url: URL
 }
 
-struct LibraryOutlineRevision: Hashable {
+nonisolated struct LibraryOutlineRevision: Hashable, Sendable {
     let libraryRevision: Int
     let grouping: LibraryGrouping
     let libraryRootURL: URL?
 }
 
-struct LibraryOutlineSnapshot {
+nonisolated struct LibraryOutlineSourceItem: Sendable {
+    let url: URL
+    let title: String
+}
+
+nonisolated struct LibraryOutlineSnapshot {
     typealias Item = SidebarOutlineItem
 
     private struct FileRecord {
@@ -81,6 +86,7 @@ struct LibraryOutlineSnapshot {
     }
 
     private struct FolderGroup: Hashable {
+        let id: String
         let title: String
         let sortKey: String
     }
@@ -101,15 +107,30 @@ struct LibraryOutlineSnapshot {
         libraryRootURL: URL?,
         displayName: (URL) -> String
     ) {
+        self.init(
+            sourceItems: urls.map { sourceURL in
+                let url = sourceURL.standardizedFileURL
+                return LibraryOutlineSourceItem(url: url, title: displayName(url))
+            },
+            grouping: grouping,
+            libraryRootURL: libraryRootURL
+        )
+    }
+
+    init(
+        sourceItems: [LibraryOutlineSourceItem],
+        grouping: LibraryGrouping,
+        libraryRootURL: URL?
+    ) {
         self.grouping = grouping
 
         var seenURLs: Set<URL> = []
-        let records = urls.compactMap { sourceURL -> FileRecord? in
-            let url = sourceURL.standardizedFileURL
+        let records = sourceItems.compactMap { sourceItem -> FileRecord? in
+            let url = sourceItem.url.standardizedFileURL
             guard seenURLs.insert(url).inserted else { return nil }
             return FileRecord(
                 url: url,
-                title: displayName(url),
+                title: sourceItem.title,
                 kind: LibraryFileGroup(url: url),
                 folder: Self.folderGroup(for: url, libraryRootURL: libraryRootURL)
             )
@@ -119,7 +140,11 @@ struct LibraryOutlineSnapshot {
             if titleOrder != .orderedSame {
                 return titleOrder == .orderedAscending
             }
-            return lhs.url.path.localizedCaseInsensitiveCompare(rhs.url.path) == .orderedAscending
+            let pathOrder = lhs.url.path.localizedCaseInsensitiveCompare(rhs.url.path)
+            if pathOrder != .orderedSame {
+                return pathOrder == .orderedAscending
+            }
+            return lhs.url.path < rhs.url.path
         }
 
         var fileItemsByURL: [URL: Item] = [:]
@@ -172,10 +197,14 @@ struct LibraryOutlineSnapshot {
                     (folder: folder, records: folderRecords)
                 }
                 .sorted {
-                    $0.folder.sortKey.localizedCaseInsensitiveCompare($1.folder.sortKey) == .orderedAscending
+                    let order = $0.folder.sortKey.localizedCaseInsensitiveCompare($1.folder.sortKey)
+                    if order != .orderedSame {
+                        return order == .orderedAscending
+                    }
+                    return $0.folder.id < $1.folder.id
                 }
             for entry in folderEntries {
-                let groupID = "folder:\(entry.folder.sortKey)"
+                let groupID = entry.folder.id
                 var children: [Item] = []
                 for record in entry.records {
                     let item = fileItem(for: record)
@@ -203,20 +232,21 @@ struct LibraryOutlineSnapshot {
 
     private static func folderGroup(for url: URL, libraryRootURL: URL?) -> FolderGroup {
         guard let libraryRootURL else {
-            return FolderGroup(title: "Root", sortKey: "0-root")
+            return FolderGroup(id: "folder:root", title: "Root", sortKey: "0-root")
         }
 
         let rootComponents = libraryRootURL.standardizedFileURL.pathComponents
         let parentComponents = url.deletingLastPathComponent().standardizedFileURL.pathComponents
         guard parentComponents.starts(with: rootComponents) else {
-            return FolderGroup(title: "Other", sortKey: "z-other")
+            return FolderGroup(id: "folder:other", title: "Other", sortKey: "z-other")
         }
 
         let relativeComponents = parentComponents.dropFirst(rootComponents.count)
         guard let firstFolder = relativeComponents.first, !firstFolder.isEmpty else {
-            return FolderGroup(title: "Root", sortKey: "0-root")
+            return FolderGroup(id: "folder:root", title: "Root", sortKey: "0-root")
         }
         return FolderGroup(
+            id: "folder:named:\(firstFolder)",
             title: firstFolder,
             sortKey: "1-\(firstFolder.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current))"
         )

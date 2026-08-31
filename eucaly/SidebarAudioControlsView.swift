@@ -112,7 +112,12 @@ struct SidebarAudioControlsView: View {
                 selectedItemIDs: selectedAudioItemID.map { [$0] } ?? [],
                 primarySelectedItemID: selectedAudioItemID,
                 expansionStore: outlineExpansionStore,
+                allowsEmptySelection: true,
                 onSelectionChange: { _, primaryID in
+                    guard primaryID != nil else {
+                        onClearBackgroundAudio()
+                        return true
+                    }
                     guard case .audio(let url) = primaryID else { return false }
                     onSelectBackgroundAudio(url)
                     return true

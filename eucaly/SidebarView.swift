@@ -105,13 +105,17 @@ struct SidebarView: View {
 
     @State private var outlineExpansionStore = SidebarOutlineExpansionStore()
 
+    @State private var outlineNavigationCoordinator = SidebarOutlineNavigationCoordinator()
+
+    @StateObject private var libraryOutlineModelStore = LibraryOutlineModelStore()
+
     var body: some View {
         GeometryReader { proxy in
             let libraryListMaxHeight = max(160, min(320, proxy.size.height * 0.35))
             let audioListMaxHeight = max(120, min(240, proxy.size.height * 0.25))
             let standardListMaxHeight = max(104, min(208, proxy.size.height * 0.22))
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 12) {
                     sidebarSection(
                         "Library",
                         systemImage: "folder",
@@ -304,7 +308,7 @@ struct SidebarView: View {
                             id: .web(url),
                             title: titleForWebpage(url),
                             accessoryAction: .remove,
-                            contextActions: [.copyURL]
+                            contextActions: [.copyURL, .remove]
                         )
                     }
                 )
@@ -312,7 +316,11 @@ struct SidebarView: View {
             selectedItemIDs: selectedWebItemID.map { [$0] } ?? [],
             primarySelectedItemID: selectedWebItemID,
             expansionStore: outlineExpansionStore,
+            navigationSection: .web,
+            navigationCoordinator: outlineNavigationCoordinator,
+            allowsEmptySelection: true,
             onSelectionChange: { _, primaryID in
+                guard primaryID != nil else { return onSelectionRequest(nil, []) }
                 guard case .web(let url) = primaryID else { return false }
                 return onSelectionRequest(.web(url), [])
             },
@@ -434,7 +442,11 @@ struct SidebarView: View {
             selectedItemIDs: selectedWindowItemID.map { [$0] } ?? [],
             primarySelectedItemID: selectedWindowItemID,
             expansionStore: outlineExpansionStore,
+            navigationSection: .window,
+            navigationCoordinator: outlineNavigationCoordinator,
+            allowsEmptySelection: true,
             onSelectionChange: { _, primaryID in
+                guard primaryID != nil else { return onSelectionRequest(nil, []) }
                 guard case .window(let windowID) = primaryID else { return false }
                 return onSelectionRequest(.window(windowID), [])
             }
@@ -515,6 +527,7 @@ struct SidebarView: View {
 
     private var canToggleLibraryGroups: Bool {
         libraryGrouping != .none
+            && libraryOutlineModelStore.presentation?.revision == libraryOutlineRevision
             && libraryExpansionState.key == libraryExpansionKey
             && libraryExpansionState.groupCount > 0
     }
@@ -549,70 +562,104 @@ struct SidebarView: View {
 
     @ViewBuilder
     private func libraryContent(maxHeight: CGFloat) -> some View {
-        if isLibraryLoading && libraryFiles.isEmpty {
-            Text("Loading library...")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        } else {
-            SidebarOutlineView(
-                contentRevision: AnyHashable(
-                    LibraryOutlineRevision(
-                        libraryRevision: libraryRevision,
-                        grouping: libraryGrouping,
-                        libraryRootURL: libraryRootURL?.standardizedFileURL
-                    )
-                ),
-                expansionKey: libraryExpansionKey,
-                modelBuilder: {
-                    LibraryOutlineSnapshot(
-                        urls: libraryFiles,
-                        grouping: libraryGrouping,
-                        libraryRootURL: libraryRootURL,
-                        displayName: displayName
-                    ).outlineModel
-                },
-                selectedItemIDs: selectedLibraryItemID.map { [$0] } ?? [],
-                primarySelectedItemID: selectedLibraryItemID,
-                scrollRequest: libraryScrollRequest.map {
-                    SidebarOutlineScrollRequest(
-                        id: $0.id,
-                        itemID: .library($0.url.standardizedFileURL)
-                    )
-                },
-                expansionCommand: libraryExpansionCommand,
-                expansionStore: outlineExpansionStore,
-                onSelectionChange: { _, primaryID in
-                    guard case .library(let url) = primaryID else { return false }
-                    return onSelectionRequest(.library(url), [])
-                },
-                onAction: { itemID, action in
-                    guard case .library(let url) = itemID else { return }
-                    switch action {
-                    case .addToPlaylist:
-                        onAddLibraryItemToPlaylist(url)
-                    case .revealInFinder:
-                        NSWorkspace.shared.activateFileViewerSelecting([url])
-                    case .remove, .copyURL:
-                        break
-                    }
-                },
-                onExpansionStateChange: { state in
-                    guard state.key == libraryExpansionKey else { return }
-                    guard libraryExpansionState != state else { return }
-                    libraryExpansionState = state
+        let revision = libraryOutlineRevision
+        Group {
+            if isLibraryLoading && libraryFiles.isEmpty {
+                Text("Loading library...")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else if libraryFiles.isEmpty {
+                Text("No supported files in Library")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else if let presentation = libraryOutlineModelStore.presentation,
+                      presentation.revision == revision {
+                libraryOutline(presentation, maxHeight: maxHeight)
+            } else {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Preparing \(libraryGrouping.title) view...")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
-            )
-            .frame(
-                maxWidth: .infinity,
-                minHeight: libraryOutlineHeight(maximum: maxHeight),
-                maxHeight: libraryOutlineHeight(maximum: maxHeight)
-            )
+            }
+        }
+        .task(id: revision) {
+            guard !libraryFiles.isEmpty else { return }
+            let sourceItems = libraryFiles.map { sourceURL in
+                let url = sourceURL.standardizedFileURL
+                return LibraryOutlineSourceItem(url: url, title: displayName(url))
+            }
+            await libraryOutlineModelStore.prepare(revision: revision, sourceItems: sourceItems)
         }
     }
 
-    private func libraryOutlineHeight(maximum: CGFloat) -> CGFloat {
-        guard libraryExpansionState.key == libraryExpansionKey else { return maximum }
-        return min(maximum, max(26, libraryExpansionState.visibleContentHeight))
+    private var libraryOutlineRevision: LibraryOutlineRevision {
+        LibraryOutlineRevision(
+            libraryRevision: libraryRevision,
+            grouping: libraryGrouping,
+            libraryRootURL: libraryRootURL?.standardizedFileURL
+        )
+    }
+
+    private func libraryOutline(
+        _ presentation: LibraryOutlineModelStore.Presentation,
+        maxHeight: CGFloat
+    ) -> some View {
+        SidebarOutlineView(
+            contentRevision: AnyHashable(presentation.revision),
+            expansionKey: libraryExpansionKey,
+            modelBuilder: { presentation.model },
+            selectedItemIDs: selectedLibraryItemID.map { [$0] } ?? [],
+            primarySelectedItemID: selectedLibraryItemID,
+            scrollRequest: libraryScrollRequest.map {
+                SidebarOutlineScrollRequest(
+                    id: $0.id,
+                    itemID: .library($0.url.standardizedFileURL)
+                )
+            },
+            expansionCommand: libraryExpansionCommand,
+            expansionStore: outlineExpansionStore,
+            navigationSection: .library,
+            navigationCoordinator: outlineNavigationCoordinator,
+            allowsEmptySelection: true,
+            onSelectionChange: { _, primaryID in
+                guard primaryID != nil else { return onSelectionRequest(nil, []) }
+                guard case .library(let url) = primaryID else { return false }
+                return onSelectionRequest(.library(url), [])
+            },
+            onAction: { itemID, action in
+                guard case .library(let url) = itemID else { return }
+                switch action {
+                case .addToPlaylist:
+                    onAddLibraryItemToPlaylist(url)
+                case .revealInFinder:
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                case .remove, .copyURL:
+                    break
+                }
+            },
+            onExpansionStateChange: { state in
+                guard state.key == libraryExpansionKey else { return }
+                guard libraryExpansionState != state else { return }
+                libraryExpansionState = state
+            }
+        )
+        .frame(
+            maxWidth: .infinity,
+            minHeight: libraryOutlineHeight(model: presentation.model, maximum: maxHeight),
+            maxHeight: libraryOutlineHeight(model: presentation.model, maximum: maxHeight)
+        )
+    }
+
+    private func libraryOutlineHeight(model: SidebarOutlineModel, maximum: CGFloat) -> CGFloat {
+        if libraryExpansionState.key == libraryExpansionKey {
+            return min(maximum, max(26, libraryExpansionState.visibleContentHeight))
+        }
+        let expandedGroupIDs = outlineExpansionStore.expandedGroupIDs[libraryExpansionKey, default: []]
+        let estimatedHeight = CGFloat(model.visibleRowCount(expandedGroupIDs: expandedGroupIDs)) * 26
+        return min(maximum, max(26, estimatedHeight))
     }
 
     private var selectedLibraryItemID: SidebarOutlineItemID? {
@@ -647,6 +694,8 @@ struct SidebarView: View {
                 selectedItemIDs: Set(selectedPlaylistEntryIDs.map { .playlist($0) }),
                 primarySelectedItemID: selectedPlaylistItemID,
                 expansionStore: outlineExpansionStore,
+                navigationSection: .playlist,
+                navigationCoordinator: outlineNavigationCoordinator,
                 allowsMultipleSelection: true,
                 allowsEmptySelection: true,
                 onSelectionChange: { selectedIDs, primaryID in

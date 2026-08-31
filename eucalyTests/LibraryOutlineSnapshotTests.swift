@@ -64,4 +64,26 @@ final class LibraryOutlineSnapshotTests: XCTestCase {
         XCTAssertEqual(snapshot.fileItemsByURL.count, 1)
         XCTAssertTrue(snapshot.groupItemsByID.isEmpty)
     }
+
+    func testFolderGroupingKeepsCaseDistinctFolderIdentities() {
+        let rootURL = URL(fileURLWithPath: "/library")
+        let uppercaseFile = URL(fileURLWithPath: "/library/Songs/Upper.txt")
+        let lowercaseFile = URL(fileURLWithPath: "/library/songs/Lower.txt")
+
+        let snapshot = LibraryOutlineSnapshot(
+            urls: [uppercaseFile, lowercaseFile],
+            grouping: .folder,
+            libraryRootURL: rootURL,
+            displayName: { $0.deletingPathExtension().lastPathComponent }
+        )
+
+        XCTAssertEqual(snapshot.roots.count, 2)
+        XCTAssertEqual(snapshot.roots.map(\.title), ["Songs", "songs"])
+        XCTAssertEqual(snapshot.groupItemsByID.count, 2)
+        XCTAssertEqual(Set(snapshot.roots.compactMap(\.groupID)).count, 2)
+        XCTAssertFalse(
+            snapshot.parentGroupByFileURL[uppercaseFile.standardizedFileURL]
+                === snapshot.parentGroupByFileURL[lowercaseFile.standardizedFileURL]
+        )
+    }
 }

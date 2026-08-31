@@ -44,4 +44,19 @@ final class SidebarOutlineModelTests: XCTestCase {
         XCTAssertEqual(row.accessoryAction, .addToPlaylist)
         XCTAssertEqual(row.contextActions, [.addToPlaylist, .revealInFinder])
     }
+
+    func testVisibleRowCountIncludesChildrenOnlyForExpandedGroups() {
+        let firstChild = SidebarOutlineItem(id: .group("child-a"), title: "A")
+        let secondChild = SidebarOutlineItem(id: .group("child-b"), title: "B")
+        let group = SidebarOutlineItem(
+            id: .group("kind:lyrics"),
+            title: "Lyrics",
+            children: [firstChild, secondChild]
+        )
+        let flatRow = SidebarOutlineItem(id: .group("flat"), title: "Flat")
+        let model = SidebarOutlineModel(roots: [group, flatRow])
+
+        XCTAssertEqual(model.visibleRowCount(expandedGroupIDs: []), 2)
+        XCTAssertEqual(model.visibleRowCount(expandedGroupIDs: ["kind:lyrics"]), 4)
+    }
 }
