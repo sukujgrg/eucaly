@@ -66,7 +66,6 @@ struct LibrarySearchOverlayView: View {
     let minimumCharacterCount: Int
     let isIndexing: Bool
     let displayName: (URL) -> String
-    let snippet: (URL) -> String?
     let onRunAction: (LibraryCommandPaletteAction) -> Void
     let onClose: () -> Void
     let onOpenResult: (URL) -> Void
@@ -85,9 +84,6 @@ struct LibrarySearchOverlayView: View {
                 }
 
             LibrarySearchKeyboardCaptureView(
-                onMoveSelection: { delta in
-                    _ = moveSelection(delta: delta)
-                },
                 onSubmit: performPrimaryAction,
                 onClose: onClose
             )
@@ -138,12 +134,6 @@ struct LibrarySearchOverlayView: View {
                     .onSubmit {
                         performPrimaryAction()
                     }
-                    .onKeyPress(.downArrow) {
-                        moveSelection(delta: 1)
-                    }
-                    .onKeyPress(.upArrow) {
-                        moveSelection(delta: -1)
-                    }
 
                 if !query.isEmpty {
                     Button {
@@ -183,59 +173,19 @@ struct LibrarySearchOverlayView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 6) {
-                        if !actions.isEmpty {
-                            paletteSectionHeader("Actions")
-
-                            ForEach(actions) { action in
-                                Button {
-                                    onRunAction(action)
-                                } label: {
-                                    LibrarySearchActionRow(action: action)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-
-                        if !results.isEmpty {
-                            if !actions.isEmpty {
-                                Divider()
-                                    .padding(.vertical, 8)
-                            }
-
-                            paletteSectionHeader("Songs")
-
-                            ForEach(results, id: \.url) { result in
-                                let url = result.url
-                                LibrarySearchResultRow(
-                                    title: displayName(url),
-                                    previewText: snippet(url),
-                                    isSelected: selectedResult == url,
-                                    onPreview: {
-                                        selectedResult = url
-                                        onOpenResult(url)
-                                    },
-                                    onAddToPlaylist: {
-                                        selectedResult = url
-                                        onAddResultToPlaylist(url)
-                                        isQueryFieldFocused = true
-                                    }
-                                )
-                                .id(url)
-                            }
-                        }
-                    }
-                    .padding(12)
+            LibrarySearchResultsListView(
+                selectedResult: $selectedResult,
+                actions: actions,
+                results: results,
+                displayName: displayName,
+                onRunAction: onRunAction,
+                onOpenResult: onOpenResult,
+                onAddResultToPlaylist: { url in
+                    selectedResult = url
+                    onAddResultToPlaylist(url)
+                    isQueryFieldFocused = true
                 }
-                .onChange(of: selectedResult) { _, newValue in
-                    guard let newValue else { return }
-                    withAnimation(.easeInOut(duration: 0.12)) {
-                        proxy.scrollTo(newValue, anchor: .center)
-                    }
-                }
-            }
+            )
         }
     }
 
@@ -275,16 +225,6 @@ struct LibrarySearchOverlayView: View {
         }
 
         onCommitQuery()
-    }
-
-    private func moveSelection(delta: Int) -> KeyPress.Result {
-        guard !results.isEmpty else { return .ignored }
-        let urls = results.map(\.url)
-        let currentIndex = selectedResult.flatMap { urls.firstIndex(of: $0) } ?? 0
-        let nextIndex = min(max(currentIndex + delta, 0), urls.count - 1)
-        guard urls.indices.contains(nextIndex) else { return .ignored }
-        selectedResult = urls[nextIndex]
-        return .handled
     }
 
     private var trimmedQuery: String {
@@ -369,59 +309,14 @@ struct LibrarySearchOverlayView: View {
         return "\(totalCount) item\(totalCount == 1 ? "" : "s")"
     }
 
-    private func paletteSectionHeader(_ title: String) -> some View {
-        Text(title)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .textCase(.uppercase)
-            .padding(.horizontal, 12)
-            .padding(.bottom, 4)
-    }
-}
-
-private struct LibrarySearchActionRow: View {
-    let action: LibraryCommandPaletteAction
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: action.systemImage)
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(AccentColorProvider.color)
-                .frame(width: 18)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(action.title)
-                    .font(.headline)
-                    .foregroundStyle(.primary)
-
-                Text(action.subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-            }
-
-            Spacer(minLength: 0)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color(NSColor.controlBackgroundColor).opacity(0.45))
-        )
-        .contentShape(Rectangle())
-    }
 }
 
 private struct LibrarySearchKeyboardCaptureView: NSViewRepresentable {
-    let onMoveSelection: (Int) -> Void
     let onSubmit: () -> Void
     let onClose: () -> Void
 
     func makeNSView(context: Context) -> KeyboardCaptureNSView {
         let view = KeyboardCaptureNSView()
-        view.onMoveSelection = onMoveSelection
         view.onSubmit = onSubmit
         view.onClose = onClose
         view.installMonitor()
@@ -429,7 +324,6 @@ private struct LibrarySearchKeyboardCaptureView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: KeyboardCaptureNSView, context: Context) {
-        nsView.onMoveSelection = onMoveSelection
         nsView.onSubmit = onSubmit
         nsView.onClose = onClose
         nsView.installMonitor()
@@ -440,7 +334,6 @@ private struct LibrarySearchKeyboardCaptureView: NSViewRepresentable {
     }
 
     final class KeyboardCaptureNSView: NSView {
-        var onMoveSelection: ((Int) -> Void)?
         var onSubmit: (() -> Void)?
         var onClose: (() -> Void)?
         private var monitor: Any?
@@ -470,71 +363,9 @@ private struct LibrarySearchKeyboardCaptureView: NSViewRepresentable {
             case 53:
                 onClose?()
                 return nil
-            case 125:
-                onMoveSelection?(1)
-                return nil
-            case 126:
-                onMoveSelection?(-1)
-                return nil
             default:
                 return event
             }
         }
-    }
-}
-
-private struct LibrarySearchResultRow: View {
-    let title: String
-    let previewText: String?
-    let isSelected: Bool
-    let onPreview: () -> Void
-    let onAddToPlaylist: () -> Void
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Button(action: onPreview) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(title)
-                        .font(.headline)
-                        .foregroundStyle(isSelected ? .white : .primary)
-                        .lineLimit(1)
-
-                    if let previewText, !previewText.isEmpty {
-                        Text(previewText)
-                            .font(.caption)
-                            .foregroundStyle(isSelected ? .white.opacity(0.8) : .secondary)
-                            .lineLimit(4)
-                            .multilineTextAlignment(.leading)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .focusable(false)
-
-            Button(action: onAddToPlaylist) {
-                Image(systemName: "plus")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(isSelected ? .white : AccentColorProvider.color)
-                    .frame(width: 22, height: 22)
-                    .background(
-                        Circle()
-                            .fill(isSelected ? Color.white.opacity(0.18) : AccentColorProvider.color.opacity(0.12))
-                    )
-            }
-            .buttonStyle(.plain)
-            .focusable(false)
-            .help("Add to Playlist")
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(isSelected ? AccentColorProvider.color.opacity(0.82) : Color.clear)
-        )
-        .contentShape(Rectangle())
     }
 }
