@@ -1,6 +1,37 @@
 import AppKit
 import SwiftUI
 
+nonisolated enum AudioSidebarPlaybackIntent: Equatable, Sendable {
+    case none
+    case selectAndPlay(URL)
+    case togglePlayback
+}
+
+nonisolated struct AudioSidebarInteraction {
+    static func defaultAction(
+        targetURL: URL,
+        activeURL: URL?,
+        isPlaying: Bool
+    ) -> AudioSidebarPlaybackIntent {
+        let targetURL = targetURL.standardizedFileURL
+        guard targetURL == activeURL?.standardizedFileURL else {
+            return .selectAndPlay(targetURL)
+        }
+        return isPlaying ? .none : .togglePlayback
+    }
+
+    static func toggleAction(
+        targetURL: URL,
+        activeURL: URL?
+    ) -> AudioSidebarPlaybackIntent {
+        let targetURL = targetURL.standardizedFileURL
+        guard targetURL == activeURL?.standardizedFileURL else {
+            return .selectAndPlay(targetURL)
+        }
+        return .togglePlayback
+    }
+}
+
 struct SidebarAudioControlsView: View {
     @ObservedObject var session: PresentationSession
     let audioFiles: [URL]
@@ -10,6 +41,7 @@ struct SidebarAudioControlsView: View {
     let outlineExpansionStore: SidebarOutlineExpansionStore
     @Binding var backgroundAudioLoop: Bool
     @Binding var backgroundAudioVolumeDraft: Double
+    @Binding var selectedAudioURL: URL?
 
     let displayName: (URL) -> String
     let onImportToAudio: () -> Void
@@ -45,17 +77,17 @@ struct SidebarAudioControlsView: View {
             .help("Import audio or video files for background audio")
 
             Button {
-                onPlayPauseBackgroundAudio()
+                togglePlayback(for: playbackTargetURL)
             } label: {
                 Label(
-                    session.isBackgroundAudioPlaying ? "Pause" : "Play",
-                    systemImage: session.isBackgroundAudioPlaying ? "pause.fill" : "play.fill"
+                    isPlaybackTargetPlaying ? "Pause" : "Play",
+                    systemImage: isPlaybackTargetPlaying ? "pause.fill" : "play.fill"
                 )
             }
             .labelStyle(.iconOnly)
             .sidebarActionStyle()
-            .disabled(session.backgroundAudioURL == nil)
-            .help(session.isBackgroundAudioPlaying ? "Pause" : "Play")
+            .disabled(playbackTargetURL == nil)
+            .help(isPlaybackTargetPlaying ? "Pause" : "Play")
 
             Button {
                 onStopBackgroundAudio()
@@ -68,7 +100,7 @@ struct SidebarAudioControlsView: View {
             .help("Stop")
 
             Button {
-                onClearBackgroundAudio()
+                clearBackgroundAudio()
             } label: {
                 Label("Clear", systemImage: "xmark.circle")
             }
@@ -111,16 +143,27 @@ struct SidebarAudioControlsView: View {
                 },
                 selectedItemIDs: selectedAudioItemID.map { [$0] } ?? [],
                 primarySelectedItemID: selectedAudioItemID,
+                itemStatuses: audioItemStatuses,
                 expansionStore: outlineExpansionStore,
                 allowsEmptySelection: true,
                 onSelectionChange: { _, primaryID in
                     guard primaryID != nil else {
-                        onClearBackgroundAudio()
+                        selectedAudioURL = nil
                         return true
                     }
                     guard case .audio(let url) = primaryID else { return false }
-                    onSelectBackgroundAudio(url)
+                    selectedAudioURL = url.standardizedFileURL
                     return true
+                },
+                onActivate: { itemID, activation in
+                    guard case .audio(let url) = itemID else { return }
+                    selectedAudioURL = url.standardizedFileURL
+                    switch activation {
+                    case .defaultAction:
+                        playIfNeeded(url)
+                    case .space:
+                        togglePlayback(for: url)
+                    }
                 },
                 onAction: { itemID, action in
                     guard case .audio(let url) = itemID, action == .revealInFinder else { return }
@@ -156,6 +199,63 @@ struct SidebarAudioControlsView: View {
     }
 
     private var selectedAudioItemID: SidebarOutlineItemID? {
-        session.backgroundAudioURL.map { .audio($0.standardizedFileURL) }
+        selectedAudioURL.map { .audio($0.standardizedFileURL) }
+    }
+
+    private var activeAudioURL: URL? {
+        session.backgroundAudioURL?.standardizedFileURL
+    }
+
+    private var playbackTargetURL: URL? {
+        selectedAudioURL?.standardizedFileURL ?? activeAudioURL
+    }
+
+    private var isPlaybackTargetPlaying: Bool {
+        playbackTargetURL == activeAudioURL && session.isBackgroundAudioPlaying
+    }
+
+    private var audioItemStatuses: [SidebarOutlineItemID: SidebarOutlineItemStatus] {
+        guard let activeAudioURL else { return [:] }
+        return [
+            .audio(activeAudioURL): session.isBackgroundAudioPlaying
+                ? .playingAudio
+                : .loadedAudio
+        ]
+    }
+
+    private func togglePlayback(for url: URL?) {
+        guard let url else { return }
+        perform(
+            AudioSidebarInteraction.toggleAction(
+                targetURL: url,
+                activeURL: activeAudioURL
+            )
+        )
+    }
+
+    private func playIfNeeded(_ url: URL) {
+        perform(
+            AudioSidebarInteraction.defaultAction(
+                targetURL: url,
+                activeURL: activeAudioURL,
+                isPlaying: session.isBackgroundAudioPlaying
+            )
+        )
+    }
+
+    private func perform(_ intent: AudioSidebarPlaybackIntent) {
+        switch intent {
+        case .none:
+            break
+        case .selectAndPlay(let url):
+            onSelectBackgroundAudio(url)
+        case .togglePlayback:
+            onPlayPauseBackgroundAudio()
+        }
+    }
+
+    private func clearBackgroundAudio() {
+        selectedAudioURL = nil
+        onClearBackgroundAudio()
     }
 }

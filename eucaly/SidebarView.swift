@@ -99,6 +99,8 @@ struct SidebarView: View {
 
     @State private var webpageAddressError: String? = nil
 
+    @State private var selectedAudioURL: URL?
+
     @State private var libraryExpansionState = SidebarOutlineExpansionState.empty
 
     @State private var libraryExpansionCommand: SidebarOutlineExpansionCommand?
@@ -191,6 +193,15 @@ struct SidebarView: View {
             if libraryScrollRequest != nil {
                 isLibrarySectionExpanded = true
             }
+        }
+        .onAppear {
+            selectedAudioURL = session.backgroundAudioURL?.standardizedFileURL
+        }
+        .onChange(of: session.backgroundAudioURL) { _, newValue in
+            selectedAudioURL = newValue?.standardizedFileURL
+        }
+        .onChange(of: libraryRevision) { _, _ in
+            reconcileAudioSelection()
         }
         .font(.subheadline)
     }
@@ -473,6 +484,7 @@ struct SidebarView: View {
             outlineExpansionStore: outlineExpansionStore,
             backgroundAudioLoop: $backgroundAudioLoop,
             backgroundAudioVolumeDraft: $backgroundAudioVolumeDraft,
+            selectedAudioURL: $selectedAudioURL,
             displayName: displayName,
             onImportToAudio: onImportToAudio,
             onSelectBackgroundAudio: onSelectBackgroundAudio,
@@ -482,6 +494,18 @@ struct SidebarView: View {
             onApplyBackgroundAudioVolume: onApplyBackgroundAudioVolume,
             onSeekBackgroundAudio: onSeekBackgroundAudio
         )
+    }
+
+    private func reconcileAudioSelection() {
+        guard let currentSelection = selectedAudioURL else { return }
+        let standardizedSelection = currentSelection.standardizedFileURL
+        guard !audioFiles.contains(where: { $0.standardizedFileURL == standardizedSelection }) else {
+            return
+        }
+        let activeURL = session.backgroundAudioURL?.standardizedFileURL
+        selectedAudioURL = activeURL.flatMap { activeURL in
+            audioFiles.contains(where: { $0.standardizedFileURL == activeURL }) ? activeURL : nil
+        }
     }
 
     private func sidebarSectionHeader(
@@ -587,11 +611,12 @@ struct SidebarView: View {
         }
         .task(id: revision) {
             guard !libraryFiles.isEmpty else { return }
-            let sourceItems = libraryFiles.map { sourceURL in
-                let url = sourceURL.standardizedFileURL
-                return LibraryOutlineSourceItem(url: url, title: displayName(url))
+            await libraryOutlineModelStore.prepare(revision: revision) {
+                libraryFiles.map { sourceURL in
+                    let url = sourceURL.standardizedFileURL
+                    return LibraryOutlineSourceItem(url: url, title: displayName(url))
+                }
             }
-            await libraryOutlineModelStore.prepare(revision: revision, sourceItems: sourceItems)
         }
     }
 
