@@ -44,13 +44,16 @@ nonisolated enum SidebarOutlineAction: Hashable, Sendable {
 }
 
 nonisolated enum SidebarOutlineItemStatus: Hashable, Sendable {
-    case loadedAudio
+    case stoppedAudio
+    case pausedAudio
     case playingAudio
 
     var systemImage: String {
         switch self {
-        case .loadedAudio:
-            "speaker.fill"
+        case .stoppedAudio:
+            "stop.fill"
+        case .pausedAudio:
+            "pause.fill"
         case .playingAudio:
             "speaker.wave.2.fill"
         }
@@ -58,8 +61,10 @@ nonisolated enum SidebarOutlineItemStatus: Hashable, Sendable {
 
     var accessibilityLabel: String {
         switch self {
-        case .loadedAudio:
-            "Loaded background audio"
+        case .stoppedAudio:
+            "Stopped background audio"
+        case .pausedAudio:
+            "Paused background audio"
         case .playingAudio:
             "Playing background audio"
         }

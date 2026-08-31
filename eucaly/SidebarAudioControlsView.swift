@@ -216,10 +216,17 @@ struct SidebarAudioControlsView: View {
 
     private var audioItemStatuses: [SidebarOutlineItemID: SidebarOutlineItemStatus] {
         guard let activeAudioURL else { return [:] }
+        let status: SidebarOutlineItemStatus
+        switch session.backgroundAudioPlaybackState {
+        case .stopped:
+            status = .stoppedAudio
+        case .paused:
+            status = .pausedAudio
+        case .playing:
+            status = .playingAudio
+        }
         return [
-            .audio(activeAudioURL): session.isBackgroundAudioPlaying
-                ? .playingAudio
-                : .loadedAudio
+            .audio(activeAudioURL): status
         ]
     }
 

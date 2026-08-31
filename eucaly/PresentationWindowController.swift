@@ -53,6 +53,12 @@ final class PlaybackProgressStore: ObservableObject {
 
 @MainActor
 final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
+    enum BackgroundAudioPlaybackState: Equatable {
+        case stopped
+        case paused
+        case playing
+    }
+
     enum OverlayMode: String, CaseIterable, Identifiable {
         case hidden = "Hidden"
         case clock = "Clock"
@@ -84,7 +90,7 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     @Published private(set) var backgroundVisualURL: URL? = nil
     @Published var isBackgroundVisualVisible = true
     @Published private(set) var backgroundAudioURL: URL? = nil
-    @Published private(set) var isBackgroundAudioPlaying = false
+    @Published private(set) var backgroundAudioPlaybackState = BackgroundAudioPlaybackState.stopped
     @Published private(set) var backgroundAudioLoop = true
     @Published private(set) var backgroundAudioVolume: Double = 1.0
     @Published var areSlidesVisible = true
@@ -100,6 +106,10 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     private var screenParametersObserver: NSObjectProtocol?
     private var screenRepositionWorkItem: DispatchWorkItem?
     private var currentThumbnailColumnCount: Int = 1
+
+    var isBackgroundAudioPlaying: Bool {
+        backgroundAudioPlaybackState == .playing
+    }
 
     override init() {
         super.init()
@@ -556,12 +566,12 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
             return
         }
         player.play()
-        isBackgroundAudioPlaying = true
+        backgroundAudioPlaybackState = .playing
     }
 
     func pauseBackgroundAudio() {
         backgroundAudioPlayer?.pause()
-        isBackgroundAudioPlaying = false
+        backgroundAudioPlaybackState = backgroundAudioURL == nil ? .stopped : .paused
         refreshBackgroundAudioProgress()
     }
 
@@ -569,7 +579,7 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
         backgroundAudioPlayer?.pause()
         backgroundAudioPlayer?.seek(to: .zero)
         playbackProgress.seekBackgroundAudio(to: 0)
-        isBackgroundAudioPlaying = false
+        backgroundAudioPlaybackState = .stopped
     }
 
     func clearBackgroundAudio() {
@@ -642,7 +652,7 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
         backgroundAudioPlayer?.pause()
         removeBackgroundAudioTimeObserver()
         backgroundAudioPlayer = nil
-        isBackgroundAudioPlaying = false
+        backgroundAudioPlaybackState = .stopped
         playbackProgress.resetBackgroundAudio()
         removeBackgroundAudioEndObserver()
 
@@ -666,7 +676,7 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
         refreshBackgroundAudioProgress()
         if autoplay {
             player.play()
-            isBackgroundAudioPlaying = true
+            backgroundAudioPlaybackState = .playing
         }
     }
 
@@ -676,9 +686,9 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
             player.seek(to: .zero)
             playbackProgress.seekBackgroundAudio(to: 0)
             player.play()
-            isBackgroundAudioPlaying = true
+            backgroundAudioPlaybackState = .playing
         } else {
-            isBackgroundAudioPlaying = false
+            backgroundAudioPlaybackState = .stopped
             refreshBackgroundAudioProgress()
         }
     }
