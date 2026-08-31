@@ -691,7 +691,6 @@ public struct ContentView: View {
                 canEditSelection: canEditSelection && !isPreviewLoading && previewLoadError == nil,
                 canLoadToCurrent: canLoadPreviewToCurrent,
                 loadToCurrentHelp: loadToCurrentHelp,
-                isLoading: isPreviewLoading,
                 loadError: previewLoadError,
                 thumbnailScale: thumbnailScale,
                 loadAnimation: loadAnimation,
