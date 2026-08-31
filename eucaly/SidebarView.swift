@@ -38,90 +38,6 @@ struct PlaylistSidebarItem: Identifiable, Hashable {
     let exists: Bool
 }
 
-struct LibraryScrollRequest: Equatable {
-    let id = UUID()
-    let url: URL
-}
-
-private enum LibraryGrouping: String, CaseIterable, Identifiable {
-    case kind
-    case folder
-    case none
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .kind:
-            "Kind"
-        case .folder:
-            "Folder"
-        case .none:
-            "None"
-        }
-    }
-}
-
-private enum LibraryFileGroup: Int, CaseIterable, Identifiable {
-    case lyrics
-    case pdfs
-    case images
-    case videos
-    case other
-
-    var id: Int { rawValue }
-
-    var title: String {
-        switch self {
-        case .lyrics:
-            "Lyrics"
-        case .pdfs:
-            "PDFs"
-        case .images:
-            "Images"
-        case .videos:
-            "Videos"
-        case .other:
-            "Other"
-        }
-    }
-
-    init(url: URL) {
-        switch url.pathExtension.lowercased() {
-        case "txt":
-            self = .lyrics
-        case "pdf":
-            self = .pdfs
-        case "jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff":
-            self = .images
-        case "mp4", "mov", "m4v", "avi", "mkv":
-            self = .videos
-        default:
-            self = .other
-        }
-    }
-}
-
-private struct LibraryFileGroupSection: Identifiable {
-    let group: LibraryFileGroup
-    let urls: [URL]
-
-    var id: LibraryFileGroup { group }
-}
-
-private struct LibraryFolderGroupSection: Identifiable {
-    let title: String
-    let sortKey: String
-    let urls: [URL]
-
-    var id: String { sortKey }
-}
-
-private struct LibraryFolderGroupKey: Hashable {
-    let title: String
-    let sortKey: String
-}
-
 struct SidebarView: View {
     @ObservedObject var session: PresentationSession
     let isWindowCaptureSupported: Bool
@@ -136,10 +52,10 @@ struct SidebarView: View {
     let libraryScrollRequest: LibraryScrollRequest?
     let selectedPlaylistEntryIDs: Set<UUID>
     let sidebarSelection: SidebarSelection?
+    @Binding var selectedAudioURL: URL?
     @Binding var backgroundAudioLoop: Bool
     @Binding var backgroundAudioVolumeDraft: Double
     @Binding var windowCaptureFrameRate: Int
-    @FocusState.Binding var isSidebarFocused: Bool
 
     let displayName: (URL) -> String
     let titleForWebpage: (URL) -> String
@@ -156,7 +72,7 @@ struct SidebarView: View {
     let onClearBackgroundAudio: () -> Void
     let onApplyBackgroundAudioVolume: (Double) -> Void
     let onSeekBackgroundAudio: (Double) -> Void
-    let onSelectionRequest: (SidebarSelection?, Set<UUID>) -> Void
+    let onSelectionRequest: (SidebarSelection?, Set<UUID>) -> Bool
     let onOpenWebpageAddress: (String) -> Bool
     let onRemoveWebpage: (URL) -> Void
     let onPickWindow: () -> Void
@@ -184,34 +100,23 @@ struct SidebarView: View {
 
     @State private var webpageAddressError: String? = nil
 
-    @State private var pendingLibraryScrollTarget: URL?
+    @State private var libraryExpansionState = SidebarOutlineExpansionState.empty
 
-    @State private var keyboardLibraryScrollTarget: URL?
+    @State private var libraryExpansionCommand: SidebarOutlineExpansionCommand?
 
-    @State private var collapsedLibraryGroups: Set<LibraryFileGroup> = []
+    @State private var outlineExpansionStore = SidebarOutlineExpansionStore()
 
-    @State private var collapsedLibraryFolders: Set<String> = []
+    @State private var outlineNavigationCoordinator = SidebarOutlineNavigationCoordinator()
 
-    @State private var expandedLibraryGroups: Set<LibraryFileGroup> = []
-
-    @State private var expandedLibraryFolders: Set<String> = []
-
-    @State private var cachedLibraryKindSections: [LibraryFileGroupSection] = []
-
-    @State private var cachedLibraryFolderSections: [LibraryFolderGroupSection] = []
-
-    @State private var displayedLibraryGrouping: LibraryGrouping = .kind
-
-    @State private var isPreparingLibraryGrouping: Bool = false
-
-    @State private var libraryGroupingTransitionTask: Task<Void, Never>? = nil
+    @StateObject private var libraryOutlineModelStore = LibraryOutlineModelStore()
 
     var body: some View {
         GeometryReader { proxy in
             let libraryListMaxHeight = max(160, min(320, proxy.size.height * 0.35))
             let audioListMaxHeight = max(120, min(240, proxy.size.height * 0.25))
+            let standardListMaxHeight = max(104, min(208, proxy.size.height * 0.22))
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 12) {
                     sidebarSection(
                         "Library",
                         systemImage: "folder",
@@ -231,7 +136,7 @@ struct SidebarView: View {
                         isExpanded: $isPlaylistSectionExpanded
                     ) {
                         playlistControls
-                        sidebarPlaylistList
+                        playlistList(maxHeight: standardListMaxHeight)
                     }
 
                     sectionDivider
@@ -253,7 +158,7 @@ struct SidebarView: View {
                         tint: .web,
                         isExpanded: $isWebSectionExpanded
                     ) {
-                        webControls
+                        webControls(maxListHeight: standardListMaxHeight)
                     }
 
                     if isWindowCaptureSupported {
@@ -265,7 +170,7 @@ struct SidebarView: View {
                             tint: .windows,
                             isExpanded: $isWindowsSectionExpanded
                         ) {
-                            windowsControls
+                            windowsControls(maxListHeight: standardListMaxHeight)
                         }
                     }
 
@@ -283,31 +188,13 @@ struct SidebarView: View {
         )
         .controlSize(.small)
         .focusEffectDisabled(true)
-        .overlay(
-            Color.clear
-                .frame(width: 1, height: 1)
-                .focusable(true)
-                .focusEffectDisabled(true)
-                .focused($isSidebarFocused)
-                .onMoveCommand { direction in
-                    guard isSidebarFocused else { return }
-                    handleSidebarMoveCommand(direction)
-                }
-        )
-        .onAppear {
-            displayedLibraryGrouping = libraryGrouping
-            rebuildLibraryCaches()
-        }
-        .onDisappear {
-            libraryGroupingTransitionTask?.cancel()
-        }
-        .onChange(of: libraryRevision) { _, _ in
-            rebuildLibraryCaches()
-        }
         .onChange(of: libraryScrollRequest?.id) { _, _ in
             if libraryScrollRequest != nil {
                 isLibrarySectionExpanded = true
             }
+        }
+        .onChange(of: libraryRevision) { _, _ in
+            reconcileAudioSelection()
         }
         .font(.subheadline)
     }
@@ -328,7 +215,7 @@ struct SidebarView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                Picker("Group", selection: libraryGroupingBinding) {
+                Picker("Group", selection: $libraryGrouping) {
                     ForEach(LibraryGrouping.allCases) { grouping in
                         Text(grouping.title).tag(grouping)
                     }
@@ -349,17 +236,10 @@ struct SidebarView: View {
                 }
                 .labelStyle(.iconOnly)
                 .playlistIconButtonStyle()
-                .disabled(isPreparingLibraryGrouping || !canToggleLibraryGroups)
+                .disabled(!canToggleLibraryGroups)
                 .help(libraryGroupToggleHelp)
             }
         }
-    }
-
-    private var libraryGroupingBinding: Binding<LibraryGrouping> {
-        Binding(
-            get: { libraryGrouping },
-            set: { prepareLibraryGroupingChange($0) }
-        )
     }
 
     private func sidebarSection<Content: View>(
@@ -370,37 +250,24 @@ struct SidebarView: View {
         isExpanded: Binding<Bool>,
         @ViewBuilder content: @escaping () -> Content
     ) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.16)) {
-                    isExpanded.wrappedValue.toggle()
-                }
-            } label: {
-                sidebarSectionHeader(
-                    title,
-                    detail: detail,
-                    systemImage: systemImage,
-                    tint: tint,
-                    isExpanded: isExpanded.wrappedValue
-                )
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+        DisclosureGroup(isExpanded: isExpanded) {
+            VStack(alignment: .leading, spacing: 10) {
+                content()
             }
-            .buttonStyle(.plain)
             .frame(maxWidth: .infinity, alignment: .leading)
-
-            if isExpanded.wrappedValue {
-                VStack(alignment: .leading, spacing: 10) {
-                    content()
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.top, 6)
-            }
+            .padding(.top, 6)
+        } label: {
+            sidebarSectionHeader(
+                title,
+                detail: detail,
+                systemImage: systemImage,
+                tint: tint
+            )
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var webControls: some View {
+    private func webControls(maxListHeight: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 TextField("https://example.com or localhost:8000", text: $webpageAddressDraft)
@@ -425,53 +292,60 @@ struct SidebarView: View {
                     .foregroundStyle(.red)
             }
 
-            ForEach(webpageURLs, id: \.self) { url in
-                HStack(spacing: 6) {
-                    Button {
-                        isSidebarFocused = true
-                        let selectionValue = SidebarSelection.web(url)
-                        onSelectionRequest(selectionValue, [])
-                    } label: {
-                        sidebarRow(
-                            title: titleForWebpage(url),
-                            isSelected: sidebarSelection == .web(url)
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-
-                    Button {
-                        onRemoveWebpage(url)
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 20, height: 20)
-                            .background(
-                                Circle()
-                                    .fill(Color.secondary.opacity(0.12))
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .help("Remove webpage")
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contextMenu {
-                    Button {
-                        copyWebpageURL(url)
-                    } label: {
-                        Label("Copy URL", systemImage: "doc.on.doc")
-                    }
-                }
-            }
-
             if webpageURLs.isEmpty {
                 Text("No saved webpages")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+            } else {
+                webpageList(maxHeight: maxListHeight)
             }
         }
+    }
+
+    private func webpageList(maxHeight: CGFloat) -> some View {
+        SidebarOutlineView(
+            contentRevision: AnyHashable(webpageURLs.map(\.absoluteString)),
+            modelBuilder: {
+                SidebarOutlineModel(
+                    roots: webpageURLs.map { url in
+                        SidebarOutlineItem(
+                            id: .web(url),
+                            title: titleForWebpage(url),
+                            accessoryAction: .remove,
+                            contextActions: [.copyURL, .remove]
+                        )
+                    }
+                )
+            },
+            selectedItemIDs: selectedWebItemID.map { [$0] } ?? [],
+            primarySelectedItemID: selectedWebItemID,
+            expansionStore: outlineExpansionStore,
+            navigationSection: .web,
+            navigationCoordinator: outlineNavigationCoordinator,
+            allowsEmptySelection: true,
+            onSelectionChange: { _, primaryID in
+                guard primaryID != nil else { return onSelectionRequest(nil, []) }
+                guard case .web(let url) = primaryID else { return false }
+                return onSelectionRequest(.web(url), [])
+            },
+            onAction: { itemID, action in
+                guard case .web(let url) = itemID else { return }
+                switch action {
+                case .remove:
+                    onRemoveWebpage(url)
+                case .copyURL:
+                    copyWebpageURL(url)
+                case .addToPlaylist, .revealInFinder:
+                    break
+                }
+            }
+        )
+        .frame(height: outlineHeight(rowCount: webpageURLs.count, maximum: maxHeight))
+    }
+
+    private var selectedWebItemID: SidebarOutlineItemID? {
+        guard case .web(let url) = sidebarSelection else { return nil }
+        return .web(url)
     }
 
     private func copyWebpageURL(_ url: URL) {
@@ -513,7 +387,7 @@ struct SidebarView: View {
         }
     }
 
-    private var windowsControls: some View {
+    private func windowsControls(maxListHeight: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Button(captureWindows.isEmpty ? "Pick Window" : "Replace Window") {
@@ -548,10 +422,45 @@ struct SidebarView: View {
                 .help("Window capture frame rate")
             }
 
-            if let window = captureWindows.first {
-                selectedWindowRow(window)
+            if !captureWindows.isEmpty {
+                windowList(maxHeight: maxListHeight)
             }
         }
+    }
+
+    private func windowList(maxHeight: CGFloat) -> some View {
+        SidebarOutlineView(
+            contentRevision: AnyHashable(
+                captureWindows.map { "\($0.windowID)|\($0.appName)|\($0.title)" }
+            ),
+            modelBuilder: {
+                SidebarOutlineModel(
+                    roots: captureWindows.map { window in
+                        let title = window.title == window.appName
+                            ? window.appName
+                            : "\(window.appName): \(window.title)"
+                        return SidebarOutlineItem(id: .window(window.windowID), title: title)
+                    }
+                )
+            },
+            selectedItemIDs: selectedWindowItemID.map { [$0] } ?? [],
+            primarySelectedItemID: selectedWindowItemID,
+            expansionStore: outlineExpansionStore,
+            navigationSection: .window,
+            navigationCoordinator: outlineNavigationCoordinator,
+            allowsEmptySelection: true,
+            onSelectionChange: { _, primaryID in
+                guard primaryID != nil else { return onSelectionRequest(nil, []) }
+                guard case .window(let windowID) = primaryID else { return false }
+                return onSelectionRequest(.window(windowID), [])
+            }
+        )
+        .frame(height: outlineHeight(rowCount: captureWindows.count, maximum: maxHeight))
+    }
+
+    private var selectedWindowItemID: SidebarOutlineItemID? {
+        guard case .window(let windowID) = sidebarSelection else { return nil }
+        return .window(windowID)
     }
 
     private var hasSelectedWindow: Bool {
@@ -562,11 +471,13 @@ struct SidebarView: View {
         SidebarAudioControlsView(
             session: session,
             audioFiles: audioFiles,
+            libraryRevision: libraryRevision,
             maxListHeight: maxListHeight,
             libraryRootURL: libraryRootURL,
+            outlineExpansionStore: outlineExpansionStore,
             backgroundAudioLoop: $backgroundAudioLoop,
             backgroundAudioVolumeDraft: $backgroundAudioVolumeDraft,
-            isSidebarFocused: $isSidebarFocused,
+            selectedAudioURL: $selectedAudioURL,
             displayName: displayName,
             onImportToAudio: onImportToAudio,
             onSelectBackgroundAudio: onSelectBackgroundAudio,
@@ -578,14 +489,25 @@ struct SidebarView: View {
         )
     }
 
+    private func reconcileAudioSelection() {
+        guard let currentSelection = selectedAudioURL else { return }
+        let standardizedSelection = currentSelection.standardizedFileURL
+        guard !audioFiles.contains(where: { $0.standardizedFileURL == standardizedSelection }) else {
+            return
+        }
+        let activeURL = session.backgroundAudioURL?.standardizedFileURL
+        selectedAudioURL = activeURL.flatMap { activeURL in
+            audioFiles.contains(where: { $0.standardizedFileURL == activeURL }) ? activeURL : nil
+        }
+    }
+
     private func sidebarSectionHeader(
         _ title: String,
         detail: String?,
         systemImage: String,
-        tint: SidebarSectionTint,
-        isExpanded: Bool
+        tint: SidebarSectionTint
     ) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             Image(systemName: systemImage)
                 .font(.headline)
                 .foregroundStyle(tint.color)
@@ -609,15 +531,6 @@ struct SidebarView: View {
             }
 
             Spacer(minLength: 0)
-
-            Capsule(style: .continuous)
-                .fill(tint.color.opacity(0.28))
-                .frame(width: 24, height: 4)
-
-            Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 12)
         }
         .padding(.top, 4)
         .padding(.trailing, 6)
@@ -629,243 +542,16 @@ struct SidebarView: View {
             .padding(.vertical, 4)
     }
 
-    private func sidebarFileList(_ urls: [URL], selection: @escaping (URL) -> SidebarSelection) -> some View {
-        LazyVStack(alignment: .leading, spacing: 0) {
-            ForEach(urls, id: \.standardizedFileURL) { url in
-                sidebarFileRow(url, selection: selection)
-                .id(url.standardizedFileURL)
-            }
-        }
-    }
-
-    private func sidebarGroupedFileList(_ urls: [URL], selection: @escaping (URL) -> SidebarSelection) -> some View {
-        let sections = cachedLibraryKindSections
-        return LazyVStack(alignment: .leading, spacing: 0) {
-            ForEach(sections) { section in
-                Button {
-                    toggleLibraryGroup(section.group)
-                } label: {
-                    libraryGroupHeader(section.group, count: section.urls.count)
-                }
-                .buttonStyle(.plain)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-                .padding(.top, section.group == sections.first?.group ? 0 : 6)
-
-                if !collapsedLibraryGroups.contains(section.group) {
-                    ForEach(section.urls, id: \.standardizedFileURL) { url in
-                        sidebarFileRow(url, selection: selection)
-                            .id(url.standardizedFileURL)
-                    }
-                }
-            }
-        }
-    }
-
-    private func sidebarFolderGroupedFileList(_ urls: [URL], selection: @escaping (URL) -> SidebarSelection) -> some View {
-        let sections = cachedLibraryFolderSections
-        return LazyVStack(alignment: .leading, spacing: 0) {
-            ForEach(sections) { section in
-                Button {
-                    toggleLibraryFolder(section.id)
-                } label: {
-                    libraryFolderHeader(
-                        section.title,
-                        count: section.urls.count,
-                        isCollapsed: collapsedLibraryFolders.contains(section.id)
-                    )
-                }
-                .buttonStyle(.plain)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-                .padding(.top, section.id == sections.first?.id ? 0 : 6)
-
-                if !collapsedLibraryFolders.contains(section.id) {
-                    ForEach(section.urls, id: \.standardizedFileURL) { url in
-                        sidebarFileRow(url, selection: selection)
-                            .id(url.standardizedFileURL)
-                    }
-                }
-            }
-        }
-    }
-
-    private func sidebarFileRow(_ url: URL, selection: @escaping (URL) -> SidebarSelection) -> some View {
-        let selectionValue = selection(url)
-        return SidebarLibraryRowView(
-            url: url,
-            title: displayName(url),
-            isSelected: sidebarSelection == selectionValue,
-            onSelect: {
-                isSidebarFocused = true
-                onSelectionRequest(selectionValue, [])
-            },
-            onAddToPlaylist: {
-                onAddLibraryItemToPlaylist(url)
-            },
-            onRevealInFinder: {
-                revealInFinder(url)
-            }
-        )
-        .equatable()
-    }
-
-    private func revealInFinder(_ url: URL) {
-        NSWorkspace.shared.activateFileViewerSelecting([url])
-    }
-
-    private func libraryGroupHeader(_ group: LibraryFileGroup, count: Int) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: collapsedLibraryGroups.contains(group) ? "chevron.right" : "chevron.down")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 12)
-
-            Text(group.title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-
-            Text("\(count)")
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.tertiary)
-
-            Spacer(minLength: 0)
-        }
-        .frame(height: 22)
-        .padding(.horizontal, 8)
-        .contentShape(Rectangle())
-    }
-
-    private func groupedLibrarySections(from urls: [URL]) -> [LibraryFileGroupSection] {
-        let sortedURLs = urls.sorted {
-            displayName($0).localizedCaseInsensitiveCompare(displayName($1)) == .orderedAscending
-        }
-        let grouped = Dictionary(grouping: sortedURLs) { LibraryFileGroup(url: $0) }
-        return LibraryFileGroup.allCases.compactMap { group in
-            guard let groupURLs = grouped[group], !groupURLs.isEmpty else { return nil }
-            return LibraryFileGroupSection(group: group, urls: groupURLs)
-        }
-    }
-
-    private func libraryFolderHeader(_ title: String, count: Int, isCollapsed: Bool) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 12)
-
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-
-            Text("\(count)")
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.tertiary)
-
-            Spacer(minLength: 0)
-        }
-        .frame(height: 22)
-        .padding(.horizontal, 8)
-        .contentShape(Rectangle())
-    }
-
-    private func groupedLibraryFolderSections(from urls: [URL]) -> [LibraryFolderGroupSection] {
-        let sortedURLs = urls.sorted {
-            displayName($0).localizedCaseInsensitiveCompare(displayName($1)) == .orderedAscending
-        }
-        let grouped = Dictionary(grouping: sortedURLs) { libraryFolderGroup(for: $0) }
-        return grouped.map { key, urls in
-            LibraryFolderGroupSection(
-                title: key.title,
-                sortKey: key.sortKey,
-                urls: urls
-            )
-        }
-        .sorted { lhs, rhs in
-            lhs.sortKey.localizedCaseInsensitiveCompare(rhs.sortKey) == .orderedAscending
-        }
-    }
-
-    private func libraryFolderGroup(for url: URL) -> LibraryFolderGroupKey {
-        guard let libraryRootURL else {
-            return LibraryFolderGroupKey(title: "Root", sortKey: "0-root")
-        }
-        let rootPath = libraryRootURL.standardizedFileURL.path
-        let parentPath = url.deletingLastPathComponent().standardizedFileURL.path
-        guard parentPath.hasPrefix(rootPath) else {
-            return LibraryFolderGroupKey(title: "Other", sortKey: "z-other")
-        }
-        let suffix = parentPath
-            .dropFirst(rootPath.count)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard let folderName = suffix.split(separator: "/").first, !folderName.isEmpty else {
-            return LibraryFolderGroupKey(title: "Root", sortKey: "0-root")
-        }
-        let title = String(folderName)
-        return LibraryFolderGroupKey(title: title, sortKey: "1-\(title.lowercased())")
-    }
-
-    private func toggleLibraryGroup(_ group: LibraryFileGroup) {
-        if collapsedLibraryGroups.contains(group) {
-            collapsedLibraryGroups.remove(group)
-            expandedLibraryGroups.insert(group)
-        } else {
-            collapsedLibraryGroups.insert(group)
-            expandedLibraryGroups.remove(group)
-        }
-    }
-
-    private func toggleLibraryFolder(_ folderID: String) {
-        if collapsedLibraryFolders.contains(folderID) {
-            collapsedLibraryFolders.remove(folderID)
-            expandedLibraryFolders.insert(folderID)
-        } else {
-            collapsedLibraryFolders.insert(folderID)
-            expandedLibraryFolders.remove(folderID)
-        }
-    }
-
-    private func applyDefaultLibraryGroupCollapse() {
-        for group in libraryKindGroups where !expandedLibraryGroups.contains(group) {
-            collapsedLibraryGroups.insert(group)
-        }
-        for folderID in libraryFolderIDs where !expandedLibraryFolders.contains(folderID) {
-            collapsedLibraryFolders.insert(folderID)
-        }
-    }
-
-    private func prepareLibraryGroupingChange(_ grouping: LibraryGrouping) {
-        libraryGrouping = grouping
-        libraryGroupingTransitionTask?.cancel()
-        guard displayedLibraryGrouping != grouping else {
-            isPreparingLibraryGrouping = false
-            return
-        }
-
-        isPreparingLibraryGrouping = true
-        libraryGroupingTransitionTask = Task { @MainActor in
-            await Task.yield()
-            try? await Task.sleep(nanoseconds: 50_000_000)
-            guard !Task.isCancelled else { return }
-            displayedLibraryGrouping = grouping
-            isPreparingLibraryGrouping = false
-        }
-    }
-
     private var canToggleLibraryGroups: Bool {
-        switch displayedLibraryGrouping {
-        case .kind:
-            !libraryKindGroups.isEmpty
-        case .folder:
-            !libraryFolderIDs.isEmpty
-        case .none:
-            false
-        }
+        libraryGrouping != .none
+            && libraryOutlineModelStore.presentation?.revision == libraryOutlineRevision
+            && libraryExpansionState.key == libraryExpansionKey
+            && libraryExpansionState.groupCount > 0
     }
 
     private var libraryGroupToggleHelp: String {
-        let action = allVisibleLibraryGroupsCollapsed ? "Expand" : "Collapse"
-        switch displayedLibraryGrouping {
+        let action = libraryExpansionState.areAllGroupsCollapsed ? "Expand" : "Collapse"
+        switch libraryGrouping {
         case .kind:
             return "\(action) all kinds"
         case .folder:
@@ -875,304 +561,193 @@ struct SidebarView: View {
         }
     }
 
-    private var libraryKindGroups: [LibraryFileGroup] {
-        cachedLibraryKindSections.map(\.group)
-    }
-
-    private var libraryFolderIDs: [String] {
-        cachedLibraryFolderSections.map(\.id)
-    }
-
     private var allVisibleLibraryGroupsCollapsed: Bool {
-        switch displayedLibraryGrouping {
-        case .kind:
-            let groups = libraryKindGroups
-            return !groups.isEmpty && groups.allSatisfy { collapsedLibraryGroups.contains($0) }
-        case .folder:
-            let folderIDs = libraryFolderIDs
-            return !folderIDs.isEmpty && folderIDs.allSatisfy { collapsedLibraryFolders.contains($0) }
-        case .none:
-            return false
-        }
+        libraryExpansionState.key == libraryExpansionKey
+            && libraryExpansionState.areAllGroupsCollapsed
+    }
+
+    private var libraryExpansionKey: String {
+        "library:\(libraryGrouping.rawValue)"
     }
 
     private func toggleAllLibraryGroups() {
-        switch displayedLibraryGrouping {
-        case .kind:
-            let groups = libraryKindGroups
-            guard !groups.isEmpty else { return }
-            if allVisibleLibraryGroupsCollapsed {
-                collapsedLibraryGroups.subtract(groups)
-                expandedLibraryGroups.formUnion(groups)
-            } else {
-                collapsedLibraryGroups.formUnion(groups)
-                expandedLibraryGroups.subtract(groups)
-            }
-        case .folder:
-            let folderIDs = libraryFolderIDs
-            guard !folderIDs.isEmpty else { return }
-            if allVisibleLibraryGroupsCollapsed {
-                collapsedLibraryFolders.subtract(folderIDs)
-                expandedLibraryFolders.formUnion(folderIDs)
-            } else {
-                collapsedLibraryFolders.formUnion(folderIDs)
-                expandedLibraryFolders.subtract(folderIDs)
-            }
-        case .none:
-            return
-        }
-    }
-
-    private func rebuildLibraryCaches() {
-        cachedLibraryKindSections = groupedLibrarySections(from: libraryFiles)
-        cachedLibraryFolderSections = groupedLibraryFolderSections(from: libraryFiles)
-        applyDefaultLibraryGroupCollapse()
-    }
-
-    private func sidebarScrollableFileList(
-        _ urls: [URL],
-        maxHeight: CGFloat,
-        selection: @escaping (URL) -> SidebarSelection
-    ) -> some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                if displayedLibraryGrouping == .kind {
-                    sidebarGroupedFileList(urls, selection: selection)
-                } else if displayedLibraryGrouping == .folder {
-                    sidebarFolderGroupedFileList(urls, selection: selection)
-                } else {
-                    sidebarFileList(urls, selection: selection)
-                }
-            }
-            .onAppear {
-                prepareLibraryScrollIfNeeded(with: proxy)
-            }
-            .onChange(of: libraryScrollRequest?.id) { _, _ in
-                prepareLibraryScrollIfNeeded(with: proxy)
-            }
-            .onChange(of: libraryRevision) { _, _ in
-                prepareLibraryScrollIfNeeded(with: proxy)
-            }
-            .onChange(of: keyboardLibraryScrollTarget) { _, newValue in
-                guard let newValue else { return }
-                prepareLibraryScroll(to: newValue, with: proxy)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: maxHeight, alignment: .topLeading)
+        guard canToggleLibraryGroups else { return }
+        libraryExpansionCommand = SidebarOutlineExpansionCommand(
+            action: allVisibleLibraryGroupsCollapsed ? .expandAll : .collapseAll
+        )
     }
 
     @ViewBuilder
     private func libraryContent(maxHeight: CGFloat) -> some View {
-        if isLibraryLoading && libraryFiles.isEmpty {
-            Text("Loading library...")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        } else if isPreparingLibraryGrouping {
-            preparingLibraryGroupingView(maxHeight: maxHeight)
-        } else {
-            sidebarScrollableFileList(libraryFiles, maxHeight: maxHeight) { .library($0) }
-        }
-    }
-
-    private func preparingLibraryGroupingView(maxHeight: CGFloat) -> some View {
-        HStack(spacing: 8) {
-            ProgressView()
-                .controlSize(.small)
-
-            Text("Preparing \(libraryGrouping.title) view...")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: maxHeight, alignment: .topLeading)
-        .padding(.horizontal, 8)
-        .padding(.top, 8)
-    }
-
-    private func prepareLibraryScrollIfNeeded(with proxy: ScrollViewProxy) {
-        guard let libraryScrollRequest else { return }
-        prepareLibraryScroll(to: libraryScrollRequest.url, with: proxy)
-    }
-
-    private func prepareLibraryScroll(to url: URL, with proxy: ScrollViewProxy) {
-        let targetURL = url.standardizedFileURL
-        guard libraryFiles.contains(where: { $0.standardizedFileURL == targetURL }) else { return }
-        let targetGroup = LibraryFileGroup(url: targetURL)
-        let targetFolderID = libraryFolderGroup(for: targetURL).sortKey
-        collapsedLibraryGroups.remove(targetGroup)
-        expandedLibraryGroups.insert(targetGroup)
-        collapsedLibraryFolders.remove(targetFolderID)
-        expandedLibraryFolders.insert(targetFolderID)
-
-        pendingLibraryScrollTarget = targetURL
-        Task { @MainActor in
-            await Task.yield()
-            guard pendingLibraryScrollTarget == targetURL else { return }
-            guard libraryFiles.contains(where: { $0.standardizedFileURL == targetURL }) else { return }
-            scrollLibraryList(to: targetURL, with: proxy)
-            pendingLibraryScrollTarget = nil
-        }
-    }
-
-    private func scrollLibraryList(to targetURL: URL, with proxy: ScrollViewProxy) {
-        withAnimation(.easeOut(duration: 0.16)) {
-            proxy.scrollTo(targetURL, anchor: .center)
-        }
-    }
-
-    private var sidebarPlaylistList: some View {
-        LazyVStack(alignment: .leading, spacing: 0) {
-            ForEach(playlistItems) { item in
-                HStack(spacing: 6) {
-                    Button {
-                        isSidebarFocused = true
-                        applyPlaylistSelection(item.id)
-                    } label: {
-                        sidebarRow(
-                            title: item.title,
-                            isSelected: selectedPlaylistEntryIDs.contains(item.id),
-                            isMissing: !item.exists
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-
-                    Button {
-                        onRemovePlaylistItem(item.id)
-                    } label: {
-                        Image(systemName: "minus")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 20, height: 20)
-                            .background(
-                                Circle()
-                                    .fill(Color.secondary.opacity(0.12))
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .help("Remove from Playlist")
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-    }
-
-    private func selectedWindowRow(_ window: ScreenCaptureManager.CapturedWindow) -> some View {
-        let selectionValue = SidebarSelection.window(window.windowID)
-        let rowTitle = window.title == window.appName ? window.appName : "\(window.appName): \(window.title)"
-        return Button {
-            isSidebarFocused = true
-            // Re-load the same picked window after Current gets cleared.
-            onSelectionRequest(selectionValue, [])
-        } label: {
-            sidebarRow(
-                title: rowTitle,
-                isSelected: sidebarSelection == selectionValue
-            )
-        }
-        .buttonStyle(.plain)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
-    }
-
-    private func sidebarRow(title: String, isSelected: Bool, isMissing: Bool = false) -> some View {
-        SidebarRowLabel(title: title, isSelected: isSelected, isMissing: isMissing)
-    }
-
-    private var sidebarSelectableItems: [SidebarSelection] {
-        let libraryItems = visibleLibraryFilesForKeyboard.map { SidebarSelection.library($0) }
-        let playlistSelectionItems = playlistItems.map { SidebarSelection.playlist($0.id) }
-        let webpageItems = webpageURLs.map { SidebarSelection.web($0) }
-        let windowItems = captureWindows.map { SidebarSelection.window($0.windowID) }
-        return libraryItems + playlistSelectionItems + webpageItems + windowItems
-    }
-
-    private var visibleLibraryFilesForKeyboard: [URL] {
-        if displayedLibraryGrouping == .none {
-            return libraryFiles
-        }
-        if displayedLibraryGrouping == .folder {
-            return cachedLibraryFolderSections.flatMap { section in
-                collapsedLibraryFolders.contains(section.id) ? [] : section.urls
-            }
-        }
-        return cachedLibraryKindSections.flatMap { section in
-            collapsedLibraryGroups.contains(section.group) ? [] : section.urls
-        }
-    }
-
-    private func handleSidebarMoveCommand(_ direction: MoveCommandDirection) {
-        guard direction == .up || direction == .down else { return }
-        let items = sidebarSelectableItems
-        guard !items.isEmpty else { return }
-
-        if let current = sidebarSelection, let index = items.firstIndex(of: current) {
-            let nextIndex = direction == .up ? max(0, index - 1) : min(items.count - 1, index + 1)
-            if nextIndex != index {
-                applyKeyboardSelection(items[nextIndex])
-            }
-            return
-        }
-
-        applyKeyboardSelection(direction == .up ? items.last : items.first)
-    }
-
-    private func applyPlaylistSelection(_ id: UUID) {
-        let flags = NSApp.currentEvent?.modifierFlags ?? []
-        let isCommand = flags.contains(.command)
-        let isShift = flags.contains(.shift)
-        let selectionValue = SidebarSelection.playlist(id)
-
-        if isShift,
-           let anchor = acceptedPlaylistAnchor,
-           let anchorIndex = playlistItems.firstIndex(where: { $0.id == anchor }),
-           let tappedIndex = playlistItems.firstIndex(where: { $0.id == id }) {
-            let range = anchorIndex <= tappedIndex ? anchorIndex...tappedIndex : tappedIndex...anchorIndex
-            let proposedIDs = Set(playlistItems[range].map(\.id))
-            onSelectionRequest(selectionValue, proposedIDs)
-            return
-        }
-
-        if isCommand {
-            var proposedIDs = selectedPlaylistEntryIDs
-            let proposedSelection: SidebarSelection?
-            if proposedIDs.remove(id) != nil {
-                if case .playlist(let currentID) = sidebarSelection, currentID == id {
-                    proposedSelection = proposedIDs.first.map { .playlist($0) }
-                } else {
-                    proposedSelection = sidebarSelection
-                }
+        let revision = libraryOutlineRevision
+        Group {
+            if isLibraryLoading && libraryFiles.isEmpty {
+                Text("Loading library...")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else if libraryFiles.isEmpty {
+                Text("No supported files in Library")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else if let presentation = libraryOutlineModelStore.presentation,
+                      presentation.revision == revision {
+                libraryOutline(presentation, maxHeight: maxHeight)
             } else {
-                proposedIDs.insert(id)
-                proposedSelection = .playlist(id)
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Preparing \(libraryGrouping.title) view...")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
-            onSelectionRequest(proposedSelection, proposedIDs)
-            return
         }
-
-        onSelectionRequest(selectionValue, [id])
-    }
-
-    private func applyKeyboardSelection(_ selection: SidebarSelection?) {
-        guard let selection else { return }
-        switch selection {
-        case .library(let url):
-            onSelectionRequest(selection, [])
-            keyboardLibraryScrollTarget = url.standardizedFileURL
-        case .playlist(let id):
-            onSelectionRequest(selection, [id])
-        case .web:
-            onSelectionRequest(selection, [])
-        case .window:
-            onSelectionRequest(selection, [])
+        .task(id: revision) {
+            guard !libraryFiles.isEmpty else { return }
+            await libraryOutlineModelStore.prepare(revision: revision) {
+                libraryFiles.map { sourceURL in
+                    let url = sourceURL.standardizedFileURL
+                    return LibraryOutlineSourceItem(url: url, title: displayName(url))
+                }
+            }
         }
     }
 
-    private var acceptedPlaylistAnchor: UUID? {
+    private var libraryOutlineRevision: LibraryOutlineRevision {
+        LibraryOutlineRevision(
+            libraryRevision: libraryRevision,
+            grouping: libraryGrouping,
+            libraryRootURL: libraryRootURL?.standardizedFileURL
+        )
+    }
+
+    private func libraryOutline(
+        _ presentation: LibraryOutlineModelStore.Presentation,
+        maxHeight: CGFloat
+    ) -> some View {
+        SidebarOutlineView(
+            contentRevision: AnyHashable(presentation.revision),
+            expansionKey: libraryExpansionKey,
+            modelBuilder: { presentation.model },
+            selectedItemIDs: selectedLibraryItemID.map { [$0] } ?? [],
+            primarySelectedItemID: selectedLibraryItemID,
+            scrollRequest: libraryScrollRequest.map {
+                SidebarOutlineScrollRequest(
+                    id: $0.id,
+                    itemID: .library($0.url.standardizedFileURL)
+                )
+            },
+            expansionCommand: libraryExpansionCommand,
+            expansionStore: outlineExpansionStore,
+            navigationSection: .library,
+            navigationCoordinator: outlineNavigationCoordinator,
+            allowsEmptySelection: true,
+            onSelectionChange: { _, primaryID in
+                guard primaryID != nil else { return onSelectionRequest(nil, []) }
+                guard case .library(let url) = primaryID else { return false }
+                return onSelectionRequest(.library(url), [])
+            },
+            onAction: { itemID, action in
+                guard case .library(let url) = itemID else { return }
+                switch action {
+                case .addToPlaylist:
+                    onAddLibraryItemToPlaylist(url)
+                case .revealInFinder:
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                case .remove, .copyURL:
+                    break
+                }
+            },
+            onExpansionStateChange: { state in
+                guard state.key == libraryExpansionKey else { return }
+                guard libraryExpansionState != state else { return }
+                libraryExpansionState = state
+            }
+        )
+        .frame(
+            maxWidth: .infinity,
+            minHeight: libraryOutlineHeight(model: presentation.model, maximum: maxHeight),
+            maxHeight: libraryOutlineHeight(model: presentation.model, maximum: maxHeight)
+        )
+    }
+
+    private func libraryOutlineHeight(model: SidebarOutlineModel, maximum: CGFloat) -> CGFloat {
+        if libraryExpansionState.key == libraryExpansionKey {
+            return min(maximum, max(26, libraryExpansionState.visibleContentHeight))
+        }
+        let expandedGroupIDs = outlineExpansionStore.expandedGroupIDs[libraryExpansionKey, default: []]
+        let estimatedHeight = CGFloat(model.visibleRowCount(expandedGroupIDs: expandedGroupIDs)) * 26
+        return min(maximum, max(26, estimatedHeight))
+    }
+
+    private var selectedLibraryItemID: SidebarOutlineItemID? {
+        if case .library(let url) = sidebarSelection {
+            return .library(url.standardizedFileURL)
+        }
+        return nil
+    }
+
+    @ViewBuilder
+    private func playlistList(maxHeight: CGFloat) -> some View {
+        if playlistItems.isEmpty {
+            Text("No playlist items")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        } else {
+            SidebarOutlineView(
+                contentRevision: AnyHashable(playlistItems),
+                modelBuilder: {
+                    SidebarOutlineModel(
+                        roots: playlistItems.map { item in
+                            SidebarOutlineItem(
+                                id: .playlist(item.id),
+                                title: item.title,
+                                isMissing: !item.exists,
+                                accessoryAction: .remove,
+                                contextActions: [.remove]
+                            )
+                        }
+                    )
+                },
+                selectedItemIDs: Set(selectedPlaylistEntryIDs.map { .playlist($0) }),
+                primarySelectedItemID: selectedPlaylistItemID,
+                expansionStore: outlineExpansionStore,
+                navigationSection: .playlist,
+                navigationCoordinator: outlineNavigationCoordinator,
+                allowsMultipleSelection: true,
+                allowsEmptySelection: true,
+                onSelectionChange: { selectedIDs, primaryID in
+                    let playlistIDs = Set(selectedIDs.compactMap { itemID -> UUID? in
+                        guard case .playlist(let id) = itemID else { return nil }
+                        return id
+                    })
+                    let primaryPlaylistID: UUID? = {
+                        guard case .playlist(let id) = primaryID else { return playlistIDs.first }
+                        return id
+                    }()
+                    return onSelectionRequest(
+                        primaryPlaylistID.map { .playlist($0) },
+                        playlistIDs
+                    )
+                },
+                onAction: { itemID, action in
+                    guard case .playlist(let id) = itemID, action == .remove else { return }
+                    onRemovePlaylistItem(id)
+                }
+            )
+            .frame(height: outlineHeight(rowCount: playlistItems.count, maximum: maxHeight))
+        }
+    }
+
+    private var selectedPlaylistItemID: SidebarOutlineItemID? {
         if case .playlist(let id) = sidebarSelection {
-            return id
+            return .playlist(id)
         }
-        return selectedPlaylistEntryIDs.first
+        return nil
+    }
+
+    private func outlineHeight(rowCount: Int, maximum: CGFloat) -> CGFloat {
+        min(maximum, max(26, CGFloat(rowCount) * 26))
     }
 
     private func submitWebpageAddress() {

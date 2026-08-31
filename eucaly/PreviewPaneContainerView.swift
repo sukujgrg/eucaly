@@ -128,7 +128,6 @@ struct PreviewPaneContainerView: View {
     let canEditSelection: Bool
     let canLoadToCurrent: Bool
     let loadToCurrentHelp: String
-    let isLoading: Bool
     let loadError: String?
     let thumbnailScale: Double
     let loadAnimation: Animation
@@ -168,13 +167,8 @@ struct PreviewPaneContainerView: View {
                 .help(editorPreviewAreaToggleLabel)
                 .accessibilityLabel(editorPreviewAreaToggleLabel)
 
-                if !flow.previewIsEmpty || canLoadToCurrent || isLoading {
+                if !flow.previewIsEmpty || canLoadToCurrent {
                     HStack(spacing: 6) {
-                        if isLoading {
-                            ProgressView()
-                                .controlSize(.small)
-                        }
-
                         if !flow.previewIsEmpty {
                             Button("Edit", action: onEdit)
                                 .paneHeaderActionStyle()
@@ -326,7 +320,6 @@ struct PreviewPaneContainerView: View {
     }
 
     private var previewStatusText: String {
-        if isLoading { return "(Loading…)" }
         if loadError != nil { return "(Load failed)" }
         return "(Selected file)"
     }

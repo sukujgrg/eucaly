@@ -134,6 +134,29 @@ final class LayerControlsTests: XCTestCase {
         XCTAssertFalse(result.isPlaying, "Clear should stop playback")
     }
 
+    func testBackgroundAudioTransportDistinguishesPauseAndStop() async {
+        let states = await MainActor.run { () -> [PresentationSession.BackgroundAudioPlaybackState] in
+            let session = PresentationSession()
+            let tempURL = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("eucaly-test-audio-state.mp3")
+            FileManager.default.createFile(
+                atPath: tempURL.path,
+                contents: Data([0x00]),
+                attributes: nil
+            )
+
+            session.setBackgroundAudio(url: tempURL, autoplay: false)
+            let loaded = session.backgroundAudioPlaybackState
+            session.pauseBackgroundAudio()
+            let paused = session.backgroundAudioPlaybackState
+            session.stopBackgroundAudioPlayback()
+            let stopped = session.backgroundAudioPlaybackState
+            return [loaded, paused, stopped]
+        }
+
+        XCTAssertEqual(states, [.stopped, .paused, .stopped])
+    }
+
     // MARK: - Slide Type Visibility Logic Tests
 
     func testIsLyricsSlideDetection() async {
