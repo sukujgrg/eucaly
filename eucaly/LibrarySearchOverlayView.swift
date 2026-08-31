@@ -301,6 +301,7 @@ private struct LibrarySearchFieldView: NSViewRepresentable {
         searchField.placeholderString = "Search songs or commands"
         searchField.font = .systemFont(ofSize: NSFont.systemFontSize)
         searchField.controlSize = .large
+        searchField.focusRingType = .none
         searchField.sendsSearchStringImmediately = true
         searchField.sendsWholeSearchString = false
         searchField.delegate = context.coordinator
