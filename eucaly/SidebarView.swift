@@ -250,19 +250,35 @@ struct SidebarView: View {
         isExpanded: Binding<Bool>,
         @ViewBuilder content: @escaping () -> Content
     ) -> some View {
-        DisclosureGroup(isExpanded: isExpanded) {
-            VStack(alignment: .leading, spacing: 10) {
-                content()
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                isExpanded.wrappedValue.toggle()
+            } label: {
+                sidebarSectionHeader(
+                    title,
+                    detail: detail,
+                    systemImage: systemImage,
+                    tint: tint,
+                    isExpanded: isExpanded.wrappedValue
+                )
+                .contentShape(Rectangle())
             }
+            .buttonStyle(SidebarSectionHeaderButtonStyle())
+            .focusEffectDisabled(false)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.top, 6)
-        } label: {
-            sidebarSectionHeader(
-                title,
-                detail: detail,
-                systemImage: systemImage,
-                tint: tint
+            .accessibilityLabel("\(title) section")
+            .accessibilityValue(isExpanded.wrappedValue ? "Expanded" : "Collapsed")
+            .accessibilityHint(
+                isExpanded.wrappedValue ? "Collapses the section" : "Expands the section"
             )
+
+            if isExpanded.wrappedValue {
+                VStack(alignment: .leading, spacing: 10) {
+                    content()
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 6)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -505,7 +521,8 @@ struct SidebarView: View {
         _ title: String,
         detail: String?,
         systemImage: String,
-        tint: SidebarSectionTint
+        tint: SidebarSectionTint,
+        isExpanded: Bool
     ) -> some View {
         HStack(spacing: 8) {
             Image(systemName: systemImage)
@@ -531,9 +548,17 @@ struct SidebarView: View {
             }
 
             Spacer(minLength: 0)
+
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                .animation(.easeInOut(duration: 0.16), value: isExpanded)
+                .frame(width: 16, height: 22)
+                .accessibilityHidden(true)
         }
-        .padding(.top, 4)
-        .padding(.trailing, 6)
+        .padding(.vertical, 2)
+        .padding(.horizontal, SidebarHighlightMetrics.horizontalInset)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -771,5 +796,47 @@ private extension View {
             .foregroundStyle(.secondary)
             .frame(width: 26, height: 22)
             .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+    }
+}
+
+private struct SidebarSectionHeaderButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .modifier(SidebarSectionHeaderInteraction(isPressed: configuration.isPressed))
+    }
+}
+
+private struct SidebarSectionHeaderInteraction: ViewModifier {
+    let isPressed: Bool
+
+    @Environment(\.controlActiveState) private var controlActiveState
+    @State private var isHovered = false
+
+    func body(content: Content) -> some View {
+        content
+            .background(
+                RoundedRectangle(
+                    cornerRadius: SidebarHighlightMetrics.cornerRadius,
+                    style: .circular
+                )
+                    .fill(backgroundColor)
+                    .padding(.horizontal, SidebarHighlightMetrics.horizontalInset)
+                    .padding(.vertical, SidebarHighlightMetrics.verticalInset)
+            )
+            .onHover { isHovered = $0 }
+            .animation(.easeOut(duration: 0.1), value: isHovered)
+            .animation(.easeOut(duration: 0.08), value: isPressed)
+    }
+
+    private var backgroundColor: Color {
+        guard controlActiveState == .key else { return .clear }
+
+        if isPressed {
+            return Color.primary.opacity(Double(SidebarHighlightMetrics.pressedOpacity))
+        }
+        if isHovered {
+            return Color.primary.opacity(Double(SidebarHighlightMetrics.hoverOpacity))
+        }
+        return .clear
     }
 }
