@@ -1,6 +1,14 @@
 import AppKit
 import SwiftUI
 
+nonisolated enum SidebarHighlightMetrics {
+    static let horizontalInset: CGFloat = 10
+    static let verticalInset: CGFloat = 0
+    static let cornerRadius: CGFloat = 10
+    static let hoverOpacity: CGFloat = 0.055
+    static let pressedOpacity: CGFloat = 0.10
+}
+
 nonisolated enum SidebarOutlineItemID: Hashable, Sendable {
     case group(String)
     case library(URL)
@@ -397,6 +405,7 @@ struct SidebarOutlineView: NSViewRepresentable {
         static let columnIdentifier = NSUserInterfaceItemIdentifier("SidebarOutlineColumn")
         private static let rowCellIdentifier = NSUserInterfaceItemIdentifier("SidebarOutlineRowCell")
         private static let groupCellIdentifier = NSUserInterfaceItemIdentifier("SidebarOutlineGroupCell")
+        private static let rowViewIdentifier = NSUserInterfaceItemIdentifier("SidebarOutlineRowView")
 
         fileprivate weak var outlineView: ReusableSidebarNSOutlineView?
 
@@ -502,6 +511,19 @@ struct SidebarOutlineView: NSViewRepresentable {
 
         func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat {
             26
+        }
+
+        func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
+            if let reused = outlineView.makeView(
+                withIdentifier: Self.rowViewIdentifier,
+                owner: self
+            ) as? SidebarOutlineRowView {
+                return reused
+            }
+
+            let rowView = SidebarOutlineRowView()
+            rowView.identifier = Self.rowViewIdentifier
+            return rowView
         }
 
         func outlineView(
@@ -1007,6 +1029,73 @@ private final class SidebarOutlineMenuAction: NSObject {
     init(itemID: SidebarOutlineItemID, action: SidebarOutlineAction) {
         self.itemID = itemID
         self.action = action
+    }
+}
+
+private final class SidebarOutlineRowView: NSTableRowView {
+    private var hoverTrackingArea: NSTrackingArea?
+    private var isHovered = false {
+        didSet {
+            guard isHovered != oldValue else { return }
+            needsDisplay = true
+        }
+    }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        isHovered = false
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+
+        if let hoverTrackingArea {
+            removeTrackingArea(hoverTrackingArea)
+        }
+
+        let trackingArea = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            owner: self
+        )
+        addTrackingArea(trackingArea)
+        hoverTrackingArea = trackingArea
+        updateHoverStateFromCurrentMouseLocation()
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+        isHovered = true
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        isHovered = false
+    }
+
+    override func drawBackground(in dirtyRect: NSRect) {
+        super.drawBackground(in: dirtyRect)
+        guard window?.isKeyWindow == true, isHovered, !isSelected else { return }
+
+        NSColor.labelColor.withAlphaComponent(SidebarHighlightMetrics.hoverOpacity).setFill()
+        NSBezierPath(
+            roundedRect: bounds.insetBy(
+                dx: SidebarHighlightMetrics.horizontalInset,
+                dy: SidebarHighlightMetrics.verticalInset
+            ),
+            xRadius: SidebarHighlightMetrics.cornerRadius,
+            yRadius: SidebarHighlightMetrics.cornerRadius
+        ).fill()
+    }
+
+    private func updateHoverStateFromCurrentMouseLocation() {
+        guard let window, window.isKeyWindow else {
+            isHovered = false
+            return
+        }
+
+        let mouseLocation = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        isHovered = bounds.contains(mouseLocation)
     }
 }
 
