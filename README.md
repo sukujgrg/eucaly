@@ -62,8 +62,11 @@ Webpage behavior:
 
 ## Requirements
 
+- Mac with Apple Silicon (M1 or later)
 - macOS 14+
-- Xcode
+- Xcode to build from source
+
+Intel Macs are not supported. The app and updater are built for `arm64` only.
 
 Notes:
 
@@ -84,11 +87,7 @@ Build a local release app:
 make build
 ```
 
-Build for the current machine architecture only:
-
-```sh
-make build-for-this
-```
+All build commands target Apple Silicon. The Xcode project's architecture setting applies to the app, updater, and tests in both Debug and Release configurations.
 
 ## Search
 

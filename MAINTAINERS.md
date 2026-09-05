@@ -4,6 +4,10 @@ This document is for maintainer-only project operations.
 
 ## Local Release
 
+Releases require macOS 14 or later on a Mac with Apple Silicon. The app and embedded updater are built for `arm64` only; Intel and universal builds are not supported.
+
+Include these requirements in custom release notes. Older Intel installations do not check update architecture before installing from GitHub, so they must stay on their last compatible release.
+
 Notarized local release:
 
 ```sh

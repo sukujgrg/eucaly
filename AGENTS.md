@@ -17,6 +17,7 @@ Primary UX model:
 Browsing must never silently replace Current.
 
 ## Tech Stack
+- Apple Silicon (`arm64`) only, macOS 14+. Intel Macs are not supported. Keep app, updater, tests, and release builds on `arm64`; do not add Intel compatibility paths.
 - SwiftUI (main UI)
 - AppKit (windowing, macOS integration)
 - AVFoundation and AVKit (video and audio)

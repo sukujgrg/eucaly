@@ -13,7 +13,7 @@ TEAM_ID ?=
 SIGNING_IDENTITY ?=
 SKIP_VERSION_FILE_CHECK ?=
 
-.PHONY: clean test build build-for-this release-local release-notarize release-github
+.PHONY: clean test build release-local release-notarize release-github
 
 clean:
 	rm -rf build
@@ -22,7 +22,7 @@ test:
 	xcodebuild \
 		-project eucaly.xcodeproj \
 		-scheme eucaly \
-		-destination 'platform=macOS' \
+		-destination 'platform=macOS,arch=arm64' \
 		-configuration Debug \
 		test \
 		CODE_SIGNING_ALLOWED=NO \
@@ -32,9 +32,6 @@ test:
 
 build: clean
 	bash ./build.sh
-
-build-for-this: clean
-	bash ./build.sh --current-arch
 
 release-local: build
 

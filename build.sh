@@ -2,27 +2,16 @@
 
 set -euo pipefail
 
-CURRENT_ARCH_ONLY=0
 VERSION=""
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --current-arch)
-      CURRENT_ARCH_ONLY=1
-      shift
-      ;;
-    *)
-      echo "Unknown option: $1" >&2
-      echo "Usage: $0 [--current-arch]" >&2
-      exit 2
-      ;;
-  esac
-done
+if [[ $# -gt 0 ]]; then
+  echo "Usage: $0" >&2
+  exit 2
+fi
 
 TMP="$(mktemp -d "${TMPDIR%/}/eucaly.XXXXXX")"
 ARCHIVE_PATH="$TMP/eucaly.xcarchive"
 EXPORT_PATH="$HOME/Applications"
-CURRENT_ARCH="$(uname -m)"
 
 if [[ -f VERSION ]]; then
   VERSION="$(tr -d '[:space:]' < VERSION)"
@@ -34,6 +23,7 @@ xcodebuild_args=(
   -project eucaly.xcodeproj \
   -scheme eucaly \
   -configuration Release \
+  -destination 'generic/platform=macOS' \
   -archivePath "$ARCHIVE_PATH" \
   archive \
   STRIP_INSTALLED_PRODUCT=YES \
@@ -42,13 +32,6 @@ xcodebuild_args=(
 
 if [[ -n "$VERSION" ]]; then
   xcodebuild_args+=("MARKETING_VERSION=$VERSION")
-fi
-
-if [[ "$CURRENT_ARCH_ONLY" -eq 1 ]]; then
-  xcodebuild_args+=(
-    ONLY_ACTIVE_ARCH=YES
-    "ARCHS=$CURRENT_ARCH"
-  )
 fi
 
 xcodebuild "${xcodebuild_args[@]}"
