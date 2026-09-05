@@ -7,22 +7,30 @@ actor PDFThumbnailCoordinator {
 
     private let maxConcurrentRequests = 6
     private let maxQueuedRenderCount = 16
-    private let maxCachedDocuments = 4
     private let renderQueue: OperationQueue
-    private var documentCache: [URL: CGPDFDocument] = [:]
-    private var documentAccessOrder: [URL] = []
+    private let documentCache: PDFThumbnailDocumentCache
     private var inFlightTasks: [String: Task<PDFThumbnailRenderOutcome, Never>] = [:]
     private var activeRequestCount = 0
 
     private init() {
-        renderQueue = OperationQueue()
+        let renderQueue = OperationQueue()
         renderQueue.name = "eucaly.pdf-thumbnail-renderer"
         renderQueue.qualityOfService = .userInitiated
         renderQueue.maxConcurrentOperationCount = 1
+        self.renderQueue = renderQueue
+        documentCache = PDFThumbnailDocumentCache(renderQueue: renderQueue)
     }
 
     func thumbnail(for url: URL, pageIndex: Int, size: CGSize) async -> PDFThumbnailRenderOutcome {
-        let cacheKey = requestKey(url: url, pageIndex: pageIndex, size: size)
+        let requestSize = ThumbnailCacheSizing.quantizedSize(from: size)
+        let normalizedURL = url.standardizedFileURL
+        let revision = PDFSourceRevision.current(for: normalizedURL)
+        let cacheKey = requestKey(
+            url: normalizedURL,
+            pageIndex: pageIndex,
+            size: requestSize,
+            revision: revision
+        )
 
         if let existingTask = inFlightTasks[cacheKey] {
             return await existingTask.value
@@ -36,109 +44,194 @@ actor PDFThumbnailCoordinator {
             return .busy
         }
 
-        let normalizedURL = url.standardizedFileURL
-        guard let document = document(for: normalizedURL) else {
-            return .failed
-        }
-
         activeRequestCount += 1
-        let task = Task {
-            await self.performThumbnail(
-                document: document,
+        let task = Task.detached(priority: .userInitiated) {
+            let outcome = await self.performThumbnail(
+                url: normalizedURL,
                 pageIndex: pageIndex,
-                size: size
+                size: requestSize,
+                revision: revision
             )
+            await self.finishInFlight(cacheKey: cacheKey)
+            return outcome
         }
         inFlightTasks[cacheKey] = task
+        return await task.value
+    }
 
-        let outcome = await task.value
+    private func finishInFlight(cacheKey: String) {
         inFlightTasks.removeValue(forKey: cacheKey)
         activeRequestCount = max(0, activeRequestCount - 1)
-        return outcome
     }
 
     private func performThumbnail(
-        document: CGPDFDocument,
+        url: URL,
         pageIndex: Int,
-        size: CGSize
+        size: CGSize,
+        revision: PDFSourceRevision
     ) async -> PDFThumbnailRenderOutcome {
         let operation = PDFThumbnailRenderOperation(
-            document: document,
+            url: url,
+            revision: revision,
             pageIndex: pageIndex,
-            size: size
+            size: size,
+            documentCache: documentCache
         )
 
-        let result = await withTaskCancellationHandler {
-            await withCheckedContinuation { continuation in
-                operation.setCompletion { image in
-                    continuation.resume(returning: image)
-                }
-                renderQueue.addOperation(operation)
+        let result = await withCheckedContinuation { continuation in
+            operation.setCompletion { image in
+                continuation.resume(returning: image)
             }
-        } onCancel: {
-            operation.cancel()
+            renderQueue.addOperation(operation)
         }
 
-        guard let result else {
-            return .failed
-        }
-
-        return .rendered(image: result.image, pngData: result.pngData)
+        return PDFThumbnailRenderGate.finalize(
+            result,
+            wasCancelled: operation.isCancelled,
+            capturedRevision: revision,
+            currentRevision: PDFSourceRevision.current(for: url)
+        )
     }
 
-    private func document(for url: URL) -> CGPDFDocument? {
-        if let cached = documentCache[url] {
-            touchDocument(url)
-            return cached
-        }
-
-        while documentCache.count >= maxCachedDocuments, let oldest = documentAccessOrder.first {
-            documentCache.removeValue(forKey: oldest)
-            documentAccessOrder.removeAll { $0 == oldest }
-        }
-
-        guard let document = CGPDFDocument(url as CFURL) else {
-            return nil
-        }
-
-        documentCache[url] = document
-        touchDocument(url)
-        return document
-    }
-
-    private func touchDocument(_ url: URL) {
-        documentAccessOrder.removeAll { $0 == url }
-        documentAccessOrder.append(url)
-    }
-
-    private func requestKey(url: URL, pageIndex: Int, size: CGSize) -> String {
+    private func requestKey(
+        url: URL,
+        pageIndex: Int,
+        size: CGSize,
+        revision: PDFSourceRevision
+    ) -> String {
         let normalizedURL = url.standardizedFileURL.absoluteString
-        return "\(normalizedURL)|\(pageIndex)|\(Int(size.width))x\(Int(size.height))"
+        let modificationPart = revision.modificationDate?.timeIntervalSinceReferenceDate ?? 0
+        return "\(normalizedURL)|\(revision.size)|\(modificationPart)|\(pageIndex)|\(ThumbnailCacheSizing.sizePart(from: size))"
     }
 }
 
-private struct PDFThumbnailRenderResult {
+nonisolated enum PDFThumbnailRenderGate {
+    static func finalize(
+        _ result: PDFThumbnailRenderResult?,
+        wasCancelled: Bool,
+        capturedRevision: PDFSourceRevision,
+        currentRevision: PDFSourceRevision
+    ) -> PDFThumbnailRenderOutcome {
+        guard capturedRevision == currentRevision else {
+            return .busy
+        }
+        guard let result else {
+            return wasCancelled ? .busy : .failed
+        }
+        return .rendered(image: result.image, pngData: result.pngData, revision: capturedRevision)
+    }
+}
+
+nonisolated struct PDFSourceRevision: Hashable, Sendable {
+    let modificationDate: Date?
+    let size: Int64
+
+    /// For UI callers: blocking filesystem access runs on a background queue.
+    static func currentAsync(for url: URL) async -> PDFSourceRevision {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(returning: current(for: url))
+            }
+        }
+    }
+
+    fileprivate static func current(for url: URL) -> PDFSourceRevision {
+        precondition(!Thread.isMainThread, "Read PDF source metadata off the main thread.")
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return PDFSourceRevision(
+            modificationDate: attributes?[.modificationDate] as? Date,
+            size: (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+        )
+    }
+}
+
+nonisolated struct PDFThumbnailRenderResult: Sendable {
     let image: NSImage
     let pngData: Data
 }
 
-private final class PDFThumbnailRenderOperation: Operation, @unchecked Sendable {
-    let document: CGPDFDocument
-    let pageIndex: Int
-    let size: CGSize
-
-    private let completionLock = NSLock()
-    private nonisolated(unsafe) var completion: ((PDFThumbnailRenderResult?) -> Void)?
-    private nonisolated(unsafe) var didFinish = false
-    private nonisolated(unsafe) var finishedResult: PDFThumbnailRenderResult?
-
-    init(document: CGPDFDocument, pageIndex: Int, size: CGSize) {
-        self.document = document
-        self.pageIndex = pageIndex
-        self.size = size
+// The serial render queue exclusively owns the documents and their access order.
+nonisolated private final class PDFThumbnailDocumentCache: @unchecked Sendable {
+    nonisolated private struct Key: Hashable {
+        let url: URL
+        let revision: PDFSourceRevision
     }
 
-    nonisolated func setCompletion(_ completion: @escaping (PDFThumbnailRenderResult?) -> Void) {
+    private let maxCount = 4
+    private let renderQueue: OperationQueue
+    private var documents: [Key: CGPDFDocument] = [:]
+    private var order: [Key] = []
+
+    init(renderQueue: OperationQueue) {
+        self.renderQueue = renderQueue
+    }
+
+    func document(for url: URL, revision: PDFSourceRevision) -> CGPDFDocument? {
+        precondition(
+            OperationQueue.current === renderQueue && renderQueue.maxConcurrentOperationCount == 1,
+            "PDF document cache access must stay on its serial render queue."
+        )
+        let key = Key(url: url, revision: revision)
+        if let cached = documents[key] {
+            touch(key)
+            return cached
+        }
+
+        removeEntries(for: url)
+
+        while documents.count >= maxCount, let oldest = order.first {
+            documents.removeValue(forKey: oldest)
+            order.removeAll { $0 == oldest }
+        }
+
+        guard let document = CGPDFDocument(url as CFURL) else { return nil }
+        documents[key] = document
+        touch(key)
+        return document
+    }
+
+    private func removeEntries(for url: URL) {
+        let staleKeys = documents.keys.filter { $0.url == url }
+        for staleKey in staleKeys {
+            documents.removeValue(forKey: staleKey)
+        }
+        order.removeAll { $0.url == url }
+    }
+
+    private func touch(_ key: Key) {
+        order.removeAll { $0 == key }
+        order.append(key)
+    }
+}
+
+nonisolated private final class PDFThumbnailRenderOperation: Operation, @unchecked Sendable {
+    let url: URL
+    let revision: PDFSourceRevision
+    let pageIndex: Int
+    let size: CGSize
+    let documentCache: PDFThumbnailDocumentCache
+
+    private let completionLock = NSLock()
+    // Callers and the render queue share this state through completionLock.
+    private var completion: ((PDFThumbnailRenderResult?) -> Void)?
+    private var didFinish = false
+    private var finishedResult: PDFThumbnailRenderResult?
+
+    init(
+        url: URL,
+        revision: PDFSourceRevision,
+        pageIndex: Int,
+        size: CGSize,
+        documentCache: PDFThumbnailDocumentCache
+    ) {
+        self.url = url
+        self.revision = revision
+        self.pageIndex = pageIndex
+        self.size = size
+        self.documentCache = documentCache
+    }
+
+    func setCompletion(_ completion: @escaping (PDFThumbnailRenderResult?) -> Void) {
         completionLock.lock()
         if didFinish {
             let result = finishedResult
@@ -151,19 +244,24 @@ private final class PDFThumbnailRenderOperation: Operation, @unchecked Sendable 
         completionLock.unlock()
     }
 
-    nonisolated override func cancel() {
+    override func cancel() {
         super.cancel()
         finish(nil)
     }
 
-    nonisolated override func main() {
+    override func main() {
         guard !isCancelled else {
             finish(nil)
             return
         }
 
+        guard let document = documentCache.document(for: url, revision: revision) else {
+            finish(nil)
+            return
+        }
+
         let image = autoreleasepool {
-            renderThumbnail()
+            renderThumbnail(document: document)
         }
 
         guard !isCancelled else {
@@ -174,7 +272,7 @@ private final class PDFThumbnailRenderOperation: Operation, @unchecked Sendable 
         finish(image)
     }
 
-    private nonisolated func finish(_ result: PDFThumbnailRenderResult?) {
+    private func finish(_ result: PDFThumbnailRenderResult?) {
         completionLock.lock()
         guard !didFinish else {
             completionLock.unlock()
@@ -190,7 +288,7 @@ private final class PDFThumbnailRenderOperation: Operation, @unchecked Sendable 
         completion?(result)
     }
 
-    private nonisolated func renderThumbnail() -> PDFThumbnailRenderResult? {
+    private func renderThumbnail(document: CGPDFDocument) -> PDFThumbnailRenderResult? {
         guard
             size.width > 0,
             size.height > 0,

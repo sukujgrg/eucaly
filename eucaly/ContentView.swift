@@ -58,7 +58,9 @@ public struct ContentView: View {
     @State private var isLibrarySearchPresented: Bool = false
     @State private var libraryLoadTask: Task<Void, Never>? = nil
     @State private var isLibraryLoading: Bool = false
+    @State private var libraryLoadFailure: LibraryLoadFailure?
     @State private var libraryRevision: Int = 0
+    @State private var displayedLibraryRootURL: URL? = nil
     @State private var projectionScreenOptions: [ProjectionScreenOption] = []
     @State private var isTimerSettingsPresented: Bool = false
     @State private var isAppearanceSettingsPresented: Bool = false
@@ -345,6 +347,7 @@ public struct ContentView: View {
             libraryFiles: previewLibraryFiles,
             audioFiles: backgroundAudioLibraryFiles,
             isLibraryLoading: isLibraryLoading,
+            libraryLoadFailure: libraryLoadFailure,
             libraryRevision: libraryRevision,
             playlistItems: playlistSidebarItems,
             libraryRootURL: libraryRootURL,
@@ -360,6 +363,7 @@ public struct ContentView: View {
             displayName: { displayName(for: $0) },
             titleForWebpage: webpageTitle(for:),
             onImportToLibrary: importFilesToLibrary,
+            onRetryLibraryLoad: refreshLibrary,
             onImportToAudio: importAudioToLibrary,
             onAddLibraryItemToPlaylist: addLibraryItemToPlaylist,
             onRemovePlaylistItem: removePlaylistItem,
@@ -1133,7 +1137,6 @@ public struct ContentView: View {
             folderURL = root
             loadMarkdownFiles(
                 from: root,
-                refreshLibrarySearchScope: true,
                 refreshSearchResults: true
             )
             loadPlaylists()
@@ -1180,7 +1183,6 @@ public struct ContentView: View {
             folderURL = root
             loadMarkdownFiles(
                 from: root,
-                refreshLibrarySearchScope: true,
                 refreshSearchResults: true
             )
             loadPlaylists()
@@ -1330,14 +1332,11 @@ public struct ContentView: View {
 
     private func isUnderLibraryRoot(_ url: URL) -> Bool {
         guard let root = libraryRootURL else { return true }
-        let rootPath = root.standardizedFileURL.path
-        let filePath = url.standardizedFileURL.path
-        return filePath == rootPath || filePath.hasPrefix(rootPath + "/")
+        return LibraryRootPath.isUnderRoot(url, root: root)
     }
 
     private func loadMarkdownFiles(
         from folder: URL,
-        refreshLibrarySearchScope: Bool = false,
         refreshSearchResults: Bool = false
     ) {
         let previousSearchScopeFiles = librarySearch.scopeFilesSnapshot
@@ -1346,22 +1345,46 @@ public struct ContentView: View {
 
         libraryLoadTask?.cancel()
         isLibraryLoading = true
+        libraryLoadFailure = nil
         librarySearch.setIndexing(true)
         libraryLoadTask = Task.detached(priority: .userInitiated) {
             let cachedMetadata = await index.cachedLibraryMetadata(root: folder)
             if !cachedMetadata.isEmpty {
                 await MainActor.run {
                     guard !Task.isCancelled else { return }
-                    applyLibraryMetadata(
-                        cachedMetadata,
-                        displayedFolder: folder,
-                        refreshLibrarySearchScope: refreshLibrarySearchScope
-                    )
+                    applyLibraryMetadata(cachedMetadata, for: folder)
                 }
             }
             guard !Task.isCancelled else { return }
 
-            let discoveredFiles = scanner.discoverFiles(in: folder)
+            let discoveredFiles: [LibraryDiscoveredFileModel]
+            do {
+                discoveredFiles = try scanner.discoverFiles(in: folder)
+            } catch is CancellationError {
+                return
+            } catch {
+                let failure = error as? LibraryLoadFailure
+                    ?? LibraryLoadFailure(url: folder, error: error)
+                await MainActor.run {
+                    guard !Task.isCancelled else { return }
+                    if !LibraryLoadFailure.shouldRetainExistingLists(
+                        displayedRoot: displayedLibraryRootURL,
+                        failedRoot: folder
+                    ) {
+                        applyLibraryMetadata([], for: folder)
+                        librarySearch.applySearchResults(
+                            [],
+                            query: librarySearch.trimmedQuery,
+                            currentSelectedURL: currentSelectedURL,
+                            preferFirstResult: true
+                        )
+                    }
+                    libraryLoadFailure = failure
+                    isLibraryLoading = false
+                    librarySearch.setIndexing(false)
+                }
+                return
+            }
             guard !Task.isCancelled else { return }
 
             let metadata = await index.syncLibraryMetadata(
@@ -1384,11 +1407,7 @@ public struct ContentView: View {
 
             await MainActor.run {
                 guard !Task.isCancelled else { return }
-                let searchScopeFiles = applyLibraryMetadata(
-                    metadata,
-                    displayedFolder: folder,
-                    refreshLibrarySearchScope: refreshLibrarySearchScope
-                )
+                let searchScopeFiles = applyLibraryMetadata(metadata, for: folder)
                 isLibraryLoading = false
                 librarySearch.setIndexing(false)
 
@@ -1407,40 +1426,35 @@ public struct ContentView: View {
     @discardableResult
     private func applyLibraryMetadata(
         _ metadata: [LibraryTextSearchIndex.FileMetadata],
-        displayedFolder: URL,
-        refreshLibrarySearchScope: Bool
+        for root: URL
     ) -> [URL] {
-        let files = metadata.map(\.url)
+        displayedLibraryRootURL = root.standardizedFileURL
+        let files = metadata.map(\.url.standardizedFileURL)
         let previewFiles = metadata
             .filter { $0.kind.isPreviewLibraryItem }
-            .map(\.url)
+            .map(\.url.standardizedFileURL)
         let backgroundAudioFiles = metadata
             .filter { $0.kind.isBackgroundAudioSource }
-            .map(\.url)
+            .map(\.url.standardizedFileURL)
         let displayNames = Dictionary(
-            uniqueKeysWithValues: metadata.map { ($0.url, $0.title) }
+            uniqueKeysWithValues: metadata.map { ($0.url.standardizedFileURL, $0.title) }
         )
-        let searchScopeFiles = resolveLibrarySearchScopeFiles(
-            displayedFolder: displayedFolder,
-            displayedFiles: previewFiles,
-            refreshLibrarySearchScope: refreshLibrarySearchScope
-        )
+
+        let listsUnchanged =
+            markdownFiles == files
+            && previewLibraryFiles == previewFiles
+            && backgroundAudioLibraryFiles == backgroundAudioFiles
+        let titlesUnchanged = displayNames.allSatisfy { fileDisplayNames[$0.key] == $0.value }
 
         markdownFiles = files
         previewLibraryFiles = previewFiles
         backgroundAudioLibraryFiles = backgroundAudioFiles
-        librarySearch.setScopeFiles(searchScopeFiles)
+        librarySearch.setScopeFiles(previewFiles)
         fileDisplayNames.merge(displayNames) { _, new in new }
-        libraryRevision &+= 1
-        return searchScopeFiles
-    }
-
-    private func resolveLibrarySearchScopeFiles(
-        displayedFolder: URL,
-        displayedFiles: [URL],
-        refreshLibrarySearchScope: Bool
-    ) -> [URL] {
-        displayedFiles
+        if !listsUnchanged || !titlesUnchanged {
+            libraryRevision &+= 1
+        }
+        return previewFiles
     }
 
     private func haveSameStandardizedURLs(_ lhs: [URL], _ rhs: [URL]) -> Bool {
@@ -1737,7 +1751,6 @@ public struct ContentView: View {
         folderURL = root
         loadMarkdownFiles(
             from: root,
-            refreshLibrarySearchScope: true,
             refreshSearchResults: true
         )
     }
@@ -1751,8 +1764,9 @@ public struct ContentView: View {
     }
 
     private func displayName(for url: URL) -> String {
-        if let name = fileDisplayNames[url], !name.isEmpty { return name }
-        return url.lastPathComponent
+        let standardizedURL = url.standardizedFileURL
+        if let name = fileDisplayNames[standardizedURL], !name.isEmpty { return name }
+        return standardizedURL.lastPathComponent
     }
 
     private var playlistResolvedURLs: [URL] {
@@ -1838,7 +1852,11 @@ public struct ContentView: View {
     }
 
     private func rebuildDisplayNames(for urls: [URL]) {
-        let names = libraryFileScanner.displayNames(for: urls)
+        let missing = urls
+            .map(\.standardizedFileURL)
+            .filter { fileDisplayNames[$0] == nil }
+        guard !missing.isEmpty else { return }
+        let names = libraryFileScanner.displayNames(for: missing)
         fileDisplayNames.merge(names) { _, new in new }
     }
 
@@ -1905,13 +1923,13 @@ public struct ContentView: View {
             folderURL = root
             loadMarkdownFiles(
                 from: root,
-                refreshLibrarySearchScope: true,
                 refreshSearchResults: true
             )
             loadPlaylists()
             return
         }
         isLibraryLoading = false
+        libraryLoadFailure = nil
         loadPlaylists()
     }
 
@@ -2104,7 +2122,6 @@ public struct ContentView: View {
                 folderURL = root
                 loadMarkdownFiles(
                     from: root,
-                    refreshLibrarySearchScope: true,
                     refreshSearchResults: true
                 )
             }
@@ -2246,8 +2263,7 @@ public struct ContentView: View {
     }
 
     private func isLyricsHeader(_ line: String) -> Bool {
-        if LyricsSectionCatalog.isHeader(line) { return true }
-        return LyricsSectionCatalog.parseCompanionHeader(line) != nil
+        LyricsSectionCatalog.isHeading(line)
     }
 
     private func normalizeHeader(line: String) -> String {

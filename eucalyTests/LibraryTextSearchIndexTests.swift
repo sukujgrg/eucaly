@@ -49,6 +49,28 @@ final class LibraryTextSearchIndexTests: XCTestCase {
         XCTAssertFalse(containsResult(results, url: nonMatchURL))
     }
 
+    func testHyphenatedSingleTokenSearchMatchesFilename() async throws {
+        let (index, directoryURL) = try makeIndex()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let hyphenURL = try writeTextFile(
+            in: directoryURL,
+            name: "be-thou.txt",
+            contents: "no matching content here"
+        )
+        let otherURL = try writeTextFile(
+            in: directoryURL,
+            name: "other.txt",
+            contents: "unrelated lyrics"
+        )
+
+        _ = await index.rebuild(with: [hyphenURL, otherURL])
+        let results = await index.search(query: "be-thou")
+
+        XCTAssertTrue(containsResult(results, url: hyphenURL))
+        XCTAssertFalse(containsResult(results, url: otherURL))
+    }
+
     func testFilenameSearchIncludesMediaFiles() async throws {
         let (index, directoryURL) = try makeIndex()
         defer { try? FileManager.default.removeItem(at: directoryURL) }
@@ -278,6 +300,156 @@ final class LibraryTextSearchIndexTests: XCTestCase {
         XCTAssertTrue(containsResult(audioFilenameResults, url: audioURL))
     }
 
+    func testSyncLibraryMetadataTitleCasesLowercaseLyricsTitles() async throws {
+        let (index, directoryURL) = try makeIndex()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let songURL = try writeTextFile(
+            in: directoryURL,
+            name: "grace.txt",
+            contents: "amazing grace\nHow sweet the sound"
+        )
+
+        let metadata = await index.syncLibraryMetadata(
+            root: directoryURL,
+            discoveredFiles: [try discoveredFile(for: songURL, root: directoryURL)]
+        )
+
+        XCTAssertEqual(
+            metadata.first { $0.url == songURL.standardizedFileURL }?.title,
+            "Amazing Grace"
+        )
+        XCTAssertEqual(
+            LibraryFileScannerService.displayTitle(for: songURL, kind: .txt),
+            "Amazing Grace"
+        )
+    }
+
+    func testSyncLibraryMetadataRollsBackWhenCommitFails() async throws {
+        let (index, directoryURL) = try makeIndex()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let originalURL = try writeTextFile(
+            in: directoryURL,
+            name: "original.txt",
+            contents: "Original Title\noriginaluniquetoken"
+        )
+        _ = await index.syncLibraryMetadata(
+            root: directoryURL,
+            discoveredFiles: [try discoveredFile(for: originalURL, root: directoryURL)]
+        )
+
+        let replacementURL = try writeTextFile(
+            in: directoryURL,
+            name: "replacement.txt",
+            contents: "Replacement Title\nreplacementuniquetoken"
+        )
+        await index.failNextTransactionCommit()
+
+        let failedSync = await index.syncLibraryMetadata(
+            root: directoryURL,
+            discoveredFiles: [try discoveredFile(for: replacementURL, root: directoryURL)]
+        )
+        XCTAssertEqual(
+            failedSync.first { $0.url == replacementURL.standardizedFileURL }?.title,
+            "Replacement Title"
+        )
+
+        let cachedAfterFailure = await index.cachedLibraryMetadata(root: directoryURL)
+        let originalResults = await index.search(query: "originaluniquetoken")
+        let missingReplacementResults = await index.search(query: "replacementuniquetoken")
+        XCTAssertEqual(cachedAfterFailure.map(\.url), [originalURL.standardizedFileURL])
+        XCTAssertTrue(containsResult(originalResults, url: originalURL))
+        XCTAssertFalse(containsResult(missingReplacementResults, url: replacementURL))
+
+        let recovered = await index.syncLibraryMetadata(
+            root: directoryURL,
+            discoveredFiles: [try discoveredFile(for: replacementURL, root: directoryURL)]
+        )
+        XCTAssertEqual(
+            recovered.first { $0.url == replacementURL.standardizedFileURL }?.title,
+            "Replacement Title"
+        )
+        let cachedAfterRecovery = await index.cachedLibraryMetadata(root: directoryURL)
+        let recoveredResults = await index.search(query: "replacementuniquetoken")
+        XCTAssertEqual(cachedAfterRecovery.map(\.url), [replacementURL.standardizedFileURL])
+        XCTAssertTrue(containsResult(recoveredResults, url: replacementURL))
+    }
+
+    func testDisplayTitleKeepsUTF8TitleWhenFirstLineCrossesFourKilobytes() throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("eucaly-title-utf8-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let firstLine = "Title " + String(repeating: "a", count: 4088) + "中文标题"
+        let fileURL = try writeTextFile(
+            in: directoryURL,
+            name: "long-title.txt",
+            contents: firstLine + "\nsecond line"
+        )
+
+        XCTAssertEqual(LibraryFileScannerService.displayTitle(for: fileURL, kind: .txt), firstLine)
+    }
+
+    func testDisplayTitleSkipsLeadingBlankLines() throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("eucaly-title-blank-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let fileURL = try writeTextFile(
+            in: directoryURL,
+            name: "leading-blanks.txt",
+            contents: "\n\nAmazing Grace\nHow sweet the sound"
+        )
+
+        XCTAssertEqual(
+            LibraryFileScannerService.displayTitle(for: fileURL, kind: .txt),
+            "Amazing Grace"
+        )
+    }
+
+    func testDisplayTitleStopsAfterTitleByteBudgetOfLeadingBlankLines() throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("eucaly-title-budget-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let fileURL = try writeTextFile(
+            in: directoryURL,
+            name: "too-many-blanks.txt",
+            contents: String(
+                repeating: "\n",
+                count: LibraryFileScannerService.titleLineByteLimit + 1
+            ) + "Amazing Grace\nHow sweet the sound"
+        )
+
+        XCTAssertEqual(
+            LibraryFileScannerService.displayTitle(for: fileURL, kind: .txt),
+            fileURL.lastPathComponent
+        )
+    }
+
+    func testDisplayTitleDoesNotFallBackWhenByteLimitSplitsUTF8Scalar() throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("eucaly-title-split-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let prefix = "Title " + String(repeating: "a", count: 4088)
+        let fileURL = try writeTextFile(
+            in: directoryURL,
+            name: "split-scalar.txt",
+            contents: prefix + "中" + String(repeating: "b", count: 5000)
+        )
+
+        let title = LibraryFileScannerService.displayTitle(for: fileURL, kind: .txt)
+        XCTAssertTrue(title.hasPrefix(prefix))
+        XCTAssertTrue(title.contains("中"))
+        XCTAssertNotEqual(title, fileURL.lastPathComponent)
+    }
+
     func testSyncLibraryMetadataRemovesDeletedFilesFromSearch() async throws {
         let (index, directoryURL) = try makeIndex()
         defer { try? FileManager.default.removeItem(at: directoryURL) }
@@ -388,18 +560,12 @@ final class LibraryTextSearchIndexTests: XCTestCase {
     private func discoveredFile(for url: URL, root: URL) throws -> LibraryDiscoveredFileModel {
         let standardizedURL = url.standardizedFileURL
         let values = try standardizedURL.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
-        let rootPath = root.standardizedFileURL.path
-        let path = standardizedURL.path
-        let suffix = path.hasPrefix(rootPath)
-            ? path.dropFirst(rootPath.count).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            : path
-
         return LibraryDiscoveredFileModel(
             url: standardizedURL,
             kind: LibraryFileKind(url: standardizedURL),
             size: Int64(values.fileSize ?? 0),
             modificationTime: values.contentModificationDate?.timeIntervalSince1970 ?? 0,
-            relativeSortKey: String(suffix).lowercased()
+            relativeSortKey: LibraryRootPath.relativeSortKey(for: standardizedURL, root: root)
         )
     }
 

@@ -1,17 +1,6 @@
 import SwiftUI
 import CoreGraphics
 
-let pdfThumbnailRenderPageLimit = 100
-
-func shouldRenderPDFThumbnails(pageCount: Int) -> Bool {
-    pageCount <= pdfThumbnailRenderPageLimit
-}
-
-func shouldRenderPDFThumbnails(for slides: [Slide]) -> Bool {
-    let pdfSlideCount = slides.filter { $0.pdfURL != nil }.count
-    return shouldRenderPDFThumbnails(pageCount: pdfSlideCount)
-}
-
 struct SlideGridCellView: View {
     let slide: Slide
     let itemWidth: CGFloat

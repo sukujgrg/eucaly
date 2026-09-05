@@ -10,9 +10,12 @@ struct PDFThumbnailView: View {
     @State private var didFailToLoadThumbnail = false
     @State private var thumbnailTask: Task<Void, Never>?
     @State private var loadGeneration = UUID()
+    @State private var loadedSizePart: String?
 
-    private let maxBusyRetries = 4
     private let busyRetryDelayNanoseconds: UInt64 = 250_000_000
+    private var requestSize: CGSize {
+        ThumbnailCacheSizing.quantizedSize(from: size)
+    }
 
     var body: some View {
         Group {
@@ -49,6 +52,8 @@ struct PDFThumbnailView: View {
             resetAndLoad()
         }
         .onChange(of: size) {
+            let sizePart = ThumbnailCacheSizing.sizePart(from: size)
+            guard sizePart != loadedSizePart else { return }
             resetAndLoad()
         }
     }
@@ -61,6 +66,7 @@ struct PDFThumbnailView: View {
 
     private func scheduleThumbnailLoad() {
         thumbnailTask?.cancel()
+        loadedSizePart = ThumbnailCacheSizing.sizePart(from: size)
         let generation = UUID()
         loadGeneration = generation
         thumbnailTask = Task {
@@ -72,46 +78,52 @@ struct PDFThumbnailView: View {
 
     private func loadThumbnail(generation: UUID) async {
         guard loadGeneration == generation else { return }
+        let thumbnailSize = requestSize
 
         if let cached = await CacheManager.shared.getCachedThumbnailAsync(
             for: url,
             type: .pdf,
             pageIndex: pageIndex,
-            size: size
+            size: thumbnailSize
         ) {
             guard !Task.isCancelled, loadGeneration == generation else { return }
             thumbnail = cached
             return
         }
 
-        for attempt in 0..<maxBusyRetries {
-            guard !Task.isCancelled, loadGeneration == generation else { return }
-
+        while !Task.isCancelled, loadGeneration == generation {
             let outcome = await PDFThumbnailCoordinator.shared.thumbnail(
                 for: url,
                 pageIndex: pageIndex,
-                size: size
+                size: thumbnailSize
             )
 
             guard !Task.isCancelled, loadGeneration == generation else { return }
 
             switch outcome {
-            case .rendered(let image, let pngData):
-                CacheManager.shared.cacheThumbnail(
-                    image,
-                    pngData: pngData,
-                    for: url,
-                    type: .pdf,
-                    pageIndex: pageIndex,
-                    size: size
-                )
+            case .rendered(let image, let pngData, let revision):
+                let currentRevision = await PDFSourceRevision.currentAsync(for: url)
+                guard !Task.isCancelled, loadGeneration == generation else { return }
+                guard currentRevision == revision else {
+                    try? await Task.sleep(nanoseconds: busyRetryDelayNanoseconds)
+                    continue
+                }
+                // Without a source date the cache would synchronously stat the file
+                // on the main actor, and could not establish thumbnail freshness.
+                if let modificationDate = revision.modificationDate {
+                    CacheManager.shared.cacheThumbnail(
+                        image,
+                        pngData: pngData,
+                        for: url,
+                        type: .pdf,
+                        pageIndex: pageIndex,
+                        size: thumbnailSize,
+                        sourceModificationDate: modificationDate
+                    )
+                }
                 thumbnail = image
                 return
             case .busy:
-                guard attempt < maxBusyRetries - 1 else {
-                    didFailToLoadThumbnail = true
-                    return
-                }
                 try? await Task.sleep(nanoseconds: busyRetryDelayNanoseconds)
             case .failed:
                 didFailToLoadThumbnail = true

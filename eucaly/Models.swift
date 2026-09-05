@@ -94,6 +94,10 @@ nonisolated enum LyricsSectionCatalog {
         parseHeader(line) != nil
     }
 
+    static func isHeading(_ line: String) -> Bool {
+        isHeader(line) || parseCompanionHeader(line) != nil
+    }
+
     static func canonicalHeaderLine(_ line: String) -> String? {
         guard let match = parseHeader(line) else { return nil }
         return match.label

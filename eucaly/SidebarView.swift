@@ -44,6 +44,7 @@ struct SidebarView: View {
     let libraryFiles: [URL]
     let audioFiles: [URL]
     let isLibraryLoading: Bool
+    let libraryLoadFailure: LibraryLoadFailure?
     let libraryRevision: Int
     let playlistItems: [PlaylistSidebarItem]
     let libraryRootURL: URL?
@@ -60,6 +61,7 @@ struct SidebarView: View {
     let displayName: (URL) -> String
     let titleForWebpage: (URL) -> String
     let onImportToLibrary: () -> Void
+    let onRetryLibraryLoad: () -> Void
     let onImportToAudio: () -> Void
     let onAddLibraryItemToPlaylist: (URL) -> Void
     let onRemovePlaylistItem: (UUID) -> Void
@@ -117,6 +119,10 @@ struct SidebarView: View {
             let standardListMaxHeight = max(104, min(208, proxy.size.height * 0.22))
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
+                    if let libraryLoadFailure {
+                        libraryLoadFailureNotice(libraryLoadFailure)
+                    }
+
                     sidebarSection(
                         "Library",
                         systemImage: "folder",
@@ -240,6 +246,32 @@ struct SidebarView: View {
                 .help(libraryGroupToggleHelp)
             }
         }
+    }
+
+    private func libraryLoadFailureNotice(_ failure: LibraryLoadFailure) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("Library couldn’t be refreshed", systemImage: "exclamationmark.triangle")
+                .font(.caption.weight(.semibold))
+            Text(failure.url.path)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .truncationMode(.middle)
+                .help(failure.url.path)
+            Text(failure.message)
+                .font(.caption)
+                .fixedSize(horizontal: false, vertical: true)
+            if !libraryFiles.isEmpty || !audioFiles.isEmpty {
+                Text("Showing the last available Library and Audio lists.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Button("Retry", action: onRetryLibraryLoad)
+                .sidebarActionStyle()
+                .disabled(isLibraryLoading)
+                .help("Refresh Library and Audio")
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func sidebarSection<Content: View>(
@@ -487,8 +519,9 @@ struct SidebarView: View {
         SidebarAudioControlsView(
             session: session,
             audioFiles: audioFiles,
-            libraryRevision: libraryRevision,
+            hasLibraryLoadFailure: libraryLoadFailure != nil,
             maxListHeight: maxListHeight,
+            libraryRevision: libraryRevision,
             libraryRootURL: libraryRootURL,
             outlineExpansionStore: outlineExpansionStore,
             backgroundAudioLoop: $backgroundAudioLoop,
@@ -611,9 +644,11 @@ struct SidebarView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             } else if libraryFiles.isEmpty {
-                Text("No supported files in Library")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                if libraryLoadFailure == nil {
+                    Text("No supported files in Library")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             } else if let presentation = libraryOutlineModelStore.presentation,
                       presentation.revision == revision {
                 libraryOutline(presentation, maxHeight: maxHeight)

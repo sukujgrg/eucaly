@@ -81,9 +81,9 @@ private struct PreviewThumbnailGrid: View {
 
     private var thumbnailRenderingIsAllowed: Bool {
         if let pdfSource = flow.previewPDFSource {
-            return shouldRenderPDFThumbnails(pageCount: pdfSource.pageCount)
+            return PDFSlideCatalog.shouldRenderThumbnails(pageCount: pdfSource.pageCount)
         }
-        return shouldRenderPDFThumbnails(for: flow.previewSlides)
+        return PDFSlideCatalog.shouldRenderThumbnails(for: flow.previewSlides)
     }
 
     private func handleArrowKey(
