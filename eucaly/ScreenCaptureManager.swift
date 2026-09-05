@@ -2,6 +2,7 @@ import ScreenCaptureKit
 import Combine
 import AppKit
 import CoreGraphics
+import CoreVideo
 
 @available(macOS 14.0, *)
 final class ScreenCaptureManager: NSObject, ObservableObject {
@@ -91,6 +92,8 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
         )
         config.width = max(1, Int((Double(sourceWidth) / scaleDown).rounded(.down)))
         config.height = max(1, Int((Double(sourceHeight) / scaleDown).rounded(.down)))
+        // Display the captured IOSurface directly through Core Animation.
+        config.pixelFormat = kCVPixelFormatType_32BGRA
         let fps = normalizedPreferredFrameRate
         config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
         config.queueDepth = 6
