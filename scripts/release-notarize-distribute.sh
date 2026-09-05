@@ -20,7 +20,6 @@ Optional:
   --output-dir DIR           Output directory (default: build/release)
   --team-id TEAM_ID          Apple Developer Team ID for export signing.
   --signing-identity NAME    Override CODE_SIGN_IDENTITY at archive time.
-  --current-arch             Build only current machine architecture.
   --allow-provisioning       Pass -allowProvisioningUpdates to xcodebuild.
 
 GitHub distribution:
@@ -81,7 +80,6 @@ TEAM_ID=""
 SIGNING_IDENTITY=""
 VERSION=""
 BUILD_NUMBER=""
-CURRENT_ARCH_ONLY=false
 ALLOW_PROVISIONING=false
 PUBLISH_GITHUB=false
 REPO=""
@@ -130,10 +128,6 @@ while [[ $# -gt 0 ]]; do
     --signing-identity)
       SIGNING_IDENTITY="$2"
       shift 2
-      ;;
-    --current-arch)
-      CURRENT_ARCH_ONLY=true
-      shift
       ;;
     --allow-provisioning)
       ALLOW_PROVISIONING=true
@@ -384,14 +378,6 @@ if [[ -n "$BUILD_NUMBER" ]]; then
   BUILD_ARGS+=("CURRENT_PROJECT_VERSION=$BUILD_NUMBER")
 fi
 
-if [[ "$CURRENT_ARCH_ONLY" == true ]]; then
-  CURRENT_ARCH="$(uname -m)"
-  BUILD_ARGS+=(
-    "ARCHS=$CURRENT_ARCH"
-    "ONLY_ACTIVE_ARCH=YES"
-  )
-fi
-
 if [[ -n "$SIGNING_IDENTITY" ]]; then
   BUILD_ARGS+=("CODE_SIGN_IDENTITY=$SIGNING_IDENTITY")
 fi
@@ -401,6 +387,7 @@ ARCHIVE_CMD=(
   -project "$PROJECT"
   -scheme "$SCHEME"
   -configuration "$CONFIGURATION"
+  -destination 'generic/platform=macOS'
   -archivePath "$ARCHIVE_PATH"
   archive
   STRIP_INSTALLED_PRODUCT=YES
@@ -470,7 +457,7 @@ if [[ "$PUBLISH_GITHUB" == true ]]; then
     if [[ -n "$NOTES_FILE" ]]; then
       CREATE_ARGS+=(--notes-file "$NOTES_FILE")
     else
-      CREATE_ARGS+=(--notes "Automated notarized release $VERSION")
+      CREATE_ARGS+=(--notes "eucaly $VERSION requires macOS 14 or later on a Mac with Apple Silicon. Intel Macs are not supported.")
     fi
     "${CREATE_ARGS[@]}"
   fi
