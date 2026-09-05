@@ -3,15 +3,27 @@ import AppKit
 import Combine
 import CryptoKit
 
-/// Comprehensive cache manager for eucaly
-/// Handles thumbnail and font size caching with proper lifecycle management
+nonisolated enum ThumbnailCacheSizing {
+    static func quantizedSize(from size: CGSize) -> CGSize {
+        CGSize(
+            width: CGFloat(max(1, Int(size.width.rounded()))),
+            height: CGFloat(max(1, Int(size.height.rounded())))
+        )
+    }
+
+    static func sizePart(from size: CGSize) -> String {
+        let quantized = quantizedSize(from: size)
+        return "\(Int(quantized.width))x\(Int(quantized.height))"
+    }
+}
+
 @MainActor
 class CacheManager: ObservableObject {
     static let shared = CacheManager()
 
     // MARK: - Configuration
 
-    private let maxMemoryCacheSize = 50 // thumbnails
+    private let maxMemoryCacheSize = 200 // thumbnails
     private let maxDiskCacheSize = 1_000 // thumbnails
     private let cacheValidityDays = 30 // Auto-cleanup after 30 days
     private let maxDiskCacheSizeMB = 100 // Max 100MB on disk
@@ -62,9 +74,14 @@ class CacheManager: ObservableObject {
     func getCachedThumbnailAsync(for url: URL, type: ThumbnailType, pageIndex: Int? = nil, size: CGSize? = nil) async -> NSImage? {
         let cacheKey = makeCacheKey(url: url, type: type, pageIndex: pageIndex, size: size)
 
-        if await hasFileBeenModifiedAsync(url: url, cacheKey: cacheKey) {
+        switch await thumbnailFreshness(url: url, cacheKey: cacheKey) {
+        case .modified:
             invalidateThumbnail(for: url, type: type, pageIndex: pageIndex, size: size)
             return nil
+        case .unverifiable:
+            return nil
+        case .fresh:
+            break
         }
 
         if let cached = memoryImageCache.object(forKey: cacheKey as NSString) {
@@ -88,10 +105,18 @@ class CacheManager: ObservableObject {
     }
 
     /// Cache a thumbnail when PNG encoding has already been done off the main actor.
-    func cacheThumbnail(_ image: NSImage, pngData: Data, for url: URL, type: ThumbnailType, pageIndex: Int? = nil, size: CGSize? = nil) {
+    func cacheThumbnail(
+        _ image: NSImage,
+        pngData: Data,
+        for url: URL,
+        type: ThumbnailType,
+        pageIndex: Int? = nil,
+        size: CGSize? = nil,
+        sourceModificationDate: Date? = nil
+    ) {
         let cacheKey = makeCacheKey(url: url, type: type, pageIndex: pageIndex, size: size)
 
-        if let modDate = fileModificationDate(url: url) {
+        if let modDate = sourceModificationDate ?? fileModificationDate(url: url) {
             fileModificationDates[cacheKey] = modDate
             scheduleSaveFileModificationDates()
         }
@@ -198,12 +223,7 @@ class CacheManager: ObservableObject {
     private func makeCacheKey(url: URL, type: ThumbnailType, pageIndex: Int?, size: CGSize?) -> String {
         let standardizedPath = url.standardizedFileURL.path
         let pagePart = pageIndex.map(String.init) ?? "-"
-        let sizePart: String
-        if let size {
-            sizePart = "\(max(1, Int(size.width.rounded())))x\(max(1, Int(size.height.rounded())))"
-        } else {
-            sizePart = "auto"
-        }
+        let sizePart = size.map { ThumbnailCacheSizing.sizePart(from: $0) } ?? "auto"
         let rawKey: String
         if type == .pdf {
             rawKey = "pdf-aspect-v2|\(type.rawValue)|\(standardizedPath)|\(pagePart)|\(sizePart)"
@@ -239,29 +259,35 @@ class CacheManager: ObservableObject {
         try? FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate] as? Date
     }
 
-    private func hasFileBeenModified(url: URL, cacheKey: String) -> Bool {
-        guard let cachedDate = fileModificationDates[cacheKey],
-              let currentDate = fileModificationDate(url: url) else {
-            return false
-        }
-        return currentDate > cachedDate
+    private enum ThumbnailFreshness {
+        case fresh
+        case modified
+        case unverifiable
     }
 
-    private func hasFileBeenModifiedAsync(url: URL, cacheKey: String) async -> Bool {
+    private func thumbnailFreshness(url: URL, cacheKey: String) async -> ThumbnailFreshness {
+#if DEBUG
+        if treatFreshnessAsUnverifiableForTests {
+            return .unverifiable
+        }
+#endif
         guard let cachedDate = fileModificationDates[cacheKey] else {
-            return false
+            return .unverifiable
+        }
+        guard diskIOQueue.operationCount < maxQueuedDiskIOCount else {
+            return .unverifiable
         }
         let path = url.path
-        guard diskIOQueue.operationCount < maxQueuedDiskIOCount else {
-            return false
-        }
-
         let currentDate: Date? = await performOnDiskIOQueue {
             try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate] as? Date
         }
-        guard let currentDate else { return false }
-        return currentDate > cachedDate
+        guard let currentDate else { return .modified }
+        return currentDate > cachedDate ? .modified : .fresh
     }
+
+#if DEBUG
+    var treatFreshnessAsUnverifiableForTests = false
+#endif
 
     private func loadFileModificationDates() {
         let url = diskCacheURL.appendingPathComponent("modification_dates.json")
@@ -391,15 +417,10 @@ class CacheManager: ObservableObject {
             }
         }
 
-        // Perform deletion
-        var deletedBytes: Int64 = 0
         for file in filesToDelete {
             try? fileManager.removeItem(at: file)
-            deletedBytes += fileSizes[file] ?? 0
         }
 
-        let freedMB = Double(deletedBytes) / 1024.0 / 1024.0
-        print("Cache cleanup: Deleted \(filesToDelete.count) files, freed ~\(String(format: "%.1f", freedMB))MB")
         return Set(files.filter { !filesToDelete.contains($0) }.map(\.lastPathComponent))
     }
 

@@ -18,6 +18,9 @@ actor LibraryTextSearchIndex {
 
     private var db: OpaquePointer?
     private let databaseURL: URL
+#if DEBUG
+    private var failNextCommit = false
+#endif
 
     init() {
         let appSupport =
@@ -40,8 +43,11 @@ actor LibraryTextSearchIndex {
     func rebuild(with urls: [URL]) -> Int {
         guard openDatabaseIfNeeded(), let db else { return 0 }
 
-        execute("BEGIN IMMEDIATE TRANSACTION;", db: db)
-        execute("DELETE FROM file_index;", db: db)
+        guard execute("BEGIN IMMEDIATE TRANSACTION;", db: db) else { return 0 }
+        guard execute("DELETE FROM file_index;", db: db) else {
+            execute("ROLLBACK;", db: db)
+            return 0
+        }
 
         let insertSQL = "INSERT INTO file_index(filename, content, path) VALUES (?1, ?2, ?3);"
         var statement: OpaquePointer?
@@ -57,18 +63,14 @@ actor LibraryTextSearchIndex {
         let uniqueURLs = Array(Set(urls))
 
         for url in uniqueURLs {
-            let content = indexedContent(for: url)
+            let standardizedURL = url.standardizedFileURL
+            let content = indexedContent(for: standardizedURL, kind: LibraryFileKind(url: standardizedURL))
 
-            let bindFilenameResult = url.lastPathComponent.withCString { value in
-                sqlite3_bind_text(statement, 1, value, -1, Self.sqliteTransient)
-            }
-            let bindContentResult = content.withCString { value in
-                sqlite3_bind_text(statement, 2, value, -1, Self.sqliteTransient)
-            }
-            let bindPathResult = url.standardizedFileURL.path.withCString { value in
-                sqlite3_bind_text(statement, 3, value, -1, Self.sqliteTransient)
-            }
-            guard bindFilenameResult == SQLITE_OK, bindContentResult == SQLITE_OK, bindPathResult == SQLITE_OK else {
+            guard
+                bindText(standardizedURL.lastPathComponent, at: 1, statement: statement),
+                bindText(content, at: 2, statement: statement),
+                bindText(standardizedURL.path, at: 3, statement: statement)
+            else {
                 sqlite3_reset(statement)
                 sqlite3_clear_bindings(statement)
                 continue
@@ -82,7 +84,10 @@ actor LibraryTextSearchIndex {
             sqlite3_clear_bindings(statement)
         }
 
-        execute("COMMIT;", db: db)
+        if !execute("COMMIT;", db: db) {
+            execute("ROLLBACK;", db: db)
+            return 0
+        }
         return inserted
     }
 
@@ -91,50 +96,66 @@ actor LibraryTextSearchIndex {
         discoveredFiles: [LibraryDiscoveredFileModel]
     ) -> [FileMetadata] {
         guard openDatabaseIfNeeded(), let db else {
-            return discoveredFiles.map { discovered in
-                FileMetadata(
-                    url: discovered.url,
-                    title: fallbackTitle(for: discovered.url, kind: discovered.kind),
-                    kind: discovered.kind,
-                    relativeSortKey: discovered.relativeSortKey
-                )
-            }
+            return fallbackMetadata(from: discoveredFiles)
         }
 
         let rootPath = root.standardizedFileURL.path
         let scanToken = UUID().uuidString
         let existing = existingMetadata(rootPath: rootPath, db: db)
 
-        var shouldCommit = true
-        execute("BEGIN IMMEDIATE TRANSACTION;", db: db)
+        guard execute("BEGIN IMMEDIATE TRANSACTION;", db: db) else {
+            return fallbackMetadata(from: discoveredFiles)
+        }
+
+        var didFinishTransaction = false
         defer {
-            execute(shouldCommit ? "COMMIT;" : "ROLLBACK;", db: db)
+            if !didFinishTransaction {
+                execute("ROLLBACK;", db: db)
+            }
         }
 
         var metadata: [FileMetadata] = []
         for file in discoveredFiles {
             if Task.isCancelled {
-                shouldCommit = false
                 return []
             }
 
             let path = file.url.standardizedFileURL.path
             let cached = existing[path]
             let isUnchanged = cached?.size == file.size && cached?.modificationTime == file.modificationTime
+            let indexedContent: String?
+            if !isUnchanged, file.kind.isEditableLyrics {
+                indexedContent = self.indexedContent(for: file.url, kind: file.kind)
+            } else {
+                indexedContent = nil
+            }
             let title = isUnchanged
-                ? cached?.title ?? fallbackTitle(for: file.url, kind: file.kind)
-                : titleForIndex(from: file.url, kind: file.kind)
+                ? cached?.title ?? LibraryFileScannerService.displayTitle(for: file.url, kind: file.kind)
+                : LibraryFileScannerService.displayTitle(
+                    for: file.url,
+                    kind: file.kind,
+                    contents: indexedContent.flatMap { $0.isEmpty ? nil : $0 }
+                )
 
-            upsertMetadata(
+            guard upsertMetadata(
                 rootPath: rootPath,
                 file: file,
                 title: title,
                 scanToken: scanToken,
                 db: db
-            )
+            ) else {
+                return fallbackMetadata(from: discoveredFiles)
+            }
 
             if !isUnchanged {
-                replaceSearchIndexEntry(url: file.url, kind: file.kind, db: db)
+                guard replaceSearchIndexEntry(
+                    url: file.url,
+                    kind: file.kind,
+                    content: indexedContent,
+                    db: db
+                ) else {
+                    return fallbackMetadata(from: discoveredFiles)
+                }
             }
 
             metadata.append(
@@ -147,7 +168,16 @@ actor LibraryTextSearchIndex {
             )
         }
 
-        removeStaleMetadata(rootPath: rootPath, scanToken: scanToken, db: db)
+        guard removeStaleMetadata(rootPath: rootPath, scanToken: scanToken, db: db) else {
+            return fallbackMetadata(from: discoveredFiles)
+        }
+
+        guard execute("COMMIT;", db: db) else {
+            execute("ROLLBACK;", db: db)
+            didFinishTransaction = true
+            return fallbackMetadata(from: discoveredFiles)
+        }
+        didFinishTransaction = true
 
         return metadata.sorted {
             $0.relativeSortKey < $1.relativeSortKey
@@ -172,7 +202,9 @@ actor LibraryTextSearchIndex {
             sqlite3_finalize(statement)
         }
 
-        bindText(root.standardizedFileURL.path, at: 1, statement: statement)
+        guard bindText(root.standardizedFileURL.path, at: 1, statement: statement) else {
+            return []
+        }
 
         var metadata: [FileMetadata] = []
         while sqlite3_step(statement) == SQLITE_ROW {
@@ -189,7 +221,7 @@ actor LibraryTextSearchIndex {
                 FileMetadata(
                     url: URL(fileURLWithPath: String(cString: cPath)).standardizedFileURL,
                     title: String(cString: cTitle),
-                    kind: kind(from: String(cString: cKind)),
+                    kind: LibraryFileKind(rawValue: String(cString: cKind)) ?? .unsupported,
                     relativeSortKey: String(cString: cRelativeSortKey)
                 )
             )
@@ -199,7 +231,7 @@ actor LibraryTextSearchIndex {
 
     func search(query: String, limit: Int = 250) -> [SearchResult] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.count >= 3 else { return [] }
+        guard trimmed.count >= LibrarySearchModel.minimumCharacterCount else { return [] }
         guard openDatabaseIfNeeded(), let db else { return [] }
 
         let ftsQuery = matchQuery(for: trimmed)
@@ -231,6 +263,7 @@ actor LibraryTextSearchIndex {
 
         var results: [SearchResult] = []
         while sqlite3_step(statement) == SQLITE_ROW {
+            if Task.isCancelled { return [] }
             guard let cPath = sqlite3_column_text(statement, 0) else { continue }
             let path = String(cString: cPath)
             let snippet: String
@@ -271,27 +304,9 @@ actor LibraryTextSearchIndex {
             .components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-            .filter { !isSnippetHeading($0) }
+            .filter { !LyricsSectionCatalog.isHeading($0) }
             .prefix(4)
             .joined(separator: "\n")
-    }
-
-    private static func isSnippetHeading(_ line: String) -> Bool {
-        LyricsSectionCatalog.isHeader(line) ||
-            LyricsSectionCatalog.parseCompanionHeader(line) != nil
-    }
-
-    private func indexedContent(for url: URL) -> String {
-        guard url.pathExtension.lowercased() == "txt" else { return "" }
-        guard
-            let values = try? url.resourceValues(forKeys: [.fileSizeKey]),
-            let fileSize = values.fileSize,
-            Int64(fileSize) <= Self.maxIndexedFileSizeBytes
-        else {
-            return ""
-        }
-
-        return (try? String(contentsOf: url, encoding: .utf8)) ?? ""
     }
 
     private func matchQuery(for query: String) -> String {
@@ -302,11 +317,6 @@ actor LibraryTextSearchIndex {
             .filter { !$0.isEmpty }
 
         guard !tokens.isEmpty else { return "" }
-
-        if tokens.count == 1 {
-            let sanitized = tokens[0].replacingOccurrences(of: "\"", with: "\"\"")
-            return "\(sanitized)*"
-        }
 
         let phrase = tokens
             .map { $0.replacingOccurrences(of: "\"", with: "\"\"") }
@@ -382,7 +392,9 @@ actor LibraryTextSearchIndex {
             sqlite3_finalize(statement)
         }
 
-        bindText(rootPath, at: 1, statement: statement)
+        guard bindText(rootPath, at: 1, statement: statement) else {
+            return [:]
+        }
 
         var metadata: [String: CachedMetadata] = [:]
         while sqlite3_step(statement) == SQLITE_ROW {
@@ -408,7 +420,7 @@ actor LibraryTextSearchIndex {
         title: String,
         scanToken: String,
         db: OpaquePointer
-    ) {
+    ) -> Bool {
         let sql = """
         INSERT INTO library_file_metadata(
             path,
@@ -439,27 +451,31 @@ actor LibraryTextSearchIndex {
 
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
-            return
+            return false
         }
         defer {
             sqlite3_finalize(statement)
         }
 
-        bindText(file.url.standardizedFileURL.path, at: 1, statement: statement)
-        bindText(rootPath, at: 2, statement: statement)
-        bindText(file.relativeSortKey, at: 3, statement: statement)
-        bindText(file.url.lastPathComponent, at: 4, statement: statement)
-        bindText(title, at: 5, statement: statement)
-        bindText(kindName(file.kind), at: 6, statement: statement)
+        guard
+            bindText(file.url.standardizedFileURL.path, at: 1, statement: statement),
+            bindText(rootPath, at: 2, statement: statement),
+            bindText(file.relativeSortKey, at: 3, statement: statement),
+            bindText(file.url.lastPathComponent, at: 4, statement: statement),
+            bindText(title, at: 5, statement: statement),
+            bindText(file.kind.rawValue, at: 6, statement: statement),
+            bindText(scanToken, at: 11, statement: statement)
+        else {
+            return false
+        }
         sqlite3_bind_int64(statement, 7, file.size)
         sqlite3_bind_double(statement, 8, file.modificationTime)
         sqlite3_bind_int(statement, 9, file.kind.isPreviewLibraryItem ? 1 : 0)
         sqlite3_bind_int(statement, 10, file.kind.isBackgroundAudioSource ? 1 : 0)
-        bindText(scanToken, at: 11, statement: statement)
-        sqlite3_step(statement)
+        return sqlite3_step(statement) == SQLITE_DONE
     }
 
-    private func removeStaleMetadata(rootPath: String, scanToken: String, db: OpaquePointer) {
+    private func removeStaleMetadata(rootPath: String, scanToken: String, db: OpaquePointer) -> Bool {
         let stalePathsSQL = """
         SELECT path
         FROM library_file_metadata
@@ -468,18 +484,28 @@ actor LibraryTextSearchIndex {
 
         var paths: [String] = []
         var stalePathsStatement: OpaquePointer?
-        if sqlite3_prepare_v2(db, stalePathsSQL, -1, &stalePathsStatement, nil) == SQLITE_OK {
-            bindText(rootPath, at: 1, statement: stalePathsStatement)
-            bindText(scanToken, at: 2, statement: stalePathsStatement)
-            while sqlite3_step(stalePathsStatement) == SQLITE_ROW {
-                guard let cPath = sqlite3_column_text(stalePathsStatement, 0) else { continue }
-                paths.append(String(cString: cPath))
-            }
+        guard sqlite3_prepare_v2(db, stalePathsSQL, -1, &stalePathsStatement, nil) == SQLITE_OK else {
+            return false
         }
-        sqlite3_finalize(stalePathsStatement)
+        defer {
+            sqlite3_finalize(stalePathsStatement)
+        }
+
+        guard
+            bindText(rootPath, at: 1, statement: stalePathsStatement),
+            bindText(scanToken, at: 2, statement: stalePathsStatement)
+        else {
+            return false
+        }
+        while sqlite3_step(stalePathsStatement) == SQLITE_ROW {
+            guard let cPath = sqlite3_column_text(stalePathsStatement, 0) else { continue }
+            paths.append(String(cString: cPath))
+        }
 
         for path in paths {
-            removeSearchIndexEntry(path: path, db: db)
+            guard removeSearchIndexEntry(path: path, db: db) else {
+                return false
+            }
         }
 
         let deleteSQL = """
@@ -489,47 +515,64 @@ actor LibraryTextSearchIndex {
 
         var deleteStatement: OpaquePointer?
         guard sqlite3_prepare_v2(db, deleteSQL, -1, &deleteStatement, nil) == SQLITE_OK else {
-            return
+            return false
         }
         defer {
             sqlite3_finalize(deleteStatement)
         }
 
-        bindText(rootPath, at: 1, statement: deleteStatement)
-        bindText(scanToken, at: 2, statement: deleteStatement)
-        sqlite3_step(deleteStatement)
+        guard
+            bindText(rootPath, at: 1, statement: deleteStatement),
+            bindText(scanToken, at: 2, statement: deleteStatement)
+        else {
+            return false
+        }
+        return sqlite3_step(deleteStatement) == SQLITE_DONE
     }
 
-    private func replaceSearchIndexEntry(url: URL, kind: LibraryFileKind, db: OpaquePointer) {
-        removeSearchIndexEntry(path: url.standardizedFileURL.path, db: db)
+    private func replaceSearchIndexEntry(
+        url: URL,
+        kind: LibraryFileKind,
+        content: String?,
+        db: OpaquePointer
+    ) -> Bool {
+        guard removeSearchIndexEntry(path: url.standardizedFileURL.path, db: db) else {
+            return false
+        }
 
         let insertSQL = "INSERT INTO file_index(filename, content, path) VALUES (?1, ?2, ?3);"
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, insertSQL, -1, &statement, nil) == SQLITE_OK else {
-            return
+            return false
         }
         defer {
             sqlite3_finalize(statement)
         }
 
-        bindText(url.lastPathComponent, at: 1, statement: statement)
-        bindText(indexedContent(for: url, kind: kind), at: 2, statement: statement)
-        bindText(url.standardizedFileURL.path, at: 3, statement: statement)
-        sqlite3_step(statement)
+        guard
+            bindText(url.lastPathComponent, at: 1, statement: statement),
+            bindText(content ?? indexedContent(for: url, kind: kind), at: 2, statement: statement),
+            bindText(url.standardizedFileURL.path, at: 3, statement: statement)
+        else {
+            return false
+        }
+        return sqlite3_step(statement) == SQLITE_DONE
     }
 
-    private func removeSearchIndexEntry(path: String, db: OpaquePointer) {
+    private func removeSearchIndexEntry(path: String, db: OpaquePointer) -> Bool {
         let sql = "DELETE FROM file_index WHERE path = ?1;"
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
-            return
+            return false
         }
         defer {
             sqlite3_finalize(statement)
         }
 
-        bindText(path, at: 1, statement: statement)
-        sqlite3_step(statement)
+        guard bindText(path, at: 1, statement: statement) else {
+            return false
+        }
+        return sqlite3_step(statement) == SQLITE_DONE
     }
 
     private func indexedContent(for url: URL, kind: LibraryFileKind) -> String {
@@ -545,73 +588,43 @@ actor LibraryTextSearchIndex {
         return (try? String(contentsOf: url, encoding: .utf8)) ?? ""
     }
 
-    private func titleForIndex(from url: URL, kind: LibraryFileKind) -> String {
-        guard kind == .txt else {
-            return url.lastPathComponent
-        }
-
-        guard let contents = try? String(contentsOf: url, encoding: .utf8) else {
-            return url.lastPathComponent
-        }
-        let lines = contents
-            .replacingOccurrences(of: "\r\n", with: "\n")
-            .split(separator: "\n", omittingEmptySubsequences: true)
-            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-
-        if let first = lines.first, !first.isEmpty {
-            return first
-        }
-
-        return url.lastPathComponent
-    }
-
-    private func fallbackTitle(for url: URL, kind: LibraryFileKind) -> String {
-        kind == .txt ? titleForIndex(from: url, kind: kind) : url.lastPathComponent
-    }
-
-    private func kindName(_ kind: LibraryFileKind) -> String {
-        switch kind {
-        case .pdf:
-            return "pdf"
-        case .image:
-            return "image"
-        case .video:
-            return "video"
-        case .audio:
-            return "audio"
-        case .txt:
-            return "txt"
-        case .unsupported:
-            return "unsupported"
+    private func fallbackMetadata(from discoveredFiles: [LibraryDiscoveredFileModel]) -> [FileMetadata] {
+        discoveredFiles.map { discovered in
+            FileMetadata(
+                url: discovered.url,
+                title: LibraryFileScannerService.displayTitle(
+                    for: discovered.url,
+                    kind: discovered.kind
+                ),
+                kind: discovered.kind,
+                relativeSortKey: discovered.relativeSortKey
+            )
         }
     }
 
-    private func kind(from name: String) -> LibraryFileKind {
-        switch name {
-        case "pdf":
-            return .pdf
-        case "image":
-            return .image
-        case "video":
-            return .video
-        case "audio":
-            return .audio
-        case "txt":
-            return .txt
-        default:
-            return .unsupported
-        }
-    }
-
-    private func bindText(_ text: String, at index: Int32, statement: OpaquePointer?) {
-        _ = text.withCString { value in
+    @discardableResult
+    private func bindText(_ text: String, at index: Int32, statement: OpaquePointer?) -> Bool {
+        text.withCString { value in
             sqlite3_bind_text(statement, index, value, -1, Self.sqliteTransient)
-        }
+        } == SQLITE_OK
     }
 
-    private func execute(_ sql: String, db: OpaquePointer) {
-        sqlite3_exec(db, sql, nil, nil, nil)
+    @discardableResult
+    private func execute(_ sql: String, db: OpaquePointer) -> Bool {
+#if DEBUG
+        if failNextCommit, sql.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("COMMIT") {
+            failNextCommit = false
+            return false
+        }
+#endif
+        return sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK
     }
+
+#if DEBUG
+    func failNextTransactionCommit() {
+        failNextCommit = true
+    }
+#endif
 
     private static let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 }

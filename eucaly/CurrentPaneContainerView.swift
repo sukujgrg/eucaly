@@ -30,9 +30,9 @@ struct CurrentPaneContainerView: View {
         let selectedWebpageURL = currentWebpageURL(from: slides)
         let allowsPDFThumbnailRendering: Bool = {
             if let pdfSource = session.pdfSlideSource {
-                return shouldRenderPDFThumbnails(pageCount: pdfSource.pageCount)
+                return PDFSlideCatalog.shouldRenderThumbnails(pageCount: pdfSource.pageCount)
             }
-            return shouldRenderPDFThumbnails(for: slides)
+            return PDFSlideCatalog.shouldRenderThumbnails(for: slides)
         }()
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {

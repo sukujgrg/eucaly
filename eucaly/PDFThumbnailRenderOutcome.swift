@@ -8,9 +8,9 @@
 import Foundation
 import AppKit
 
-enum PDFThumbnailRenderOutcome {
+nonisolated enum PDFThumbnailRenderOutcome: Sendable {
 
-    case rendered(image: NSImage, pngData: Data)
+    case rendered(image: NSImage, pngData: Data, revision: PDFSourceRevision)
 
     case busy
 

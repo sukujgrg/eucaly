@@ -235,13 +235,13 @@ nonisolated struct LibraryOutlineSnapshot {
             return FolderGroup(id: "folder:root", title: "Root", sortKey: "0-root")
         }
 
-        let rootComponents = libraryRootURL.standardizedFileURL.pathComponents
-        let parentComponents = url.deletingLastPathComponent().standardizedFileURL.pathComponents
-        guard parentComponents.starts(with: rootComponents) else {
+        guard let relativeComponents = LibraryRootPath.relativeComponents(
+            for: url.deletingLastPathComponent(),
+            from: libraryRootURL
+        ) else {
             return FolderGroup(id: "folder:other", title: "Other", sortKey: "z-other")
         }
 
-        let relativeComponents = parentComponents.dropFirst(rootComponents.count)
         guard let firstFolder = relativeComponents.first, !firstFolder.isEmpty else {
             return FolderGroup(id: "folder:root", title: "Root", sortKey: "0-root")
         }

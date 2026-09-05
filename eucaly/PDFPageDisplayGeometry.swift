@@ -1,6 +1,6 @@
 import CoreGraphics
 
-enum PDFPageDisplayGeometry {
+nonisolated enum PDFPageDisplayGeometry {
     static func cropBoxDisplayBounds(for page: CGPDFPage) -> CGRect {
         let cropBox = page.getBoxRect(.cropBox)
         let rotation = ((page.rotationAngle % 360) + 360) % 360

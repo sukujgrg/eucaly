@@ -86,4 +86,20 @@ final class LibraryOutlineSnapshotTests: XCTestCase {
                 === snapshot.parentGroupByFileURL[lowercaseFile.standardizedFileURL]
         )
     }
+
+    func testLibraryRootPathRejectsSiblingPrefixFolders() {
+        let root = URL(fileURLWithPath: "/library")
+        let nested = URL(fileURLWithPath: "/library/Songs/Grace.txt")
+        let sibling = URL(fileURLWithPath: "/library-old/Outside.txt")
+
+        XCTAssertTrue(LibraryRootPath.isUnderRoot(nested, root: root))
+        XCTAssertFalse(LibraryRootPath.isUnderRoot(sibling, root: root))
+        XCTAssertEqual(LibraryRootPath.relativePath(for: nested, from: root), "Songs/Grace.txt")
+        XCTAssertNil(LibraryRootPath.relativePath(for: sibling, from: root))
+        XCTAssertEqual(LibraryRootPath.relativeSortKey(for: nested, root: root), "songs/grace.txt")
+        XCTAssertEqual(
+            LibraryRootPath.relativeSortKey(for: sibling, root: root),
+            sibling.standardizedFileURL.path.lowercased()
+        )
+    }
 }

@@ -13,6 +13,9 @@ final class PDFSlideCatalogTests: XCTestCase {
         XCTAssertFalse(PDFSlideCatalog.shouldUseVirtualCatalog(pageCount: 100))
         XCTAssertTrue(PDFSlideCatalog.shouldUseVirtualCatalog(pageCount: 101))
         XCTAssertTrue(PDFSlideCatalog.shouldUseVirtualCatalog(pageCount: 278))
+        XCTAssertTrue(PDFSlideCatalog.shouldRenderThumbnails(pageCount: 0))
+        XCTAssertTrue(PDFSlideCatalog.shouldRenderThumbnails(pageCount: 100))
+        XCTAssertFalse(PDFSlideCatalog.shouldRenderThumbnails(pageCount: 101))
     }
 
     func testSlideFactoryUsesStableIdentity() {

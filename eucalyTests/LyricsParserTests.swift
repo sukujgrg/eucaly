@@ -279,6 +279,13 @@ final class LyricsParserTests: XCTestCase {
         }
     }
 
+    func testHeadingDetectionIncludesHeadersAndCompanions() {
+        XCTAssertTrue(LyricsSectionCatalog.isHeading("Verse 1"))
+        XCTAssertTrue(LyricsSectionCatalog.isHeading("Meaning"))
+        XCTAssertTrue(LyricsSectionCatalog.isHeading("Translation"))
+        XCTAssertFalse(LyricsSectionCatalog.isHeading("Amazing grace"))
+    }
+
     func testCCLITrailerAndAuthorAreStripped() {
         let raw = """
         Verse

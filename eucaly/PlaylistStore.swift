@@ -111,10 +111,6 @@ final class PlaylistStore: ObservableObject {
     }
 
     private func makeRelativePath(for url: URL, fromRoot root: URL) -> String? {
-        let rootPath = root.standardizedFileURL.path
-        let filePath = url.standardizedFileURL.path
-        guard filePath.hasPrefix(rootPath + "/") else { return nil }
-        let start = filePath.index(filePath.startIndex, offsetBy: rootPath.count + 1)
-        return String(filePath[start...])
+        LibraryRootPath.relativePath(for: url, from: root)
     }
 }

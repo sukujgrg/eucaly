@@ -17,7 +17,7 @@ struct PDFPagePlaceholderView: View {
                 Image(systemName: "doc.richtext")
                     .font(.system(size: 28, weight: .semibold))
                     .foregroundStyle(.secondary)
-                Text("Page \(pageIndex + 1)")
+                Text(PDFSlideCatalog.pageLabel(pageIndex: pageIndex))
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
             }

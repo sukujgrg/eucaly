@@ -37,8 +37,9 @@ nonisolated struct AudioSidebarInteraction {
 struct SidebarAudioControlsView: View {
     @ObservedObject var session: PresentationSession
     let audioFiles: [URL]
-    let libraryRevision: Int
+    let hasLibraryLoadFailure: Bool
     let maxListHeight: CGFloat
+    let libraryRevision: Int
     let libraryRootURL: URL?
     let outlineExpansionStore: SidebarOutlineExpansionStore
     @Binding var backgroundAudioLoop: Bool
@@ -125,9 +126,11 @@ struct SidebarAudioControlsView: View {
     @ViewBuilder
     private var audioList: some View {
         if audioFiles.isEmpty {
-            Text("No audio or video files in Library")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            if !hasLibraryLoadFailure {
+                Text("No audio or video files in Library")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
         } else {
             SidebarOutlineView(
                 contentRevision: AnyHashable(libraryRevision),

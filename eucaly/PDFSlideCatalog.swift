@@ -2,12 +2,14 @@ import CoreGraphics
 import CryptoKit
 import Foundation
 
-struct PDFSlideSource: Equatable, Sendable {
+nonisolated struct PDFSlideSource: Equatable, Sendable {
     let url: URL
     let pageCount: Int
 }
 
-enum PDFSlideCatalog {
+nonisolated enum PDFSlideCatalog {
+    static let thumbnailRenderPageLimit = 100
+
     static func pageCount(for url: URL) -> Int? {
         guard let document = CGPDFDocument(url as CFURL) else { return nil }
         let count = document.numberOfPages
@@ -15,7 +17,19 @@ enum PDFSlideCatalog {
     }
 
     static func shouldUseVirtualCatalog(pageCount: Int) -> Bool {
-        pageCount > pdfThumbnailRenderPageLimit
+        pageCount > thumbnailRenderPageLimit
+    }
+
+    static func shouldRenderThumbnails(pageCount: Int) -> Bool {
+        pageCount <= thumbnailRenderPageLimit
+    }
+
+    static func shouldRenderThumbnails(for slides: [Slide]) -> Bool {
+        shouldRenderThumbnails(pageCount: slides.filter { $0.pdfURL != nil }.count)
+    }
+
+    static func pageLabel(pageIndex: Int) -> String {
+        "Page \(pageIndex + 1)"
     }
 
     static func stableSlideID(url: URL, pageIndex: Int) -> UUID {
@@ -56,7 +70,7 @@ enum PDFSlideCatalog {
             id: stableSlideID(url: url, pageIndex: pageIndex),
             index: pageIndex + 1,
             lines: [],
-            label: "Page \(pageIndex + 1)",
+            label: pageLabel(pageIndex: pageIndex),
             videoURL: nil,
             pdfURL: url,
             pdfPageIndex: pageIndex,
