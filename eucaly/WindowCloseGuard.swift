@@ -27,7 +27,9 @@ struct WindowCloseGuard: NSViewRepresentable {
         var shouldClose: () -> Bool
         private let registrationID = UUID()
         private weak var window: NSWindow?
-        private weak var forwardedDelegate: NSWindowDelegate?
+        // AppKit caches optional delegate callbacks when the proxy is installed.
+        // Keep their receiver alive until the original delegate is restored.
+        private var forwardedDelegate: NSWindowDelegate?
 
         init(shouldClose: @escaping () -> Bool) {
             self.shouldClose = shouldClose
@@ -43,8 +45,15 @@ struct WindowCloseGuard: NSViewRepresentable {
                 return
             }
             uninstall()
+            if let previousGuard = window.delegate as? Coordinator {
+                // A replacement view can attach before SwiftUI dismantles the old
+                // one. Transfer the native delegate instead of chaining guards.
+                forwardedDelegate = previousGuard.forwardedDelegate
+                previousGuard.uninstall()
+            } else {
+                forwardedDelegate = window.delegate
+            }
             self.window = window
-            forwardedDelegate = window.delegate
             window.delegate = self
             refreshRegistration()
         }

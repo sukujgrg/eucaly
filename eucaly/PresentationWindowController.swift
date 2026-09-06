@@ -106,6 +106,7 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     private var screenParametersObserver: NSObjectProtocol?
     private var screenRepositionWorkItem: DispatchWorkItem?
     private var currentThumbnailColumnCount: Int = 1
+    private var currentDocumentRevision: UInt64 = 0
 
     var isBackgroundAudioPlaying: Bool {
         backgroundAudioPlaybackState == .playing
@@ -200,6 +201,7 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
         preferredSelection: Slide.ID? = nil,
         preferredSelectionIndex: Int? = nil
     ) {
+        currentDocumentRevision &+= 1
         let preservedSelection = preferredSelection ?? currentSlideID
         pdfSlideSource = nil
         self.slides = slides
@@ -221,6 +223,7 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
         preferredSelection: Slide.ID? = nil,
         preferredSelectionIndex: Int? = nil
     ) {
+        currentDocumentRevision &+= 1
         slides = []
         pdfSlideSource = source
 
@@ -243,6 +246,7 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     func clearSlides() {
+        currentDocumentRevision &+= 1
         slides = []
         pdfSlideSource = nil
         currentSlideID = nil
@@ -345,16 +349,8 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     func moveSelection(_ delta: Int) {
-        // Defer to avoid publishing changes during view updates.
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            guard let currentID = self.currentSlideID,
-                  let index = self.slideIndex(for: currentID) else {
-                self.currentSlideID = self.firstSlideID
-                return
-            }
-            let nextIndex = max(0, min(self.slideCount - 1, index + delta))
-            self.currentSlideID = self.slide(at: nextIndex)?.id
+        enqueueSelectionMove { index, count, _ in
+            max(0, min(count - 1, index + delta))
         }
     }
 
@@ -363,20 +359,32 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     func moveSelection(direction: ThumbnailGridNavigationDirection) {
-        guard slideCount > 0 else { return }
-        guard let selectedSlideID = currentSlideID,
-              let currentIndex = slideIndex(for: selectedSlideID) else {
-            currentSlideID = firstSlideID
-            return
+        enqueueSelectionMove { index, count, columnCount in
+            ThumbnailGridLayout.fixedColumnCount(columnCount).selectionTargetIndex(
+                from: index,
+                itemCount: count,
+                direction: direction
+            )
         }
+    }
 
-        let layout = ThumbnailGridLayout.fixedColumnCount(currentThumbnailColumnCount)
-        let targetIndex = layout.selectionTargetIndex(
-            from: currentIndex,
-            itemCount: slideCount,
-            direction: direction
-        )
-        currentSlideID = slide(at: targetIndex)?.id
+    private func enqueueSelectionMove(_ targetIndex: @escaping (Int, Int, Int) -> Int) {
+        let revision = currentDocumentRevision
+        // SwiftUI can invoke onKeyPress during its update pass. Resolve each
+        // queued move in order, after that pass, against the same Current document.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.currentDocumentRevision == revision, !self.isEmpty else { return }
+            let nextID: Slide.ID?
+            if let currentID = self.currentSlideID, let index = self.slideIndex(for: currentID) {
+                let nextIndex = targetIndex(index, self.slideCount, self.currentThumbnailColumnCount)
+                nextID = self.slide(at: nextIndex)?.id
+            } else {
+                nextID = self.firstSlideID
+            }
+            if self.currentSlideID != nextID {
+                self.currentSlideID = nextID
+            }
+        }
     }
 
     func seekVideo(to seconds: Double) {
@@ -2109,14 +2117,10 @@ final class PresentationWindow: NSWindow {
     }
 
     private func requestMoveSelection(_ delta: Int) {
-        DispatchQueue.main.async { [weak self] in
-            self?.session?.moveSelection(delta)
-        }
+        session?.moveSelection(delta)
     }
 
     private func requestMoveSelection(direction: ThumbnailGridNavigationDirection) {
-        DispatchQueue.main.async { [weak self] in
-            self?.session?.moveSelection(direction: direction)
-        }
+        session?.moveSelection(direction: direction)
     }
 }

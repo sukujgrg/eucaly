@@ -276,36 +276,36 @@ final class PresentationFlowTests: XCTestCase {
         XCTAssertEqual(result.current, result.expected)
     }
 
+    @MainActor
     func testSessionGridNavigationUsesCurrentThumbnailColumnCount() async {
-        let result = await MainActor.run { () -> (current: Slide.ID?, expected: Slide.ID?) in
-            let session = PresentationSession()
-            let slides = makeTestSlides(count: 6)
+        let session = PresentationSession()
+        let slides = makeTestSlides(count: 6)
 
-            session.setSlides(slides)
-            session.currentSlideID = slides[5].id
-            session.setCurrentThumbnailColumnCount(3)
-            session.moveSelection(direction: .previousRow)
+        session.setSlides(slides)
+        session.currentSlideID = slides[5].id
+        session.setCurrentThumbnailColumnCount(3)
+        session.moveSelection(direction: .previousRow)
 
-            return (session.currentSlideID, slides[2].id)
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
         }
-
-        XCTAssertEqual(result.current, result.expected)
+        XCTAssertEqual(session.currentSlideID, slides[2].id)
     }
 
+    @MainActor
     func testSessionGridNavigationMovesDownByRowWhilePresenting() async {
-        let result = await MainActor.run { () -> (current: Slide.ID?, expected: Slide.ID?) in
-            let session = PresentationSession()
-            let slides = makeTestSlides(count: 6)
+        let session = PresentationSession()
+        let slides = makeTestSlides(count: 6)
 
-            session.setSlides(slides)
-            session.currentSlideID = slides[1].id
-            session.setCurrentThumbnailColumnCount(3)
-            session.moveSelection(direction: .nextRow)
+        session.setSlides(slides)
+        session.currentSlideID = slides[1].id
+        session.setCurrentThumbnailColumnCount(3)
+        session.moveSelection(direction: .nextRow)
 
-            return (session.currentSlideID, slides[4].id)
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
         }
-
-        XCTAssertEqual(result.current, result.expected)
+        XCTAssertEqual(session.currentSlideID, slides[4].id)
     }
 
     func testHideSlidesDoesNotClearBackgroundVisual() async {
