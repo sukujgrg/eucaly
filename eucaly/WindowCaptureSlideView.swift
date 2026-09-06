@@ -3,7 +3,9 @@ import ScreenCaptureKit
 import AppKit
 import CoreGraphics
 import CoreMedia
-import CoreImage
+import CoreVideo
+import IOSurface
+import QuartzCore
 
 nonisolated enum WindowCaptureFrameRate {
     static func normalized(_ value: Int) -> Int {
@@ -70,6 +72,31 @@ nonisolated struct WindowCaptureCommitGeneration {
 
     func allowsCommit(_ generation: Int) -> Bool {
         generation == value
+    }
+}
+
+nonisolated struct WindowCaptureFrame: @unchecked Sendable {
+    // Keep the capture buffer alive while queued or displayed so its pooled
+    // storage cannot be reused. Consumers only read this frame's surface.
+    private let pixelBuffer: CVPixelBuffer
+    let surface: IOSurface
+
+    init?(sampleBuffer: CMSampleBuffer) {
+        guard sampleBuffer.isValid,
+              CMSampleBufferDataIsReady(sampleBuffer),
+              let attachments = CMSampleBufferGetSampleAttachmentsArray(
+                sampleBuffer,
+                createIfNecessary: false
+              ) as? [[SCStreamFrameInfo: Any]],
+              let status = attachments.first?[.status] as? Int,
+              status == SCFrameStatus.complete.rawValue,
+              let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
+              let surfaceRef = CVPixelBufferGetIOSurface(pixelBuffer)?.takeUnretainedValue() else {
+            return nil
+        }
+
+        self.pixelBuffer = pixelBuffer
+        surface = IOSurface(surfaceRef)
     }
 }
 
@@ -217,9 +244,10 @@ private struct WindowCaptureLayerView: NSViewRepresentable {
 }
 
 @available(macOS 14.0, *)
-private final class WindowCaptureLayerHostView: NSView {
+final class WindowCaptureLayerHostView: NSView {
     private var didConfigureLayer = false
     private var currentContentsScale: CGFloat?
+    private var displayedFrame: WindowCaptureFrame?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -258,28 +286,31 @@ private final class WindowCaptureLayerHostView: NSView {
         layer?.contentsScale = nextScale
     }
 
-    func displayFrame(_ image: CGImage) {
+    func displayFrame(_ frame: WindowCaptureFrame) {
         configureLayerIfNeeded()
-        layer?.contents = image
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer?.contents = frame.surface
+        displayedFrame = frame
+        CATransaction.commit()
     }
 
     func clearFrame() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         layer?.contents = nil
+        displayedFrame = nil
+        CATransaction.commit()
     }
 }
 
 @available(macOS 14.0, *)
 private final class WindowStreamOutput: NSObject, SCStreamOutput {
-    private struct CapturedFrame: @unchecked Sendable {
-        let image: CGImage
-    }
-
-    private let context = CIContext(options: nil)
     private let frameGateLock = NSLock()
     private let pendingFrameLock = NSLock()
 
     private var frameGate = WindowCaptureFrameGate()
-    private var pendingFrame: CapturedFrame?
+    private var pendingFrame: WindowCaptureFrame?
     private var isCommitScheduled = false
     private var commitGeneration = WindowCaptureCommitGeneration()
 
@@ -294,6 +325,7 @@ private final class WindowStreamOutput: NSObject, SCStreamOutput {
     func detach(from view: WindowCaptureLayerHostView) {
         if targetView === view {
             targetView = nil
+            clearFrame()
         }
         view.clearFrame()
     }
@@ -306,7 +338,7 @@ private final class WindowStreamOutput: NSObject, SCStreamOutput {
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .screen,
-              let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+              let frame = WindowCaptureFrame(sampleBuffer: sampleBuffer) else {
             return
         }
 
@@ -315,15 +347,10 @@ private final class WindowStreamOutput: NSObject, SCStreamOutput {
             return
         }
 
-        let ciImage = CIImage(cvPixelBuffer: imageBuffer)
-
-        guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else {
-            return
-        }
-
-        scheduleCommit(CapturedFrame(image: cgImage))
+        scheduleCommit(frame)
     }
 
+    @MainActor
     func clearFrame() {
         pendingFrameLock.lock()
         pendingFrame = nil
@@ -331,9 +358,7 @@ private final class WindowStreamOutput: NSObject, SCStreamOutput {
         isCommitScheduled = false
         pendingFrameLock.unlock()
 
-        Task { @MainActor [weak self] in
-            self?.targetView?.clearFrame()
-        }
+        targetView?.clearFrame()
     }
 
     private func shouldAcceptFrame(at frameTime: CMTime) -> Bool {
@@ -346,7 +371,7 @@ private final class WindowStreamOutput: NSObject, SCStreamOutput {
         )
     }
 
-    private func scheduleCommit(_ frame: CapturedFrame) {
+    private func scheduleCommit(_ frame: WindowCaptureFrame) {
         pendingFrameLock.lock()
         pendingFrame = frame
         let generation = commitGeneration.current
@@ -375,7 +400,7 @@ private final class WindowStreamOutput: NSObject, SCStreamOutput {
         pendingFrameLock.unlock()
 
         if let frame {
-            targetView?.displayFrame(frame.image)
+            targetView?.displayFrame(frame)
         }
     }
 }
