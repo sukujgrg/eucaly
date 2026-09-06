@@ -172,6 +172,10 @@ public struct ContentView: View {
     public var body: some View {
         rootSplitView
             .background(
+                InitialWindowFocus()
+                    .frame(width: 0, height: 0)
+            )
+            .background(
                 WindowCloseGuard(shouldClose: confirmMainWindowClose)
                     .frame(width: 0, height: 0)
             )
