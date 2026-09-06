@@ -453,6 +453,7 @@ class CacheManager: ObservableObject {
 
     /// Manually clear all caches
     func clearAllCaches() {
+        ProjectionImageLoader.shared.clearCache()
         modificationDatesSaveTask?.cancel()
         cleanupTask?.cancel()
         cleanupTask = nil
