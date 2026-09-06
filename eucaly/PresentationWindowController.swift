@@ -992,46 +992,18 @@ struct BackgroundVisualView: View {
         if isVideoURL(url) {
             BackgroundVideoView(url: url, isVisible: isVisible)
         } else {
-            BackgroundImageView(url: url)
+            ImageSlideView(
+                url: url,
+                contentMode: .fill,
+                showsLoadingIndicator: false,
+                retainsPreviousImageWhileLoading: true
+            )
         }
     }
 
     private func isVideoURL(_ url: URL) -> Bool {
         let ext = url.pathExtension.lowercased()
         return ["mp4", "mov", "m4v", "avi", "mkv"].contains(ext)
-    }
-}
-
-struct BackgroundImageView: View {
-    let url: URL
-    @State private var image: NSImage?
-
-    var body: some View {
-        ZStack {
-            Color.black
-            if let image = image {
-                Image(nsImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .clipped()
-            }
-        }
-        .onAppear {
-            loadImage()
-        }
-        .onChange(of: url) { _, _ in
-            loadImage()
-        }
-    }
-
-    private func loadImage() {
-        DispatchQueue.global(qos: .userInitiated).async {
-            let loadedImage = NSImage(contentsOf: url)
-            DispatchQueue.main.async {
-                self.image = loadedImage
-            }
-        }
     }
 }
 
