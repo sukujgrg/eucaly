@@ -51,8 +51,10 @@ struct ImageThumbnailView: View {
         .onChange(of: url) {
             resetAndLoad()
         }
-        .onChange(of: size) {
-            resetAndLoad()
+        .onChange(of: ThumbnailCacheSizing.quantizedSize(from: size)) {
+            // Keep the current image visible while resizing, and render only
+            // after the requested size settles.
+            scheduleThumbnailLoad(debounce: true)
         }
     }
 
@@ -61,17 +63,24 @@ struct ImageThumbnailView: View {
         scheduleThumbnailLoad()
     }
 
-    private func scheduleThumbnailLoad() {
+    private func scheduleThumbnailLoad(debounce: Bool = false) {
         thumbnailTask?.cancel()
+        let requestSize = ThumbnailCacheSizing.quantizedSize(from: size)
         thumbnailTask = Task {
-            if let cached = await CacheManager.shared.getCachedThumbnailAsync(for: url, type: .image, size: size) {
+            if debounce {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            guard !Task.isCancelled else { return }
+
+            if let cached = await CacheManager.shared.getCachedThumbnailAsync(for: url, type: .image, size: requestSize) {
                 guard !Task.isCancelled else { return }
                 thumbnail = cached
                 return
             }
+            guard !Task.isCancelled else { return }
 
             let result = await Task.detached(priority: .userInitiated) {
-                Self.makeDownsampledThumbnail(url: url, targetSize: size)
+                Self.makeDownsampledThumbnail(url: url, targetSize: requestSize)
             }.value
 
             guard !Task.isCancelled, let result else {
@@ -82,7 +91,7 @@ struct ImageThumbnailView: View {
                 pngData: result.pngData,
                 for: url,
                 type: .image,
-                size: size
+                size: requestSize
             )
             thumbnail = result.image
         }

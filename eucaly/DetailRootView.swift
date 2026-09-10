@@ -15,6 +15,7 @@ struct DetailRootView<EditorPane: View, PreviewPane: View, CurrentPane: View>: V
                     spacing: isEditorPreviewAreaCollapsed ? 0 : 12
                 ) {
                     editorPane
+                        .excludingInterfaceAnimation(.disclosure)
                         .frame(maxWidth: .infinity, alignment: .topLeading)
                         .frame(
                             width: isEditorPreviewAreaCollapsed ? 0 : nil,

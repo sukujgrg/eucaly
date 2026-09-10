@@ -7,12 +7,11 @@ enum DetailFocusTarget: Hashable {
 }
 
 struct CurrentPaneContainerView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var session: PresentationSession
     @ObservedObject var playbackProgress: PlaybackProgressStore
     @ObservedObject var flow: PresentationFlowController
     let thumbnailScale: Double
-    let paneToggleAnimation: Animation
-    let loadAnimation: Animation
     let titleForWebpage: (URL) -> String
     let savedWebpageEntryURL: URL?
     let onWebpageNavigationChange: (URL, URL) -> Void
@@ -46,8 +45,9 @@ struct CurrentPaneContainerView: View {
                 if session.isPresenting || !session.isEmpty {
                     Button(action: toggleCollapsed) {
                         HStack(spacing: 4) {
-                            Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                            Image(systemName: "chevron.right")
                                 .font(.system(size: 11, weight: .semibold))
+                                .rotationEffect(.degrees(isCollapsed ? 0 : 90))
                             Text("Current")
                                 .font(.headline)
                                 .fontWeight(.semibold)
@@ -120,6 +120,7 @@ struct CurrentPaneContainerView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding()
+                    .transition(.opacity)
                 } else if let selectedWebpageURL {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack(spacing: 8) {
@@ -172,6 +173,8 @@ struct CurrentPaneContainerView: View {
                         .padding(.bottom, 4)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
+                    .excludingInterfaceAnimation(.disclosure)
+                    .transition(.opacity)
                 } else {
                     GeometryReader { proxy in
                         let horizontalInset: CGFloat = 10
@@ -261,10 +264,14 @@ struct CurrentPaneContainerView: View {
                             }
                         }
                     }
+                    .excludingInterfaceAnimation(.disclosure)
+                    .transition(.opacity)
                 }
 
                 if session.currentSlide?.videoURL != nil {
                     videoControls
+                        .excludingInterfaceAnimation(.disclosure)
+                        .transition(.opacity)
                 }
             }
         }
@@ -280,7 +287,6 @@ struct CurrentPaneContainerView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         )
         .paneAccentRing(.current, isEmphasized: !session.isEmpty && !isCollapsed)
-        .animation(loadAnimation, value: session.slideCount)
         .layoutPriority(selectedWebpageURL == nil ? 0 : 1)
         .onChange(of: playbackProgress.videoCurrentTime) { _, newValue in
             guard !isSeekingVideo else { return }
@@ -354,7 +360,7 @@ struct CurrentPaneContainerView: View {
     }
 
     private func toggleCollapsed() {
-        withAnimation(paneToggleAnimation) {
+        InterfaceMotion.disclosure.animate(reduceMotion: reduceMotion) {
             flow.isCurrentCollapsed.toggle()
         }
         if flow.isCurrentCollapsed {
@@ -392,8 +398,8 @@ struct CurrentPaneContainerView: View {
 
     private func scrollToSelectedSlide(_ slideID: Slide.ID?, with proxy: ScrollViewProxy) {
         guard let slideID else { return }
-        withAnimation(.easeInOut(duration: 0.12)) {
-            proxy.scrollTo(slideID, anchor: .center)
+        InterfaceMotion.selectionScroll.animate(reduceMotion: reduceMotion) {
+            proxy.scrollTo(slideID)
         }
     }
 

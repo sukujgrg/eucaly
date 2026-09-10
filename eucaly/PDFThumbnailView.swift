@@ -10,7 +10,6 @@ struct PDFThumbnailView: View {
     @State private var didFailToLoadThumbnail = false
     @State private var thumbnailTask: Task<Void, Never>?
     @State private var loadGeneration = UUID()
-    @State private var loadedSizePart: String?
 
     private let busyRetryDelayNanoseconds: UInt64 = 250_000_000
     private var requestSize: CGSize {
@@ -51,10 +50,10 @@ struct PDFThumbnailView: View {
         .onChange(of: pageIndex) {
             resetAndLoad()
         }
-        .onChange(of: size) {
-            let sizePart = ThumbnailCacheSizing.sizePart(from: size)
-            guard sizePart != loadedSizePart else { return }
-            resetAndLoad()
+        .onChange(of: requestSize) {
+            // Resize the existing image until the debounced render is ready.
+            // Source and page changes still clear it through resetAndLoad().
+            scheduleThumbnailLoad()
         }
     }
 
@@ -66,7 +65,6 @@ struct PDFThumbnailView: View {
 
     private func scheduleThumbnailLoad() {
         thumbnailTask?.cancel()
-        loadedSizePart = ThumbnailCacheSizing.sizePart(from: size)
         let generation = UUID()
         loadGeneration = generation
         thumbnailTask = Task {

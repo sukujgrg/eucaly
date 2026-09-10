@@ -1,6 +1,7 @@
 import SwiftUI
 
 private struct PreviewThumbnailGrid: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let flow: PresentationFlowController
     @ObservedObject var selection: PreviewSelectionState
     let thumbnailScale: Double
@@ -114,8 +115,9 @@ private struct PreviewThumbnailGrid: View {
 
     private func scrollToSelectedSlide(_ slideID: Slide.ID?, with proxy: ScrollViewProxy) {
         guard let slideID else { return }
-        withAnimation(.easeInOut(duration: 0.12)) {
-            proxy.scrollTo(slideID, anchor: .center)
+        InterfaceMotion.selectionScroll.animate(reduceMotion: reduceMotion) {
+            // The default anchor moves only enough to reveal an offscreen slide.
+            proxy.scrollTo(slideID)
         }
     }
 }
@@ -130,7 +132,6 @@ struct PreviewPaneContainerView: View {
     let loadToCurrentHelp: String
     let loadError: String?
     let thumbnailScale: Double
-    let loadAnimation: Animation
     let titleForWebpage: (URL) -> String
     let savedWebpageEntryURL: URL?
     let onWebpageNavigationChange: (URL, URL) -> Void
@@ -148,8 +149,9 @@ struct PreviewPaneContainerView: View {
             HStack(spacing: 8) {
                 Button(action: toggleEditorPreviewArea) {
                     HStack(spacing: 4) {
-                        Image(systemName: isEditorPreviewAreaCollapsed ? "chevron.right" : "chevron.down")
+                        Image(systemName: "chevron.right")
                             .font(.system(size: 11, weight: .semibold))
+                            .rotationEffect(.degrees(isEditorPreviewAreaCollapsed ? 0 : 90))
                         Text(editorPreviewAreaTitle)
                             .font(.headline)
                             .fontWeight(.semibold)
@@ -282,6 +284,8 @@ struct PreviewPaneContainerView: View {
                         )
                     }
                 }
+                .excludingInterfaceAnimation(.disclosure)
+                .transition(.opacity)
             }
 
         }
@@ -299,7 +303,6 @@ struct PreviewPaneContainerView: View {
             .preview,
             isEmphasized: !flow.previewIsEmpty && !isEditorPreviewAreaCollapsed
         )
-        .animation(loadAnimation, value: flow.previewSlideCount)
     }
 
     private var editorPreviewAreaTitle: String {

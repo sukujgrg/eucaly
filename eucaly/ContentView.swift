@@ -5,6 +5,7 @@ import CoreGraphics
 import Combine
 
 public struct ContentView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var lyricsEditor = LyricsEditorSession()
     @State private var lyricsEditorFocusController = PlainTextEditorFocusController()
     @StateObject private var session = PresentationSession()
@@ -73,8 +74,6 @@ public struct ContentView: View {
     @StateObject private var appUpdateViewModel = AppUpdateViewModel()
     @State private var isEditorPreviewAreaCollapsed: Bool = false
     private let playlistDirectoryName = "Playlist"
-    private let paneToggleAnimation = Animation.easeOut(duration: 0.12)
-    private let loadAnimation = Animation.easeInOut(duration: 0.24)
     private let windowCaptureFrameRateOptions = [24, 30, 60]
     private let libraryFileScanner = LibraryFileScannerService()
 
@@ -224,6 +223,7 @@ public struct ContentView: View {
     private var rootSplitWithLibrarySearchOverlay: some View {
         ZStack {
             rootSplitWithNotificationObservers
+                .excludingInterfaceAnimation(.search)
 
             if isLibrarySearchPresented {
                 LibrarySearchOverlayContainerView(
@@ -236,11 +236,10 @@ public struct ContentView: View {
                     onAddResultToPlaylist: addLibrarySearchResultToPlaylist,
                     onCommitQuery: commitLibrarySearchQuery
                 )
-                .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.98)))
                 .zIndex(1)
             }
         }
-        .animation(.easeInOut(duration: 0.16), value: isLibrarySearchPresented)
     }
 
     private var rootSplitWithStateObservers: some View {
@@ -706,7 +705,6 @@ public struct ContentView: View {
                 loadToCurrentHelp: loadToCurrentHelp,
                 loadError: previewLoadError,
                 thumbnailScale: thumbnailScale,
-                loadAnimation: loadAnimation,
                 titleForWebpage: webpageTitle(for:),
                 savedWebpageEntryURL: sidebarSelectedWebpageURL,
                 onWebpageNavigationChange: updatePreviewWebpageURL(to:from:),
@@ -720,8 +718,6 @@ public struct ContentView: View {
                 playbackProgress: session.playbackProgress,
                 flow: flow,
                 thumbnailScale: thumbnailScale,
-                paneToggleAnimation: paneToggleAnimation,
-                loadAnimation: loadAnimation,
                 titleForWebpage: webpageTitle(for:),
                 savedWebpageEntryURL: sidebarSelectedWebpageURL,
                 onWebpageNavigationChange: updateCurrentWebpageURL(to:from:),
@@ -829,7 +825,8 @@ public struct ContentView: View {
         if !isEditorPreviewAreaCollapsed {
             lyricsEditorFocusController.resignFocus()
         }
-        withAnimation(paneToggleAnimation) {
+        // Loads also change this flag; only an explicit disclosure animates it.
+        InterfaceMotion.disclosure.animate(reduceMotion: reduceMotion) {
             isEditorPreviewAreaCollapsed.toggle()
         }
     }
@@ -1779,7 +1776,9 @@ public struct ContentView: View {
 
     @MainActor
     private func presentLibrarySearch() {
-        isLibrarySearchPresented = true
+        InterfaceMotion.search.animate(reduceMotion: reduceMotion) {
+            isLibrarySearchPresented = true
+        }
         librarySearch.syncSelectedResult(
             currentSelectedURL: currentSelectedURL,
             preferFirstResult: true
@@ -1788,7 +1787,9 @@ public struct ContentView: View {
 
     @MainActor
     private func dismissLibrarySearch() {
-        isLibrarySearchPresented = false
+        InterfaceMotion.search.animate(reduceMotion: reduceMotion) {
+            isLibrarySearchPresented = false
+        }
     }
 
     @MainActor

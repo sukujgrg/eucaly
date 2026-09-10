@@ -10,6 +10,7 @@ struct LyricsThumbnailView: View {
 
     var body: some View {
         let contentAlignment = presentationVerticalPosition.frameAlignment
+        let fontSize = thumbnailFontSize
         ZStack {
             Color.black
 
@@ -41,43 +42,12 @@ struct LyricsThumbnailView: View {
         .shadow(color: Color.black.opacity(0.18), radius: 6, x: 0, y: 2)
     }
 
-    private var fontSize: CGFloat {
-        // Simple formula: base size on thumbnail height and line count
+    private var thumbnailFontSize: CGFloat {
+        // This is cheaper to calculate once than to join and hash all the lyrics
+        // for a shared-cache lookup on every rendered line.
         let lineCount = max(1, slide.lines.count)
-
-        // Create a simple cache key from slide lines
-        let cacheText = slide.lines.map { $0.text }.joined(separator: "\n")
-
-        // Check cache (using dummy weight/italic since this is just sizing)
-        if let cached = CacheManager.shared.getCachedFontSize(
-            text: cacheText,
-            maxWidth: size.width,
-            maxHeight: size.height,
-            maxSize: 16 * thumbnailFontScale,
-            minSize: 8 * thumbnailFontScale,
-            weight: .bold,
-            italic: false
-        ) {
-            return cached
-        }
-
-        // Calculate if not cached
         let baseSize = (size.height - 20) / CGFloat(lineCount)
         let calculatedSize = min(16, max(8, baseSize * 0.6))
-        let finalSize = calculatedSize * thumbnailFontScale
-
-        // Cache the result
-        CacheManager.shared.cacheFontSize(
-            finalSize,
-            text: cacheText,
-            maxWidth: size.width,
-            maxHeight: size.height,
-            maxSize: 16 * thumbnailFontScale,
-            minSize: 8 * thumbnailFontScale,
-            weight: .bold,
-            italic: false
-        )
-
-        return finalSize
+        return calculatedSize * thumbnailFontScale
     }
 }
