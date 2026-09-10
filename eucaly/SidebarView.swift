@@ -39,6 +39,7 @@ struct PlaylistSidebarItem: Identifiable, Hashable {
 }
 
 struct SidebarView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var session: PresentationSession
     let isWindowCaptureSupported: Bool
     let libraryFiles: [URL]
@@ -284,7 +285,9 @@ struct SidebarView: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
-                isExpanded.wrappedValue.toggle()
+                InterfaceMotion.disclosure.animate(reduceMotion: reduceMotion) {
+                    isExpanded.wrappedValue.toggle()
+                }
             } label: {
                 sidebarSectionHeader(
                     title,
@@ -308,8 +311,10 @@ struct SidebarView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     content()
                 }
+                .excludingInterfaceAnimation(.disclosure)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, 6)
+                .transition(.opacity)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -586,7 +591,6 @@ struct SidebarView: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                .animation(.easeInOut(duration: 0.16), value: isExpanded)
                 .frame(width: 16, height: 22)
                 .accessibilityHidden(true)
         }
@@ -844,6 +848,7 @@ private struct SidebarSectionHeaderButtonStyle: ButtonStyle {
 private struct SidebarSectionHeaderInteraction: ViewModifier {
     let isPressed: Bool
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.controlActiveState) private var controlActiveState
     @State private var isHovered = false
 
@@ -857,10 +862,10 @@ private struct SidebarSectionHeaderInteraction: ViewModifier {
                     .fill(backgroundColor)
                     .padding(.horizontal, SidebarHighlightMetrics.horizontalInset)
                     .padding(.vertical, SidebarHighlightMetrics.verticalInset)
+                    .animation(InterfaceMotion.hover.animation(reduceMotion: reduceMotion), value: isHovered)
+                    .animation(InterfaceMotion.press.animation(reduceMotion: reduceMotion), value: isPressed)
             )
             .onHover { isHovered = $0 }
-            .animation(.easeOut(duration: 0.1), value: isHovered)
-            .animation(.easeOut(duration: 0.08), value: isPressed)
     }
 
     private var backgroundColor: Color {

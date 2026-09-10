@@ -2,6 +2,7 @@ import SwiftUI
 import CoreGraphics
 
 struct SlideGridCellView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let slide: Slide
     let itemWidth: CGFloat
     let itemHeight: CGFloat
@@ -32,7 +33,7 @@ struct SlideGridCellView: View {
                             : AnyShapeStyle(.separator),
                         lineWidth: 1
                     )
-                    .animation(.easeInOut(duration: 0.12), value: isSelected)
+                    .animation(InterfaceMotion.selectionHighlight.animation(reduceMotion: reduceMotion), value: isSelected)
             )
         }
         .buttonStyle(.plain)

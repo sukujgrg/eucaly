@@ -57,8 +57,9 @@ struct VideoThumbnailView: View {
         .onChange(of: url) {
             resetAndLoad()
         }
-        .onChange(of: size) {
-            resetAndLoad()
+        .onChange(of: ThumbnailCacheSizing.quantizedSize(from: size)) {
+            // Keep the current frame visible until the debounced resize is ready.
+            scheduleThumbnailLoad(debounce: true)
         }
     }
 
@@ -67,17 +68,24 @@ struct VideoThumbnailView: View {
         scheduleThumbnailLoad()
     }
 
-    private func scheduleThumbnailLoad() {
+    private func scheduleThumbnailLoad(debounce: Bool = false) {
         thumbnailTask?.cancel()
+        let requestSize = ThumbnailCacheSizing.quantizedSize(from: size)
         thumbnailTask = Task {
-            if let cached = await CacheManager.shared.getCachedThumbnailAsync(for: url, type: .video, size: size) {
+            if debounce {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            guard !Task.isCancelled else { return }
+
+            if let cached = await CacheManager.shared.getCachedThumbnailAsync(for: url, type: .video, size: requestSize) {
                 guard !Task.isCancelled else { return }
                 thumbnail = cached
                 return
             }
+            guard !Task.isCancelled else { return }
 
             let result = await Task.detached(priority: .userInitiated) {
-                Self.generateVideoThumbnail(url: url, size: size)
+                Self.generateVideoThumbnail(url: url, size: requestSize)
             }.value
 
             guard !Task.isCancelled else { return }
@@ -87,7 +95,7 @@ struct VideoThumbnailView: View {
                     pngData: result.pngData,
                     for: url,
                     type: .video,
-                    size: size
+                    size: requestSize
                 )
                 thumbnail = result.image
             } else {
