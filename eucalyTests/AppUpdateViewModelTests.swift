@@ -4,126 +4,69 @@ import XCTest
 
 @MainActor
 final class AppUpdateViewModelTests: XCTestCase {
-    private var cancellables: Set<AnyCancellable> = []
+    func testOneStartAndChecksFollowDriverAvailability() {
+        let driver = UpdateDriverFixture()
+        let updater = AppUpdateViewModel(driver: driver)
+        updater.checkForUpdates()
+        XCTAssertEqual(driver.checks, 0)
 
-    override func tearDown() {
-        cancellables.removeAll()
-        super.tearDown()
+        updater.start()
+        updater.start()
+        XCTAssertEqual(driver.starts, 1)
+        XCTAssertTrue(updater.state.canCheckForUpdates)
+
+        updater.checkForUpdates()
+        updater.checkForUpdates()
+        XCTAssertEqual(driver.checks, 1)
+        XCTAssertFalse(updater.state.canCheckForUpdates)
+        driver.state.canCheckForUpdates = true
+        updater.checkForUpdates()
+        XCTAssertEqual(driver.checks, 2)
     }
 
-    func testInstallFailureShowsAlertWithReleaseURL() async throws {
-        let releaseURL = try XCTUnwrap(URL(string: "https://example.com/releases/v1.1.0"))
-        let release = AppUpdateRelease(
-            version: "1.1.0",
-            releaseURL: releaseURL,
-            asset: GitHubReleaseAssetModel(
-                name: "eucaly-1.1.0-notarized.zip",
-                downloadURL: try XCTUnwrap(URL(string: "https://example.com/eucaly.zip"))
-            ),
-            checksumAsset: GitHubReleaseAssetModel(
-                name: "eucaly-1.1.0-notarized.zip.sha256",
-                downloadURL: try XCTUnwrap(URL(string: "https://example.com/eucaly.zip.sha256"))
-            )
-        )
-        let alertExpectation = expectation(description: "Install failure alert")
-        let viewModel = AppUpdateViewModel(
-            service: FakeAppUpdateService(
-                release: release,
-                downloadedUpdate: AppDownloadedUpdate(
-                    archiveURL: URL(fileURLWithPath: "/tmp/eucaly-test-update.zip")
-                )
-            ),
-            installUpdateAction: { _ in
-                throw AppUpdateViewModelTestError.installFailed
-            }
-        )
-
-        let releaseExpectation = expectation(description: "Available release")
-        viewModel.$availableRelease
-            .dropFirst()
-            .compactMap { $0 }
-            .first()
-            .sink { _ in
-                releaseExpectation.fulfill()
-            }
-            .store(in: &cancellables)
-
-        viewModel.$checkAlert
-            .dropFirst()
-            .compactMap { $0 }
-            .first()
-            .sink { alert in
-                XCTAssertEqual(alert.title, "Unable to install update")
-                XCTAssertEqual(alert.releaseURL, releaseURL)
-                XCTAssertTrue(alert.message.contains("Install failed"))
-                alertExpectation.fulfill()
-            }
-            .store(in: &cancellables)
-
-        viewModel.checkForUpdates()
-        await fulfillment(of: [releaseExpectation], timeout: 2)
-        viewModel.downloadAndInstallUpdate()
-        await fulfillment(of: [alertExpectation], timeout: 2)
+    func testAutomaticCheckingPreferenceComesFromDriver() {
+        let driver = UpdateDriverFixture()
+        driver.state.automaticallyChecksForUpdates = false
+        let updater = AppUpdateViewModel(driver: driver)
+        XCTAssertFalse(updater.state.automaticallyChecksForUpdates)
+        updater.setAutomaticChecks(true)
+        XCTAssertTrue(driver.state.automaticallyChecksForUpdates)
+        XCTAssertTrue(updater.state.automaticallyChecksForUpdates)
+        driver.state.automaticallyChecksForUpdates = false
+        XCTAssertFalse(updater.state.automaticallyChecksForUpdates)
     }
 
-    func testCheckFailureAlertIncludesReleasesPageURL() async {
-        let alertExpectation = expectation(description: "Check failure alert")
-        let viewModel = AppUpdateViewModel(
-            service: FakeAppUpdateService(checkError: AppUpdateError.updateCheckFailed)
-        )
+    func testSharedReminderSurvivesAnObserverClosingAndClearsAtSessionEnd() {
+        let driver = UpdateDriverFixture()
+        let updater = AppUpdateViewModel(driver: driver)
+        updater.start()
+        var firstVersions: [String?] = []
+        var secondVersions: [String?] = []
+        let first = updater.$state.sink { firstVersions.append($0.availableVersion) }
+        let second = updater.$state.sink { secondVersions.append($0.availableVersion) }
+        defer { second.cancel() }
 
-        viewModel.$checkAlert
-            .dropFirst()
-            .compactMap { $0 }
-            .first()
-            .sink { alert in
-                XCTAssertEqual(alert.title, "Unable to check for updates")
-                XCTAssertEqual(alert.releaseURL, AppUpdateRelease.releasesPageURL)
-                alertExpectation.fulfill()
-            }
-            .store(in: &cancellables)
+        driver.state.availableVersion = "1.33"
+        XCTAssertEqual(firstVersions.last!, "1.33")
+        XCTAssertEqual(secondVersions.last!, "1.33")
+        XCTAssertEqual(driver.checks, 0, "A reminder must not open the installer UI")
 
-        viewModel.checkForUpdates()
-        await fulfillment(of: [alertExpectation], timeout: 2)
+        first.cancel()
+        driver.state.availableVersion = nil
+        XCTAssertEqual(firstVersions.last!, "1.33")
+        XCTAssertNil(secondVersions.last!)
+        XCTAssertEqual(driver.starts, 1)
     }
 }
 
-private enum AppUpdateViewModelTestError: Error, LocalizedError {
-    case installFailed
+@MainActor
+private final class UpdateDriverFixture: AppUpdateDriving {
+    var state = AppUpdateState() { didSet { onStateChange?(state) } }
+    var onStateChange: ((AppUpdateState) -> Void)?
+    var starts = 0
+    var checks = 0
 
-    var errorDescription: String? {
-        switch self {
-        case .installFailed:
-            return "Install failed"
-        }
-    }
-}
-
-private actor FakeAppUpdateService: AppUpdateServicing {
-    let release: AppUpdateRelease?
-    let downloadedUpdate: AppDownloadedUpdate
-    let checkError: Error?
-
-    init(
-        release: AppUpdateRelease? = nil,
-        downloadedUpdate: AppDownloadedUpdate = AppDownloadedUpdate(
-            archiveURL: URL(fileURLWithPath: "/tmp/eucaly-test-update.zip")
-        ),
-        checkError: Error? = nil
-    ) {
-        self.release = release
-        self.downloadedUpdate = downloadedUpdate
-        self.checkError = checkError
-    }
-
-    func checkForUpdate() async throws -> AppUpdateRelease? {
-        if let checkError {
-            throw checkError
-        }
-        return release
-    }
-
-    func downloadUpdate(_ release: AppUpdateRelease) async throws -> AppDownloadedUpdate {
-        downloadedUpdate
-    }
+    func start() { starts += 1; state.canCheckForUpdates = true }
+    func checkForUpdates() { checks += 1; state.canCheckForUpdates = false }
+    func setAutomaticChecks(_ enabled: Bool) { state.automaticallyChecksForUpdates = enabled }
 }

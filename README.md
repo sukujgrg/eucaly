@@ -32,6 +32,7 @@ Browsing never silently replaces **Current**.
 - Webpage preview / projection
 - Recursive text search under library root
 - Explicit projection display selection
+- Sparkle self-updates with quiet toolbar reminders during presentations
 
 Webpage behavior:
 
@@ -47,6 +48,8 @@ Webpage behavior:
 
 ## Project Structure
 
+- `Makefile`, `VERSION`, `scripts/`
+  - build and release tooling, following ViewTheWord's layout; see the [release guide](docs/releasing.md#tooling-layout)
 - `eucaly/ContentView.swift`
   - app-level orchestration
 - `eucaly/PresentationFlowController.swift`
@@ -62,8 +65,9 @@ Webpage behavior:
 
 ## Requirements
 
-- macOS 14+
+- Apple Silicon Mac running macOS 14+
 - Xcode
+- Python 3.9+ for release tooling and script regressions
 
 Notes:
 
@@ -78,17 +82,17 @@ Run tests:
 make test
 ```
 
-Build a local release app:
+Build and export an Apple Silicon app to `~/Applications`:
 
 ```sh
 make build
 ```
 
-Build for the current machine architecture only:
-
-```sh
-make build-for-this
-```
+`make build` runs `scripts/build.sh`, matching ViewTheWord's archive/export process.
+The app version comes from `VERSION` for both Xcode and command-line builds.
+Maintainers can sign, notarize, and publish with `make release`; see the
+[release guide](docs/releasing.md) for setup and the
+[self-update guide](docs/self-updates.md) for Sparkle behavior.
 
 ## Search
 

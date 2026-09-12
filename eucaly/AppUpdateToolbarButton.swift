@@ -1,44 +1,32 @@
-import AppKit
 import SwiftUI
 
 struct AppUpdateToolbarButton: View {
     @ObservedObject var viewModel: AppUpdateViewModel
 
     var body: some View {
-        if let release = viewModel.availableRelease {
-            if release.isInstallable {
-                Button {
-                    viewModel.downloadAndInstallUpdate()
-                } label: {
-                    Label(
-                        buttonTitle,
-                        systemImage: viewModel.isDownloading ? "arrow.down.circle.dotted" : "arrow.down.circle"
-                    )
-                }
-                .labelStyle(.titleAndIcon)
-                .buttonStyle(.borderedProminent)
-                .disabled(viewModel.isDownloading || viewModel.isInstalling)
-                .help("Install eucaly \(release.version)")
-            } else {
-                Button {
-                    NSWorkspace.shared.open(release.releaseURL)
-                } label: {
-                    Label("Release", systemImage: "safari")
-                }
-                .labelStyle(.titleAndIcon)
-                .buttonStyle(.bordered)
-                .help("Open eucaly \(release.version) release")
+        if let version = viewModel.state.availableVersion {
+            Button(action: viewModel.checkForUpdates) {
+                Label("Update", systemImage: "arrow.down.circle")
             }
+            .labelStyle(.titleAndIcon)
+            .buttonStyle(.borderedProminent)
+            .disabled(!viewModel.state.canCheckForUpdates)
+            .help("Show the update to eucaly \(version)")
         }
     }
+}
 
-    private var buttonTitle: String {
-        if viewModel.isInstalling {
-            return "Installing"
+struct AppUpdateCommands: Commands {
+    @ObservedObject var viewModel: AppUpdateViewModel
+
+    var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button("Check for Updates…", action: viewModel.checkForUpdates)
+                .disabled(!viewModel.state.canCheckForUpdates)
+            Toggle("Automatically Check for Updates", isOn: Binding(
+                get: { viewModel.state.automaticallyChecksForUpdates },
+                set: { viewModel.setAutomaticChecks($0) }
+            ))
         }
-        if viewModel.isDownloading {
-            return "Downloading"
-        }
-        return "Update"
     }
 }

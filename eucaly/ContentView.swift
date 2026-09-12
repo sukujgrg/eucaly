@@ -71,7 +71,7 @@ public struct ContentView: View {
     @State private var securityScopedBackgroundVisual: URL? = nil
     @State private var securityScopedBackgroundAudio: URL? = nil
     @StateObject private var screenCaptureManager = ScreenCaptureManager.shared
-    @StateObject private var appUpdateViewModel = AppUpdateViewModel()
+    @EnvironmentObject private var appUpdateViewModel: AppUpdateViewModel
     @State private var isEditorPreviewAreaCollapsed: Bool = false
     private let playlistDirectoryName = "Playlist"
     private let windowCaptureFrameRateOptions = [24, 30, 60]
@@ -181,29 +181,7 @@ public struct ContentView: View {
     }
 
     private var rootSplitView: some View {
-        rootSplitWithAppUpdateAlert
-    }
-
-    private var rootSplitWithAppUpdateAlert: some View {
         rootSplitWithLibrarySearchOverlay
-            .alert(item: $appUpdateViewModel.checkAlert) { alert in
-                if let releaseURL = alert.releaseURL {
-                    Alert(
-                        title: Text(alert.title),
-                        message: Text(alert.message),
-                        primaryButton: .default(Text("Open Release")) {
-                            NSWorkspace.shared.open(releaseURL)
-                        },
-                        secondaryButton: .cancel(Text("OK"))
-                    )
-                } else {
-                    Alert(
-                        title: Text(alert.title),
-                        message: Text(alert.message),
-                        dismissButton: .default(Text("OK"))
-                    )
-                }
-            }
     }
 
     private var rootSplitBase: some View {
@@ -326,9 +304,6 @@ public struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: .toggleBackgroundVisibility), perform: handleToggleBackgroundVisibilityNotification)
             .onReceive(NotificationCenter.default.publisher(for: .toggleBackgroundAudio), perform: handleToggleBackgroundAudioNotification)
             .onReceive(NotificationCenter.default.publisher(for: .clearAllLayers), perform: handleClearAllLayersNotification)
-        .onReceive(NotificationCenter.default.publisher(for: .checkForUpdates)) { _ in
-            appUpdateViewModel.checkForUpdates()
-        }
         .onReceive(NotificationCenter.default.publisher(for: .clearBackgroundVisual), perform: handleClearBackgroundVisualNotification)
         .onReceive(NotificationCenter.default.publisher(for: .clearBackgroundAudio), perform: handleClearBackgroundAudioNotification)
         .onReceive(NotificationCenter.default.publisher(for: .newLyrics), perform: handleNewLyricsNotification)
@@ -529,7 +504,6 @@ public struct ContentView: View {
         refreshBackgroundAudioAccess()
         restoreWebpageState()
         loadPlaylists()
-        appUpdateViewModel.checkForUpdatesIfNeeded()
         overlayScaleDraft = overlayScale
         backgroundAudioVolumeDraft = backgroundAudioVolume
         deferSessionChange {

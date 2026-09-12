@@ -22,7 +22,7 @@ Browsing must never silently replace Current.
 - AVFoundation and AVKit (video and audio)
 - PDFKit (PDF rendering)
 - ScreenCaptureKit (window capture)
-- Pure Swift (no third-party packages)
+- Swift, with Sparkle 2.9.6 pinned through Xcode Swift Package Manager for self-updates
 
 ## Core Architecture
 
@@ -31,6 +31,18 @@ Browsing must never silently replace Current.
   - Main `WindowGroup`
   - Settings scene (`AppSettingsView`)
   - App command menu and shortcuts
+
+### Releases and Self-Updates
+- `VERSION` is the sole marketing-version source (`X.Y` or `X.Y.Z`). An Xcode build phase generates Info.plist in DerivedData for every build; do not restore a separate `MARKETING_VERSION` copy or modify a signed app's plist.
+- Keep build/release entry points aligned with ViewTheWord: root `Makefile` and `VERSION`, implementation under `scripts/`. `make build` runs `scripts/build.sh` to archive/export into `~/Applications`; `make release` uses the Python pipeline directly. See the tooling layout in `docs/releasing.md` for the future shared-tooling boundary.
+- `make release` runs `scripts/release.py` on the maintainer's Mac: clean source, successful **Validate** push run on `main` for that commit, arm64 archive/export, notarization, signed Sparkle feed, then tag and GitHub publication. Signing credentials remain in local Keychain. See `docs/releasing.md`.
+- Preparation is resumable under `build/release/v<VERSION>/`. Preserve `state.json`, `work/`, and saved artifacts. `make clean` preserves releases and respects the shared release lock. Never force tags or overwrite uploaded release assets.
+- Only the known legacy GitHub release `v1.32` (ID `383478874`) may bootstrap a missing appcast. Every later release must retain and verify the previous signed feed and advance its build number automatically.
+- `AppDelegate` owns one `AppUpdateViewModel`, shared through the SwiftUI environment and app commands. `SparkleUpdateDriver` owns update UI, verification, installation, and relaunch. Scheduled checks show a toolbar reminder without stealing focus; installation requires user action.
+- Target Apple Silicon (arm64) only, matching ViewTheWord, in Xcode, local builds, releases, and the appcast. `make build` is the sole local build command. Preserve eucaly's unsandboxed access and macOS 14 minimum; do not copy ViewTheWord's sandbox/XPC settings. Update restarts use normal unsaved-edit confirmation and capture cleanup.
+- The update signing key is in Keychain under `com.suku.eucaly`. Only the public key belongs in `eucaly/Info.plist`. Never generate a replacement per release. See `docs/self-updates.md`.
+- Validate with `make test` (app plus offline release/feed regressions). GitHub Actions validates only; it does not sign or publish.
+- The unit-test host skips normal library/preference restoration and Sparkle startup; tests construct their own views and sessions without loading the maintainer's saved library.
 
 ### Main Composition
 - `eucaly/ContentView.swift`
