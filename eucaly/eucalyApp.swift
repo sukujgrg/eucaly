@@ -8,8 +8,13 @@
 import SwiftUI
 import AppKit
 
+private enum AppLaunchContext {
+    static let isRunningTests = NSClassFromString("XCTestCase") != nil
+}
+
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    static var isInstallingUpdate = false
+    let updates = AppUpdateViewModel(driver: SparkleUpdateDriver())
 
     private var isTerminatingAfterCaptureCleanup = false
 
@@ -17,6 +22,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Ensure the app runs as a regular GUI app when launched via `swift run`.
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
+        // Hosted unit tests use an injected driver and never contact the feed.
+        if !AppLaunchContext.isRunningTests {
+            updates.start()
+        }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -37,12 +46,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         guard ApplicationTerminationCoordinator.shared.confirmApplicationTermination() else {
             return .terminateCancel
-        }
-
-        if Self.isInstallingUpdate {
-            closePresentationWindows(in: sender)
-            Task { await ScreenCaptureManager.shared.stopAllCaptures() }
-            return .terminateNow
         }
 
         Task { @MainActor in
@@ -71,24 +74,27 @@ struct EucalyApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     init() {
-        SandboxPreferencesMigration.migrateIfNeeded()
+        if !AppLaunchContext.isRunningTests {
+            SandboxPreferencesMigration.migrateIfNeeded()
+        }
     }
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
-                .frame(minWidth: 1060, minHeight: 600)
+            // Unit tests construct their own views and sessions. Restoring the
+            // user's library here would perform unrelated file/network access.
+            if !AppLaunchContext.isRunningTests {
+                ContentView()
+                    .environmentObject(appDelegate.updates)
+                    .frame(minWidth: 1060, minHeight: 600)
+            }
         }
         .windowToolbarStyle(.unified)
         Settings {
             AppSettingsView()
         }
         .commands {
-            CommandGroup(after: .appInfo) {
-                Button("Check for Updates...") {
-                    NotificationCenter.default.post(name: .checkForUpdates, object: nil)
-                }
-            }
+            AppUpdateCommands(viewModel: appDelegate.updates)
             CommandGroup(replacing: .newItem) {
                 Button("New Lyrics") {
                     NotificationCenter.default.post(name: .newLyrics, object: nil)
@@ -166,7 +172,6 @@ struct EucalyApp: App {
 }
 
 extension Notification.Name {
-    static let checkForUpdates = Notification.Name("checkForUpdates")
     static let newLyrics = Notification.Name("newLyrics")
     static let stopProjection = Notification.Name("stopProjection")
     static let toggleSlidesVisibility = Notification.Name("toggleSlidesVisibility")

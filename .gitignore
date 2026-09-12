@@ -118,6 +118,7 @@ DerivedData/
 
 # Build artifacts
 build/
+__pycache__/
 
 # Xcode workspace
 *.xcworkspace/xcuserdata/

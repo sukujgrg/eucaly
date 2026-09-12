@@ -1,47 +1,50 @@
-.DEFAULT: build
-
-# Release sequence:
-#   git push && git tag -a vX.Y.Z -m "eucaly X.Y.Z" && git push origin vX.Y.Z
-#   make release-github NOTARY_PROFILE=<profile> TAG=vX.Y.Z
+.DEFAULT_GOAL := help
+.PHONY: help build test test-release clean release release-check release-notarize release-publish
 
 NOTARY_PROFILE ?= eucalyNotary
-GH_REPO ?= sukujgrg/eucaly
-TAG ?=
 NOTES_FILE ?=
-BUILD_NUMBER ?=
-TEAM_ID ?=
-SIGNING_IDENTITY ?=
-SKIP_VERSION_FILE_CHECK ?=
+# Optional notes must be outside the checkout, e.g. /tmp/eucaly-notes.md.
 
-.PHONY: clean test build build-for-this release-local release-notarize release-github
+help:
+	@printf '%s\n' \
+	  'make build             Build an Apple Silicon app into ~/Applications' \
+	  'make release           Validate, sign, notarize, tag, and publish from this Mac' \
+	  'make release-check     Check source, destination, and CI only' \
+	  'make release-notarize  Produce signed local artifacts without publishing' \
+	  'make release-publish   Publish saved artifacts without building or notarizing' \
+	  'make test              Run app and release regression tests' \
+	  'make clean             Remove build caches; preserve saved releases'
 
 clean:
-	rm -rf build
+	python3 scripts/release.py --clean
 
-test:
-	xcodebuild \
-		-project eucaly.xcodeproj \
-		-scheme eucaly \
-		-destination 'platform=macOS' \
-		-configuration Debug \
-		test \
-		CODE_SIGNING_ALLOWED=NO \
-		CODE_SIGNING_REQUIRED=NO \
-		CODE_SIGN_IDENTITY="" \
-		DEVELOPMENT_TEAM=""
+build:
+	./scripts/build.sh
 
-build: clean
-	bash ./build.sh
+ifneq ($(filter release release-check release-notarize release-publish,$(MAKECMDGOALS)),)
+ifneq ($(strip $(VERSION)$(TAG)$(BUILD_NUMBER)$(SKIP_VERSION_FILE_CHECK)$(GH_REPO)$(TEAM_ID)$(SIGNING_IDENTITY)),)
+$(error Release settings are derived automatically. Edit VERSION, commit and merge or push to main, then run make release without VERSION, TAG, BUILD_NUMBER, SKIP_VERSION_FILE_CHECK, GH_REPO, TEAM_ID or SIGNING_IDENTITY overrides)
+endif
+endif
 
-build-for-this: clean
-	bash ./build.sh --current-arch
+release:
+	python3 scripts/release.py --notary-profile "$(NOTARY_PROFILE)" $(if $(NOTES_FILE),--notes "$(NOTES_FILE)")
 
-release-local: build
+release-check:
+	python3 scripts/release.py --check
 
 release-notarize:
-	@if [ -z "$(NOTARY_PROFILE)" ]; then echo "Set NOTARY_PROFILE, e.g. make release-notarize NOTARY_PROFILE=eucalyNotary"; exit 1; fi
-	bash ./scripts/release-notarize-distribute.sh --notary-profile "$(NOTARY_PROFILE)" $(if $(TAG),--tag "$(TAG)") $(if $(BUILD_NUMBER),--build-number "$(BUILD_NUMBER)") $(if $(TEAM_ID),--team-id "$(TEAM_ID)") $(if $(SIGNING_IDENTITY),--signing-identity "$(SIGNING_IDENTITY)") $(if $(SKIP_VERSION_FILE_CHECK),--skip-version-file-check)
+	python3 scripts/release.py --notary-profile "$(NOTARY_PROFILE)" --no-publish
 
-release-github:
-	@if [ -z "$(NOTARY_PROFILE)" ]; then echo "Set NOTARY_PROFILE, e.g. make release-github NOTARY_PROFILE=eucalyNotary GH_REPO=owner/repo"; exit 1; fi
-	bash ./scripts/release-notarize-distribute.sh --notary-profile "$(NOTARY_PROFILE)" --github $(if $(GH_REPO),--repo "$(GH_REPO)") $(if $(TAG),--tag "$(TAG)") $(if $(BUILD_NUMBER),--build-number "$(BUILD_NUMBER)") $(if $(TEAM_ID),--team-id "$(TEAM_ID)") $(if $(SIGNING_IDENTITY),--signing-identity "$(SIGNING_IDENTITY)") $(if $(NOTES_FILE),--notes "$(NOTES_FILE)") $(if $(SKIP_VERSION_FILE_CHECK),--skip-version-file-check)
+release-publish:
+	python3 scripts/release.py --publish-only $(if $(NOTES_FILE),--notes "$(NOTES_FILE)")
+
+test-release:
+	python3 scripts/test-update-feed.py
+	python3 scripts/test-release-workflow.py
+
+test: test-release
+	xcodebuild -project eucaly.xcodeproj -scheme eucaly \
+		-destination 'platform=macOS' -configuration Debug \
+		-derivedDataPath build/DerivedData test \
+		CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM=""

@@ -1,0 +1,56 @@
+name: Validate
+on:
+  push:
+    branches: [main]
+  pull_request:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  macos:
+    runs-on: macos-26
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain versions
+        run: |
+          xcodebuild -version
+          python3 --version
+      - name: App and release regressions
+        run: make test
+      - name: Shell syntax
+        run: |
+          for script in scripts/*.sh; do
+            bash -n "$script"
+          done
+      - name: Release build
+        run: >-
+          xcodebuild -project eucaly.xcodeproj -scheme eucaly
+          -configuration Release -derivedDataPath build/DerivedData
+          CODE_SIGNING_ALLOWED=NO build
+      - name: Verify Apple Silicon binaries and built metadata
+        run: |
+          python3 - <<'PY'
+          import plistlib
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "scripts")
+          from release import verify_arm64_app
+          version = Path("VERSION").read_text().strip()
+          for configuration in ("Debug", "Release"):
+              app = Path("build/DerivedData/Build/Products") / configuration / "eucaly.app"
+              verify_arm64_app(app)
+              info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
+              assert info["CFBundleShortVersionString"] == version
+              assert info["LSMinimumSystemVersion"] == "14.0"
+              assert info["SURequireSignedFeed"] is True
+              assert info["SUVerifyUpdateBeforeExtraction"] is True
+              assert info["SUAllowsAutomaticUpdates"] is False
+              assert not info.get("SUEnableInstallerLauncherService")
+              assert not info.get("SUEnableDownloaderService")
+              assert not (app / "Contents/MacOS/eucalyUpdater").exists()
+              print(f"{configuration}: eucaly {version} with signed Sparkle updates")
+          PY
