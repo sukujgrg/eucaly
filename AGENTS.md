@@ -246,6 +246,7 @@ Window capture supports live streaming of a user-picked app window into a slide.
   - Preview and Current thumbnails share the projection text layout. SwiftUI measures and fits its own text, including multilingual fallback fonts.
   - Appearance separates shared slide layout, Projection Font Size, and thumbnail controls. Projection and thumbnail font sizes remain independent.
   - Preview and Current lyrics cards show an advisory when a component cannot fit at 32 projection points, or its requested font is smaller. The check uses the selected display's full frame, shared layout geometry, and SwiftUI font metrics. It does not guarantee readability at every viewing distance. Keep the full text fitting behavior; never silently truncate, change layout, or project operator warnings.
+  - The advisory is a visible status row and is included in the card button's accessibility value. Suggest increasing Projection Font Size only for components that fit at the threshold; overflow needs more space or shorter content. Apply measured status outside the layout update and reserve no warning space on unaffected cards.
 - Media slide views:
   - `eucaly/ImageSlideView.swift`
   - `eucaly/PresentationWindowController.swift` (`VideoSlideView`, `PDFSlideView`)

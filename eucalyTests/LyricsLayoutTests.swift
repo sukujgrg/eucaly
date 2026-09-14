@@ -49,6 +49,21 @@ final class LyricsLayoutTests: XCTestCase {
         XCTAssertEqual(blocks.map(\.id), lines.map(\.id))
         XCTAssertEqual(blocks.map(\.text), lines.map(\.text))
     }
+
+    func testReadabilityAdviceOnlySuggestsFontChangesWhenTheyCanHelp() {
+        let overflow = LyricsReadabilityReport(needsSpace: ["Meaning"], smallFont: ["Meaning"])
+        XCTAssertTrue(overflow.message.contains("Reduce padding"))
+        XCTAssertFalse(overflow.message.contains("Increase Projection Font Size"))
+
+        let smallFont = LyricsReadabilityReport(smallFont: ["Meaning"])
+        XCTAssertTrue(smallFont.message.contains("Increase Projection Font Size for Meaning"))
+        XCTAssertFalse(smallFont.message.contains("Reduce padding"))
+
+        let mixed = LyricsReadabilityReport(needsSpace: ["Meaning"], smallFont: ["Meaning", "Lyrics"])
+        XCTAssertTrue(mixed.message.contains("Reduce padding"))
+        XCTAssertTrue(mixed.message.contains("Increase Projection Font Size for Lyrics."))
+        XCTAssertEqual(LyricsReadabilityReport().message, "")
+    }
 }
 
 @MainActor
@@ -69,10 +84,10 @@ final class LyricsLayoutRenderingTests: XCTestCase {
         func warning(at size: CGSize?, thumbnailScale: Double = 1) throws -> Bool {
             preferences.set(thumbnailScale, forKey: "thumbnailFontScale")
             let bitmap = try render(
-                LyricsReadabilityWarning(lines: lines)
+                readabilityIndicator(lines: lines)
                     .environment(\.lyricsProjectionSize, size)
                     .defaultAppStorage(preferences),
-                size: CGSize(width: 20, height: 20), name: "Projection readability — \(String(describing: size))"
+                size: CGSize(width: 240, height: 24), name: "Projection readability — \(String(describing: size))"
             )
             return hasOrangePixels(in: bitmap)
         }
@@ -102,10 +117,10 @@ final class LyricsLayoutRenderingTests: XCTestCase {
         func warning(for lines: [SlideLine], padding: Double) throws -> Bool {
             preferences.set(padding, forKey: "presentationPaddingScale")
             let bitmap = try render(
-                LyricsReadabilityWarning(lines: lines)
+                readabilityIndicator(lines: lines)
                     .environment(\.lyricsProjectionSize, CGSize(width: 960, height: 270))
                     .defaultAppStorage(preferences),
-                size: CGSize(width: 20, height: 20), name: "Readability — \(lines.count) components, padding \(padding)"
+                size: CGSize(width: 240, height: 24), name: "Readability — \(lines.count) components, padding \(padding)"
             )
             return hasOrangePixels(in: bitmap)
         }
@@ -123,7 +138,7 @@ final class LyricsLayoutRenderingTests: XCTestCase {
         }
     }
 
-    func testSmallTextWarningAppearsOnOperatorCardOnly() throws {
+    func testSmallTextWarningAppearsOnOperatorCardOnly() async throws {
         let slide = try XCTUnwrap(LyricsParser.parseDocument("""
         Verse
         Sing with joy
@@ -142,14 +157,31 @@ final class LyricsLayoutRenderingTests: XCTestCase {
         session.setSlides([slide])
         let displaySize = CGSize(width: 960, height: 270)
 
-        let card = try render(
+        func cardView(displaySize: CGSize) -> some View {
             SlideGridCellView(slide: slide, itemWidth: 320, itemHeight: 210,
                               isSelected: false, allowsPDFThumbnailRendering: false, onTap: {})
                 .environment(\.lyricsProjectionSize, displaySize)
-                .defaultAppStorage(preferences),
-            size: CGSize(width: 340, height: 260), name: "Operator card with small Meaning warning"
+                .defaultAppStorage(preferences)
+        }
+        let largeDisplay = CGSize(width: 1920, height: 1080)
+        let host = NSHostingView(rootView: cardView(displaySize: largeDisplay))
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 340, height: 260),
+            styleMask: [.borderless], backing: .buffered, defer: false
         )
-        XCTAssertTrue(hasOrangePixels(in: card))
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.close() }
+        host.layoutSubtreeIfNeeded()
+        let normalHeight = host.fittingSize.height
+        host.rootView = cardView(displaySize: displaySize)
+        try await waitForCard(in: host) { $0 > normalHeight + 1 }
+        let warningHeight = host.fittingSize.height
+
+        host.rootView = cardView(displaySize: largeDisplay)
+        try await waitForCard(in: host) { abs($0 - normalHeight) < 0.5 }
+        XCTAssertLessThan(host.fittingSize.height, warningHeight, "Unaffected cards must not reserve a warning row.")
+
         let projection = try render(
             PresentationView().environmentObject(session).defaultAppStorage(preferences),
             size: displaySize, name: "Audience slide without operator warning"
@@ -157,6 +189,24 @@ final class LyricsLayoutRenderingTests: XCTestCase {
         XCTAssertFalse(hasOrangePixels(in: projection))
         XCTAssertEqual(session.currentSlideID, slide.id)
         XCTAssertEqual(session.slides.first?.lines, slide.lines)
+    }
+
+    private func readabilityIndicator(lines: [SlideLine]) -> some View {
+        Color.clear
+            .background { LyricsReadabilityCheck(lines: lines) }
+            .overlayPreferenceValue(LyricsReadabilityPreferenceKey.self) { report in
+                LyricsReadabilityWarning(report: report)
+            }
+    }
+
+    private func waitForCard(in host: NSView, heightMatches: (CGFloat) -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(3)
+        repeat {
+            host.layoutSubtreeIfNeeded()
+            if heightMatches(host.fittingSize.height) { return }
+            try await Task.sleep(for: .milliseconds(20))
+        } while Date() < deadline
+        XCTFail("Card warning row did not update its height.")
     }
 
     private func hasOrangePixels(in bitmap: NSBitmapImageRep) -> Bool {

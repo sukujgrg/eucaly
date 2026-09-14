@@ -3,6 +3,7 @@ import CoreGraphics
 
 struct SlideGridCellView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var readability = LyricsReadabilityReport()
     let slide: Slide
     let itemWidth: CGFloat
     let itemHeight: CGFloat
@@ -18,13 +19,8 @@ struct SlideGridCellView: View {
                     .font(.footnote)
                     .fontWeight(.semibold)
                     .foregroundStyle(.secondary)
-                    .padding(.horizontal, 22)
                     .frame(maxWidth: .infinity)
-                    .overlay(alignment: .trailing) {
-                        if !slide.lines.isEmpty {
-                            LyricsReadabilityWarning(lines: slide.lines)
-                        }
-                    }
+                LyricsReadabilityWarning(report: readability)
             }
             .frame(maxWidth: .infinity, alignment: .center)
             .padding(10)
@@ -44,6 +40,19 @@ struct SlideGridCellView: View {
             )
         }
         .buttonStyle(.plain)
+        .accessibilityValue(readability.message)
+        .background {
+            if !slide.lines.isEmpty {
+                LyricsReadabilityCheck(lines: slide.lines)
+            }
+        }
+        .onPreferenceChange(LyricsReadabilityPreferenceKey.self) { report in
+            // The measurements are independent of card size. Apply the result
+            // after layout so the status row and accessibility value stay in sync.
+            DispatchQueue.main.async {
+                if readability != report { readability = report }
+            }
+        }
     }
 
     @ViewBuilder
