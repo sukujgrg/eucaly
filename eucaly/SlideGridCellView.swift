@@ -18,6 +18,13 @@ struct SlideGridCellView: View {
                     .font(.footnote)
                     .fontWeight(.semibold)
                     .foregroundStyle(.secondary)
+                    .padding(.horizontal, 22)
+                    .frame(maxWidth: .infinity)
+                    .overlay(alignment: .trailing) {
+                        if !slide.lines.isEmpty {
+                            LyricsReadabilityWarning(lines: slide.lines)
+                        }
+                    }
             }
             .frame(maxWidth: .infinity, alignment: .center)
             .padding(10)

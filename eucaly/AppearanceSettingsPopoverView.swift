@@ -10,25 +10,18 @@ struct AppearanceSettingsPopoverView: View {
     @Binding var thumbnailScale: Double
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Lyrics Appearance")
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Appearance")
                 .font(.headline)
 
-            AppearanceSliderRow(
-                title: "Lyrics Font Size",
-                value: $presentationFontScale,
-                range: 0.5...2.0,
-                step: 0.1
-            )
-
-            AppearanceAlignmentRow(selection: $presentationTextAlignment)
-
-            VStack(alignment: .leading, spacing: 7) {
-                Text("Lyrics Layout")
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Slide Layout")
+                    .font(.subheadline.weight(.semibold))
+                Text("Applies to projection and thumbnails.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                Picker("Lyrics Layout", selection: $presentationLyricsLayout) {
+                Picker("Layout", selection: $presentationLyricsLayout) {
                     ForEach(PresentationLyricsLayout.allCases) { layout in
                         Text(layout.title).tag(layout)
                     }
@@ -36,32 +29,48 @@ struct AppearanceSettingsPopoverView: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
 
-                Text("Columns place lyrics, meaning, and transliteration side by side.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                if presentationLyricsLayout == .columns {
+                    Text("Lyrics, meaning, translation, and transliteration appear side by side when present.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                AppearanceAlignmentRow(selection: $presentationTextAlignment)
+                AppearanceVerticalPositionRow(selection: $presentationVerticalPosition)
+                AppearancePaddingRow(value: $presentationPaddingScale)
             }
 
-            AppearanceVerticalPositionRow(selection: $presentationVerticalPosition)
-
-            AppearancePaddingRow(value: $presentationPaddingScale)
+            Divider()
 
             AppearanceSliderRow(
-                title: "Thumbnail Font Size",
-                value: $thumbnailFontScale,
-                range: 0.3...2.0,
+                title: "Projection Font Size",
+                value: $presentationFontScale,
+                range: 0.5...2.0,
                 step: 0.1
             )
 
-            AppearanceSliderRow(
-                title: "Thumbnail Size",
-                value: $thumbnailScale,
-                range: 0.6...1.6,
-                step: 0.1
-            )
+            Divider()
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Thumbnails")
+                    .font(.subheadline.weight(.semibold))
+                AppearanceSliderRow(
+                    title: "Thumbnail Font Size",
+                    value: $thumbnailFontScale,
+                    range: 0.3...2.0,
+                    step: 0.1
+                )
+                AppearanceSliderRow(
+                    title: "Thumbnail Size",
+                    value: $thumbnailScale,
+                    range: 0.6...1.6,
+                    step: 0.1
+                )
+            }
         }
         .padding(16)
-        .frame(width: 320)
+        .frame(width: 340)
     }
 }
 
@@ -83,7 +92,7 @@ private struct AppearancePaddingRow: View {
                 step: 0.05
             )
 
-            Text("Space around and between components. 0% uses the full slide; 100% is the default.")
+            Text("Margins and gaps: 0% is edge to edge; 100% is the default.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

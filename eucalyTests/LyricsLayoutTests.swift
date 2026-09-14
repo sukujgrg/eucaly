@@ -53,6 +53,124 @@ final class LyricsLayoutTests: XCTestCase {
 
 @MainActor
 final class LyricsLayoutRenderingTests: XCTestCase {
+    func testReadabilityWarningUsesProjectionSettingsAndDisplaySize() throws {
+        let lines = [
+            SlideLine(kind: .verse, languageTag: "", text: "கர்த்தரை பாடுங்கள்"),
+            SlideLine(kind: .verse, languageTag: "Meaning", text: Array(repeating: "Together we lift our voices and sing with joy.", count: 6).joined(separator: "\n")),
+            SlideLine(kind: .verse, languageTag: "Transliteration", text: "Kartharai paadungal")
+        ]
+        let suiteName = "LyricsReadabilityTests.\(UUID().uuidString)"
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { preferences.removePersistentDomain(forName: suiteName) }
+        preferences.set("columns", forKey: "presentationLyricsLayout")
+        preferences.set(1.0, forKey: "presentationPaddingScale")
+        preferences.set(1.0, forKey: "presentationFontScale")
+
+        func warning(at size: CGSize?, thumbnailScale: Double = 1) throws -> Bool {
+            preferences.set(thumbnailScale, forKey: "thumbnailFontScale")
+            let bitmap = try render(
+                LyricsReadabilityWarning(lines: lines)
+                    .environment(\.lyricsProjectionSize, size)
+                    .defaultAppStorage(preferences),
+                size: CGSize(width: 20, height: 20), name: "Projection readability — \(String(describing: size))"
+            )
+            return hasOrangePixels(in: bitmap)
+        }
+
+        XCTAssertTrue(try warning(at: CGSize(width: 960, height: 270)))
+        XCTAssertTrue(try warning(at: CGSize(width: 960, height: 270), thumbnailScale: 0.3))
+        XCTAssertFalse(try warning(at: CGSize(width: 1920, height: 1080)), "The warning must use the selected display's geometry.")
+        XCTAssertFalse(try warning(at: nil), "Do not guess the target size when no display is available.")
+
+        preferences.set(0.5, forKey: "presentationFontScale")
+        XCTAssertTrue(try warning(at: CGSize(width: 1920, height: 1080)), "A low requested font size also needs a warning.")
+        preferences.set(1.0, forKey: "presentationFontScale")
+        XCTAssertFalse(try warning(at: CGSize(width: 1920, height: 1080)), "Clearing the cause must clear the warning.")
+    }
+
+    func testReadabilityWarningRespondsToPaddingAndMissingComponentsInBothLayouts() throws {
+        let suiteName = "LyricsReadabilityPaddingTests.\(UUID().uuidString)"
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { preferences.removePersistentDomain(forName: suiteName) }
+        preferences.set(1.0, forKey: "presentationFontScale")
+        let meaning = SlideLine(kind: .verse, languageTag: "Meaning", text: "Together we lift our voices and sing with joy.")
+        let lines = [
+            SlideLine(kind: .verse, languageTag: "", text: "Joy"), meaning,
+            SlideLine(kind: .verse, languageTag: "Transliteration", text: "Hope")
+        ]
+
+        func warning(for lines: [SlideLine], padding: Double) throws -> Bool {
+            preferences.set(padding, forKey: "presentationPaddingScale")
+            let bitmap = try render(
+                LyricsReadabilityWarning(lines: lines)
+                    .environment(\.lyricsProjectionSize, CGSize(width: 960, height: 270))
+                    .defaultAppStorage(preferences),
+                size: CGSize(width: 20, height: 20), name: "Readability — \(lines.count) components, padding \(padding)"
+            )
+            return hasOrangePixels(in: bitmap)
+        }
+
+        for layout in PresentationLyricsLayout.allCases {
+            preferences.set(layout.rawValue, forKey: "presentationLyricsLayout")
+            XCTAssertFalse(try warning(for: lines, padding: 0), layout.title)
+            if layout == .columns {
+                XCTAssertFalse(try warning(for: lines, padding: 1), "Rounded text measurements must fit fractional column widths.")
+            }
+            XCTAssertTrue(try warning(for: lines, padding: 2), layout.title)
+            XCTAssertFalse(try warning(for: [meaning], padding: 2), "A lone component can use all the available space.")
+            XCTAssertFalse(try warning(for: [], padding: 2))
+            XCTAssertFalse(try warning(for: [SlideLine(kind: .verse, languageTag: "Meaning", text: " \n ")], padding: 2))
+        }
+    }
+
+    func testSmallTextWarningAppearsOnOperatorCardOnly() throws {
+        let slide = try XCTUnwrap(LyricsParser.parseDocument("""
+        Verse
+        Sing with joy
+        Meaning
+        \(Array(repeating: "Together we lift our voices and sing with joy.", count: 6).joined(separator: "\n"))
+        Transliteration
+        Sing with joy
+        """).slides.first)
+        let suiteName = "LyricsReadabilityCardTests.\(UUID().uuidString)"
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { preferences.removePersistentDomain(forName: suiteName) }
+        preferences.set("columns", forKey: "presentationLyricsLayout")
+        preferences.set(1.0, forKey: "presentationPaddingScale")
+        preferences.set(1.0, forKey: "presentationFontScale")
+        let session = PresentationSession()
+        session.setSlides([slide])
+        let displaySize = CGSize(width: 960, height: 270)
+
+        let card = try render(
+            SlideGridCellView(slide: slide, itemWidth: 320, itemHeight: 210,
+                              isSelected: false, allowsPDFThumbnailRendering: false, onTap: {})
+                .environment(\.lyricsProjectionSize, displaySize)
+                .defaultAppStorage(preferences),
+            size: CGSize(width: 340, height: 260), name: "Operator card with small Meaning warning"
+        )
+        XCTAssertTrue(hasOrangePixels(in: card))
+        let projection = try render(
+            PresentationView().environmentObject(session).defaultAppStorage(preferences),
+            size: displaySize, name: "Audience slide without operator warning"
+        )
+        XCTAssertFalse(hasOrangePixels(in: projection))
+        XCTAssertEqual(session.currentSlideID, slide.id)
+        XCTAssertEqual(session.slides.first?.lines, slide.lines)
+    }
+
+    private func hasOrangePixels(in bitmap: NSBitmapImageRep) -> Bool {
+        for y in 0..<bitmap.pixelsHigh {
+            for x in 0..<bitmap.pixelsWide {
+                guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
+                if color.alphaComponent > 0.5 && color.redComponent > 0.8
+                    && color.greenComponent > 0.25 && color.greenComponent < 0.8
+                    && color.blueComponent < 0.3 { return true }
+            }
+        }
+        return false
+    }
+
     func testProjectionAndThumbnailsPositionEveryColumn() throws {
         let slide = try XCTUnwrap(LyricsParser.parseDocument("""
         Verse

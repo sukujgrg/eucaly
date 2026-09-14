@@ -244,6 +244,8 @@ Window capture supports live streaming of a user-picked app window into a slide.
   - Columns group existing lyric components (lyrics, meaning, translation, transliteration); missing components do not reserve space.
   - Column widths follow relative font sizes: Meaning gets half the width of each full-size component (40% / 20% / 40% for lyrics / meaning / transliteration, after margins and gaps). A single component always uses the full available width.
   - Preview and Current thumbnails share the projection text layout. SwiftUI measures and fits its own text, including multilingual fallback fonts.
+  - Appearance separates shared slide layout, Projection Font Size, and thumbnail controls. Projection and thumbnail font sizes remain independent.
+  - Preview and Current lyrics cards show an advisory when a component cannot fit at 32 projection points, or its requested font is smaller. The check uses the selected display's full frame, shared layout geometry, and SwiftUI font metrics. It does not guarantee readability at every viewing distance. Keep the full text fitting behavior; never silently truncate, change layout, or project operator warnings.
 - Media slide views:
   - `eucaly/ImageSlideView.swift`
   - `eucaly/PresentationWindowController.swift` (`VideoSlideView`, `PDFSlideView`)

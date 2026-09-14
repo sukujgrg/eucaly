@@ -17,73 +17,91 @@ struct LyricsSlideContentView: View {
     let rendering: Rendering
 
     var body: some View {
-        let blocks = layout.blocks(for: lines)
-        let contentSize = CGSize(
-            width: max(0, size.width - horizontalInset * 2),
-            height: max(0, size.height - verticalInset * 2)
-        )
-        let count = CGFloat(max(1, blocks.count))
-        let availableSpacing = (layout == .columns ? contentSize.width : contentSize.height) / count
-        let spacing = min((rendering == .projection ? 28 : 6) * paddingMultiplier, availableSpacing)
-        let gaps = spacing * CGFloat(max(0, blocks.count - 1))
-        let availableSize = CGSize(
-            width: layout == .columns ? max(0, contentSize.width - gaps) : contentSize.width,
-            height: layout == .stacked ? max(0, contentSize.height - gaps) / count : contentSize.height
+        let metrics = LyricsSlideMetrics(
+            lines: lines, size: size, layout: layout,
+            paddingScale: paddingScale, rendering: rendering
         )
 
         Group {
             switch layout {
             case .stacked:
-                VStack(alignment: textAlignment.horizontalAlignment, spacing: spacing) {
-                    textBlocks(blocks, in: availableSize)
+                VStack(alignment: textAlignment.horizontalAlignment, spacing: metrics.spacing) {
+                    textBlocks(using: metrics)
                 }
             case .columns:
-                HStack(alignment: verticalPosition.verticalAlignment, spacing: spacing) {
-                    textBlocks(blocks, in: availableSize)
+                HStack(alignment: verticalPosition.verticalAlignment, spacing: metrics.spacing) {
+                    textBlocks(using: metrics)
                 }
             }
         }
-        .frame(width: contentSize.width, height: contentSize.height, alignment: verticalPosition.frameAlignment)
+        .frame(width: metrics.contentSize.width, height: metrics.contentSize.height, alignment: verticalPosition.frameAlignment)
         .frame(width: size.width, height: size.height)
         .clipped()
     }
 
-    private var paddingMultiplier: CGFloat {
-        CGFloat(min(2, max(0, paddingScale)))
-    }
-
-    private var horizontalInset: CGFloat {
-        (rendering == .projection ? max(40, size.width * 0.1) : 6) * paddingMultiplier
-    }
-
-    private var verticalInset: CGFloat {
-        (rendering == .projection ? max(32, size.height * 0.08) : 6) * paddingMultiplier
-    }
-
-    private func textBlocks(_ blocks: [LyricsTextBlock], in availableSize: CGSize) -> some View {
-        // Give smaller text a proportionally narrower column. Normalizing over
-        // the present blocks also lets a lone Meaning section use the full width.
-        let totalWeight = blocks.reduce(0) { $0 + $1.relativeFontSize }
-        return ForEach(blocks) { block in
-            let blockSize = CGSize(
-                width: layout == .columns
-                    ? availableSize.width * CGFloat(block.relativeFontSize / totalWeight)
-                    : availableSize.width,
-                height: availableSize.height
-            )
+    private func textBlocks(using metrics: LyricsSlideMetrics) -> some View {
+        ForEach(metrics.blocks) { block in
+            let blockSize = metrics.size(for: block)
             LyricsTextFitLayout(maxHeight: blockSize.height) {
                 Text(block.text)
-                    .font(font(for: block, in: blockSize))
+                    .font(block.font(size: metrics.fontSize(for: block, scale: fontScale)))
                     .foregroundStyle(.white)
                     .multilineTextAlignment(textAlignment.textAlignment)
                     .lineLimit(nil)
+                    // Preserve the complete text. Operator cards warn when it
+                    // cannot fit at the readability threshold; a hard floor
+                    // here would silently truncate dense lyrics instead.
                     .minimumScaleFactor(0.01)
             }
             .frame(width: blockSize.width, alignment: textAlignment.frameAlignment)
         }
     }
+}
 
-    private func font(for block: LyricsTextBlock, in blockSize: CGSize) -> Font {
+/// Shared geometry for rendering and projection readability checks.
+struct LyricsSlideMetrics {
+    let blocks: [LyricsTextBlock]
+    let contentSize: CGSize
+    let spacing: CGFloat
+    private let availableSize: CGSize
+    private let layout: PresentationLyricsLayout
+    private let rendering: LyricsSlideContentView.Rendering
+    private let totalWeight: Double
+
+    init(lines: [SlideLine], size: CGSize, layout: PresentationLyricsLayout,
+         paddingScale: Double, rendering: LyricsSlideContentView.Rendering) {
+        self.layout = layout
+        self.rendering = rendering
+        blocks = layout.blocks(for: lines)
+        totalWeight = blocks.reduce(0) { $0 + $1.relativeFontSize }
+        let padding = CGFloat(min(2, max(0, paddingScale)))
+        let horizontalInset = (rendering == .projection ? max(40, size.width * 0.1) : 6) * padding
+        let verticalInset = (rendering == .projection ? max(32, size.height * 0.08) : 6) * padding
+        contentSize = CGSize(
+            width: max(0, size.width - horizontalInset * 2),
+            height: max(0, size.height - verticalInset * 2)
+        )
+        let count = CGFloat(max(1, blocks.count))
+        let availableSpacing = (layout == .columns ? contentSize.width : contentSize.height) / count
+        spacing = min((rendering == .projection ? 28 : 6) * padding, availableSpacing)
+        let gaps = spacing * CGFloat(max(0, blocks.count - 1))
+        availableSize = CGSize(
+            width: layout == .columns ? max(0, contentSize.width - gaps) : contentSize.width,
+            height: layout == .stacked ? max(0, contentSize.height - gaps) / count : contentSize.height
+        )
+    }
+
+    func size(for block: LyricsTextBlock) -> CGSize {
+        CGSize(
+            width: layout == .columns
+                ? availableSize.width * CGFloat(block.relativeFontSize / totalWeight)
+                : availableSize.width,
+            height: availableSize.height
+        )
+    }
+
+    func fontSize(for block: LyricsTextBlock, scale: Double) -> CGFloat {
+        let blockSize = size(for: block)
         let preferredSize: CGFloat
         switch rendering {
         case .projection:
@@ -91,9 +109,14 @@ struct LyricsSlideContentView: View {
         case .thumbnail:
             preferredSize = min(16, max(8, blockSize.height * 0.6))
         }
-        let fontSize = preferredSize * fontScale * block.relativeFontSize
-        let font = Font.system(size: fontSize, weight: block.isMeaning ? .regular : .bold)
-        return block.isMeaning ? font.italic() : font
+        return preferredSize * scale * block.relativeFontSize
+    }
+}
+
+extension LyricsTextBlock {
+    func font(size: CGFloat) -> Font {
+        let font = Font.system(size: size, weight: isMeaning ? .regular : .bold)
+        return isMeaning ? font.italic() : font
     }
 }
 
