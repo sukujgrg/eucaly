@@ -733,15 +733,14 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
 struct PresentationView: View {
     @EnvironmentObject var session: PresentationSession
     @AppStorage("presentationFontScale") private var presentationFontScale: Double = 1.0
+    @AppStorage("presentationLyricsLayout") private var presentationLyricsLayout: PresentationLyricsLayout = .stacked
+    @AppStorage("presentationPaddingScale") private var presentationPaddingScale: Double = 1.0
     @AppStorage("presentationTextAlignment") private var presentationTextAlignment: PresentationTextAlignment = .center
     @AppStorage("presentationVerticalPosition") private var presentationVerticalPosition: PresentationVerticalPosition = .middle
 
     var body: some View {
         GeometryReader { proxy in
             let size = proxy.size
-            let horizontalMargin = max(40, size.width * 0.1)
-            let maxWidth = max(0, size.width - horizontalMargin * 2)
-
             ZStack {
                 Color.black
                     .frame(width: size.width, height: size.height)
@@ -749,7 +748,7 @@ struct PresentationView: View {
                 backgroundLayer
                     .frame(width: size.width, height: size.height)
 
-                slidesLayer(in: size, maxWidth: maxWidth)
+                slidesLayer(in: size)
                     .frame(width: size.width, height: size.height)
 
                 overlayLayer
@@ -777,7 +776,7 @@ struct PresentationView: View {
     }
 
     @ViewBuilder
-    private func slidesLayer(in size: CGSize, maxWidth: CGFloat) -> some View {
+    private func slidesLayer(in size: CGSize) -> some View {
         ZStack {
             let currentSlide = session.currentSlide
             // Show black background only when a non-lyrics slide is actively shown.
@@ -816,26 +815,15 @@ struct PresentationView: View {
                             ImageSlideView(url: imageURL)
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                         } else {
-                            VStack(spacing: 28) {
-                                ForEach(slide.lines) { line in
-                                    VStack(alignment: presentationTextAlignment.horizontalAlignment, spacing: 10) {
-                                        Text(line.text)
-                                            .font(dynamicFont(for: line, in: size, maxWidth: maxWidth))
-                                            .foregroundStyle(.white)
-                                            .multilineTextAlignment(presentationTextAlignment.textAlignment)
-                                            .frame(maxWidth: maxWidth, alignment: presentationTextAlignment.frameAlignment)
-                                            .lineLimit(nil)
-                                            .minimumScaleFactor(0.4)
-                                            .allowsTightening(true)
-                                    }
-                                }
-                            }
-                            .frame(maxWidth: maxWidth, alignment: presentationTextAlignment.frameAlignment)
-                            .padding(.vertical, max(32, size.height * 0.08))
-                            .frame(
-                                maxWidth: .infinity,
-                                maxHeight: .infinity,
-                                alignment: presentationVerticalPosition.frameAlignment
+                            LyricsSlideContentView(
+                                lines: slide.lines,
+                                size: size,
+                                layout: presentationLyricsLayout,
+                                textAlignment: presentationTextAlignment,
+                                verticalPosition: presentationVerticalPosition,
+                                fontScale: presentationFontScale,
+                                paddingScale: presentationPaddingScale,
+                                rendering: .projection
                             )
                         }
                     }
@@ -868,118 +856,6 @@ struct PresentationView: View {
         if !session.areSlidesVisible { return true }
         guard let slide else { return true }
         return isLyricsSlide(slide)
-    }
-
-    private func lineFont(for line: SlideLine) -> Font {
-        let baseSize: CGFloat = 52
-        if line.languageTag.caseInsensitiveCompare("Meaning") == .orderedSame {
-            return .system(size: baseSize * 0.5, weight: .regular).italic()
-        }
-        return .system(size: baseSize, weight: .bold)
-    }
-
-    private func dynamicFont(for line: SlideLine, in size: CGSize, maxWidth: CGFloat) -> Font {
-        let isMeaning = line.languageTag.caseInsensitiveCompare("Meaning") == .orderedSame
-        let lineCount = max(1, session.currentSlide?.lines.count ?? 1)
-        let verticalPadding: CGFloat = 120
-        let availableHeight = max(80, (size.height - verticalPadding) / CGFloat(lineCount))
-
-        let maxSize: CGFloat = min(84, availableHeight * 0.9) * presentationFontScale
-        let minSize: CGFloat = 16 * presentationFontScale
-        let baseSize = fitFontSize(
-            text: line.text,
-            maxWidth: maxWidth,
-            maxHeight: availableHeight,
-            maxSize: maxSize,
-            minSize: minSize,
-            weight: isMeaning ? .regular : .bold,
-            italic: isMeaning
-        )
-
-        let finalSize = isMeaning ? max(minSize, baseSize * 0.5) : baseSize
-        let font = Font.system(size: finalSize, weight: isMeaning ? .regular : .bold)
-        return isMeaning ? font.italic() : font
-    }
-
-
-    private func fitFontSize(
-        text: String,
-        maxWidth: CGFloat,
-        maxHeight: CGFloat,
-        maxSize: CGFloat,
-        minSize: CGFloat,
-        weight: NSFont.Weight,
-        italic: Bool
-    ) -> CGFloat {
-        if text.isEmpty { return minSize }
-
-        // Check cache first
-        if let cached = CacheManager.shared.getCachedFontSize(
-            text: text,
-            maxWidth: maxWidth,
-            maxHeight: maxHeight,
-            maxSize: maxSize,
-            minSize: minSize,
-            weight: weight,
-            italic: italic
-        ) {
-            return cached
-        }
-
-        // Calculate if not cached
-        var low = minSize
-        var high = maxSize
-        var best = minSize
-        let constraint = CGSize(width: maxWidth, height: maxHeight)
-
-        while high - low > 0.5 {
-            let mid = (low + high) / 2
-            let font = makeNSFont(size: mid, weight: weight, italic: italic)
-            let rect = measure(text: text, font: font, constraint: constraint)
-            if rect.width <= constraint.width && rect.height <= constraint.height {
-                best = mid
-                low = mid
-            } else {
-                high = mid
-            }
-        }
-
-        // Cache the result
-        CacheManager.shared.cacheFontSize(
-            best,
-            text: text,
-            maxWidth: maxWidth,
-            maxHeight: maxHeight,
-            maxSize: maxSize,
-            minSize: minSize,
-            weight: weight,
-            italic: italic
-        )
-
-        return best
-    }
-
-    private func makeNSFont(size: CGFloat, weight: NSFont.Weight, italic: Bool) -> NSFont {
-        let base = NSFont.systemFont(ofSize: size, weight: weight)
-        if italic {
-            return NSFontManager.shared.convert(base, toHaveTrait: .italicFontMask)
-        }
-        return base
-    }
-
-    private func measure(text: String, font: NSFont, constraint: CGSize) -> CGRect {
-        let paragraphStyle = NSMutableParagraphStyle()
-        paragraphStyle.lineBreakMode = .byWordWrapping
-        paragraphStyle.alignment = .center
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .paragraphStyle: paragraphStyle
-        ]
-        let attributed = NSAttributedString(string: text, attributes: attrs)
-        return attributed.boundingRect(
-            with: constraint,
-            options: [.usesLineFragmentOrigin, .usesFontLeading]
-        )
     }
 
 }

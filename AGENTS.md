@@ -238,6 +238,12 @@ Window capture supports live streaming of a user-picked app window into a slide.
 - Parser: `eucaly/LyricsParser.swift`
 - Grid layout: `eucaly/ThumbnailGridLayout.swift`
 - Grid cell: `eucaly/SlideGridCellView.swift`
+- Lyrics layout: `eucaly/PresentationLyricsLayout.swift`, `eucaly/LyricsSlideContentView.swift`
+  - Appearance offers Stacked / Columns plus Top / Middle / Bottom positioning.
+  - Lyrics Padding scales outer margins and component gaps in both layouts, from 0% (full slide) to 200%; 100% preserves the default spacing. The saved setting also applies to Preview and Current thumbnails.
+  - Columns group existing lyric components (lyrics, meaning, translation, transliteration); missing components do not reserve space.
+  - Column widths follow relative font sizes: Meaning gets half the width of each full-size component (40% / 20% / 40% for lyrics / meaning / transliteration, after margins and gaps). A single component always uses the full available width.
+  - Preview and Current thumbnails share the projection text layout. SwiftUI measures and fits its own text, including multilingual fallback fonts.
 - Media slide views:
   - `eucaly/ImageSlideView.swift`
   - `eucaly/PresentationWindowController.swift` (`VideoSlideView`, `PDFSlideView`)
@@ -261,7 +267,6 @@ Window capture supports live streaming of a user-picked app window into a slide.
   - `@MainActor`, singleton
   - Memory and disk thumbnail caches
   - File-change invalidation
-  - Font calculation cache
   - startup cleanup and manual clear action
 
 ## Filesystem Model

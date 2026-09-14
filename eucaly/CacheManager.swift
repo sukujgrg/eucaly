@@ -35,7 +35,6 @@ class CacheManager: ObservableObject {
     // Memory caches (cleared on app quit)
     private let memoryImageCache = NSCache<NSString, NSImage>()
     private var memoryCacheKeys = Set<String>()
-    private var fontSizeCache: [FontCacheKey: CGFloat] = [:]
 
     // Disk cache directory
     private let diskIOQueue = OperationQueue()
@@ -139,78 +138,6 @@ class CacheManager: ObservableObject {
         let diskURL = diskCacheURL
         diskIOQueue.addOperation { [cacheKey] in
             try? FileManager.default.removeItem(at: diskURL.appendingPathComponent(cacheKey))
-        }
-    }
-
-    // MARK: - Font Size Caching
-
-    struct FontCacheKey: Hashable {
-        let text: String
-        let maxWidth: Int
-        let maxHeight: Int
-        let maxSize: Int
-        let minSize: Int
-        let weight: Int // NSFont.Weight.rawValue as Int
-        let italic: Bool
-
-        init(text: String, maxWidth: CGFloat, maxHeight: CGFloat, maxSize: CGFloat,
-             minSize: CGFloat, weight: NSFont.Weight, italic: Bool) {
-            self.text = text
-            self.maxWidth = Int(maxWidth)
-            self.maxHeight = Int(maxHeight)
-            self.maxSize = Int(maxSize)
-            self.minSize = Int(minSize)
-            self.weight = Int(weight.rawValue * 1000)
-            self.italic = italic
-        }
-    }
-
-    func getCachedFontSize(
-        text: String,
-        maxWidth: CGFloat,
-        maxHeight: CGFloat,
-        maxSize: CGFloat,
-        minSize: CGFloat,
-        weight: NSFont.Weight,
-        italic: Bool
-    ) -> CGFloat? {
-        let key = FontCacheKey(
-            text: text,
-            maxWidth: maxWidth,
-            maxHeight: maxHeight,
-            maxSize: maxSize,
-            minSize: minSize,
-            weight: weight,
-            italic: italic
-        )
-        return fontSizeCache[key]
-    }
-
-    func cacheFontSize(
-        _ size: CGFloat,
-        text: String,
-        maxWidth: CGFloat,
-        maxHeight: CGFloat,
-        maxSize: CGFloat,
-        minSize: CGFloat,
-        weight: NSFont.Weight,
-        italic: Bool
-    ) {
-        let key = FontCacheKey(
-            text: text,
-            maxWidth: maxWidth,
-            maxHeight: maxHeight,
-            maxSize: maxSize,
-            minSize: minSize,
-            weight: weight,
-            italic: italic
-        )
-        fontSizeCache[key] = size
-
-        // Limit font cache size (keep most recent 500)
-        if fontSizeCache.count > 500 {
-            let keysToRemove = fontSizeCache.keys.prefix(100)
-            keysToRemove.forEach { fontSizeCache.removeValue(forKey: $0) }
         }
     }
 
@@ -461,7 +388,6 @@ class CacheManager: ObservableObject {
         // Clear memory
         memoryImageCache.removeAllObjects()
         memoryCacheKeys.removeAll()
-        fontSizeCache.removeAll()
         fileModificationDates.removeAll()
 
         // Clear disk
@@ -487,7 +413,6 @@ class CacheManager: ObservableObject {
         return CacheStats(
             memoryThumbnails: memoryCacheKeys.count,
             diskThumbnails: files.count,
-            fontCalculations: fontSizeCache.count,
             diskSizeMB: Double(diskSize) / 1024.0 / 1024.0
         )
     }
@@ -495,7 +420,6 @@ class CacheManager: ObservableObject {
     struct CacheStats {
         let memoryThumbnails: Int
         let diskThumbnails: Int
-        let fontCalculations: Int
         let diskSizeMB: Double
     }
 }

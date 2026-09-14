@@ -22,6 +22,7 @@ Browsing never silently replaces **Current**.
 ## Features
 
 - Lyrics presentation from `.txt`
+- Stacked or side-by-side lyric components, with Top / Middle / Bottom positioning and adjustable padding in Lyrics Appearance
 - PDF slides
 - Images
 - Videos
