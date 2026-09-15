@@ -238,6 +238,15 @@ Window capture supports live streaming of a user-picked app window into a slide.
 - Parser: `eucaly/LyricsParser.swift`
 - Grid layout: `eucaly/ThumbnailGridLayout.swift`
 - Grid cell: `eucaly/SlideGridCellView.swift`
+- Lyrics layout: `eucaly/PresentationLyricsLayout.swift`, `eucaly/LyricsSlideContentView.swift`
+  - Appearance offers Stacked / Columns plus Top / Middle / Bottom positioning.
+  - Lyrics Padding scales outer margins and component gaps in both layouts, from 0% (full slide) to 200%; 100% preserves the default spacing. The saved setting also applies to Preview and Current thumbnails.
+  - Columns group existing lyric components (lyrics, meaning, translation, transliteration); missing components do not reserve space.
+  - Column widths follow relative font sizes: Meaning gets half the width of each full-size component (40% / 20% / 40% for lyrics / meaning / transliteration, after margins and gaps). A single component always uses the full available width.
+  - Preview and Current thumbnails share the projection text layout. SwiftUI measures and fits its own text, including multilingual fallback fonts.
+  - Appearance separates shared slide layout, Projection Font Size, and thumbnail controls. Projection and thumbnail font sizes remain independent.
+  - Preview and Current lyrics cards show an advisory when a component cannot fit at 32 projection points, or its requested font is smaller. The check uses the selected display's full frame, shared layout geometry, and SwiftUI font metrics. It does not guarantee readability at every viewing distance. Keep the full text fitting behavior; never silently truncate, change layout, or project operator warnings.
+  - The advisory is a visible status row and is included in the card button's accessibility value. Suggest increasing Projection Font Size only for components that fit at the threshold; overflow needs more space or shorter content. Apply measured status outside the layout update and reserve no warning space on unaffected cards.
 - Media slide views:
   - `eucaly/ImageSlideView.swift`
   - `eucaly/PresentationWindowController.swift` (`VideoSlideView`, `PDFSlideView`)
@@ -261,7 +270,6 @@ Window capture supports live streaming of a user-picked app window into a slide.
   - `@MainActor`, singleton
   - Memory and disk thumbnail caches
   - File-change invalidation
-  - Font calculation cache
   - startup cleanup and manual clear action
 
 ## Filesystem Model

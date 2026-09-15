@@ -24,6 +24,8 @@ public struct ContentView: View {
     @AppStorage("backgroundAudioLoop") private var backgroundAudioLoop: Bool = true
     @AppStorage("thumbnailScale") private var thumbnailScale: Double = 1.0
     @AppStorage("presentationFontScale") private var presentationFontScale: Double = 1.0
+    @AppStorage("presentationLyricsLayout") private var presentationLyricsLayout: PresentationLyricsLayout = .stacked
+    @AppStorage("presentationPaddingScale") private var presentationPaddingScale: Double = 1.0
     @AppStorage("presentationTextAlignment") private var presentationTextAlignment: PresentationTextAlignment = .center
     @AppStorage("presentationVerticalPosition") private var presentationVerticalPosition: PresentationVerticalPosition = .middle
     @AppStorage("thumbnailFontScale") private var thumbnailFontScale: Double = 1.0
@@ -63,6 +65,7 @@ public struct ContentView: View {
     @State private var libraryRevision: Int = 0
     @State private var displayedLibraryRootURL: URL? = nil
     @State private var projectionScreenOptions: [ProjectionScreenOption] = []
+    @State private var lyricsProjectionSize: CGSize?
     @State private var isTimerSettingsPresented: Bool = false
     @State private var isAppearanceSettingsPresented: Bool = false
     @State private var isBackgroundSettingsPresented: Bool = false
@@ -170,6 +173,7 @@ public struct ContentView: View {
 
     public var body: some View {
         rootSplitView
+            .environment(\.lyricsProjectionSize, lyricsProjectionSize)
             .background(
                 InitialWindowFocus()
                     .frame(width: 0, height: 0)
@@ -467,8 +471,10 @@ public struct ContentView: View {
         .popover(isPresented: $isAppearanceSettingsPresented, arrowEdge: .top) {
             AppearanceSettingsPopoverView(
                 presentationFontScale: $presentationFontScale,
+                presentationLyricsLayout: $presentationLyricsLayout,
                 presentationTextAlignment: $presentationTextAlignment,
                 presentationVerticalPosition: $presentationVerticalPosition,
+                presentationPaddingScale: $presentationPaddingScale,
                 thumbnailFontScale: $thumbnailFontScale,
                 thumbnailScale: $thumbnailScale
             )
@@ -1002,8 +1008,10 @@ public struct ContentView: View {
     }
 
     private func applyProjectionScreenPreference() {
+        let screen = preferredProjectionScreen()
+        lyricsProjectionSize = screen?.frame.size
         guard session.isPresenting else { return }
-        session.setPreferredPresentationScreen(preferredProjectionScreen())
+        session.setPreferredPresentationScreen(screen)
     }
 
     private func stopWindowCapturesForShutdown() {

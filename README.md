@@ -22,6 +22,8 @@ Browsing never silently replaces **Current**.
 ## Features
 
 - Lyrics presentation from `.txt`
+- Stacked or side-by-side lyric components, with Top / Middle / Bottom positioning and adjustable padding in Appearance
+- Appearance groups shared slide layout separately from Projection Font Size and thumbnail controls. A “Small projected text” label flags affected lyrics cards; hover for adjustments tailored to the cause. The card's accessibility value includes the full explanation.
 - PDF slides
 - Images
 - Videos

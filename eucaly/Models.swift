@@ -25,7 +25,7 @@ nonisolated enum LyricsSectionCatalog {
         let isMeaning: Bool
     }
 
-    enum CompanionKind: String {
+    enum CompanionKind: String, CaseIterable {
         case meaning = "Meaning"
         case translation = "Translation"
         case transliteration = "Transliteration"

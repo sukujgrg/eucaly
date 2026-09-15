@@ -91,4 +91,12 @@ enum PresentationVerticalPosition: String, CaseIterable, Identifiable {
             return .bottom
         }
     }
+
+    var verticalAlignment: VerticalAlignment {
+        switch self {
+        case .top: return .top
+        case .middle: return .center
+        case .bottom: return .bottom
+        }
+    }
 }

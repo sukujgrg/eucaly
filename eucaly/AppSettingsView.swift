@@ -43,9 +43,6 @@ struct AppSettingsView: View {
                     Text("Disk: \(cacheStats.diskThumbnails) thumbnails (\(String(format: "%.1f", cacheStats.diskSizeMB)) MB)")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
-                    Text("Font calculations: \(cacheStats.fontCalculations)")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
                 }
 
                 Button("Clear All Caches") {
