@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 
 struct AppSettingsView: View {
+    @EnvironmentObject private var appUpdateViewModel: AppUpdateViewModel
     @AppStorage("libraryRootPath") private var libraryRootPath: String = ""
     @AppStorage("libraryRootBookmark") private var libraryRootBookmark: String = ""
     @State private var resolvedLibraryRoot: URL? = nil
@@ -10,52 +11,89 @@ struct AppSettingsView: View {
 
     var body: some View {
         Form {
-            Section("Library Root") {
-                HStack {
-                    Text("Status")
-                    Spacer()
-                    Text(libraryRootStatus)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(libraryRootStatusColor)
-                }
-
-                Button("Set Library Root") {
-                    chooseLibraryRoot()
-                }
-                .buttonStyle(.bordered)
-
-                if let resolvedLibraryRoot {
-                    Text(resolvedLibraryRoot.path)
-                        .font(.system(size: 12))
+            Section("Library") {
+                HStack(spacing: 12) {
+                    Image(systemName: "folder")
+                        .font(.title2)
                         .foregroundStyle(.secondary)
-                } else if !libraryRootPath.isEmpty {
-                    Text(libraryRootPath)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(displayedLibraryRoot?.lastPathComponent ?? "No folder selected")
+                            .fontWeight(.medium)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+
+                        if let displayedLibraryRoot {
+                            Text(displayedLibraryRoot.path)
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .help(displayedLibraryRoot.path)
+                        } else {
+                            Text("Choose a folder for your lyrics and media.")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        if libraryRootNeedsPermission {
+                            Label("Choose this folder again to restore access.", systemImage: "exclamationmark.triangle.fill")
+                                .font(.callout)
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Button(displayedLibraryRoot == nil ? "Choose…" : "Change…") {
+                        chooseLibraryRoot()
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityLabel(displayedLibraryRoot == nil ? "Choose Library Folder" : "Change Library Folder")
                 }
             }
 
-            Section("Cache") {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Memory: \(cacheStats.memoryThumbnails) thumbnails")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                    Text("Disk: \(cacheStats.diskThumbnails) thumbnails (\(String(format: "%.1f", cacheStats.diskSizeMB)) MB)")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                }
+            Section {
+                Toggle("Automatically Check for Updates", isOn: Binding(
+                    get: { appUpdateViewModel.state.automaticallyChecksForUpdates },
+                    set: { appUpdateViewModel.setAutomaticChecks($0) }
+                ))
+                .toggleStyle(.switch)
 
-                Button("Clear All Caches") {
-                    CacheManager.shared.clearAllCaches()
-                    refreshCacheStats()
+                Button("Check for Updates…") {
+                    appUpdateViewModel.checkForUpdates()
                 }
-                .buttonStyle(.bordered)
+                .disabled(!appUpdateViewModel.state.canCheckForUpdates)
+            } header: {
+                Text("Updates")
+            } footer: {
+                Text("Checks in the background. You choose when to download and install.")
             }
 
+            Section {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("\(String(format: "%.1f", cacheStats.diskSizeMB)) MB on disk · \(cacheStats.diskThumbnails) thumbnails")
+                        Text("\(cacheStats.memoryThumbnails) thumbnails in memory")
+                            .foregroundStyle(.secondary)
+                    }
+                    .font(.callout)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Button("Clear Cache") {
+                        CacheManager.shared.clearAllCaches()
+                        refreshCacheStats()
+                    }
+                    .buttonStyle(.bordered)
+                }
+            } header: {
+                Text("Cache")
+            } footer: {
+                Text("Thumbnails are recreated as needed.")
+            }
         }
         .formStyle(.grouped)
-        .padding(20)
-        .frame(minWidth: 520, idealWidth: 560)
+        .frame(width: 520)
         .onAppear {
             refreshResolvedURLs()
             refreshCacheStats()
@@ -68,18 +106,14 @@ struct AppSettingsView: View {
         }
     }
 
-    private var libraryRootStatus: String {
-        if resolvedLibraryRoot != nil {
-            return "Active"
-        }
-        if !libraryRootBookmark.isEmpty || !libraryRootPath.isEmpty {
-            return "Needs permission"
-        }
-        return "Not set"
+    private var displayedLibraryRoot: URL? {
+        if let resolvedLibraryRoot { return resolvedLibraryRoot }
+        guard !libraryRootPath.isEmpty else { return nil }
+        return URL(fileURLWithPath: libraryRootPath, isDirectory: true)
     }
 
-    private var libraryRootStatusColor: AnyShapeStyle {
-        resolvedLibraryRoot != nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange)
+    private var libraryRootNeedsPermission: Bool {
+        resolvedLibraryRoot == nil && !libraryRootBookmark.isEmpty
     }
 
     private func refreshCacheStats() {
