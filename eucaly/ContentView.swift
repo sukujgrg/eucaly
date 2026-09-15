@@ -191,11 +191,11 @@ public struct ContentView: View {
     private var rootSplitBase: some View {
         NavigationSplitView {
             sidebarPane
+                .navigationSplitViewColumnWidth(min: 260, ideal: 320, max: 520)
         } detail: {
             detailPane
         }
         .navigationSplitViewStyle(.balanced)
-        .navigationSplitViewColumnWidth(min: 260, ideal: 320, max: 520)
         .toolbar {
             projectionToolbar
         }
