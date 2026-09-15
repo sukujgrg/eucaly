@@ -92,7 +92,9 @@ struct EucalyApp: App {
         .windowToolbarStyle(.unified)
         Settings {
             AppSettingsView()
+                .environmentObject(appDelegate.updates)
         }
+        .windowResizability(.contentSize)
         .commands {
             AppUpdateCommands(viewModel: appDelegate.updates)
             CommandGroup(replacing: .newItem) {
