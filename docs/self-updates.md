@@ -8,8 +8,9 @@ the update before extraction and installation.
 
 ## App behavior
 
-- **eucaly → Check for Updates…** opens Sparkle's native update UI, including
-  download, installation, errors, and up-to-date results.
+- **eucaly → Check for Updates…** and **Settings → Updates → Check for Updates…**
+  open Sparkle's native update UI, including download, installation, errors, and
+  up-to-date results.
 - **Settings → Updates → Automatically Check for Updates** controls Sparkle's
   persisted preference. It defaults to enabled on Sparkle's daily schedule.
 - Scheduled checks add an **Update** toolbar reminder without opening a dialog

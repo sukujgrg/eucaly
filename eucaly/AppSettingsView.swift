@@ -38,7 +38,7 @@ struct AppSettingsView: View {
                         }
 
                         if libraryRootNeedsPermission {
-                            Text("Choose this folder again to restore access.")
+                            Label("Choose this folder again to restore access.", systemImage: "exclamationmark.triangle.fill")
                                 .font(.callout)
                                 .foregroundStyle(.orange)
                         }
@@ -49,7 +49,7 @@ struct AppSettingsView: View {
                         chooseLibraryRoot()
                     }
                     .buttonStyle(.bordered)
-                    .accessibilityLabel("Choose Library Folder")
+                    .accessibilityLabel(displayedLibraryRoot == nil ? "Choose Library Folder" : "Change Library Folder")
                 }
             }
 
@@ -59,6 +59,11 @@ struct AppSettingsView: View {
                     set: { appUpdateViewModel.setAutomaticChecks($0) }
                 ))
                 .toggleStyle(.switch)
+
+                Button("Check for Updates…") {
+                    appUpdateViewModel.checkForUpdates()
+                }
+                .disabled(!appUpdateViewModel.state.canCheckForUpdates)
             } header: {
                 Text("Updates")
             } footer: {
@@ -88,7 +93,7 @@ struct AppSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 520, height: 400)
+        .frame(width: 520)
         .onAppear {
             refreshResolvedURLs()
             refreshCacheStats()
@@ -108,7 +113,7 @@ struct AppSettingsView: View {
     }
 
     private var libraryRootNeedsPermission: Bool {
-        resolvedLibraryRoot == nil && (!libraryRootBookmark.isEmpty || !libraryRootPath.isEmpty)
+        resolvedLibraryRoot == nil && !libraryRootBookmark.isEmpty
     }
 
     private func refreshCacheStats() {
