@@ -23,10 +23,6 @@ struct AppUpdateCommands: Commands {
         CommandGroup(after: .appInfo) {
             Button("Check for Updates…", action: viewModel.checkForUpdates)
                 .disabled(!viewModel.state.canCheckForUpdates)
-            Toggle("Automatically Check for Updates", isOn: Binding(
-                get: { viewModel.state.automaticallyChecksForUpdates },
-                set: { viewModel.setAutomaticChecks($0) }
-            ))
         }
     }
 }

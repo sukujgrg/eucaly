@@ -10,15 +10,16 @@ the update before extraction and installation.
 
 - **eucaly → Check for Updates…** opens Sparkle's native update UI, including
   download, installation, errors, and up-to-date results.
-- **Automatically Check for Updates** controls Sparkle's persisted preference.
-  It defaults to enabled on Sparkle's daily schedule.
+- **Settings → Updates → Automatically Check for Updates** controls Sparkle's
+  persisted preference. It defaults to enabled on Sparkle's daily schedule.
 - Scheduled checks add an **Update** toolbar reminder without opening a dialog
   or stealing focus, even during projection or launch. Clicking it brings the
   update UI into focus. The reminder clears when the update session finishes.
 - Automatic installation is disabled. Download and restart require user action.
   Restart uses normal unsaved-edit confirmation and waits for capture cleanup.
-- `AppDelegate` owns one `AppUpdateViewModel` shared by every window and the app
-  menu. `SparkleUpdateDriver` owns Sparkle. Closing a window does not stop updates.
+- `AppDelegate` owns one `AppUpdateViewModel` shared by every window, Settings,
+  and the app menu. `SparkleUpdateDriver` owns Sparkle. Closing a window does not
+  stop updates.
 
 The app stays unsandboxed, retains its bundle ID and preferences, and supports
 Apple Silicon (arm64) on macOS 14+. New appcast entries require Apple Silicon.
