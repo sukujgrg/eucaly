@@ -972,6 +972,18 @@ private final class ReusableSidebarNSOutlineView: NSOutlineView {
     var boundaryMoveHandler: ((SidebarOutlineNavigationDirection) -> Bool)?
     fileprivate var activeInteractionItemID: SidebarOutlineItemID?
 
+    override func setFrameSize(_ newSize: NSSize) {
+        let widthChanged = frame.width != newSize.width
+        super.setFrameSize(newSize)
+
+        // AppKit can leave the column at its old width after a very narrow
+        // initial layout. Fit it when the viewport resizes without reloading
+        // rows or disturbing selection, expansion, or scroll position.
+        if widthChanged, newSize.width > 0 {
+            sizeLastColumnToFit()
+        }
+    }
+
     override func moveUp(_ sender: Any?) {
         guard boundaryMoveHandler?(.up) != true else { return }
         super.moveUp(sender)
