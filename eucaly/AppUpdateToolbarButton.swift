@@ -10,8 +10,9 @@ struct AppUpdateToolbarButton: View {
             }
             .labelStyle(.titleAndIcon)
             .buttonStyle(.borderedProminent)
-            .disabled(!viewModel.state.canCheckForUpdates)
-            .help("Show the update to eucaly \(version)")
+            .disabled(!viewModel.canCheckForUpdates)
+            .help(viewModel.manualCheckDisabledReason ?? "Show the update to eucaly \(version)")
+            .accessibilityValue("eucaly \(version) available. \(viewModel.manualCheckDisabledReason ?? "")")
         }
     }
 }
@@ -22,7 +23,8 @@ struct AppUpdateCommands: Commands {
     var body: some Commands {
         CommandGroup(after: .appInfo) {
             Button("Check for Updates…", action: viewModel.checkForUpdates)
-                .disabled(!viewModel.state.canCheckForUpdates)
+                .disabled(!viewModel.canCheckForUpdates)
+                .help(viewModel.manualCheckDisabledReason ?? "Check for updates to eucaly")
         }
     }
 }

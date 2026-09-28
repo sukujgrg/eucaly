@@ -5,13 +5,21 @@ import Sparkle
 /// Sparkle owns verification, installation, native update UI, and relaunch.
 /// Its Objective-C delegate runs on the main thread without actor annotations.
 @MainActor
-final class SparkleUpdateDriver: NSObject, AppUpdateDriving, @preconcurrency SPUStandardUserDriverDelegate {
+final class SparkleUpdateDriver: NSObject, AppUpdateDriving,
+    @preconcurrency SPUStandardUserDriverDelegate, SPUUpdaterDelegate {
     var onStateChange: ((AppUpdateState) -> Void)?
+    private let projectionActivity: ProjectionActivity
     private var availableVersion: String?
+    private var preserveReminderAtSessionEnd = false
     private var subscriptions = Set<AnyCancellable>()
     private lazy var controller = SPUStandardUpdaterController(
-        startingUpdater: false, updaterDelegate: nil, userDriverDelegate: self
+        startingUpdater: false, updaterDelegate: self, userDriverDelegate: self
     )
+
+    init(projectionActivity: ProjectionActivity? = nil) {
+        self.projectionActivity = projectionActivity ?? .shared
+        super.init()
+    }
 
     var state: AppUpdateState {
         AppUpdateState(
@@ -30,7 +38,46 @@ final class SparkleUpdateDriver: NSObject, AppUpdateDriving, @preconcurrency SPU
         publishState()
     }
 
-    func checkForUpdates() { controller.checkForUpdates(nil) }
+    func checkForUpdates() {
+        guard !projectionActivity.isActive else { return }
+        controller.checkForUpdates(nil)
+    }
+
+    func updater(_ updater: SPUUpdater, mayPerform updateCheck: SPUUpdateCheck) throws {
+        if updateCheck == .updates && projectionActivity.isActive {
+            preserveReminderAtSessionEnd = availableVersion != nil
+            throw projectionCheckError
+        }
+    }
+
+    func updater(
+        _ updater: SPUUpdater, shouldProceedWithUpdate updateItem: SUAppcastItem,
+        updateCheck: SPUUpdateCheck
+    ) throws {
+        // Projection may have started while a manual check was fetching the feed.
+        if updateCheck == .updates && projectionActivity.isActive {
+            availableVersion = updateItem.displayVersionString
+            preserveReminderAtSessionEnd = true
+            publishState()
+            throw projectionCheckError
+        }
+    }
+
+    func updaterShouldRelaunchApplication(_ updater: SPUUpdater) -> Bool {
+        // Sparkle checks this before installing and restarting, including retries
+        // from an update dialog opened before projection began. Aborting leaves
+        // the reminder available for an explicit user action after projection.
+        guard projectionActivity.isActive else { return true }
+        preserveReminderAtSessionEnd = true
+        return false
+    }
+
+    private var projectionCheckError: NSError {
+        NSError(
+            domain: "com.suku.eucaly.updates", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: AppUpdateViewModel.projectionCheckExplanation]
+        )
+    }
 
     func setAutomaticChecks(_ enabled: Bool) {
         controller.updater.automaticallyChecksForUpdates = enabled
@@ -56,7 +103,10 @@ final class SparkleUpdateDriver: NSObject, AppUpdateDriving, @preconcurrency SPU
     }
 
     func standardUserDriverWillFinishUpdateSession() {
-        availableVersion = nil
+        if !preserveReminderAtSessionEnd {
+            availableVersion = nil
+        }
+        preserveReminderAtSessionEnd = false
         publishState()
     }
 }

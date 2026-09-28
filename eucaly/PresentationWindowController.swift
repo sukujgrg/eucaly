@@ -77,7 +77,9 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     @Published var slides: [Slide] = []
     @Published private(set) var pdfSlideSource: PDFSlideSource?
     @Published var currentSlideID: Slide.ID?
-    @Published var isPresenting = false
+    @Published var isPresenting = false {
+        didSet { projectionActivity.setActive(isPresenting, for: projectionSessionID) }
+    }
     @Published var videoMuted = false
     // Current and projection webpage mute state; Preview keeps a separate local mute state.
     @Published var webpageMuted = false
@@ -107,12 +109,15 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     private var screenRepositionWorkItem: DispatchWorkItem?
     private var currentThumbnailColumnCount: Int = 1
     private var currentDocumentRevision: UInt64 = 0
+    private let projectionActivity: ProjectionActivity
+    private let projectionSessionID = UUID()
 
     var isBackgroundAudioPlaying: Bool {
         backgroundAudioPlaybackState == .playing
     }
 
-    override init() {
+    init(projectionActivity: ProjectionActivity? = nil) {
+        self.projectionActivity = projectionActivity ?? .shared
         super.init()
         screenParametersObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
@@ -126,6 +131,11 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     deinit {
+        let activity = projectionActivity
+        let sessionID = projectionSessionID
+        Task { @MainActor in
+            activity.setActive(false, for: sessionID)
+        }
         if let screenParametersObserver {
             NotificationCenter.default.removeObserver(screenParametersObserver)
         }

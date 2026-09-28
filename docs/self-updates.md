@@ -10,12 +10,20 @@ the update before extraction and installation.
 
 - **eucaly → Check for Updates…** and **Settings → Updates → Check for Updates…**
   open Sparkle's native update UI, including download, installation, errors, and
-  up-to-date results.
+  up-to-date results. While any window is projecting, manual checks are disabled
+  with “Stop projection before checking for updates.” Hiding slides or clearing
+  Current does not end projection or re-enable update actions.
 - **Settings → Updates → Automatically Check for Updates** controls Sparkle's
   persisted preference. It defaults to enabled on Sparkle's daily schedule.
 - Scheduled checks add an **Update** toolbar reminder without opening a dialog
   or stealing focus, even during projection or launch. Clicking it brings the
-  update UI into focus. The reminder clears when the update session finishes.
+  update UI into focus once projection has stopped. During projection the reminder
+  remains visible but disabled. Stopping projection does not open update UI or
+  start installation automatically.
+- Sparkle's install/relaunch guard also blocks requests from an update dialog
+  opened before projection began. A blocked update remains a reminder until the
+  user explicitly checks again after stopping projection. Other completed update
+  sessions clear the reminder.
 - Automatic installation is disabled. Download and restart require user action.
   Restart uses normal unsaved-edit confirmation and waits for capture cleanup.
 - `AppDelegate` owns one `AppUpdateViewModel` shared by every window, Settings,
@@ -59,7 +67,8 @@ report an update-information retrieval error.
 
 `make test` runs injected updater tests without contacting a feed or installer,
 plus offline release and feed regressions. These exercise shared reminders,
-manual-check enablement, preference changes, archive metadata, retained feed
+manual-check enablement across projection windows, late update results,
+install/relaunch blocking, preference changes, archive metadata, retained feed
 history, first-feed migration, and safe release retries.
 
 Before distribution, check a signed and notarized pair in a disposable app

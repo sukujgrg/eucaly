@@ -63,7 +63,13 @@ struct AppSettingsView: View {
                 Button("Check for Updates…") {
                     appUpdateViewModel.checkForUpdates()
                 }
-                .disabled(!appUpdateViewModel.state.canCheckForUpdates)
+                .disabled(!appUpdateViewModel.canCheckForUpdates)
+                .help(appUpdateViewModel.manualCheckDisabledReason ?? "Check for updates to eucaly")
+                if let reason = appUpdateViewModel.manualCheckDisabledReason {
+                    Text(reason)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
             } header: {
                 Text("Updates")
             } footer: {
