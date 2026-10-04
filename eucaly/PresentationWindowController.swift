@@ -74,10 +74,10 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
         var countdownEndDate: Date? = nil
     }
 
-    @Published var slides: [Slide] = []
-    @Published private(set) var pdfSlideSource: PDFSlideSource?
-    @Published var currentSlideID: Slide.ID?
-    @Published var isPresenting = false
+    @Published var slides: [Slide] = [] { didSet { scheduleOutputChange() } }
+    @Published private(set) var pdfSlideSource: PDFSlideSource? { didSet { scheduleOutputChange() } }
+    @Published var currentSlideID: Slide.ID? { didSet { scheduleOutputChange() } }
+    @Published var isPresenting = false { didSet { scheduleOutputChange() } }
     @Published var videoMuted = false
     // Current and projection webpage mute state; Preview keeps a separate local mute state.
     @Published var webpageMuted = false
@@ -93,7 +93,7 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     @Published private(set) var backgroundAudioPlaybackState = BackgroundAudioPlaybackState.stopped
     @Published private(set) var backgroundAudioLoop = true
     @Published private(set) var backgroundAudioVolume: Double = 1.0
-    @Published var areSlidesVisible = true
+    @Published var areSlidesVisible = true { didSet { scheduleOutputChange() } }
     @Published private(set) var overlay = OverlayState()
     private var countdownToken = UUID()
 
@@ -107,6 +107,43 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     private var screenRepositionWorkItem: DispatchWorkItem?
     private var currentThumbnailColumnCount: Int = 1
     private var currentDocumentRevision: UInt64 = 0
+
+    let outputSourceID = UUID()
+    var onOutputEvent: ((PresentationOutputEvent) -> Void)?
+    private var outputChangeScheduled = false
+    private var outputProjectionRequested = false
+
+    var outputSnapshot: PresentationOutputSnapshot {
+        PresentationOutputSnapshot(slide: currentSlide, isPresenting: isPresenting, slidesVisible: areSlidesVisible)
+    }
+
+    private func scheduleOutputChange(explicit: Bool = false) {
+        outputProjectionRequested = outputProjectionRequested || explicit
+        guard !outputChangeScheduled else { return }
+        outputChangeScheduled = true
+        // Read the completed model transaction, never @Published's willSet
+        // values or an intermediate selection while replacing Current.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.outputChangeScheduled = false
+            let snapshot = self.outputSnapshot
+            let project = self.outputProjectionRequested && snapshot.isPresenting && snapshot.slidesVisible
+            self.outputProjectionRequested = false
+            self.onOutputEvent?(project ? .project(snapshot) : .changed(snapshot))
+        }
+    }
+
+    /// User activation is distinct from model refreshes and hidden navigation.
+    func selectCurrentSlide(_ slideID: Slide.ID) {
+        guard containsSlide(id: slideID) else { return }
+        if currentSlideID != slideID { currentSlideID = slideID }
+        requestCurrentProjection()
+    }
+
+    func requestCurrentProjection() {
+        guard isPresenting, areSlidesVisible else { return }
+        scheduleOutputChange(explicit: true)
+    }
 
     var isBackgroundAudioPlaying: Bool {
         backgroundAudioPlaybackState == .playing
@@ -267,7 +304,7 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
         PDFDocumentCache.shared.releaseDocuments(notIn: retainedURLs)
     }
 
-    func startPresentation(preferredScreen: NSScreen?, slidesVisible: Bool = true) {
+    private func startPresentation(preferredScreen: NSScreen?, slidesVisible: Bool = true) {
         guard window == nil else { return }
         let screen = preferredScreen ?? NSScreen.main
         preferredPresentationScreenID = screen?.displayID
@@ -318,6 +355,8 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     func stopPresentation() {
+        outputProjectionRequested = false
+        onOutputEvent?(.stopped)
         guard let window else {
             teardownPresentationState()
             return
@@ -331,6 +370,8 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
             startPresentation(preferredScreen: preferredScreen)
         }
         areSlidesVisible = true
+        outputProjectionRequested = false
+        onOutputEvent?(.show(outputSnapshot))
     }
 
     func hideSlides() {
@@ -382,7 +423,7 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
                 nextID = self.firstSlideID
             }
             if self.currentSlideID != nextID {
-                self.currentSlideID = nextID
+                if let nextID { self.selectCurrentSlide(nextID) }
             }
         }
     }
@@ -421,6 +462,8 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     private func teardownPresentationState() {
+        outputProjectionRequested = false
+        onOutputEvent?(.stopped)
         screenRepositionWorkItem?.cancel()
         screenRepositionWorkItem = nil
         window = nil

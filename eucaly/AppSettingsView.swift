@@ -5,11 +5,24 @@ struct AppSettingsView: View {
     @EnvironmentObject private var appUpdateViewModel: AppUpdateViewModel
     @AppStorage("libraryRootPath") private var libraryRootPath: String = ""
     @AppStorage("libraryRootBookmark") private var libraryRootBookmark: String = ""
+    @AppStorage("settingsTab") private var settingsTab = "general"
     @State private var resolvedLibraryRoot: URL? = nil
     @State private var securityScopedLibraryRoot: URL? = nil
     @State private var cacheStats: CacheManager.CacheStats = CacheManager.shared.getCacheStats()
 
     var body: some View {
+        TabView(selection: $settingsTab) {
+            generalSettings
+                .tabItem { Label("General", systemImage: "gearshape") }
+                .tag("general")
+            AltViewSettingsView()
+                .tabItem { Label("AltView", systemImage: "network") }
+                .tag("altView")
+        }
+        .frame(width: 560, height: settingsTab == "altView" ? 440 : 500)
+    }
+
+    private var generalSettings: some View {
         Form {
             Section("Library") {
                 HStack(spacing: 12) {
@@ -93,7 +106,6 @@ struct AppSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 520)
         .onAppear {
             refreshResolvedURLs()
             refreshCacheStats()

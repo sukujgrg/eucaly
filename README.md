@@ -34,6 +34,7 @@ Browsing never silently replaces **Current**.
 - Webpage preview / projection
 - Recursive text search under library root
 - Explicit projection display selection
+- [AltView text output](docs/altview.md) with encrypted pairing, primary lyrics only, receiver template discovery, and independent nonblocking delivery
 - Sparkle self-updates with quiet toolbar reminders during presentations
 
 Webpage behavior:

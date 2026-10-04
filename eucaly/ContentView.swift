@@ -9,6 +9,7 @@ public struct ContentView: View {
     @State private var lyricsEditor = LyricsEditorSession()
     @State private var lyricsEditorFocusController = PlainTextEditorFocusController()
     @StateObject private var session = PresentationSession()
+    @EnvironmentObject private var altView: AltViewService
     @StateObject private var flow = PresentationFlowController()
     @State private var folderURL: URL?
     @State private var markdownFiles: [URL] = []
@@ -200,6 +201,7 @@ public struct ContentView: View {
             projectionToolbar
         }
         .applyToolbarBackgroundIfAvailable()
+        .onAppear { altView.attach(session) }
     }
 
     private var rootSplitWithLibrarySearchOverlay: some View {
@@ -278,6 +280,7 @@ public struct ContentView: View {
     }
 
     private func handleRootOnDisappear() {
+        altView.detach(session)
         librarySearch.cancelDebounce()
         libraryLoadTask?.cancel()
         isLibraryLoading = false
@@ -409,6 +412,7 @@ public struct ContentView: View {
         }
 
         ToolbarItemGroup(placement: .primaryAction) {
+            AltViewToolbarButton(service: altView, session: session)
             AppUpdateToolbarButton(viewModel: appUpdateViewModel)
             backgroundSettingsButton
             timerSettingsButton
@@ -903,6 +907,7 @@ public struct ContentView: View {
             )
             flow.isCurrentCollapsed = false
             focusedDetailTarget = .currentThumbnails
+            session.requestCurrentProjection()
             return
         }
 
@@ -925,6 +930,7 @@ public struct ContentView: View {
         focusedDetailTarget = session.slides.contains { $0.webpageURL != nil }
             ? nil
             : .currentThumbnails
+        session.requestCurrentProjection()
     }
 
     private var canLoadPreviewToCurrent: Bool {

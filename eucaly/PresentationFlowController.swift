@@ -164,9 +164,7 @@ final class PresentationFlowController: ObservableObject {
     }
 
     func selectCurrentSlide(_ slideID: Slide.ID, in session: PresentationSession) {
-        if session.currentSlideID != slideID {
-            session.currentSlideID = slideID
-        }
+        session.selectCurrentSlide(slideID)
     }
 
     func selectCurrentSlideForPresentationStart(in session: PresentationSession) {

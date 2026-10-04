@@ -52,6 +52,14 @@ Browsing must never silently replace Current.
     - `@StateObject var flow = PresentationFlowController()`
   - Hosts split view, toolbar controls, selection handling, and sidebar callbacks
 
+### AltView Text Output
+- `AppDelegate` owns one `AltViewService`; it is independent of projection views and local window lifetime.
+- `PresentationSession` emits coherent Current snapshots plus explicit project/show/stop events. Preview never publishes. Visible Current activation (including the same slide), keyboard navigation, and explicit Load/Switch Current request projection; background model refreshes and hidden navigation do not.
+- The adapter sends primary lyrics only, using `LyricsSectionCatalog` to exclude meaning/translation/transliteration companions. Media slides clear remote text.
+- Connect Only and restoring the last paired receiver at startup never take output. Explicit visible projection/Show Slides takes output from another sender without manual release or reconnect; hide/clear/background updates never create a takeover. A cached lease may already be revoked: keep explicit requests until a fresh grant or acceptance at/after their snapshot revision, and request takeover when delayed ownership feedback revokes the lease. Same-slide activation sends a fresh revision so earlier acceptance cannot settle the new action. Preserve requests through reconnect and interrupted grants; Stop/Disconnect cancels them. Reconnect without a pending explicit request uses resume only for the former owner and must not displace another sender.
+- AltView settings share ViewTheWord’s compact native connection layout. Template discovery uses opaque IDs; default to Lyrics when advertised. Selection and discovery are private until the next slide/show. Hide and reconnect retain the published request, filtered against the latest catalogue; show receiver overrides separately.
+- Keep network/encoding/Keychain work off the UI thread, bounded latest-value mailboxes, submission-correlated acknowledgements, and late-grant cancellation. See `docs/altview.md` for protocol provenance, operator setup, and validation boundaries.
+
 ### Pane Containers
 - `eucaly/EditorPaneContainerView.swift`
 - `eucaly/PreviewPaneContainerView.swift`

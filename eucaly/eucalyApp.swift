@@ -15,6 +15,7 @@ private enum AppLaunchContext {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let updates = AppUpdateViewModel(driver: SparkleUpdateDriver())
+    let altView = AltViewService(restorePreferences: !AppLaunchContext.isRunningTests)
 
     private var isTerminatingAfterCaptureCleanup = false
 
@@ -25,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Hosted unit tests use an injected driver and never contact the feed.
         if !AppLaunchContext.isRunningTests {
             updates.start()
+            altView.restoreConnection()
         }
     }
 
@@ -49,6 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         Task { @MainActor in
+            altView.disconnect()
             await ScreenCaptureManager.shared.stopAllCaptures()
             closePresentationWindows(in: sender)
             isTerminatingAfterCaptureCleanup = true
@@ -86,6 +89,7 @@ struct EucalyApp: App {
             if !AppLaunchContext.isRunningTests {
                 ContentView()
                     .environmentObject(appDelegate.updates)
+                    .environmentObject(appDelegate.altView)
                     .frame(minWidth: 1060, minHeight: 600)
             }
         }
@@ -93,6 +97,7 @@ struct EucalyApp: App {
         Settings {
             AppSettingsView()
                 .environmentObject(appDelegate.updates)
+                .environmentObject(appDelegate.altView)
         }
         .windowResizability(.contentSize)
         .commands {
