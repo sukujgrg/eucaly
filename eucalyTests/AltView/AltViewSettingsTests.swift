@@ -18,13 +18,14 @@ final class AltViewSettingsTests: XCTestCase {
         let controller = AltViewSettingsController(service: service)
         controller.discoveryEnabled = false
         controller.loadViewIfNeeded()
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 440),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 500),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentViewController = controller
-        window.setContentSize(NSSize(width: 560, height: 440))
+        window.setContentSize(NSSize(width: 560, height: 500))
         defer { window.close() }
         controller.hostField.stringValue = "receiver.local"
+        controller.portField.stringValue = "54321"
         XCTAssertTrue(window.makeFirstResponder(controller.codeField))
         let editor = try XCTUnwrap(controller.codeField.currentEditor() as? NSTextView)
         editor.insertText("ABCD2345", replacementRange: NSRange(location: 0, length: 0))
@@ -117,18 +118,21 @@ final class AltViewSettingsTests: XCTestCase {
         var status = sender.connectedStatus
         status.templateCapabilities = .init(templates: [.init(id: .lyrics, name: "Lyrics"), .init(id: .scripture, name: "Scripture")], policy: .custom)
         status.message = "Connected — ready to take output"
+        status.capabilities = Set(AltViewProtocol.capabilities)
         service.receive(status)
         let controller = AltViewSettingsController(service: service)
         controller.discoveryEnabled = false
         controller.loadViewIfNeeded()
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 440),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 500),
                               styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentViewController = controller
         // Installing a controller adopts its fitting size. Test the actual
         // Settings content size supplied by SwiftUI after installation.
-        window.setContentSize(NSSize(width: 560, height: 440))
+        window.setContentSize(NSSize(width: 560, height: 500))
         window.appearance = NSAppearance(named: .aqua)
+        window.setFrameOrigin(NSPoint(x: -8000, y: 0))
+        window.orderFront(nil)
         defer { window.close() }
         controller.view.layoutSubtreeIfNeeded()
         await settle()
@@ -145,7 +149,15 @@ final class AltViewSettingsTests: XCTestCase {
         let bitmap = try XCTUnwrap(controller.view.bitmapImageRepForCachingDisplay(in: controller.view.bounds))
         controller.view.cacheDisplay(in: controller.view.bounds, to: bitmap)
         let image = NSImage(size: controller.view.bounds.size)
-        image.addRepresentation(bitmap)
+        image.lockFocus()
+        window.effectiveAppearance.performAsCurrentDrawingAppearance {
+            NSColor.windowBackgroundColor.setFill(); controller.view.bounds.fill()
+        }
+        let snapshot = NSImage(size: controller.view.bounds.size); snapshot.addRepresentation(bitmap)
+        snapshot.draw(in: controller.view.bounds, from: .zero, operation: .sourceOver, fraction: 1)
+        image.unlockFocus()
+        let png = try XCTUnwrap(NSBitmapImageRep(data: XCTUnwrap(image.tiffRepresentation))?.representation(using: .png, properties: [:]))
+        try png.write(to: URL(fileURLWithPath: "/private/tmp/eucaly-confidence-settings.png"))
         let attachment = XCTAttachment(image: image)
         attachment.name = "AltView Settings — connected with receiver override"
         attachment.lifetime = .keepAlways

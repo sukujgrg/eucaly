@@ -5,6 +5,8 @@ import Foundation
 
 nonisolated enum AltViewProtocol {
     static let version = 2
+    static let confidenceText = "confidenceTextV1"
+    static let capabilities = [confidenceText]
     static let serviceType = "_altview._tcp"
     static let maximumFrameSize = 65_536
     static let maximumClients = 8
@@ -13,6 +15,15 @@ nonisolated enum AltViewProtocol {
     static let connectionTimeout: TimeInterval = 30
     static let connectionAttemptTimeout: TimeInterval = 10
     static let timeout: TimeInterval = 5
+}
+
+nonisolated struct AltViewConfidenceText: Codable, Equatable, Sendable {
+    var title = ""
+    var body = ""
+    var footer = ""
+    static let empty = Self()
+    var hasText: Bool { [title, body, footer].contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } }
+    var isValid: Bool { title.utf8.count <= 512 && body.utf8.count <= 24_000 && footer.utf8.count <= 1_024 }
 }
 
 nonisolated enum AltViewEmptyRegionBehavior: String, Codable, Sendable { case collapse, reserve }
@@ -105,6 +116,7 @@ nonisolated struct AltViewDisplayContent: Codable, Equatable, Sendable {
     var visible = true
     var emptyRegions = AltViewEmptyRegionBehavior.collapse
     var template: AltViewContentTemplate?
+    var confidence: AltViewConfidenceText?
 
     var hasTitle: Bool { !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     var hasFooter: Bool { !footer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -112,12 +124,12 @@ nonisolated struct AltViewDisplayContent: Codable, Equatable, Sendable {
     static let empty = AltViewDisplayContent(visible: false)
 
     var isValid: Bool {
-        title.utf8.count <= 512 && body.utf8.count <= 24_000 && footer.utf8.count <= 1_024 && (template?.isValid ?? true)
+        title.utf8.count <= 512 && body.utf8.count <= 24_000 && footer.utf8.count <= 1_024 && (template?.isValid ?? true) && (confidence?.isValid ?? true)
     }
 }
 
 extension AltViewDisplayContent {
-    private enum CodingKeys: String, CodingKey { case title, body, footer, visible, emptyRegions, template }
+    private enum CodingKeys: String, CodingKey { case title, body, footer, visible, emptyRegions, template, confidence }
 
     nonisolated init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -128,6 +140,7 @@ extension AltViewDisplayContent {
         visible = try values.decode(Bool.self, forKey: .visible)
         emptyRegions = try values.decodeIfPresent(AltViewEmptyRegionBehavior.self, forKey: .emptyRegions) ?? .collapse
         template = try values.decodeIfPresent(AltViewContentTemplate.self, forKey: .template)
+        confidence = try values.decodeIfPresent(AltViewConfidenceText.self, forKey: .confidence)
     }
 }
 
@@ -151,6 +164,7 @@ nonisolated struct AltViewWireMessage: Codable, Equatable, Sendable {
     var outputReadiness: AltViewOutputReadiness?
     var templates: [AltViewTemplateDescriptor]?
     var templatePolicy: AltViewTemplatePolicy?
+    var capabilities: [String]?
 }
 
 nonisolated enum AltViewProtocolFailure: Error, LocalizedError {

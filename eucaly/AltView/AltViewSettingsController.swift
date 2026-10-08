@@ -10,7 +10,7 @@ final class AltViewSettingsController: NSViewController, NSTextFieldDelegate {
     private var templateMenuEntries: [AltViewTemplateDescriptor]?
     private var unavailableTemplate: AltViewContentTemplate?
     let hostField = NSTextField()
-    let portField = NSTextField(string: "49721")
+    let portField = NSTextField()
     let codeField = NSSecureTextField()
     let connectButton = NSButton(title: "Connect Only", target: nil, action: nil)
     let disconnectButton = NSButton(title: "Disconnect", target: nil, action: nil)
@@ -25,15 +25,16 @@ final class AltViewSettingsController: NSViewController, NSTextFieldDelegate {
     var discoveryEnabled = true
     init(service: AltViewService) {
         self.service = service
-        self.selected = service.destination?.host == nil ? service.destination : nil
+        self.selected = service.destination?.host == nil || service.destination?.localReceiverID != nil ? service.destination : nil
         super.init(nibName: nil, bundle: nil)
         hostField.stringValue = service.destination?.host ?? ""
-        portField.stringValue = String(service.destination?.port ?? 49721)
+        portField.stringValue = service.destination.flatMap { $0.host == nil ? nil : $0.port }.map(String.init) ?? ""
+        portField.placeholderString = "Port"
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func loadView() {
         view = NSView()
-        let explanation = NSTextField(wrappingLabelWithString: "Send the main lyrics to AltView on another Mac. Meaning, translation and transliteration stay in eucaly.")
+        let explanation = NSTextField(wrappingLabelWithString: "Send the main lyrics to AltView on This Mac or another Mac. Meaning, translation and transliteration stay in eucaly.")
         explanation.font = .systemFont(ofSize: 12)
         explanation.textColor = .secondaryLabelColor
         receiverPicker.target = self; receiverPicker.action = #selector(destinationChanged(_:))
@@ -53,7 +54,7 @@ final class AltViewSettingsController: NSViewController, NSTextFieldDelegate {
         for button in [connectButton, disconnectButton] { button.target = self; button.bezelStyle = .rounded }
         connectButton.action = #selector(connect(_:)); disconnectButton.action = #selector(disconnect(_:))
         connectButton.keyEquivalent = "\r"
-        let hint = NSTextField(wrappingLabelWithString: "The last receiver connects automatically at startup and reconnects after a network drop. Show Slides to send Current; Hide, Clear and Stop follow eucaly. Appearance and display are set in AltView.")
+        let hint = NSTextField(wrappingLabelWithString: "The last receiver connects automatically at startup and reconnects after a network drop. Show Slides to send Current; Hide, Clear and Stop follow eucaly. Choose This Mac when AltView runs here; its current port is discovered automatically. This does not restrict AltView’s LAN listener. Appearance and displays are set in AltView.")
         hint.font = .systemFont(ofSize: 11); hint.textColor = .secondaryLabelColor
         statusLabel.font = .systemFont(ofSize: 11)
         statusLabel.maximumNumberOfLines = 0
@@ -61,7 +62,8 @@ final class AltViewSettingsController: NSViewController, NSTextFieldDelegate {
         let actions = horizontalStack([connectButton, disconnectButton, NSView(), statusBadge])
         let stack = NSStackView(views: [explanation, row("Receiver", receiverPicker),
                                       row("Address", horizontalStack([hostField, portField])),
-                                      row("Pairing code", codeField), actions, row("Template", templatePicker), templateHint, statusLabel, hint])
+                                      row("Pairing code", codeField), actions, row("Template", templatePicker), templateHint,
+                                      statusLabel, hint])
         stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 10
         stack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(stack)
@@ -95,6 +97,7 @@ final class AltViewSettingsController: NSViewController, NSTextFieldDelegate {
     func stopDiscovery() { if discoveryEnabled { service.stopDiscovery() } }
     private func refreshReceivers() {
         receivers = service.receivers
+        if let id = selected?.localReceiverID, let fresh = receivers.first(where: { $0.localReceiverID == id }) { selected = fresh }
         if let selected, !receivers.contains(selected) { receivers.insert(selected, at: 0) }
         guard receiverMenuEntries != receivers else { return }
         receiverMenuEntries = receivers

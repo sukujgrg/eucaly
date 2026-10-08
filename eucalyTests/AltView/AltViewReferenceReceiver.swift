@@ -13,6 +13,7 @@ nonisolated struct ReferenceAltViewReceiverStatus: Equatable {
     var ownerID: UUID?
     var ownerName: String?
     var content = AltViewDisplayContent.empty
+    var confidenceContent = AltViewConfidenceText.empty
     var revision: UInt64 = 0
     var message = "Receiving is off"
 }
@@ -22,6 +23,8 @@ nonisolated final class ReferenceAltViewReceiverServer: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.suku.AltView.receiver", qos: .userInitiated)
     private var listener: NWListener?
     private var peers: [UUID: AltViewPeerChannel] = [:]
+    private var peerCapabilities: [UUID: Set<String>] = [:]
+    private let capabilities: [String]
     private var resumesSuspended = false
     private var pendingResumes: [UUID: AltViewPeerChannel] = [:]
     private var suspendedOwnershipNames = Set<String>()
@@ -35,12 +38,12 @@ nonisolated final class ReferenceAltViewReceiverServer: @unchecked Sendable {
     private let delivery: AltViewSnapshotMailbox<ReferenceAltViewReceiverStatus>
 
     init(receiverID: UUID, templateCapabilities: AltViewTemplateCapabilities = .init(), handshakeDisconnects: Int = 0,
-         grantDelay: TimeInterval = 0,
+         grantDelay: TimeInterval = 0, capabilities: [String] = [],
          callbackQueue: DispatchQueue = .main, onStatus: @escaping (ReferenceAltViewReceiverStatus) -> Void) {
         self.receiverID = receiverID
         self.templateCapabilities = templateCapabilities
         self.handshakeDisconnects = handshakeDisconnects
-        self.grantDelay = grantDelay
+        self.grantDelay = grantDelay; self.capabilities = capabilities
         delivery = AltViewSnapshotMailbox(queue: callbackQueue, consume: onStatus)
     }
     func start(name: String, key: Data, port: UInt16 = 0, advertise: Bool = true) {
@@ -173,6 +176,7 @@ nonisolated final class ReferenceAltViewReceiverServer: @unchecked Sendable {
             self.pendingResumes.removeValue(forKey: peer.id)
             let wasOwner = self.state.ownerConnection == peer.id
             self.state.disconnect(peer.id)
+            self.peerCapabilities.removeValue(forKey: peer.id)
             if wasOwner { self.status.message = "Sender disconnected — output cleared" }
             self.broadcastOwnership()
             self.publish()
@@ -195,7 +199,8 @@ nonisolated final class ReferenceAltViewReceiverServer: @unchecked Sendable {
             guard let id = message.senderID, let name = message.name, state.register(connection: peer.id, senderID: id, name: name) else {
                 peer.close("Invalid sender identity."); return
             }
-            peer.send(AltViewWireMessage(kind: .welcome, receiverID: receiverID, ownerID: state.owner?.id, ownerName: state.owner?.name, templates: templateCapabilities.templates, templatePolicy: templateCapabilities.policy))
+            peerCapabilities[peer.id] = Set(message.capabilities ?? []).intersection(capabilities)
+            peer.send(AltViewWireMessage(kind: .welcome, receiverID: receiverID, ownerID: state.owner?.id, ownerName: state.owner?.name, templates: templateCapabilities.templates, templatePolicy: templateCapabilities.policy, capabilities: peerCapabilities[peer.id]?.sorted()))
             sendFeedback(to: peer)
             publish()
             return
@@ -227,7 +232,7 @@ nonisolated final class ReferenceAltViewReceiverServer: @unchecked Sendable {
             guard let lease = message.lease, let revision = message.revision, let content = message.content, content.isValid else {
                 peer.close("Invalid content snapshot."); return
             }
-            if state.apply(connection: peer.id, lease: lease, revision: revision, content: content) {
+            if state.apply(connection: peer.id, lease: lease, revision: revision, content: content, supportsConfidence: peerCapabilities[peer.id]?.contains(AltViewProtocol.confidenceText) == true) {
                 publish()
                 sendFeedback(to: peer)
             } else {
@@ -260,7 +265,7 @@ nonisolated final class ReferenceAltViewReceiverServer: @unchecked Sendable {
         let hasSnapshot = state.ownerConnection == peer.id && state.revision > 0
         peer.send(AltViewWireMessage(kind: .feedback, lease: hasSnapshot ? state.lease : nil,
                               revision: hasSnapshot ? state.revision : nil, outputReadiness: outputReadiness,
-                              templates: templateCapabilities.templates, templatePolicy: templateCapabilities.policy))
+                              templates: templateCapabilities.templates, templatePolicy: templateCapabilities.policy, capabilities: peerCapabilities[peer.id]?.sorted()))
     }
     private func publish() {
         status.connections = state.senders.count
@@ -271,6 +276,7 @@ nonisolated final class ReferenceAltViewReceiverServer: @unchecked Sendable {
         status.ownerID = state.owner?.id
         status.ownerName = state.owner?.name
         status.content = state.content
+        status.confidenceContent = state.confidenceContent
         status.revision = state.revision
         delivery.offer(status)
     }

@@ -348,6 +348,7 @@ final class AltViewPresentationTests: XCTestCase {
 
 nonisolated final class RecordingAltViewSender: AltViewSending {
     var submissions: [AltViewSubmission] = []
+    var endpoints: [NWEndpoint] = []
     var takes = 0
     var releases = 0
     var connectionID: UUID?
@@ -357,6 +358,7 @@ nonisolated final class RecordingAltViewSender: AltViewSending {
     }
     func connect(to endpoint: NWEndpoint, key: Data, expectedReceiverID: UUID?, connectionID: UUID) { self.connectionID = connectionID; self.expectedReceiverID = expectedReceiverID }
     func submit(_ content: AltViewDisplayContent, submissionID: UUID) { submissions.append(.init(id: submissionID, content: content)) }
+    func updateEndpoint(_ endpoint: NWEndpoint, connectionID: UUID) { if self.connectionID == connectionID { endpoints.append(endpoint) } }
     func takeOutput() { takes += 1 }
     func releaseOutput() { releases += 1 }
     func disconnect() { connectionID = nil }

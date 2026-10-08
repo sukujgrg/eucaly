@@ -19,7 +19,7 @@ struct AppSettingsView: View {
                 .tabItem { Label("AltView", systemImage: "network") }
                 .tag("altView")
         }
-        .frame(width: 560, height: settingsTab == "altView" ? 440 : 500)
+        .frame(width: 560, height: 500)
     }
 
     private var generalSettings: some View {

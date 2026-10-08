@@ -16,6 +16,9 @@ final class AltViewService: ObservableObject {
     @Published private(set) var submitted: AltViewDisplayContent?
     @Published private(set) var selectedTemplate: AltViewContentTemplate? = .lyrics
 
+    private var confidenceText: AltViewConfidenceText?
+    private var discoveryVisible = false
+    private var discoveryRunning = false
     private let defaults: UserDefaults
     private let pairingStore: AltViewPairingStoring
     private let restorePreferences: Bool
@@ -25,8 +28,7 @@ final class AltViewService: ObservableObject {
     private var startedSender = false
     private lazy var discovery = AltViewReceiverDiscovery { [weak self] receivers, notice in
         MainActor.assumeIsolated {
-            self?.receivers = receivers.compactMap(AltViewDestination.init)
-            self?.discoveryNotice = notice
+            self?.receiveDiscovered(receivers.compactMap(AltViewDestination.init), notice: notice)
         }
     }
     private var connectionID: UUID?
@@ -101,9 +103,21 @@ final class AltViewService: ObservableObject {
         defaults.set(template?.rawValue ?? "", forKey: "altViewTemplate")
     }
 
-    func startDiscovery() { discovery.start() }
-    func stopDiscovery() { discovery.stop() }
-
+    func startDiscovery() { discoveryVisible = true; refreshDiscovery() }
+    func stopDiscovery() { discoveryVisible = false; refreshDiscovery() }
+    private func refreshDiscovery() {
+        let needed = discoveryVisible || (hasConnection && destination?.localReceiverID != nil)
+        guard needed != discoveryRunning else { return }
+        discoveryRunning = needed
+        if needed { discovery.start() } else { discovery.stop() }
+    }
+    func receiveDiscovered(_ receivers: [AltViewDestination], notice: String?) {
+        self.receivers = receivers; discoveryNotice = notice
+        guard let id = destination?.localReceiverID,
+              let fresh = receivers.first(where: { $0.localReceiverID == id }) else { return }
+        destination = fresh
+        if startedSender, let connectionID { sender?.updateEndpoint(fresh.endpoint, connectionID: connectionID) }
+    }
     /// Pairing is always connect-only. A later Show Slides or toolbar action is
     /// the separate, explicit authorization to take the receiver's output.
     func connect(to destination: AltViewDestination, code: String) {
@@ -122,6 +136,7 @@ final class AltViewService: ObservableObject {
         let id = UUID()
         connectionID = id
         isConnecting = true
+        refreshDiscovery()
         connectionNotice = nil; persistenceNotice = nil
         if sender == nil {
             sender = senderFactory { [weak self] status in
@@ -149,7 +164,7 @@ final class AltViewService: ObservableObject {
     private func beginConnection(_ destination: AltViewDestination, key: Data, receiverID: UUID?, id: UUID) {
         pairingKey = key
         startedSender = true
-        sender?.connect(to: destination.endpoint, key: key, expectedReceiverID: receiverID, connectionID: id)
+        sender?.connect(to: self.destination?.endpoint ?? destination.endpoint, key: key, expectedReceiverID: receiverID ?? destination.localReceiverID, connectionID: id)
         // Show/navigation can arrive while a saved pairing is being read. Keep
         // that snapshot in the service until its connection mailbox exists.
         if let submitted, let submissionID { sender?.submit(submitted, submissionID: submissionID) }
@@ -159,10 +174,11 @@ final class AltViewService: ObservableObject {
         didRestoreConnection = true
         connectionID = nil; pairingKey = nil; savedThisConnection = false
         isConnecting = false; activeSourceID = nil; pendingTake = false
-        submitted = nil; submissionID = nil; submittedSlideID = nil
+        submitted = nil; submissionID = nil; submittedSlideID = nil; confidenceText = nil
         startedSender = false
         sender?.disconnect()
         status = AltViewSenderStatus()
+        refreshDiscovery()
     }
 
     func attach(_ session: PresentationSession) {
@@ -176,13 +192,13 @@ final class AltViewService: ObservableObject {
     }
 
     func sendCurrent(from session: PresentationSession) {
-        guard session.isPresenting else { return }
+        guard session.isPresenting, session.areSlidesVisible else { return }
         publish(session.outputSnapshot, from: session.outputSourceID)
     }
 
     func stopSending() {
         activeSourceID = nil; pendingTake = false
-        submitted = nil; submissionID = nil; submittedSlideID = nil
+        submitted = nil; submissionID = nil; submittedSlideID = nil; confidenceText = nil
         guard hasConnection else { return }
         sender?.releaseOutput()
         status.ownsOutput = false; status.followingOutput = false
@@ -205,7 +221,7 @@ final class AltViewService: ObservableObject {
     }
 
     private func publish(_ snapshot: PresentationOutputSnapshot, from sourceID: UUID) {
-        guard hasConnection else { return }
+        guard hasConnection, snapshot.isPresenting, snapshot.slidesVisible else { return }
         activeSourceID = sourceID
         submit(snapshot, explicit: true)
         if status.connected { sender?.takeOutput() }
@@ -215,6 +231,10 @@ final class AltViewService: ObservableObject {
 
     private func submit(_ snapshot: PresentationOutputSnapshot, explicit: Bool = false) {
         var content = AltViewPresentationAdapter.content(for: snapshot)
+        if explicit || (content.body.isEmpty && snapshot.slide == nil) {
+            confidenceText = AltViewConfidenceText(title: content.title, body: content.body, footer: content.footer)
+        }
+        content.confidence = confidenceText?.hasText == true ? confidenceText : nil
         let changedSlide = submittedSlideID != snapshot.slide?.id || submitted?.body != content.body
         // A settings edit is a private choice. Hiding/reconnecting the existing
         // slide retains its request; the next slide or explicit Show adopts it.
