@@ -29,13 +29,14 @@ nonisolated protocol AltViewSending: AnyObject {
     func connect(to endpoint: NWEndpoint, key: Data, expectedReceiverID: UUID?, connectionID: UUID)
     func updateEndpoint(_ endpoint: NWEndpoint, connectionID: UUID)
     func submit(_ content: AltViewDisplayContent, submissionID: UUID)
-    func takeOutput()
+    func takeOutput(submission: AltViewSubmission?)
     func releaseOutput()
     func disconnect()
 }
 
 extension AltViewSending {
     nonisolated func updateEndpoint(_ endpoint: NWEndpoint, connectionID: UUID) {}
+    nonisolated func takeOutput() { takeOutput(submission: nil) }
 }
 
 /// No network operation or serialization runs on the caller's UI thread.
@@ -55,12 +56,14 @@ nonisolated final class AltViewSenderClient: AltViewSending, @unchecked Sendable
     private var lease: UUID?
     private var revision: UInt64 = 0
     private var latest = AltViewDisplayContent.empty
+    private var latestForSending = AltViewDisplayContent.empty
+    private var latestIsSendable = true
     private var latestSubmissionID: UUID?
     private var wantsConnection = false
     private var shouldRestoreOwnership = false
     // A cached lease can already be revoked. Retain explicit projection until
     // its snapshot is accepted or a fresh ownership grant resolves the request.
-    private var pendingTake = false
+    private var pendingTake: AltViewDisplayContent?
     private var pendingProjectionRevision: UInt64?
     private enum OwnershipRequest { case take, resume }
     private var pendingOwnershipRequest: OwnershipRequest?
@@ -68,6 +71,8 @@ nonisolated final class AltViewSenderClient: AltViewSending, @unchecked Sendable
     private let delivery: AltViewSnapshotMailbox<AltViewSenderStatus>
     private let inputLock = NSLock()
     private var submissions: AltViewSnapshotMailbox<AltViewSubmission>?
+    private var offeredSubmission: AltViewSubmission?
+    private var inputConnectionID: UUID?
 
     init(name: String, senderID: UUID = UUID(),
          senderQueue: DispatchQueue = DispatchQueue(label: "com.suku.eucaly.altview.sender", qos: .userInitiated),
@@ -78,15 +83,11 @@ nonisolated final class AltViewSenderClient: AltViewSending, @unchecked Sendable
     }
     private func accept(_ submission: AltViewSubmission, connectionID: UUID) {
         guard wantsConnection, status.connectionID == connectionID else { return }
-        // Check escaped JSON as well as UTF-8 limits off the UI thread. Clear a
-        // previous verse if this one cannot be represented; never truncate it.
-        let content = submission.content
-        let encodable = content.isValid && (try? AltViewFrameCodec.encode(AltViewWireMessage(
-            kind: .state, lease: UUID(), revision: UInt64.max, content: contentForSending(content)
-        ))) != nil
-        latest = encodable ? content : .empty
+        // Retain the desired snapshot across capability negotiation/reconnect.
+        // A rejected snapshot may clear our own text, but cannot authorize a take.
+        latest = submission.content
         latestSubmissionID = submission.id
-        status.contentError = encodable ? nil : "This slide exceeds AltView’s text limits. AltView text is cleared; local projection continues."
+        prepareLatest()
         sendLatest()
         publish()
     }
@@ -95,6 +96,8 @@ nonisolated final class AltViewSenderClient: AltViewSending, @unchecked Sendable
         defer { inputLock.unlock() }
         // A new mailbox cannot be consumed by an old connection's queued drain.
         // Queue the connect before exposing this mailbox to submissions.
+        inputConnectionID = connectionID
+        offeredSubmission = nil
         submissions = AltViewSnapshotMailbox(queue: queue) { [weak self] in
             self?.accept($0, connectionID: connectionID)
         }
@@ -119,27 +122,42 @@ nonisolated final class AltViewSenderClient: AltViewSending, @unchecked Sendable
         }
     }
     func submit(_ content: AltViewDisplayContent, submissionID: UUID) {
-        let mailbox = inputLock.withLock { submissions }
-        mailbox?.offer(AltViewSubmission(id: submissionID, content: content))
+        inputLock.withLock {
+            guard let submissions else { return }
+            let submission = AltViewSubmission(id: submissionID, content: content)
+            offeredSubmission = submission
+            submissions.offer(submission)
+        }
     }
-    func takeOutput() {
-        queue.async { [weak self] in
-            guard let self, self.wantsConnection else { return }
-            self.pendingTake = true
-            self.pendingProjectionRevision = nil
-            self.status.followingOutput = true
-            if self.lease != nil {
-                // Reaffirm even an unchanged slide with a fresh revision. An
-                // earlier acceptance cannot confirm this operator action.
-                self.sendLatest(force: true)
-            } else {
-                self.requestPendingTake()
+    func takeOutput(submission: AltViewSubmission? = nil) {
+        inputLock.withLock {
+            guard let request = submission ?? offeredSubmission, let connectionID = inputConnectionID else { return }
+            queue.async { [weak self] in
+                guard let self, self.wantsConnection, self.status.connectionID == connectionID else { return }
+                self.prepareLatest()
+                // The latest-value mailbox may already contain a later passive
+                // update. Validate the snapshot that authorized this action too.
+                guard self.latestIsSendable, self.canSend(self.contentForSending(request.content)) else {
+                    self.cancelPendingTake()
+                    self.publish()
+                    return
+                }
+                self.pendingTake = request.content
+                self.pendingProjectionRevision = nil
+                self.status.followingOutput = true
+                if self.lease != nil {
+                    // Reaffirm even an unchanged slide with a fresh revision. An
+                    // earlier acceptance cannot confirm this operator action.
+                    self.sendLatest(force: true)
+                } else {
+                    self.requestPendingTake()
+                }
+                self.publish()
             }
-            self.publish()
         }
     }
     private func requestPendingTake() {
-        guard pendingTake, lease == nil, status.connected else { return }
+        guard pendingTake != nil, latestIsSendable, lease == nil, status.connected else { return }
         if pendingOwnershipRequest == .resume {
             // v2 broadcasts cannot distinguish a refused resume from an
             // unrelated ownership update. Retire that uncertain request
@@ -157,7 +175,7 @@ nonisolated final class AltViewSenderClient: AltViewSending, @unchecked Sendable
         queue.async { [weak self] in
             guard let self else { return }
             self.shouldRestoreOwnership = false
-            self.pendingTake = false
+            self.pendingTake = nil
             self.pendingProjectionRevision = nil
             self.status.followingOutput = false
             self.peer?.discardPendingState()
@@ -173,6 +191,7 @@ nonisolated final class AltViewSenderClient: AltViewSending, @unchecked Sendable
     func disconnect() {
         inputLock.withLock {
             submissions = nil
+            offeredSubmission = nil; inputConnectionID = nil
             queue.async { [weak self] in self?.disconnectOnQueue(); self?.publish() }
         }
     }
@@ -188,10 +207,11 @@ nonisolated final class AltViewSenderClient: AltViewSending, @unchecked Sendable
         status.capabilities = []
     }
     private func disconnectOnQueue() {
-        wantsConnection = false; shouldRestoreOwnership = false; pendingTake = false
+        wantsConnection = false; shouldRestoreOwnership = false; pendingTake = nil
         initialConnectionDeadline = nil
         stopTransport()
-        latest = .empty; latestSubmissionID = nil; revision = 0
+        latest = .empty; latestForSending = .empty; latestIsSendable = true
+        latestSubmissionID = nil; revision = 0
         endpoint = nil; key = nil; expectedReceiverID = nil
         status = AltViewSenderStatus()
     }
@@ -218,7 +238,7 @@ nonisolated final class AltViewSenderClient: AltViewSending, @unchecked Sendable
         self.peer = peer
         peer.onReady = { [weak self, weak peer] in
             guard let self, let peer, self.peer === peer else { return }
-            peer.send(AltViewWireMessage(kind: .hello, senderID: self.senderID, name: self.name, capabilities: AltViewProtocol.capabilities))
+            peer.send(AltViewWireMessage(kind: .hello, senderID: self.senderID, name: self.name, capabilities: AltViewProtocol.capabilities, localProcess: AltViewLocalProjectionProcess.current))
             // The application handshake starts after the transport is ready.
             self.queue.asyncAfter(deadline: .now() + AltViewProtocol.timeout) { [weak self, weak peer] in
                 guard let self, let peer, self.peer === peer, !self.status.connected else { return }
@@ -235,7 +255,7 @@ nonisolated final class AltViewSenderClient: AltViewSending, @unchecked Sendable
             self.peer = nil; self.lease = nil
             self.pendingOwnershipRequest = nil; self.pendingProjectionRevision = nil
             self.status.connected = false; self.status.ownsOutput = false
-            self.status.followingOutput = self.shouldRestoreOwnership || self.pendingTake
+            self.status.followingOutput = self.shouldRestoreOwnership || self.pendingTake != nil
             self.status.submissionID = nil
             self.status.feedback = AltViewDeliveryFeedback()
             self.status.templateCapabilities = AltViewTemplateCapabilities()
@@ -300,9 +320,11 @@ nonisolated final class AltViewSenderClient: AltViewSending, @unchecked Sendable
             attempts = 0; status.connected = true; status.receiverID = receiverID
             status.ownerName = message.ownerName
             status.message = "Connected — ready to take output"
-            if pendingTake {
-                pendingOwnershipRequest = .take
-                peer?.send(AltViewWireMessage(kind: .take))
+            // Negotiated extensions can push queued content over the frame limit.
+            // Validate before take, while the receiver still belongs to its owner.
+            prepareLatest()
+            if pendingTake != nil {
+                requestPendingTake()
             } else if shouldRestoreOwnership && message.ownerID == nil {
                 pendingOwnershipRequest = .resume
                 peer?.send(AltViewWireMessage(kind: .resume))
@@ -311,7 +333,7 @@ nonisolated final class AltViewSenderClient: AltViewSending, @unchecked Sendable
             publish()
         case .granted:
             guard status.connected, pendingOwnershipRequest != nil, let lease = message.lease else { peer?.close("Invalid output grant."); return }
-            pendingTake = false; pendingProjectionRevision = nil; pendingOwnershipRequest = nil
+            pendingTake = nil; pendingProjectionRevision = nil; pendingOwnershipRequest = nil
             // Stop may have crossed an in-flight take/resume. Relinquish the new
             // lease without ever publishing text or restarting restoration.
             guard status.followingOutput else {
@@ -336,7 +358,7 @@ nonisolated final class AltViewSenderClient: AltViewSending, @unchecked Sendable
                 // Broadcasts are unsolicited, including when an idle sender
                 // disconnects. They cannot settle a pending take or resume;
                 // a valid grant may still follow on this connection.
-                if pendingOwnershipRequest == nil { status.followingOutput = pendingTake }
+                if pendingOwnershipRequest == nil { status.followingOutput = pendingTake != nil }
                 status.submissionID = nil
                 status.feedback.resetSnapshot()
                 peer?.discardPendingState()
@@ -351,10 +373,14 @@ nonisolated final class AltViewSenderClient: AltViewSending, @unchecked Sendable
             }
             // A complete report replaces discovery, including missing fields
             // from older receivers. Discovery alone never republishes text.
-            status.templateCapabilities = AltViewTemplateCapabilities(templates: message.templates, policy: message.templatePolicy)
+            let capabilities = AltViewTemplateCapabilities(templates: message.templates, policy: message.templatePolicy)
+            if status.templateCapabilities != capabilities {
+                status.templateCapabilities = capabilities
+                prepareLatest()
+            }
             status.feedback.receive(message, lease: lease, now: ProcessInfo.processInfo.systemUptime)
             if let pendingProjectionRevision, status.feedback.acceptedRevision >= pendingProjectionRevision {
-                pendingTake = false
+                pendingTake = nil
                 self.pendingProjectionRevision = nil
             }
             publish()
@@ -366,27 +392,54 @@ nonisolated final class AltViewSenderClient: AltViewSending, @unchecked Sendable
         }
     }
     private func sendLatest(force: Bool = false) {
-        guard latest.isValid else { status.message = "Text is too long to send"; publish(); return }
         guard let lease, status.connected, status.followingOutput else { return }
         guard force || status.submissionID != latestSubmissionID || status.feedback.sentRevision == 0 else { return }
         guard revision < UInt64.max else { peer?.close("Session revision exhausted."); return }
-        var content = contentForSending(latest)
-        // Welcome may enable confidence after a submission was queued. Validate
-        // the negotiated frame before enqueueing it so oversize text cannot close TLS.
-        if (try? AltViewFrameCodec.encode(AltViewWireMessage(kind: .state, lease: lease, revision: UInt64.max, content: content))) == nil {
-            content = .empty; latest = .empty
-            status.contentError = "This slide exceeds AltView’s text limits. AltView text is cleared; local projection continues."
-        }
         revision += 1
-        if pendingTake, pendingProjectionRevision == nil { pendingProjectionRevision = revision }
+        if pendingTake != nil, pendingProjectionRevision == nil { pendingProjectionRevision = revision }
         status.feedback.sent(revision, now: ProcessInfo.processInfo.systemUptime)
         status.submissionID = latestSubmissionID
-        peer?.send(AltViewWireMessage(kind: .state, lease: lease, revision: revision, content: content))
+        peer?.send(AltViewWireMessage(kind: .state, lease: lease, revision: revision, content: latestForSending))
         publish()
+    }
+    private func prepareLatest() {
+        let content = contentForSending(latest)
+        latestIsSendable = canSend(content)
+        status.contentError = latestIsSendable ? nil
+            : "This slide exceeds AltView’s text limits and cannot be sent. Local projection continues."
+        if latestIsSendable {
+            latestForSending = content
+        } else {
+            latestForSending = .empty
+            // Hidden Current navigation is not a new Confidence presentation. Its
+            // audience text can fail independently of the retained, valid report.
+            if !content.visible {
+                latestForSending.confidence = content.confidence?.isValid == true ? content.confidence : nil
+                latestForSending.projection = content.projection?.isValid == true ? content.projection : nil
+                if !canSend(latestForSending) { latestForSending.confidence = nil }
+            }
+        }
+        if !latestIsSendable || pendingTake.map({ !canSend(contentForSending($0)) }) == true {
+            cancelPendingTake()
+        }
+    }
+    private func cancelPendingTake() {
+        pendingTake = nil
+        pendingProjectionRevision = nil
+        if lease == nil, pendingOwnershipRequest != .resume {
+            if pendingOwnershipRequest == .take { shouldRestoreOwnership = false }
+            status.followingOutput = shouldRestoreOwnership
+        }
+    }
+    private func canSend(_ content: AltViewDisplayContent) -> Bool {
+        content.isValid && (try? AltViewFrameCodec.encode(AltViewWireMessage(
+            kind: .state, lease: UUID(), revision: UInt64.max, content: content
+        ))) != nil
     }
     private func contentForSending(_ snapshot: AltViewDisplayContent) -> AltViewDisplayContent {
         var content = status.templateCapabilities.contentForSending(snapshot)
         if !status.capabilities.contains(AltViewProtocol.confidenceText) { content.confidence = nil }
+        if !status.capabilities.contains(AltViewProtocol.localProjection) { content.projection = nil }
         return content
     }
     private func validName(_ name: String?) -> Bool {
@@ -411,7 +464,7 @@ nonisolated final class AltViewSenderClient: AltViewSending, @unchecked Sendable
     }
     private func failInitialConnection(_ reason: String) {
         wantsConnection = false; initialConnectionDeadline = nil
-        pendingTake = false; shouldRestoreOwnership = false; status.followingOutput = false
+        pendingTake = nil; shouldRestoreOwnership = false; status.followingOutput = false
         pendingProjectionRevision = nil
         reconnectWork?.cancel(); reconnectWork = nil
         status.failureReason = reason

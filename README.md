@@ -33,7 +33,8 @@ Browsing never silently replaces **Current**.
 - Live app-window capture with ScreenCaptureKit
 - Webpage preview / projection
 - Recursive text search under library root
-- Explicit projection display selection
+- [Named projection monitors](docs/projection-monitors.md) with remembered numbers, physical display identity, and an Identify action
+- Keeps the Mac and displays awake while projection is open, including hidden slides and background-only output
 - [AltView text output](docs/altview.md) with encrypted pairing, primary lyrics only, receiver template discovery, and independent nonblocking delivery
 - Sparkle self-updates with quiet toolbar reminders during presentations
 

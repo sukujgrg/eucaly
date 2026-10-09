@@ -16,8 +16,11 @@ final class PlaybackProgressStore: ObservableObject {
     func updateVideo(currentTime: Double, duration: Double) {
         let normalizedDuration = duration.isFinite && duration > 0 ? duration : 0
         let normalizedTime = currentTime.isFinite && currentTime >= 0 ? currentTime : 0
-        videoDuration = normalizedDuration
-        videoCurrentTime = min(normalizedTime, max(normalizedDuration, normalizedTime))
+        // Progress ticks must not republish an unchanged duration or paused
+        // position: @Published emits even when the assigned value is equal.
+        if videoDuration != normalizedDuration { videoDuration = normalizedDuration }
+        let nextTime = min(normalizedTime, max(normalizedDuration, normalizedTime))
+        if videoCurrentTime != nextTime { videoCurrentTime = nextTime }
     }
 
     func resetVideo() {
@@ -102,8 +105,13 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     private var backgroundAudioTimeObserver: Any?
 
     private var window: NSWindow?
-    private var preferredPresentationScreenID: CGDirectDisplayID?
-    private var screenParametersObserver: NSObjectProtocol?
+    private var projectionWindowGeneration: UUID?
+    private let projectionSleepPrevention: ProjectionSleepPrevention
+    let projectionDisplays: ProjectionDisplayManager
+    private(set) var activePresentationTarget: ProjectionMonitorTarget?
+    @Published var projectionDisplayIssue: String?
+    private var displayObservation: UUID?
+    private var stopProjectionObserver: NSObjectProtocol?
     private var screenRepositionWorkItem: DispatchWorkItem?
     private var currentThumbnailColumnCount: Int = 1
     private var currentDocumentRevision: UInt64 = 0
@@ -114,7 +122,9 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     private var outputProjectionRequested = false
 
     var outputSnapshot: PresentationOutputSnapshot {
-        PresentationOutputSnapshot(slide: currentSlide, isPresenting: isPresenting, slidesVisible: areSlidesVisible)
+        PresentationOutputSnapshot(slide: currentSlide, isPresenting: isPresenting, slidesVisible: areSlidesVisible,
+                                   projectionWindowID: window.map { UInt32($0.windowNumber) },
+                                   projectionWindowGeneration: projectionWindowGeneration)
     }
 
     private func scheduleOutputChange(explicit: Bool = false) {
@@ -149,23 +159,29 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
         backgroundAudioPlaybackState == .playing
     }
 
-    override init() {
+    override convenience init() {
+        self.init(projectionDisplays: ProjectionDisplayManager())
+    }
+
+    init(projectionDisplays: ProjectionDisplayManager,
+         sleepPrevention: ProjectionSleepPrevention = ProjectionSleepPrevention()) {
+        self.projectionDisplays = projectionDisplays
+        projectionSleepPrevention = sleepPrevention
         super.init()
-        screenParametersObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.didChangeScreenParametersNotification,
-            object: nil,
-            queue: .main
+        displayObservation = projectionDisplays.observe { [weak self] in
+            self?.handleProjectionDisplaysChanged()
+        }
+        // Projection can outlive its controls window. Keep Stop Projection with
+        // the session so the app command still closes that output after reopen.
+        stopProjectionObserver = NotificationCenter.default.addObserver(
+            forName: .stopProjection, object: nil, queue: .main
         ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.schedulePresentationWindowReposition()
-            }
+            DispatchQueue.main.async { self?.stopPresentation() }
         }
     }
 
     deinit {
-        if let screenParametersObserver {
-            NotificationCenter.default.removeObserver(screenParametersObserver)
-        }
+        if let stopProjectionObserver { NotificationCenter.default.removeObserver(stopProjectionObserver) }
         if let backgroundAudioEndObserver {
             NotificationCenter.default.removeObserver(backgroundAudioEndObserver)
         }
@@ -173,6 +189,13 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
             backgroundAudioPlayer.removeTimeObserver(backgroundAudioTimeObserver)
         }
         screenRepositionWorkItem?.cancel()
+        let displays = projectionDisplays
+        let observation = displayObservation
+        let owner = outputSourceID
+        DispatchQueue.main.async {
+            if let observation { displays.removeObserver(observation) }
+            displays.unlock(owner: owner)
+        }
     }
 
     var overlayMode: OverlayMode { overlay.mode }
@@ -277,11 +300,6 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
         syncPDFDocumentCache()
     }
 
-    func setPreferredPresentationScreen(_ screen: NSScreen?) {
-        preferredPresentationScreenID = screen?.displayID
-        schedulePresentationWindowReposition()
-    }
-
     func clearSlides() {
         currentDocumentRevision &+= 1
         slides = []
@@ -304,11 +322,22 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
         PDFDocumentCache.shared.releaseDocuments(notIn: retainedURLs)
     }
 
-    private func startPresentation(preferredScreen: NSScreen?, slidesVisible: Bool = true) {
-        guard window == nil else { return }
-        let screen = preferredScreen ?? NSScreen.main
-        preferredPresentationScreenID = screen?.displayID
-        let frame = screen?.frame ?? .zero
+    @discardableResult
+    private func startPresentation(slidesVisible: Bool = true) -> Bool {
+        guard window == nil else { return true }
+        projectionDisplays.refresh()
+        guard !projectionDisplays.isLocked else {
+            projectionDisplayIssue = "Projection is already open in another eucaly window. Stop that projection first."
+            return false
+        }
+        guard let monitor = projectionDisplays.resolvedMonitor(),
+              let screen = ProjectionScreenResolver.screen(for: monitor) else {
+            projectionDisplayIssue = projectionDisplays.selectionProblem ?? "The projection monitor is not ready. Choose it again."
+            return false
+        }
+        projectionDisplayIssue = nil
+        activePresentationTarget = monitor.target
+        let frame = screen.frame
 
         let view = PresentationView()
             .environmentObject(self)
@@ -317,7 +346,7 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
         hostingView.translatesAutoresizingMaskIntoConstraints = false
 
         let presentationWindow = PresentationWindow(
-            contentRect: frame,
+            contentRect: ProjectionScreenResolver.screenRelativeContentRect(for: frame),
             styleMask: [.borderless],
             backing: .buffered,
             defer: false,
@@ -342,32 +371,35 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
             hostingView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
         ])
         presentationWindow.contentView = container
-        presentationWindow.makeKeyAndOrderFront(nil)
-        presentationWindow.makeFirstResponder(presentationWindow)
-
         if frame != .zero {
             presentationWindow.setFrame(frame, display: true)
         }
+        projectionSleepPrevention.start()
+        presentationWindow.makeKeyAndOrderFront(nil)
+        presentationWindow.makeFirstResponder(presentationWindow)
 
         window = presentationWindow
+        projectionWindowGeneration = UUID()
         isPresenting = true
         areSlidesVisible = slidesVisible
+        projectionDisplays.lock(monitor.target, owner: outputSourceID)
+        return true
     }
 
     func stopPresentation() {
-        outputProjectionRequested = false
-        onOutputEvent?(.stopped)
-        guard let window else {
-            teardownPresentationState()
-            return
+        if let window {
+            // Closing is already at an event boundary. Prevent a delayed delegate
+            // teardown from closing a newly opened projection after hot-plug.
+            window.delegate = nil
+            window.orderOut(nil)
+            window.close()
         }
-        window.orderOut(nil)
-        window.close()
+        teardownPresentationState()
     }
 
-    func showSlides(preferredScreen: NSScreen?) {
+    func showSlides() {
         if !isPresenting {
-            startPresentation(preferredScreen: preferredScreen)
+            guard startPresentation() else { return }
         }
         areSlidesVisible = true
         outputProjectionRequested = false
@@ -379,10 +411,10 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
         areSlidesVisible = false
     }
 
-    func toggleBackgroundVisualVisibility(preferredScreen: NSScreen?) {
+    func toggleBackgroundVisualVisibility() {
         guard backgroundVisualURL != nil else { return }
         if !isPresenting {
-            startPresentation(preferredScreen: preferredScreen, slidesVisible: false)
+            guard startPresentation(slidesVisible: false) else { return }
             isBackgroundVisualVisible = true
             return
         }
@@ -462,13 +494,29 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     private func teardownPresentationState() {
+        projectionSleepPrevention.stop()
         outputProjectionRequested = false
         onOutputEvent?(.stopped)
         screenRepositionWorkItem?.cancel()
         screenRepositionWorkItem = nil
         window = nil
+        projectionWindowGeneration = nil
         isPresenting = false
+        activePresentationTarget = nil
+        projectionDisplays.unlock(owner: outputSourceID)
         stopWindowCapturesForShutdown()
+    }
+
+    private func handleProjectionDisplaysChanged() {
+        guard window != nil, let target = activePresentationTarget else { return }
+        if let problem = projectionDisplays.problem(for: target) {
+            // Close immediately before macOS can leave the full-screen window on
+            // another display. Keep the saved assignment and Current intact.
+            projectionDisplayIssue = "Projection stopped. \(problem) Show slides again when the monitor is ready."
+            stopPresentation()
+            return
+        }
+        schedulePresentationWindowReposition()
     }
 
     private func schedulePresentationWindowReposition() {
@@ -483,28 +531,17 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
 
     private func repositionPresentationWindowIfNeeded() {
         guard let window else { return }
-        guard let targetScreen = resolvePreferredPresentationScreen() else { return }
+        guard let target = activePresentationTarget,
+              let monitor = projectionDisplays.resolve(target),
+              let targetScreen = ProjectionScreenResolver.screen(for: monitor) else {
+            projectionDisplayIssue = "Projection stopped because its monitor is unavailable. Reconnect it and show slides again."
+            stopPresentation()
+            return
+        }
         let targetFrame = targetScreen.frame
         guard targetFrame != .zero else { return }
         guard window.frame != targetFrame else { return }
         window.setFrame(targetFrame, display: true)
-    }
-
-    private func resolvePreferredPresentationScreen() -> NSScreen? {
-        let requestedDisplayID = preferredPresentationScreenID
-        if let exactMatch = ProjectionScreenResolver.exactScreen(displayID: requestedDisplayID) {
-            return exactMatch
-        }
-
-        let fallbackScreen = ProjectionScreenResolver.resolve(displayID: nil)
-        let fallbackDisplayID = fallbackScreen?.displayID
-        preferredPresentationScreenID = fallbackDisplayID
-
-        if let requestedDisplayID, requestedDisplayID != fallbackDisplayID {
-            NotificationCenter.default.post(name: .projectionScreenFellBackToAuto, object: nil)
-        }
-
-        return fallbackScreen
     }
 
     private func stopWindowCapturesForShutdown() {
@@ -694,8 +731,10 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     private func deferTeardownPresentationState() {
+        let generation = projectionWindowGeneration
         DispatchQueue.main.async { [weak self] in
-            self?.teardownPresentationState()
+            guard let self, self.projectionWindowGeneration == generation else { return }
+            self.teardownPresentationState()
         }
     }
 
@@ -1981,7 +2020,7 @@ final class PresentationWindow: NSWindow {
             if session.areSlidesVisible {
                 session.hideSlides()
             } else {
-                session.showSlides(preferredScreen: nil)
+                session.showSlides()
             }
         }
     }

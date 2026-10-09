@@ -3,6 +3,7 @@ import AppKit
 
 struct AppSettingsView: View {
     @EnvironmentObject private var appUpdateViewModel: AppUpdateViewModel
+    @EnvironmentObject private var projectionDisplays: ProjectionDisplayManager
     @AppStorage("libraryRootPath") private var libraryRootPath: String = ""
     @AppStorage("libraryRootBookmark") private var libraryRootBookmark: String = ""
     @AppStorage("settingsTab") private var settingsTab = "general"
@@ -18,6 +19,9 @@ struct AppSettingsView: View {
             AltViewSettingsView()
                 .tabItem { Label("AltView", systemImage: "network") }
                 .tag("altView")
+            ProjectionMonitorSettingsView(displays: projectionDisplays)
+                .tabItem { Label("Projection", systemImage: "display") }
+                .tag("projection")
         }
         .frame(width: 560, height: 500)
     }
@@ -62,6 +66,7 @@ struct AppSettingsView: View {
                         chooseLibraryRoot()
                     }
                     .buttonStyle(.bordered)
+                    .controlSize(.small)
                     .accessibilityLabel(displayedLibraryRoot == nil ? "Choose Library Folder" : "Change Library Folder")
                 }
             }
@@ -76,6 +81,8 @@ struct AppSettingsView: View {
                 Button("Check for Updates…") {
                     appUpdateViewModel.checkForUpdates()
                 }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
                 .disabled(!appUpdateViewModel.state.canCheckForUpdates)
             } header: {
                 Text("Updates")
@@ -98,6 +105,7 @@ struct AppSettingsView: View {
                         refreshCacheStats()
                     }
                     .buttonStyle(.bordered)
+                    .controlSize(.small)
                 }
             } header: {
                 Text("Cache")

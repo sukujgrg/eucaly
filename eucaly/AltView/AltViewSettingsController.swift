@@ -51,7 +51,12 @@ final class AltViewSettingsController: NSViewController, NSTextFieldDelegate {
         codeField.placeholderString = "8-character code, or leave empty to use saved pairing"
         codeField.setAccessibilityLabel("AltView pairing code")
         for field in [hostField, portField, codeField] { field.delegate = self }
-        for button in [connectButton, disconnectButton] { button.target = self; button.bezelStyle = .rounded }
+        for button in [connectButton, disconnectButton] {
+            button.target = self
+            button.bezelStyle = .rounded
+            button.controlSize = .small
+            button.font = .systemFont(ofSize: NSFont.systemFontSize(for: .small))
+        }
         connectButton.action = #selector(connect(_:)); disconnectButton.action = #selector(disconnect(_:))
         connectButton.keyEquivalent = "\r"
         let hint = NSTextField(wrappingLabelWithString: "The last receiver connects automatically at startup and reconnects after a network drop. Show Slides to send Current; Hide, Clear and Stop follow eucaly. Choose This Mac when AltView runs here; its current port is discovered automatically. This does not restrict AltView’s LAN listener. Appearance and displays are set in AltView.")

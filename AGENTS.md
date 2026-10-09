@@ -55,7 +55,7 @@ Browsing must never silently replace Current.
 ### AltView Text Output
 - `AppDelegate` owns one `AltViewService`; it is independent of projection views and local window lifetime.
 - `PresentationSession` emits coherent Current snapshots plus explicit project/show/stop events. Preview never publishes. Visible Current activation (including the same slide), keyboard navigation, and explicit Load/Switch Current request projection; background model refreshes and hidden navigation do not.
-- The adapter sends primary lyrics only, using `LyricsSectionCatalog` to exclude meaning/translation/transliteration companions. Media slides clear remote text.
+- The adapter sends primary lyrics only, using `LyricsSectionCatalog` to exclude meaning/translation/transliteration companions. Media slides clear remote text. The negotiated localProjectionV1 extension explicitly reports the last presented lyrics/media mode plus the exact projection-window identity for same-Mac AltView Confidence capture. Hidden navigation retains mode; Preview, pairing and background changes never publish a new mode. Eucaly remains the sole playback/audio owner. See docs/altview.md.
 - Connect Only and restoring the last paired receiver at startup never take output. Explicit visible projection/Show Slides takes output from another sender without manual release or reconnect; hide/clear/background updates never create a takeover. A cached lease may already be revoked: keep explicit requests until a fresh grant or acceptance at/after their snapshot revision, and request takeover when delayed ownership feedback revokes the lease. Same-slide activation sends a fresh revision so earlier acceptance cannot settle the new action. Preserve requests through reconnect and interrupted grants; Stop/Disconnect cancels them. Reconnect without a pending explicit request uses resume only for the former owner and must not displace another sender.
 - AltView settings share ViewTheWord’s compact native connection layout. Template discovery uses opaque IDs; default to Lyrics when advertised. Selection and discovery are private until the next slide/show. Hide and reconnect retain the published request, filtered against the latest catalogue; show receiver overrides separately.
 - Keep network/encoding/Keychain work off the UI thread, bounded latest-value mailboxes, submission-correlated acknowledgements, and late-grant cancellation. See `docs/altview.md` for protocol provenance, operator setup, and validation boundaries.
@@ -129,9 +129,12 @@ If a new type cannot follow this contract, treat it as a design bug and refactor
 - Toolbar and menu control slide visibility separately from background layer visibility.
 - ESC hides slides.
 - Projection can remain active while slides are hidden.
+- `PresentationSession` holds one `ProjectionSleepPrevention` activity while its projection window is open, preventing idle system and display sleep. Hide Slides, Clear Current, and background/layer changes retain it. Stop Projection, native window close, display-loss shutdown, and teardown release it; browsing, naming, Identify, audio alone, and failed projection starts do not acquire it.
 - Background and audio are independent from slides visibility.
 - Projection target display is user-selectable from the toolbar (`display` menu).
-- Display selection is persisted (`projectionScreenDisplayID`) with `Auto` fallback behavior.
+- `ProjectionDisplayManager` is shared by the toolbar, Projection settings, and sessions. Assignments, monitor numbers, and custom names are persisted by macOS display UUID; the old `projectionScreenDisplayID` preference is migrated once.
+- Identify briefly labels an idle monitor without changing Current or opening projection. Stop projection before selecting another monitor.
+- Projection requires an explicitly selected monitor; there is no Auto selection or fallback. A previous Auto preference becomes unassigned and requires a choice. Each active projection pins the selected physical identity. Disconnect, mirroring, or ambiguous identity closes projection immediately, retaining Current, audio, names, and the saved assignment; reconnect requires an explicit Show Slides. Never silently move output to another monitor.
 
 ### Keyboard Shortcuts (Current)
 - `Cmd+1`: Stop Projection (close projection window and reclaim display)
@@ -359,9 +362,9 @@ Window capture supports live streaming of a user-picked app window into a slide.
   - Ensure background/media layers are frame-pinned so they cannot affect slide-layer layout.
   - Test with and without background visual enabled.
 - Projection screen issues
-  - Verify selected display exists after hot-plug/unplug.
-  - Ensure stale display preference is cleared back to `Auto`.
-  - Verify screen-parameter-change handling repositions projection window safely.
+  - Verify selected UUID resolves uniquely after hot-plug/unplug, including reused runtime IDs and identical monitor names.
+  - Keep disconnected assignments; never clear them or silently use another screen. An unassigned destination must block projection until the user chooses a monitor.
+  - Verify screen-parameter changes close unavailable/mirrored/ambiguous output immediately and reposition only the same physical identity.
 - Capture issues
   - Check picker selection state (`ScreenCaptureManager.shared.windows`).
   - Check permission grant state after explicit picker invocation.
@@ -378,7 +381,7 @@ When changing behavior, verify:
 - Webpage mute affects Preview, Current, and projection consistently.
 - Background visual/audio remain independent from slides visibility.
 - Projection display picker selects the correct monitor across start/toggle/background actions.
-- Display unplug/hot-plug does not leave projection on an invalid screen.
+- Display unplug/hot-plug closes invalid output and keeps the chosen identity; reconnect and a new Show Slides use that identity even with a new runtime ID.
 - Timer/clock controls and rendering still work.
 - No new SwiftUI publish-during-update warnings.
 - No stale capture streams after slide/session teardown.

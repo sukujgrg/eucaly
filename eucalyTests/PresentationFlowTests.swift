@@ -333,7 +333,7 @@ final class PresentationFlowTests: XCTestCase {
             session.isPresenting = true
             session.areSlidesVisible = false
 
-            session.showSlides(preferredScreen: nil)
+            session.showSlides()
 
             return session.areSlidesVisible
         }
@@ -352,10 +352,10 @@ final class PresentationFlowTests: XCTestCase {
             session.isPresenting = true
             session.areSlidesVisible = true
 
-            flow.toggleSlidesVisibility(in: session, preferredScreen: nil)
+            flow.toggleSlidesVisibility(in: session)
             let firstVisible = session.areSlidesVisible
 
-            flow.toggleSlidesVisibility(in: session, preferredScreen: nil)
+            flow.toggleSlidesVisibility(in: session)
             let secondVisible = session.areSlidesVisible
 
             return (firstVisible, secondVisible, session.backgroundVisualURL)
@@ -373,7 +373,7 @@ final class PresentationFlowTests: XCTestCase {
             let slides = makeTestSlides(count: 2)
 
             flow.setPreviewSlides(slides)
-            flow.toggleSlidesVisibility(in: session, preferredScreen: nil)
+            flow.toggleSlidesVisibility(in: session)
 
             return (session.slides.count, flow.previewSlides.count, session.isPresenting)
         }

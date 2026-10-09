@@ -45,6 +45,8 @@ final class AltViewConfidenceTests: XCTestCase {
         let (service, sender) = service()
         defer { service.disconnect() }
         service.connect(to: first, code: "ABCD2345")
+        XCTAssertNil(sender.connectionID, "A saved This Mac port is not a live endpoint")
+        service.receiveDiscovered([first], notice: nil)
         XCTAssertEqual(sender.expectedReceiverID, id)
         service.receiveDiscovered([next], notice: nil)
         XCTAssertEqual(service.destination?.port, 54322)
@@ -67,9 +69,10 @@ final class AltViewConfidenceTests: XCTestCase {
         eventually { output.port != nil }
         sender.connect(to: .hostPort(host: "127.0.0.1", port: .init(rawValue: try XCTUnwrap(output.port))!), key: key)
         eventually { status.connected }
-        sender.submit(.init(body: "Ordinary", confidence: .init(body: "Ordinary")), submissionID: UUID()); sender.takeOutput()
+        sender.submit(.init(body: "Ordinary", confidence: .init(body: "Ordinary"), projection: .init(sessionID: UUID(), mode: .media, windowID: 7, windowGeneration: UUID())), submissionID: UUID()); sender.takeOutput()
         eventually { output.content.body == "Ordinary" && status.feedback.accepted }
         XCTAssertNil(output.content.confidence)
+        XCTAssertNil(output.content.projection)
         XCTAssertTrue(status.connected)
     }
     func testNegotiatedFrameLimitKeepsLegacyTextAndClearsOversizeConfidenceWithoutDisconnect() throws {
@@ -92,11 +95,75 @@ final class AltViewConfidenceTests: XCTestCase {
                 eventually { output.content.body == text && status.feedback.accepted }
                 XCTAssertNil(output.content.confidence); XCTAssertNil(status.contentError)
             } else {
-                eventually { status.connected && status.contentError != nil && status.feedback.accepted }
+                eventually { status.connected && status.contentError != nil }
                 XCTAssertEqual(output.content, .empty)
+                XCTAssertNil(output.ownerID, "Rejected queued content cannot take output even when it is clear")
+                XCTAssertFalse(status.ownsOutput)
             }
             XCTAssertTrue(status.connected)
         }
+    }
+    func testExplicitMediaModeHiddenNavigationAndWindowRecreation() throws {
+        let (service, sender) = service(), source = UUID()
+        defer { service.disconnect() }
+        let url = URL(fileURLWithPath: "/tmp/media")
+        let slides = [
+            Slide(index: 1, lines: [], label: nil, videoURL: url, pdfURL: nil, pdfPageIndex: nil, imageURL: nil),
+            Slide(index: 1, lines: [], label: nil, videoURL: nil, pdfURL: url, pdfPageIndex: 0, imageURL: nil),
+            Slide(index: 1, lines: [], label: nil, videoURL: nil, pdfURL: nil, pdfPageIndex: nil, imageURL: url),
+            Slide(index: 1, lines: [], label: nil, videoURL: nil, pdfURL: nil, pdfPageIndex: nil, imageURL: nil, webpageURL: URL(string: "https://example.com")),
+            Slide(index: 1, lines: [], label: nil, videoURL: nil, pdfURL: nil, pdfPageIndex: nil, imageURL: nil, captureWindowID: 42)
+        ]
+        for slide in slides {
+            let generation = UUID()
+            let media = PresentationOutputSnapshot(slide: slide, isPresenting: true, slidesVisible: true,
+                projectionWindowID: 77, projectionWindowGeneration: generation)
+            let count = sender.submissions.count
+            service.handle(.changed(media), from: UUID())
+            XCTAssertEqual(sender.submissions.count, count, "An inactive session cannot publish or take output")
+            service.handle(.project(media), from: source)
+            XCTAssertEqual(sender.submissions.last?.content.projection?.mode, .media)
+            XCTAssertEqual(sender.submissions.last?.content.projection?.sessionID, source)
+            XCTAssertEqual(sender.submissions.last?.content.projection?.windowID, 77)
+            XCTAssertEqual(sender.submissions.last?.content.body, "")
+            XCTAssertNil(sender.submissions.last?.content.confidence)
+            let takes = sender.takes
+            var hiddenLyrics = snapshot("Private navigation", visible: false)
+            hiddenLyrics.projectionWindowID = 77; hiddenLyrics.projectionWindowGeneration = generation
+            service.handle(.changed(hiddenLyrics), from: source)
+            XCTAssertEqual(sender.submissions.last?.content.projection?.mode, .media)
+            XCTAssertEqual(sender.takes, takes)
+            let newGeneration = UUID()
+            hiddenLyrics.projectionWindowID = 88; hiddenLyrics.projectionWindowGeneration = newGeneration
+            service.handle(.changed(hiddenLyrics), from: source)
+            XCTAssertEqual(sender.submissions.last?.content.projection?.windowID, 88)
+            XCTAssertEqual(sender.submissions.last?.content.projection?.windowGeneration, newGeneration)
+            XCTAssertEqual(sender.submissions.last?.content.projection?.mode, .media)
+            service.handle(.show(snapshot("Presented lyrics")), from: source)
+            XCTAssertEqual(sender.submissions.last?.content.projection?.mode, .lyrics)
+            XCTAssertEqual(sender.submissions.last?.content.confidence?.body, "Presented lyrics")
+            service.handle(.changed(PresentationOutputSnapshot(slide: nil, isPresenting: true, slidesVisible: false)), from: source)
+            XCTAssertNil(sender.submissions.last?.content.projection)
+            XCTAssertEqual(sender.submissions.last?.content, .empty)
+        }
+        service.handle(.stopped, from: source)
+        XCTAssertNil(service.submitted)
+        XCTAssertFalse(service.isSending)
+    }
+    func testBackgroundAndConnectOnlyNeverPublishProjection() {
+        let (service, sender) = service()
+        defer { service.disconnect() }
+        let source = UUID()
+        service.handle(.changed(snapshot("Unpresented")), from: source)
+        XCTAssertTrue(sender.submissions.isEmpty); XCTAssertEqual(sender.takes, 0)
+        service.handle(.show(snapshot("Primary")), from: source)
+        let original = service.submitted?.projection
+        service.handle(.changed(snapshot("Hidden different media", visible: false)), from: source)
+        XCTAssertEqual(service.submitted?.projection?.mode, original?.mode)
+        XCTAssertEqual(service.submitted?.confidence?.body, "Primary")
+        XCTAssertEqual(sender.takes, 1)
+        service.disconnect()
+        XCTAssertNil(service.submitted)
     }
     private func eventually(_ check: () -> Bool) {
         let deadline = Date().addingTimeInterval(10)
