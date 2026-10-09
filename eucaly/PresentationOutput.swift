@@ -5,6 +5,8 @@ nonisolated struct PresentationOutputSnapshot {
     let slide: Slide?
     let isPresenting: Bool
     let slidesVisible: Bool
+    var projectionWindowID: UInt32? = nil
+    var projectionWindowGeneration: UUID? = nil
 }
 
 nonisolated enum PresentationOutputEvent {

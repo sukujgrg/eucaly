@@ -81,7 +81,7 @@ final class AltViewPresentationTests: XCTestCase {
         await settle()
         XCTAssertTrue(sender.submissions.isEmpty, "Loading Current while stopped is not a show intent")
         session.isPresenting = true // Avoid opening a physical window in unit tests.
-        session.showSlides(preferredScreen: nil)
+        session.showSlides()
         XCTAssertEqual(sender.takes, 1)
         XCTAssertEqual(sender.submissions.last?.content.body, "Current first")
         flow.setPreviewSlides(LyricsParser.parseDocument("Verse 1\nDifferent preview").slides)
@@ -194,7 +194,7 @@ final class AltViewPresentationTests: XCTestCase {
         await settle()
         XCTAssertEqual(sender.takes, 4, "Hide and navigation while hidden cannot reclaim output")
         XCTAssertFalse(try XCTUnwrap(sender.submissions.last).content.visible)
-        session.showSlides(preferredScreen: nil)
+        session.showSlides()
         XCTAssertEqual(sender.takes, 5)
         XCTAssertEqual(sender.submissions.last?.content.body, "Replacement")
         session.stopPresentation()
@@ -348,6 +348,7 @@ final class AltViewPresentationTests: XCTestCase {
 
 nonisolated final class RecordingAltViewSender: AltViewSending {
     var submissions: [AltViewSubmission] = []
+    var endpoints: [NWEndpoint] = []
     var takes = 0
     var releases = 0
     var connectionID: UUID?
@@ -357,7 +358,8 @@ nonisolated final class RecordingAltViewSender: AltViewSending {
     }
     func connect(to endpoint: NWEndpoint, key: Data, expectedReceiverID: UUID?, connectionID: UUID) { self.connectionID = connectionID; self.expectedReceiverID = expectedReceiverID }
     func submit(_ content: AltViewDisplayContent, submissionID: UUID) { submissions.append(.init(id: submissionID, content: content)) }
-    func takeOutput() { takes += 1 }
+    func updateEndpoint(_ endpoint: NWEndpoint, connectionID: UUID) { if self.connectionID == connectionID { endpoints.append(endpoint) } }
+    func takeOutput(submission: AltViewSubmission?) { takes += 1 }
     func releaseOutput() { releases += 1 }
     func disconnect() { connectionID = nil }
 }

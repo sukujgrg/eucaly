@@ -8,7 +8,8 @@ public struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var lyricsEditor = LyricsEditorSession()
     @State private var lyricsEditorFocusController = PlainTextEditorFocusController()
-    @StateObject private var session = PresentationSession()
+    @StateObject private var session: PresentationSession
+    @ObservedObject private var projectionDisplays: ProjectionDisplayManager
     @EnvironmentObject private var altView: AltViewService
     @StateObject private var flow = PresentationFlowController()
     @State private var folderURL: URL?
@@ -33,7 +34,6 @@ public struct ContentView: View {
     @AppStorage("countdownMinutes") private var countdownMinutes: Int = 5
     @AppStorage("overlayScale") private var overlayScale: Double = 1.0
     @AppStorage("windowCaptureFrameRate") private var windowCaptureFrameRate: Int = 30
-    @AppStorage("projectionScreenDisplayID") private var projectionScreenDisplayID: Int = 0
     @AppStorage("savedWebpageURLs") private var savedWebpageURLs: String = ""
     @AppStorage("savedSelectedWebpageURL") private var savedSelectedWebpageURL: String = ""
     @AppStorage("savedWebpageTitles") private var savedWebpageTitles: String = ""
@@ -65,7 +65,7 @@ public struct ContentView: View {
     @State private var libraryLoadFailure: LibraryLoadFailure?
     @State private var libraryRevision: Int = 0
     @State private var displayedLibraryRootURL: URL? = nil
-    @State private var projectionScreenOptions: [ProjectionScreenOption] = []
+    @State private var isProjectionSettingsPresented = false
     @State private var lyricsProjectionSize: CGSize?
     @State private var isTimerSettingsPresented: Bool = false
     @State private var isAppearanceSettingsPresented: Bool = false
@@ -81,10 +81,9 @@ public struct ContentView: View {
     private let windowCaptureFrameRateOptions = [24, 30, 60]
     private let libraryFileScanner = LibraryFileScannerService()
 
-    private struct ProjectionScreenOption: Identifiable, Hashable {
-        let displayID: Int
-        let label: String
-        var id: Int { displayID }
+    init(projectionDisplays: ProjectionDisplayManager) {
+        self.projectionDisplays = projectionDisplays
+        _session = StateObject(wrappedValue: PresentationSession(projectionDisplays: projectionDisplays))
     }
 
     private enum PreviewSource: Equatable {
@@ -273,8 +272,8 @@ public struct ContentView: View {
         .onChange(of: webpageTitles) { _, _ in
             persistWebpageState()
         }
-        .onChange(of: projectionScreenDisplayID) { _, _ in
-            applyProjectionScreenPreference()
+        .onChange(of: projectionDisplays.revision) { _, _ in
+            updateLyricsProjectionSize()
         }
         .onDisappear(perform: handleRootOnDisappear)
     }
@@ -286,7 +285,8 @@ public struct ContentView: View {
         isLibraryLoading = false
         librarySearch.setIndexing(false)
         releaseSecurityScopedAccess()
-        stopWindowCapturesForShutdown()
+        // Capture views release their own streams when removed. The surviving
+        // projection session (and app termination) owns global capture cleanup.
     }
 
     private func handleExitCommand() {
@@ -300,14 +300,7 @@ public struct ContentView: View {
         rootSplitWithStateObservers
             .onReceive(screenCaptureManager.$windows, perform: handleCaptureWindowsUpdate)
             .onReceive(screenCaptureManager.windowPickerSelections, perform: handleWindowPickerSelection)
-            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
-                refreshProjectionScreenOptions()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .projectionScreenFellBackToAuto)) { _ in
-                projectionScreenDisplayID = 0
-            }
             .onReceive(NotificationCenter.default.publisher(for: .toggleSlidesVisibility), perform: handleToggleSlidesVisibilityNotification)
-            .onReceive(NotificationCenter.default.publisher(for: .stopProjection), perform: handleStopProjectionNotification)
             .onReceive(NotificationCenter.default.publisher(for: .toggleBackgroundVisibility), perform: handleToggleBackgroundVisibilityNotification)
             .onReceive(NotificationCenter.default.publisher(for: .toggleBackgroundAudio), perform: handleToggleBackgroundAudioNotification)
             .onReceive(NotificationCenter.default.publisher(for: .clearAllLayers), perform: handleClearAllLayersNotification)
@@ -487,28 +480,61 @@ public struct ContentView: View {
 
     private var projectionScreenPicker: some View {
         Menu {
-            Button("Auto") {
-                projectionScreenDisplayID = 0
+            Text("Projection: \(projectionDisplays.selectionLabel)")
+            if let problem = projectionDisplays.selectionProblem {
+                Text(problem)
             }
-
-            if !projectionScreenOptions.isEmpty {
-                Divider()
-                ForEach(projectionScreenOptions) { option in
-                    Button(option.label) {
-                        projectionScreenDisplayID = option.displayID
-                    }
+            Divider()
+            ForEach(projectionDisplays.displays) { display in
+                Button {
+                    projectionDisplays.select(display.target)
+                } label: {
+                    Label(projectionDisplays.label(for: display.target),
+                          systemImage: projectionDisplays.target?.identity == display.identity ? "checkmark" : "display")
                 }
+                .disabled(projectionDisplays.isLocked || projectionDisplays.problem(for: display.target) != nil)
             }
+            Divider()
+            if let target = projectionDisplays.target {
+                Button("Identify Selected Monitor") { projectionDisplays.identify(target) }
+                    .disabled(!projectionDisplays.canIdentify(target))
+            }
+            Button("Manage Monitors…") { isProjectionSettingsPresented = true }
         } label: {
             Label("Projection Screen", systemImage: "display")
         }
         .labelStyle(.iconOnly)
         .buttonStyle(.bordered)
-        .help("Choose projection display")
+        .help("Projection: \(projectionDisplays.selectionLabel). Manage names and identify monitors.")
+        .sheet(isPresented: $isProjectionSettingsPresented) {
+            VStack(spacing: 0) {
+                ProjectionMonitorSettingsView(displays: projectionDisplays)
+                HStack {
+                    Spacer()
+                    Button("Done") { isProjectionSettingsPresented = false }
+                        .keyboardShortcut(.defaultAction)
+                }
+                .padding()
+            }
+            .frame(width: 560, height: 500)
+        }
+        .alert(projectionDisplays.target == nil ? "Choose a Projection Monitor" : "Projection Monitor Unavailable",
+               isPresented: Binding(
+            get: { session.projectionDisplayIssue != nil },
+            set: { if !$0 { session.projectionDisplayIssue = nil } }
+        )) {
+            Button("Manage Monitors…") { isProjectionSettingsPresented = true }
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(session.projectionDisplayIssue ?? "")
+        }
     }
 
     private func handleRootOnAppear() {
-        refreshProjectionScreenOptions()
+        deferSessionChange {
+            projectionDisplays.refresh()
+            updateLyricsProjectionSize()
+        }
         refreshLibraryRootAccess()
         refreshBackgroundVisualAccess()
         refreshBackgroundAudioAccess()
@@ -571,24 +597,13 @@ public struct ContentView: View {
 
     private func handleToggleSlidesVisibilityNotification(_ notification: Notification) {
         deferSessionChange {
-            flow.toggleSlidesVisibility(
-                in: session,
-                preferredScreen: preferredProjectionScreen()
-            )
-        }
-    }
-
-    private func handleStopProjectionNotification(_ notification: Notification) {
-        deferSessionChange {
-            session.stopPresentation()
+            flow.toggleSlidesVisibility(in: session)
         }
     }
 
     private func handleToggleBackgroundVisibilityNotification(_ notification: Notification) {
         deferSessionChange {
-            session.toggleBackgroundVisualVisibility(
-                preferredScreen: preferredProjectionScreen()
-            )
+            session.toggleBackgroundVisualVisibility()
         }
     }
 
@@ -666,8 +681,6 @@ public struct ContentView: View {
         }
         return nil
     }
-
-    public init() {}
 
     private var detailView: some View {
         DetailRootView(
@@ -956,73 +969,20 @@ public struct ContentView: View {
 
     private func toggleSlidesFromUI() {
         DispatchQueue.main.async {
-            flow.toggleSlidesVisibility(
-                in: session,
-                preferredScreen: preferredProjectionScreen()
-            )
+            flow.toggleSlidesVisibility(in: session)
         }
     }
 
     private func toggleBackgroundVisualFromUI() {
         DispatchQueue.main.async {
-            session.toggleBackgroundVisualVisibility(
-                preferredScreen: preferredProjectionScreen()
-            )
+            session.toggleBackgroundVisualVisibility()
         }
     }
 
-    private func preferredProjectionScreen() -> NSScreen? {
-        let displayID = projectionScreenDisplayID == 0
-            ? nil
-            : CGDirectDisplayID(projectionScreenDisplayID)
-        return ProjectionScreenResolver.resolve(displayID: displayID)
-    }
-
-    private func refreshProjectionScreenOptions() {
-        let activeScreens = ProjectionScreenResolver.activeScreens()
-            .map { screen in
-                (
-                    name: screen.localizedName,
-                    displayID: screen.displayID,
-                    width: Int(screen.frame.width.rounded()),
-                    height: Int(screen.frame.height.rounded())
-                )
-            }
-
-        let countsByName = Dictionary(grouping: activeScreens, by: \.name)
-            .mapValues(\.count)
-
-        projectionScreenOptions = activeScreens.compactMap { screen in
-            guard let displayID = screen.displayID, displayID != 0 else { return nil }
-            let displayIDValue = Int(displayID)
-            let hasDuplicateName = (countsByName[screen.name] ?? 0) > 1
-            let label: String
-            if hasDuplicateName {
-                label = "\(screen.name) • \(screen.width)x\(screen.height) • #\(displayIDValue)"
-            } else {
-                label = "\(screen.name) • \(screen.width)x\(screen.height)"
-            }
-            return ProjectionScreenOption(displayID: displayIDValue, label: label)
-        }
-
-        if projectionScreenDisplayID != 0,
-           !projectionScreenOptions.contains(where: { $0.displayID == projectionScreenDisplayID }) {
-            projectionScreenDisplayID = 0
-        }
-
-        applyProjectionScreenPreference()
-    }
-
-    private func applyProjectionScreenPreference() {
-        let screen = preferredProjectionScreen()
-        lyricsProjectionSize = screen?.frame.size
-        guard session.isPresenting else { return }
-        session.setPreferredPresentationScreen(screen)
-    }
-
-    private func stopWindowCapturesForShutdown() {
-        Task { @MainActor in
-            await ScreenCaptureManager.shared.stopAllCaptures()
+    private func updateLyricsProjectionSize() {
+        let size = projectionDisplays.resolvedMonitor()?.frame.size
+        deferSessionChange {
+            lyricsProjectionSize = size
         }
     }
 

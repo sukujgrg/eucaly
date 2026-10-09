@@ -9,13 +9,16 @@ nonisolated struct AltViewDestination: Codable, Equatable, Identifiable, Sendabl
     let port: UInt16?
     let serviceType: String?
     let domain: String?
+    var localReceiverID: UUID?
 
     var id: String {
+        if let localReceiverID { return "local:\(localReceiverID)" }
         if let host, let port { return "host:\(host.lowercased()):\(port)" }
         return "service:\(name)|\(serviceType ?? "")|\(domain ?? "")"
     }
 
     var isValid: Bool {
+        if localReceiverID != nil, host != "127.0.0.1" { return false }
         if let host, let port {
             return Self.manual(host: host, port: String(port)) != nil && serviceType == nil && domain == nil
         }
@@ -36,13 +39,18 @@ nonisolated struct AltViewDestination: Codable, Equatable, Identifiable, Sendabl
     }
 
     init?(_ receiver: AltViewDiscoveredReceiver) {
+        if receiver.isLocal, let id = receiver.receiverID, case .hostPort(_, let port) = receiver.endpoint {
+            self.init(name: receiver.name, host: "127.0.0.1", port: port.rawValue, serviceType: nil, domain: nil)
+            localReceiverID = id
+            return
+        }
         guard case .service(let name, let type, let domain, _) = receiver.endpoint else { return nil }
         self.init(name: name, host: nil, port: nil, serviceType: type, domain: domain)
     }
 
     init(name: String, host: String?, port: UInt16?, serviceType: String?, domain: String?) {
         self.name = name; self.host = host; self.port = port
-        self.serviceType = serviceType; self.domain = domain
+        self.serviceType = serviceType; self.domain = domain; self.localReceiverID = nil
     }
 }
 

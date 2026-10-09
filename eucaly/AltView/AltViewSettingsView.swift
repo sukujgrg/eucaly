@@ -57,7 +57,7 @@ struct AltViewToolbarButton: View {
                 if let destination = service.destination { Text(destination.name).foregroundStyle(.secondary) }
                 AltViewStatusView(service: service)
                 Button("Send Current to AltView") { service.sendCurrent(from: session) }
-                    .disabled(!service.status.connected || !session.isPresenting)
+                    .disabled(!service.status.connected || !session.isPresenting || !session.areSlidesVisible)
                 if service.isSending {
                     Button("Stop Sending to AltView") { service.stopSending() }
                 }

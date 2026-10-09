@@ -48,7 +48,7 @@ final class LayerControlsTests: XCTestCase {
             let firstBg = session.isBackgroundVisualVisible
 
             // Second toggle: show slides
-            session.showSlides(preferredScreen: nil)
+            session.showSlides()
             let secondSlides = session.areSlidesVisible
             let secondBg = session.isBackgroundVisualVisible
 
@@ -74,12 +74,12 @@ final class LayerControlsTests: XCTestCase {
             session.isBackgroundVisualVisible = true
 
             // First toggle: hide background
-            session.toggleBackgroundVisualVisibility(preferredScreen: nil)
+            session.toggleBackgroundVisualVisibility()
             let firstSlides = session.areSlidesVisible
             let firstBg = session.isBackgroundVisualVisible
 
             // Second toggle: show background
-            session.toggleBackgroundVisualVisibility(preferredScreen: nil)
+            session.toggleBackgroundVisualVisibility()
             let secondSlides = session.areSlidesVisible
             let secondBg = session.isBackgroundVisualVisible
 
@@ -429,11 +429,11 @@ final class LayerControlsTests: XCTestCase {
             let step2 = (session.areSlidesVisible, session.isBackgroundVisualVisible)
 
             // Step 3: Cmd+B hides background
-            session.toggleBackgroundVisualVisibility(preferredScreen: nil)
+            session.toggleBackgroundVisualVisibility()
             let step3 = (session.areSlidesVisible, session.isBackgroundVisualVisible)
 
             // Step 4: Cmd+Z shows slides
-            session.showSlides(preferredScreen: nil)
+            session.showSlides()
             let step4 = (session.areSlidesVisible, session.isBackgroundVisualVisible)
 
             return (

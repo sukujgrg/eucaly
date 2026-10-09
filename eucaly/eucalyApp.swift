@@ -16,6 +16,8 @@ private enum AppLaunchContext {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let updates = AppUpdateViewModel(driver: SparkleUpdateDriver())
     let altView = AltViewService(restorePreferences: !AppLaunchContext.isRunningTests)
+    // Read monitor preferences after EucalyApp has migrated sandbox preferences.
+    lazy var projectionDisplays = ProjectionDisplayManager(defaults: AppLaunchContext.isRunningTests ? nil : .standard)
 
     private var isTerminatingAfterCaptureCleanup = false
 
@@ -87,7 +89,7 @@ struct EucalyApp: App {
             // Unit tests construct their own views and sessions. Restoring the
             // user's library here would perform unrelated file/network access.
             if !AppLaunchContext.isRunningTests {
-                ContentView()
+                ContentView(projectionDisplays: appDelegate.projectionDisplays)
                     .environmentObject(appDelegate.updates)
                     .environmentObject(appDelegate.altView)
                     .frame(minWidth: 1060, minHeight: 600)
@@ -98,6 +100,7 @@ struct EucalyApp: App {
             AppSettingsView()
                 .environmentObject(appDelegate.updates)
                 .environmentObject(appDelegate.altView)
+                .environmentObject(appDelegate.projectionDisplays)
         }
         .windowResizability(.contentSize)
         .commands {
@@ -190,5 +193,4 @@ extension Notification.Name {
     static let saveLyrics = Notification.Name("saveLyrics")
     static let showLibrarySearch = Notification.Name("showLibrarySearch")
     static let refreshLibrary = Notification.Name("refreshLibrary")
-    static let projectionScreenFellBackToAuto = Notification.Name("projectionScreenFellBackToAuto")
 }

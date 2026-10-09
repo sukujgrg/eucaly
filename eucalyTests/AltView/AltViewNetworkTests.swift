@@ -88,7 +88,7 @@ final class AltViewNetworkTests: XCTestCase {
         other.connect(to: .hostPort(host: "127.0.0.1", port: .init(rawValue: port)!), key: key)
         eventually("both connected without output") { service.status.connected && otherStatus.connected }
         XCTAssertNil(output.ownerID)
-        session.showSlides(preferredScreen: nil)
+        session.showSlides()
         eventually("first lyrics accepted") { output.content.body == "First lyrics" && service.latestAccepted }
         other.submit(.init(body: "Scripture"), submissionID: UUID()); other.takeOutput()
         eventually("other app takes output") { otherStatus.feedback.accepted && service.status.ownerName == "ViewTheWord" }

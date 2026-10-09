@@ -34,7 +34,7 @@ final class BackgroundControlsTests: XCTestCase {
             session.isPresenting = true
             session.areSlidesVisible = true
 
-            session.toggleBackgroundVisualVisibility(preferredScreen: nil)
+            session.toggleBackgroundVisualVisibility()
 
             return (session.areSlidesVisible, session.isBackgroundVisualVisible)
         }
@@ -54,10 +54,10 @@ final class BackgroundControlsTests: XCTestCase {
             session.isPresenting = true
             session.areSlidesVisible = false
 
-            session.toggleBackgroundVisualVisibility(preferredScreen: nil)
+            session.toggleBackgroundVisualVisibility()
             let firstVisible = session.isBackgroundVisualVisible
 
-            session.toggleBackgroundVisualVisibility(preferredScreen: nil)
+            session.toggleBackgroundVisualVisibility()
             let secondVisible = session.isBackgroundVisualVisible
 
             return (firstVisible, secondVisible)
@@ -73,7 +73,7 @@ final class BackgroundControlsTests: XCTestCase {
             session.isPresenting = true
             session.isBackgroundVisualVisible = true
 
-            session.toggleBackgroundVisualVisibility(preferredScreen: nil)
+            session.toggleBackgroundVisualVisibility()
 
             return session.isBackgroundVisualVisible
         }

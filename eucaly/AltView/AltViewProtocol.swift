@@ -2,9 +2,13 @@
 // Template discovery follows AltView protocol.md and ViewTheWord’s protocol adapter (2026-10-03).
 // Kept local so eucaly builds and runs without an AltView checkout or process.
 import Foundation
+import Darwin
 
 nonisolated enum AltViewProtocol {
     static let version = 2
+    static let confidenceText = "confidenceTextV1"
+    static let localProjection = "localProjectionV1"
+    static let capabilities = [confidenceText, localProjection]
     static let serviceType = "_altview._tcp"
     static let maximumFrameSize = 65_536
     static let maximumClients = 8
@@ -13,6 +17,49 @@ nonisolated enum AltViewProtocol {
     static let connectionTimeout: TimeInterval = 30
     static let connectionAttemptTimeout: TimeInterval = 10
     static let timeout: TimeInterval = 5
+}
+
+nonisolated struct AltViewConfidenceText: Codable, Equatable, Sendable {
+    var title = ""
+    var body = ""
+    var footer = ""
+    static let empty = Self()
+    var hasText: Bool { [title, body, footer].contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } }
+    var isValid: Bool { title.utf8.count <= 512 && body.utf8.count <= 24_000 && footer.utf8.count <= 1_024 }
+}
+
+/// Same-boot process identity. Public metadata, never a pairing credential.
+nonisolated struct AltViewLocalProjectionProcess: Codable, Equatable, Sendable {
+    let processID: Int32
+    let startTime: UInt64
+    let bootMarker: String
+    var isValid: Bool { processID > 0 && startTime > 0 && bootMarker.utf8.count == 64 }
+    static func startTime(for pid: Int32) -> UInt64? {
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+        return info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec
+    }
+    static var current: Self? {
+        let pid = ProcessInfo.processInfo.processIdentifier
+        guard let marker = AltViewLocalReceiverMarker.current, let start = startTime(for: pid) else { return nil }
+        return Self(processID: pid, startTime: start, bootMarker: marker)
+    }
+    var isLiveLocalProcess: Bool {
+        isValid && bootMarker == AltViewLocalReceiverMarker.current && Self.startTime(for: processID) == startTime
+    }
+}
+
+/// Complete last explicit presentation, independent of hidden Current navigation.
+nonisolated struct AltViewProjectionPresentation: Codable, Equatable, Sendable {
+    enum Mode: String, Codable, Sendable { case lyrics, media }
+    var sessionID: UUID
+    var mode: Mode
+    var windowID: UInt32?
+    var windowGeneration: UUID?
+    var isValid: Bool {
+        (windowID == nil && windowGeneration == nil) || (windowID.map { $0 > 0 } == true && windowGeneration != nil)
+    }
 }
 
 nonisolated enum AltViewEmptyRegionBehavior: String, Codable, Sendable { case collapse, reserve }
@@ -105,6 +152,8 @@ nonisolated struct AltViewDisplayContent: Codable, Equatable, Sendable {
     var visible = true
     var emptyRegions = AltViewEmptyRegionBehavior.collapse
     var template: AltViewContentTemplate?
+    var confidence: AltViewConfidenceText?
+    var projection: AltViewProjectionPresentation?
 
     var hasTitle: Bool { !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     var hasFooter: Bool { !footer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -112,12 +161,12 @@ nonisolated struct AltViewDisplayContent: Codable, Equatable, Sendable {
     static let empty = AltViewDisplayContent(visible: false)
 
     var isValid: Bool {
-        title.utf8.count <= 512 && body.utf8.count <= 24_000 && footer.utf8.count <= 1_024 && (template?.isValid ?? true)
+        title.utf8.count <= 512 && body.utf8.count <= 24_000 && footer.utf8.count <= 1_024 && (template?.isValid ?? true) && (confidence?.isValid ?? true) && (projection?.isValid ?? true)
     }
 }
 
 extension AltViewDisplayContent {
-    private enum CodingKeys: String, CodingKey { case title, body, footer, visible, emptyRegions, template }
+    private enum CodingKeys: String, CodingKey { case title, body, footer, visible, emptyRegions, template, confidence, projection }
 
     nonisolated init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -128,6 +177,8 @@ extension AltViewDisplayContent {
         visible = try values.decode(Bool.self, forKey: .visible)
         emptyRegions = try values.decodeIfPresent(AltViewEmptyRegionBehavior.self, forKey: .emptyRegions) ?? .collapse
         template = try values.decodeIfPresent(AltViewContentTemplate.self, forKey: .template)
+        confidence = try values.decodeIfPresent(AltViewConfidenceText.self, forKey: .confidence)
+        projection = try values.decodeIfPresent(AltViewProjectionPresentation.self, forKey: .projection)
     }
 }
 
@@ -151,6 +202,8 @@ nonisolated struct AltViewWireMessage: Codable, Equatable, Sendable {
     var outputReadiness: AltViewOutputReadiness?
     var templates: [AltViewTemplateDescriptor]?
     var templatePolicy: AltViewTemplatePolicy?
+    var capabilities: [String]?
+    var localProcess: AltViewLocalProjectionProcess?
 }
 
 nonisolated enum AltViewProtocolFailure: Error, LocalizedError {

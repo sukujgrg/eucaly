@@ -1,19 +1,20 @@
-// Test-only protocol peer from AltView 9918ca19a5ab6480cb58f2d8ea90878e4f5c67cd.
+// Confidence reducer mirrored from AltView; fixture retains legacy negotiation by default.
 @testable import eucaly
 import Foundation
 
-nonisolated struct ReferenceAltViewSenderIdentity: Equatable, Sendable {
+nonisolated struct ReferenceAltViewSenderIdentity: Equatable {
     let id: UUID
     let name: String
 }
 
-/// Pure ownership rules, confined to ReferenceAltViewReceiverServer's serial queue in production.
+/// Pure ownership rules, confined to ReceiverServer's serial queue in production.
 nonisolated struct ReferenceAltViewReceiverState {
     private(set) var senders: [UUID: ReferenceAltViewSenderIdentity] = [:]
     private(set) var ownerConnection: UUID?
     private(set) var lease: UUID?
     private(set) var revision: UInt64 = 0
     private(set) var content = AltViewDisplayContent.empty
+    private(set) var confidenceContent = AltViewConfidenceText.empty
     var owner: ReferenceAltViewSenderIdentity? { ownerConnection.flatMap { senders[$0] } }
 
     mutating func register(connection: UUID, senderID: UUID, name: String) -> Bool {
@@ -28,13 +29,21 @@ nonisolated struct ReferenceAltViewReceiverState {
         lease = UUID()
         revision = 0
         content = .empty
+        confidenceContent = .empty
         return lease
     }
     @discardableResult
-    mutating func apply(connection: UUID, lease: UUID, revision: UInt64, content: AltViewDisplayContent) -> Bool {
+    mutating func apply(connection: UUID, lease: UUID, revision: UInt64, content: AltViewDisplayContent, supportsConfidence: Bool = false) -> Bool {
         guard ownerConnection == connection, self.lease == lease, revision > self.revision, content.isValid else { return false }
         self.revision = revision
         self.content = content
+        if supportsConfidence, let confidence = content.confidence {
+            confidenceContent = confidence
+        } else {
+            let text = AltViewConfidenceText(title: content.title, body: content.body, footer: content.footer)
+            // Legacy senders: retain the last visible text on Hide; empty snapshots clear.
+            if content.visible || !text.hasText || !confidenceContent.hasText { confidenceContent = text }
+        }
         return true
     }
     @discardableResult
@@ -52,5 +61,6 @@ nonisolated struct ReferenceAltViewReceiverState {
         lease = nil
         revision = 0
         content = .empty
+        confidenceContent = .empty
     }
 }

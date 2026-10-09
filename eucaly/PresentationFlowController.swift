@@ -175,13 +175,13 @@ final class PresentationFlowController: ObservableObject {
         session.currentSlideID = session.firstSlideID
     }
 
-    func toggleSlidesVisibility(in session: PresentationSession, preferredScreen: NSScreen?) {
+    func toggleSlidesVisibility(in session: PresentationSession) {
         if session.isPresenting {
             if session.areSlidesVisible {
                 session.hideSlides()
             } else {
                 selectCurrentSlideForPresentationStart(in: session)
-                session.showSlides(preferredScreen: preferredScreen)
+                session.showSlides()
             }
             return
         }
@@ -189,7 +189,7 @@ final class PresentationFlowController: ObservableObject {
         guard !session.isEmpty || session.hasAvailableBackgroundVisual else { return }
 
         selectCurrentSlideForPresentationStart(in: session)
-        session.showSlides(preferredScreen: preferredScreen)
+        session.showSlides()
         isCurrentCollapsed = false
     }
 
