@@ -68,8 +68,15 @@ nonisolated protocol AltViewPairingStoring {
 /// is stored in preferences or files, including when Keychain access fails.
 nonisolated final class AltViewPairingStore: AltViewPairingStoring, @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.suku.eucaly.altview.pairing")
-    private let service = "com.suku.eucaly.altview.pairing"
+    private let service: String
+    private let keychain: any AltViewKeychainAccess
     private var memory: [String: AltViewCredentials] = [:]
+
+    init(service: String = "com.suku.eucaly.altview.pairing",
+         keychain: any AltViewKeychainAccess = SystemAltViewKeychain()) {
+        self.service = service
+        self.keychain = keychain
+    }
 
     func read(_ destination: AltViewDestination, completion: @escaping (AltViewCredentials?, String?) -> Void) {
         queue.async { [self] in
@@ -77,42 +84,97 @@ nonisolated final class AltViewPairingStore: AltViewPairingStoring, @unchecked S
                 DispatchQueue.main.async { completion(credentials, nil) }
                 return
             }
-            var query = query(destination)
-            query[kSecReturnData] = true
-            query[kSecMatchLimit] = kSecMatchLimitOne
-            var item: CFTypeRef?
-            let result = SecItemCopyMatching(query as CFDictionary, &item)
-            let credentials = (item as? Data).flatMap { try? JSONDecoder().decode(AltViewCredentials.self, from: $0) }
-            let valid = credentials.flatMap { AltViewPairingKey.isValid($0.key) ? $0 : nil }
-            if let valid { memory[destination.id] = valid }
-            let notice = result == errSecItemNotFound || (result == errSecSuccess && valid != nil)
-                ? nil : "Saved pairing is unavailable. Enter the code shown in AltView."
-            DispatchQueue.main.async { completion(valid, notice) }
+            do {
+                let credentials = try readCredentials(account: destination.id)
+                if let credentials { memory[destination.id] = credentials }
+                DispatchQueue.main.async { completion(credentials, nil) }
+            } catch {
+                DispatchQueue.main.async {
+                    completion(nil, "Saved pairing is unavailable. Enter the code shown in AltView.")
+                }
+            }
         }
     }
 
     func save(_ credentials: AltViewCredentials, for destination: AltViewDestination, completion: @escaping (String?) -> Void) {
         queue.async { [self] in
             memory[destination.id] = credentials
-            guard let data = try? JSONEncoder().encode(credentials) else { return }
-            let query = query(destination)
-            var result = SecItemUpdate(query as CFDictionary, [kSecValueData: data] as CFDictionary)
-            if result == errSecItemNotFound {
-                var attributes = query
-                attributes[kSecValueData] = data
-                attributes[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-                result = SecItemAdd(attributes as CFDictionary, nil)
+            do {
+                let data = try JSONEncoder().encode(credentials)
+                do { try keychain.save(data, service: service, account: destination.id, dataProtection: true) }
+                catch where Self.isMissingEntitlement(error) {
+                    try keychain.save(data, service: service, account: destination.id, dataProtection: false)
+                }
+                DispatchQueue.main.async { completion(nil) }
+            } catch {
+                DispatchQueue.main.async {
+                    completion("Pairing is remembered for this session only. Keychain could not save it; enter the code again after restarting eucaly.")
+                }
             }
-            let notice = result == errSecSuccess ? nil : "Pairing is remembered for this session only. Keychain could not save it; enter the code again after restarting eucaly."
-            DispatchQueue.main.async { completion(notice) }
         }
     }
 
-    private func query(_ destination: AltViewDestination) -> [CFString: Any] {
+    private func readCredentials(account: String) throws -> AltViewCredentials? {
+        var data: Data?
+        do { data = try keychain.read(service: service, account: account, dataProtection: true) }
+        catch where Self.isMissingEntitlement(error) {}
+        // As in ViewTheWord, retain existing data-protection items when available.
+        // Unprovisioned Developer ID apps use the encrypted login Keychain with
+        // normal app-signature access controls. Other errors remain visible.
+        if data == nil { data = try keychain.read(service: service, account: account, dataProtection: false) }
+        guard let data else { return nil }
+        let credentials = try JSONDecoder().decode(AltViewCredentials.self, from: data)
+        guard AltViewPairingKey.isValid(credentials.key) else {
+            throw NSError(domain: NSOSStatusErrorDomain, code: Int(errSecDecode))
+        }
+        return credentials
+    }
+
+    private static func isMissingEntitlement(_ error: Error) -> Bool {
+        let error = error as NSError
+        return error.domain == NSOSStatusErrorDomain && error.code == Int(errSecMissingEntitlement)
+    }
+}
+
+/// Synchronous Security calls run only on AltViewPairingStore's private queue.
+nonisolated protocol AltViewKeychainAccess: Sendable {
+    func read(service: String, account: String, dataProtection: Bool) throws -> Data?
+    func save(_ data: Data, service: String, account: String, dataProtection: Bool) throws
+}
+
+nonisolated struct SystemAltViewKeychain: AltViewKeychainAccess {
+    private func query(service: String, account: String, dataProtection: Bool) -> [CFString: Any] {
         let context = LAContext()
         context.interactionNotAllowed = true
         return [kSecClass: kSecClassGenericPassword, kSecAttrService: service,
-         kSecAttrAccount: destination.id, kSecUseDataProtectionKeychain: true,
+         kSecAttrAccount: account, kSecUseDataProtectionKeychain: dataProtection,
          kSecUseAuthenticationContext: context]
+    }
+
+    func read(service: String, account: String, dataProtection: Bool) throws -> Data? {
+        var query = query(service: service, account: account, dataProtection: dataProtection)
+        query[kSecReturnData] = true
+        query[kSecMatchLimit] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        let result = SecItemCopyMatching(query as CFDictionary, &item)
+        if result == errSecItemNotFound { return nil }
+        guard result == errSecSuccess, let data = item as? Data else {
+            throw NSError(domain: NSOSStatusErrorDomain, code: Int(result == errSecSuccess ? errSecDecode : result))
+        }
+        return data
+    }
+
+    func save(_ data: Data, service: String, account: String, dataProtection: Bool) throws {
+        let query = query(service: service, account: account, dataProtection: dataProtection)
+        let result = SecItemUpdate(query as CFDictionary, [kSecValueData: data] as CFDictionary)
+        if result == errSecItemNotFound {
+            var attributes = query
+            attributes[kSecValueData] = data
+            if dataProtection { attributes[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly }
+            let result = SecItemAdd(attributes as CFDictionary, nil)
+            guard result == errSecSuccess else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(result)) }
+        } else if result != errSecSuccess {
+            throw NSError(domain: NSOSStatusErrorDomain, code: Int(result))
+        }
     }
 }
