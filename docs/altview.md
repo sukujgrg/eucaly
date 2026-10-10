@@ -5,7 +5,7 @@ eucaly sends the primary lyrics from **Current** directly to an AltView protocol
 ## Connect and present
 
 1. Open AltView on the receiving Mac. Leave receiving enabled, open **Audience**, choose the intended monitor and click **Open Display**. Appearance, lower thirds, artwork, and display selection belong to AltView.
-2. In eucaly, open **AltView → Connection Settings…** from the toolbar, or **Settings → AltView**. Select a discovered receiver, or enter its host/IP address and the current port shown in AltView Settings.
+2. In eucaly, open **AltView → Connection Settings…** from the toolbar, or **Settings → AltView**. **This Mac** is selected by default for new connections and waits for the local AltView receiver. Saved receiver choices are retained. To use another Mac, select its discovered receiver or choose **Manual address** and enter its host/IP address and current port.
 3. Enter AltView’s eight-character pairing code and choose **Connect Only**. This authenticates an encrypted TLS connection without taking output. After successful pairing, an empty code field reuses the saved pairing. Pairing secrets and pinned receiver identities use the data-protection Keychain; persistence failures are visible and retain credentials in memory for this session only.
 4. Choose a **Template**, or leave the default **Lyrics** request. The list comes from the connected receiver; **Receiver’s layout** sends no template request. Changes apply when you next show a slide.
 5. The next **Show Slides** action also takes AltView output. If eucaly is already projecting, activate a visible Current slide or choose **Send Current to AltView** in the toolbar popover to start sending immediately.

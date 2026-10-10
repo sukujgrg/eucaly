@@ -67,9 +67,6 @@ public struct ContentView: View {
     @State private var displayedLibraryRootURL: URL? = nil
     @State private var isProjectionSettingsPresented = false
     @State private var lyricsProjectionSize: CGSize?
-    @State private var isTimerSettingsPresented: Bool = false
-    @State private var isAppearanceSettingsPresented: Bool = false
-    @State private var isBackgroundSettingsPresented: Bool = false
     @FocusState private var focusedDetailTarget: DetailFocusTarget?
     @State private var securityScopedRoot: URL? = nil
     @State private var securityScopedBackgroundVisual: URL? = nil
@@ -414,68 +411,38 @@ public struct ContentView: View {
     }
 
     private var backgroundSettingsButton: some View {
-        Button {
-            isBackgroundSettingsPresented.toggle()
-        } label: {
-            Label("Background", systemImage: "photo.on.rectangle")
-        }
-        .labelStyle(.iconOnly)
-        .buttonStyle(.bordered)
-        .help("Background settings")
-        .popover(isPresented: $isBackgroundSettingsPresented, arrowEdge: .top) {
-            BackgroundSettingsPopoverView(
-                session: session,
-                visualName: session.backgroundVisualURL.map { displayName(for: $0) },
-                isMediaCurrent: isCurrentSelectionMediaFile,
-                onChooseVisual: chooseBackgroundVisual,
-                onClearVisual: clearBackgroundVisual,
-                onToggleVisibility: toggleBackgroundVisualFromUI
-            )
-        }
+        BackgroundSettingsMenu(
+            session: session,
+            visualName: session.backgroundVisualURL.map { displayName(for: $0) },
+            isMediaCurrent: isCurrentSelectionMediaFile,
+            onChooseVisual: chooseBackgroundVisual,
+            onClearVisual: clearBackgroundVisual,
+            onToggleVisibility: toggleBackgroundVisualFromUI
+        )
     }
 
     private var timerSettingsButton: some View {
-        Button {
-            isTimerSettingsPresented.toggle()
-        } label: {
-            Label("Overlay", systemImage: "clock")
-        }
-        .labelStyle(.iconOnly)
-        .buttonStyle(.bordered)
-        .help("Overlay settings")
-        .popover(isPresented: $isTimerSettingsPresented, arrowEdge: .top) {
-            TimerSettingsPopoverView(
-                session: session,
-                overlayScaleDraft: $overlayScaleDraft,
-                countdownMinutes: $countdownMinutes,
-                onOverlayScaleDraftChange: handleOverlayScaleDraftChange,
-                onSetOverlayMode: setOverlayMode,
-                onStartCountdown: startCountdown,
-                onStopCountdown: stopCountdown
-            )
-        }
+        TimerSettingsMenu(
+            session: session,
+            overlayScaleDraft: $overlayScaleDraft,
+            countdownMinutes: $countdownMinutes,
+            onOverlayScaleDraftChange: handleOverlayScaleDraftChange,
+            onSetOverlayMode: setOverlayMode,
+            onStartCountdown: startCountdown,
+            onStopCountdown: stopCountdown
+        )
     }
 
     private var appearanceSettingsButton: some View {
-        Button {
-            isAppearanceSettingsPresented.toggle()
-        } label: {
-            Label("Appearance", systemImage: "gearshape")
-        }
-        .labelStyle(.iconOnly)
-        .buttonStyle(.bordered)
-        .help("Appearance settings")
-        .popover(isPresented: $isAppearanceSettingsPresented, arrowEdge: .top) {
-            AppearanceSettingsPopoverView(
-                presentationFontScale: $presentationFontScale,
-                presentationLyricsLayout: $presentationLyricsLayout,
-                presentationTextAlignment: $presentationTextAlignment,
-                presentationVerticalPosition: $presentationVerticalPosition,
-                presentationPaddingScale: $presentationPaddingScale,
-                thumbnailFontScale: $thumbnailFontScale,
-                thumbnailScale: $thumbnailScale
-            )
-        }
+        AppearanceSettingsMenu(
+            presentationFontScale: $presentationFontScale,
+            presentationLyricsLayout: $presentationLyricsLayout,
+            presentationTextAlignment: $presentationTextAlignment,
+            presentationVerticalPosition: $presentationVerticalPosition,
+            presentationPaddingScale: $presentationPaddingScale,
+            thumbnailFontScale: $thumbnailFontScale,
+            thumbnailScale: $thumbnailScale
+        )
     }
 
     private var projectionScreenPicker: some View {

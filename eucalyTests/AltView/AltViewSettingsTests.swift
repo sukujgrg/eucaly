@@ -4,12 +4,13 @@ import XCTest
 
 @MainActor
 final class AltViewSettingsTests: XCTestCase {
-    private func makeService() -> (AltViewService, RecordingAltViewSender) {
+    private func makeService(saved: AltViewDestination? = nil) -> (AltViewService, RecordingAltViewSender) {
         let name = "AltViewSettingsTests.\(UUID())"
         let defaults = UserDefaults(suiteName: name)!
         addTeardownBlock { defaults.removePersistentDomain(forName: name) }
+        if let saved { defaults.set(try! JSONEncoder().encode(saved), forKey: "altViewDestination") }
         let sender = RecordingAltViewSender()
-        let service = AltViewService(defaults: defaults, pairingStore: RecordingAltViewPairingStore(), senderFactory: { _ in sender })
+        let service = AltViewService(defaults: defaults, pairingStore: RecordingAltViewPairingStore(), senderFactory: { _ in sender }, discoveryFactory: { _ in SettingsAltViewDiscovery() })
         return (service, sender)
     }
 
@@ -24,6 +25,8 @@ final class AltViewSettingsTests: XCTestCase {
         window.contentViewController = controller
         window.setContentSize(NSSize(width: 560, height: 500))
         defer { window.close() }
+        controller.receiverPicker.selectItem(withTitle: "Manual address")
+        controller.receiverPicker.sendAction(controller.receiverPicker.action, to: controller)
         controller.hostField.stringValue = "receiver.local"
         controller.portField.stringValue = "54321"
         XCTAssertTrue(window.makeFirstResponder(controller.codeField))
@@ -164,5 +167,96 @@ final class AltViewSettingsTests: XCTestCase {
         add(attachment)
     }
 
+    private func local(_ id: UUID, port: UInt16) -> AltViewDestination {
+        var receiver = AltViewDestination(name: "This Mac · Receiver", host: "127.0.0.1", port: port,
+                                          serviceType: nil, domain: nil)
+        receiver.localReceiverID = id
+        return receiver
+    }
+
+    func testThisMacDefaultWaitsForLocalDiscoveryAndConnectsOnlyToItsLatestPort() async throws {
+        let (service, sender) = makeService()
+        service.startDiscovery()
+        defer { service.disconnect(); service.stopDiscovery() }
+        let controller = AltViewSettingsController(service: service)
+        controller.discoveryEnabled = false
+        controller.loadViewIfNeeded()
+        XCTAssertEqual(controller.receiverPicker.selectedItem?.title, "This Mac")
+        XCTAssertFalse(controller.hostField.isEnabled)
+        XCTAssertFalse(controller.connectButton.isEnabled)
+        XCTAssertTrue(controller.statusLabel.stringValue.contains("Open AltView on this Mac"))
+        let remote = AltViewDestination(name: "Hall", host: nil, port: nil, serviceType: AltViewProtocol.serviceType, domain: "local.")
+        service.receiveDiscovered([remote], notice: nil)
+        await settle()
+        XCTAssertEqual(controller.receiverPicker.selectedItem?.title, "This Mac")
+        XCTAssertFalse(controller.connectButton.isEnabled, "Discovery must not substitute a remote receiver")
+        let id = UUID()
+        service.receiveDiscovered([remote, local(id, port: 54321)], notice: nil)
+        await settle()
+        XCTAssertTrue(controller.connectButton.isEnabled)
+        XCTAssertNil(service.destination, "Selecting the default is private until Connect Only")
+        XCTAssertNil(sender.connectionID)
+        let item = controller.receiverPicker.item(at: 0)
+        let fresh = local(id, port: 54322)
+        service.receiveDiscovered([remote, fresh], notice: nil)
+        await settle()
+        XCTAssertTrue(controller.receiverPicker.item(at: 0) === item, "Port refresh must keep the open menu stable")
+        controller.codeField.stringValue = "ABCD2345"
+        controller.connectButton.performClick(nil)
+        XCTAssertEqual(service.destination, fresh)
+        XCTAssertEqual(sender.expectedReceiverID, id)
+        XCTAssertTrue(sender.submissions.isEmpty)
+        XCTAssertEqual(sender.takes, 0)
+    }
+
+    func testExplicitManualAndRemoteChoicesSurviveLocalDiscovery() async {
+        let (service, sender) = makeService()
+        let controller = AltViewSettingsController(service: service)
+        controller.discoveryEnabled = false
+        controller.loadViewIfNeeded()
+        controller.receiverPicker.selectItem(withTitle: "Manual address")
+        controller.receiverPicker.sendAction(controller.receiverPicker.action, to: controller)
+        let remote = AltViewDestination(name: "Hall", host: nil, port: nil, serviceType: AltViewProtocol.serviceType, domain: "local.")
+        service.receiveDiscovered([remote, local(UUID(), port: 54321)], notice: nil)
+        await settle()
+        XCTAssertEqual(controller.receiverPicker.selectedItem?.title, "Manual address")
+        XCTAssertTrue(controller.hostField.isEnabled)
+        controller.receiverPicker.selectItem(withTitle: "Hall")
+        controller.receiverPicker.sendAction(controller.receiverPicker.action, to: controller)
+        service.receiveDiscovered([remote, local(UUID(), port: 54322)], notice: nil)
+        await settle()
+        XCTAssertEqual(controller.receiverPicker.selectedItem?.title, "Hall")
+        XCTAssertFalse(controller.hostField.isEnabled)
+        XCTAssertNil(sender.connectionID)
+        XCTAssertTrue(sender.submissions.isEmpty)
+    }
+
+    func testSavedThisMacWaitsForItsOwnIdentityWhenAnotherLocalReceiverAppears() async {
+        let id = UUID()
+        let (service, sender) = makeService(saved: local(id, port: 54321))
+        service.startDiscovery()
+        defer { service.disconnect(); service.stopDiscovery() }
+        let controller = AltViewSettingsController(service: service)
+        controller.discoveryEnabled = false
+        controller.loadViewIfNeeded()
+        service.receiveDiscovered([local(UUID(), port: 54322)], notice: nil)
+        await settle()
+        XCTAssertEqual(controller.receiverPicker.selectedItem?.title, "This Mac")
+        controller.codeField.stringValue = "ABCD2345"
+        controller.connectButton.performClick(nil)
+        XCTAssertEqual(service.destination?.localReceiverID, id)
+        XCTAssertNil(sender.connectionID)
+        service.receiveDiscovered([local(id, port: 54323)], notice: nil)
+        XCTAssertEqual(service.destination?.port, 54323)
+        XCTAssertEqual(sender.expectedReceiverID, id)
+        XCTAssertTrue(sender.submissions.isEmpty)
+        XCTAssertEqual(sender.takes, 0)
+    }
+
     private func settle() async { try? await Task.sleep(for: .milliseconds(25)) }
+}
+
+nonisolated private final class SettingsAltViewDiscovery: AltViewReceiverDiscovering {
+    func start() {}
+    func stop() {}
 }

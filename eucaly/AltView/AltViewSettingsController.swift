@@ -19,12 +19,13 @@ final class AltViewSettingsController: NSViewController, NSTextFieldDelegate {
     private let service: AltViewService
     private var receivers: [AltViewDestination] = []
     private var selected: AltViewDestination?
+    private var usesThisMac: Bool
     private var subscription: AnyCancellable?
     private var renderScheduled = false
-    private var receiverMenuEntries: [AltViewDestination]?
     var discoveryEnabled = true
     init(service: AltViewService) {
         self.service = service
+        self.usesThisMac = service.destination == nil || service.destination?.localReceiverID != nil
         self.selected = service.destination?.host == nil || service.destination?.localReceiverID != nil ? service.destination : nil
         super.init(nibName: nil, bundle: nil)
         hostField.stringValue = service.destination?.host ?? ""
@@ -59,7 +60,7 @@ final class AltViewSettingsController: NSViewController, NSTextFieldDelegate {
         }
         connectButton.action = #selector(connect(_:)); disconnectButton.action = #selector(disconnect(_:))
         connectButton.keyEquivalent = "\r"
-        let hint = NSTextField(wrappingLabelWithString: "The last receiver connects automatically at startup and reconnects after a network drop. Show Slides to send Current; Hide, Clear and Stop follow eucaly. Choose This Mac when AltView runs here; its current port is discovered automatically. This does not restrict AltView’s LAN listener. Appearance and displays are set in AltView.")
+        let hint = NSTextField(wrappingLabelWithString: "The last receiver connects automatically at startup and reconnects after a network drop. Show Slides to send Current; Hide, Clear and Stop follow eucaly. This Mac is the default for a new connection; its current port is discovered automatically. Saved receivers keep their selection. This does not restrict AltView’s LAN listener. Appearance and displays are set in AltView.")
         hint.font = .systemFont(ofSize: 11); hint.textColor = .secondaryLabelColor
         statusLabel.font = .systemFont(ofSize: 11)
         statusLabel.maximumNumberOfLines = 0
@@ -101,32 +102,48 @@ final class AltViewSettingsController: NSViewController, NSTextFieldDelegate {
     func startDiscovery() { if discoveryEnabled { service.startDiscovery() } }
     func stopDiscovery() { if discoveryEnabled { service.stopDiscovery() } }
     private func refreshReceivers() {
-        receivers = service.receivers
-        if let id = selected?.localReceiverID, let fresh = receivers.first(where: { $0.localReceiverID == id }) { selected = fresh }
-        if let selected, !receivers.contains(selected) { receivers.insert(selected, at: 0) }
-        guard receiverMenuEntries != receivers else { return }
-        receiverMenuEntries = receivers
-        receiverPicker.removeAllItems()
-        receiverPicker.addItem(withTitle: "Manual address")
-        for (index, receiver) in receivers.enumerated() {
-            let item = NSMenuItem(title: receiver.name, action: nil, keyEquivalent: "")
-            item.tag = index + 1
-            receiverPicker.menu?.addItem(item)
+        let discovered = service.receivers.filter { $0.isValid }
+        if let id = selected?.localReceiverID,
+           let fresh = discovered.first(where: { $0.localReceiverID == id }) { selected = fresh }
+        // Resolve the initial default once, then retain its receiver identity.
+        if usesThisMac, selected == nil {
+            selected = discovered.first(where: { $0.localReceiverID != nil })
         }
-        receiverPicker.selectItem(at: selected.flatMap { receivers.firstIndex(of: $0) }.map { $0 + 1 } ?? 0)
+        let local = usesThisMac ? selected : discovered.first(where: { $0.localReceiverID != nil })
+        var freshReceivers = discovered.filter {
+            $0.localReceiverID == nil || $0.localReceiverID != local?.localReceiverID
+        }
+        if !usesThisMac, let selected, !freshReceivers.contains(selected) { freshReceivers.insert(selected, at: 0) }
+        // Status and acknowledgement updates must not replace an open menu.
+        if receivers != freshReceivers || receiverPicker.numberOfItems == 0 {
+            receivers = freshReceivers
+            receiverPicker.removeAllItems()
+            receiverPicker.addItems(withTitles: ["This Mac", "Manual address"])
+            for (index, receiver) in receivers.enumerated() {
+                let item = NSMenuItem(title: receiver.name, action: nil, keyEquivalent: "")
+                item.tag = index + 2
+                receiverPicker.menu?.addItem(item)
+            }
+        }
+        receiverPicker.item(at: 0)?.toolTip = local?.name ?? "Open AltView on this Mac to discover its current port."
+        receiverPicker.selectItem(at: usesThisMac ? 0 : selected.flatMap { receivers.firstIndex(of: $0) }.map { $0 + 2 } ?? 1)
     }
     private func render() {
         guard isViewLoaded else { return }
         refreshReceivers()
-        hostField.isEnabled = selected == nil; portField.isEnabled = selected == nil
+        let manual = !usesThisMac && selected == nil
+        hostField.isEnabled = manual; portField.isEnabled = manual
         let connecting = service.hasConnection && !service.status.connected
             && (service.status.failureReason == nil || service.status.waitingToRetry)
         disconnectButton.isEnabled = service.status.connected || connecting
         disconnectButton.title = connecting ? "Cancel" : "Disconnect"
         connectButton.isEnabled = !service.hasConnection || (!connecting && service.status.failureReason != nil)
+        if usesThisMac, selected == nil { connectButton.isEnabled = false }
         refreshTemplatePicker()
         statusBadge.render(service)
-        statusLabel.stringValue = service.detail + (service.discoveryNotice.map { "\n\($0)" } ?? "")
+        let detail = usesThisMac && selected == nil && !service.hasConnection
+            ? "Open AltView on this Mac. Its receiver will be selected automatically when discovered." : service.detail
+        statusLabel.stringValue = detail + (service.discoveryNotice.map { "\n\($0)" } ?? "")
         statusLabel.toolTip = statusLabel.stringValue
         if service.status.connected { codeField.stringValue = "" }
     }
@@ -166,8 +183,13 @@ final class AltViewSettingsController: NSViewController, NSTextFieldDelegate {
         refreshTemplatePicker()
     }
     @objc private func destinationChanged(_ sender: Any?) {
-        let index = receiverPicker.indexOfSelectedItem - 1
-        selected = receivers.indices.contains(index) ? receivers[index] : nil
+        usesThisMac = receiverPicker.indexOfSelectedItem == 0
+        if usesThisMac {
+            selected = selected?.localReceiverID != nil ? selected : service.receivers.first(where: { $0.localReceiverID != nil && $0.isValid })
+        } else {
+            let index = receiverPicker.indexOfSelectedItem - 2
+            selected = receivers.indices.contains(index) ? receivers[index] : nil
+        }
         service.disconnect(); codeField.stringValue = ""
         render()
     }
@@ -179,6 +201,7 @@ final class AltViewSettingsController: NSViewController, NSTextFieldDelegate {
     @objc private func connect(_ sender: Any?) {
         let destination: AltViewDestination
         if let selected { destination = selected }
+        else if usesThisMac { render(); return }
         else {
             guard let manual = AltViewDestination.manual(host: hostField.stringValue, port: portField.stringValue) else {
                 statusLabel.stringValue = "Enter a receiving Mac name or IP address and a port from 1 to 65535."

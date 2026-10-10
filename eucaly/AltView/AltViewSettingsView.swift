@@ -15,27 +15,9 @@ struct AltViewSettingsView: NSViewControllerRepresentable {
     }
 }
 
-private struct AltViewStatusView: View {
-    @ObservedObject var service: AltViewService
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(service.isConnecting ? "Connecting securely…" : service.status.message)
-            if service.status.connected || service.submitted != nil {
-                Text(service.deliveryDetail).font(.callout).foregroundStyle(.secondary)
-            }
-            if let notice = service.connectionNotice { Text(notice).font(.callout).foregroundStyle(.orange) }
-            if let notice = service.persistenceNotice { Text(notice).font(.callout).foregroundStyle(.orange) }
-        }
-        .textSelection(.enabled)
-        .accessibilityElement(children: .combine)
-    }
-}
-
 struct AltViewToolbarButton: View {
     @ObservedObject var service: AltViewService
     @ObservedObject var session: PresentationSession
-    @State private var showsStatus = false
     @Environment(\.openSettings) private var openSettings
     @AppStorage("settingsTab") private var settingsTab = "general"
 
@@ -45,29 +27,45 @@ struct AltViewToolbarButton: View {
     }
 
     var body: some View {
-        Button { showsStatus.toggle() } label: {
-            Label("AltView", systemImage: statusSymbol)
-                .foregroundStyle(service.needsAttention ? Color.orange : Color.primary)
-        }
-        .help("AltView: \(service.status.message). \(service.deliveryDetail)")
-        .accessibilityValue("\(service.status.message). \(service.deliveryDetail)")
-        .popover(isPresented: $showsStatus) {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("AltView").font(.headline)
-                if let destination = service.destination { Text(destination.name).foregroundStyle(.secondary) }
-                AltViewStatusView(service: service)
+        Menu {
+            Section("AltView") {
+                if let destination = service.destination {
+                    Text(destination.name).font(.caption)
+                }
+                Text(service.isConnecting ? "Connecting securely…" : service.status.message)
+                    .font(.caption)
+                if let notice = service.connectionNotice { Text(notice).font(.caption) }
+                if let notice = service.persistenceNotice { Text(notice).font(.caption) }
+
+                Divider()
                 Button("Send Current to AltView") { service.sendCurrent(from: session) }
                     .disabled(!service.status.connected || !session.isPresenting || !session.areSlidesVisible)
                 if service.isSending {
                     Button("Stop Sending to AltView") { service.stopSending() }
                 }
-                Button("Connection Settings…") {
-                    showsStatus = false
-                    settingsTab = "altView"
-                    openSettings()
+            }
+
+            if service.status.connected || service.submitted != nil {
+                Menu("Output Status") {
+                    Text(service.deliveryDetail).font(.caption)
+                    Divider()
+                    Button("Connection Settings…", action: showConnectionSettings)
                 }
             }
-            .padding().frame(width: 340, alignment: .leading)
+
+            Divider()
+            Button("Connection Settings…", action: showConnectionSettings)
+        } label: {
+            Label("AltView", systemImage: statusSymbol)
+                .foregroundStyle(service.needsAttention ? Color.orange : Color.primary)
         }
+        .toolbarSettingsMenuStyle()
+        .help("AltView: \(service.detail)")
+        .accessibilityValue(service.detail)
+    }
+
+    private func showConnectionSettings() {
+        settingsTab = "altView"
+        openSettings()
     }
 }
