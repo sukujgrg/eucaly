@@ -125,7 +125,8 @@ private struct ProjectionMonitorNameView: View {
                 Text("macOS display UUID").font(.caption).foregroundStyle(.secondary)
                 Text(target.identity).font(.caption.monospaced()).textSelection(.enabled)
             }
-            .disclosureGroupStyle(MonitorDetailsDisclosureStyle())
+            .disclosureGroupStyle(SettingsDisclosureGroupStyle())
+            .accessibilityIdentifier("projectionMonitorDetails")
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
@@ -139,33 +140,6 @@ private struct ProjectionMonitorNameView: View {
         .padding(24)
         .frame(width: 420)
         .onAppear { name = displays.nickname(for: target) }
-    }
-}
-
-private struct MonitorDetailsDisclosureStyle: DisclosureGroupStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Button {
-                configuration.isExpanded.toggle()
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: configuration.isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.caption.weight(.semibold))
-                        .accessibilityHidden(true)
-                    configuration.label
-                    Spacer(minLength: 0)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 4)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityValue(configuration.isExpanded ? "Expanded" : "Collapsed")
-            .accessibilityIdentifier("projectionMonitorDetails")
-            if configuration.isExpanded {
-                configuration.content.padding(.leading, 18)
-            }
-        }
     }
 }
 

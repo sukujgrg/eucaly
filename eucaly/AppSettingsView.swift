@@ -5,10 +5,11 @@ struct AppSettingsView: View {
     @EnvironmentObject private var appUpdateViewModel: AppUpdateViewModel
     @EnvironmentObject private var receiver: ExternalPresentationReceiver
     @EnvironmentObject private var outputs: OutputCoordinator
-    @EnvironmentObject private var projectionDisplays: ProjectionDisplayManager
     @AppStorage("libraryRootPath") private var libraryRootPath: String = ""
     @AppStorage("libraryRootBookmark") private var libraryRootBookmark: String = ""
     @AppStorage("settingsTab") private var settingsTab = "general"
+    @AppStorage("thumbnailFontScale") private var thumbnailFontScale: Double = 1
+    @AppStorage("thumbnailScale") private var thumbnailScale: Double = 1
     @State private var resolvedLibraryRoot: URL? = nil
     @State private var securityScopedLibraryRoot: URL? = nil
     @State private var cacheStats: CacheManager.CacheStats = CacheManager.shared.getCacheStats()
@@ -22,7 +23,7 @@ struct AppSettingsView: View {
                 .tabItem { Label("AltView", systemImage: "network") }
                 .tag("altView")
             OutputSettingsView(coordinator: outputs)
-                .tabItem { Label("Projection", systemImage: "display") }
+                .tabItem { Label("Manage Outputs", systemImage: "display") }
                 .tag("projection")
             ExternalReceiverSettingsView(receiver: receiver)
                 .tabItem { Label("Receiver", systemImage: "antenna.radiowaves.left.and.right") }
@@ -74,6 +75,11 @@ struct AppSettingsView: View {
                     .controlSize(.small)
                     .accessibilityLabel(displayedLibraryRoot == nil ? "Choose Library Folder" : "Change Library Folder")
                 }
+            }
+
+            Section("Thumbnails") {
+                SettingsSliderRow(title: "Font Size", value: $thumbnailFontScale, range: 0.3...2, step: 0.1)
+                SettingsSliderRow(title: "Size", value: $thumbnailScale, range: 0.6...1.6, step: 0.1)
             }
 
             Section {

@@ -86,7 +86,17 @@ nonisolated struct OutputBackground: Codable, Equatable, Sendable {
 }
 
 nonisolated struct OutputProfile: Codable, Equatable, Sendable, Identifiable {
-    enum Kind: String, Codable, CaseIterable, Sendable { case audience, confidence, meaning, translation, lowerThird }
+    enum Kind: String, Codable, CaseIterable, Sendable {
+        case audience, confidence, lowerThird
+
+        init(from decoder: any Decoder) throws {
+            let value = try decoder.singleValueContainer().decode(String.self)
+            // Old custom copies retain their components and appearance as Audience profiles.
+            if value == "meaning" || value == "translation" { self = .audience }
+            else if let kind = Self(rawValue: value) { self = kind }
+            else { throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Unknown output profile kind")) }
+        }
+    }
     var id: UUID
     var name: String
     var kind: Kind
@@ -98,7 +108,6 @@ nonisolated struct OutputProfile: Codable, Equatable, Sendable, Identifiable {
     var typography = OutputTypography()
     var componentTypography: [OutputComponentRole: OutputTypographyOverride] = [:]
     var background = OutputBackground()
-    var includesOverlay = true
     // Migrated Audience matches the old geometry-dependent requested font size.
     var usesLegacySizing = false
 
@@ -109,9 +118,12 @@ nonisolated struct OutputProfile: Codable, Equatable, Sendable, Identifiable {
         content.components.filter { roles.contains($0.role) && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
     static let audienceID = UUID(uuidString: "00000000-0000-4000-8000-000000000001")!
+    static let confidenceID = UUID(uuidString: "00000000-0000-4000-8000-000000000002")!
+    static let lowerThirdID = UUID(uuidString: "00000000-0000-4000-8000-000000000005")!
     static var builtIns: [Self] {
-        Kind.allCases.enumerated().map { index, kind in
-            var profile = Self(id: UUID(uuidString: String(format: "00000000-0000-4000-8000-%012d", index + 1))!,
+        let identities: [(Kind, UUID)] = [(.audience, audienceID), (.confidence, confidenceID), (.lowerThird, lowerThirdID)]
+        return identities.map { kind, identity in
+            var profile = Self(id: identity,
                                name: kind == .lowerThird ? "Lower Third" : kind.rawValue.capitalized, kind: kind)
             switch kind {
             case .audience:
@@ -121,8 +133,6 @@ nonisolated struct OutputProfile: Codable, Equatable, Sendable, Identifiable {
                 profile.typography.size = 48
                 profile.alignment = "left"
                 profile.background.dimming = 0
-            case .meaning: profile.roles = [.meaning]; profile.typography.weight = 0
-            case .translation: profile.roles = [.translation]
             case .lowerThird:
                 profile.roles = [.primary, .heading, .reference, .footer]
                 profile.position = "bottom"
@@ -151,6 +161,23 @@ nonisolated struct OutputProfileDocument: Codable, Equatable {
 }
 
 nonisolated enum OutputProfileMigration {
+    /// Retire factory presets without losing physical monitor identities or custom copies.
+    static func retireLegacyPresets(in saved: OutputProfileDocument) -> OutputProfileDocument {
+        let retiredIDs: Set<UUID> = [
+            UUID(uuidString: "00000000-0000-4000-8000-000000000003")!,
+            UUID(uuidString: "00000000-0000-4000-8000-000000000004")!
+        ]
+        var result = saved
+        result.profiles.removeAll { retiredIDs.contains($0.id) }
+        for index in result.destinations.indices where retiredIDs.contains(result.destinations[index].profileID) {
+            result.destinations[index].profileID = OutputProfile.audienceID
+            if ["Meaning", "Translation"].contains(result.destinations[index].name) {
+                result.destinations[index].name = "Audience"
+            }
+        }
+        return result
+    }
+
     static func migrate(defaults: UserDefaults?, monitor: ProjectionMonitorTarget?) -> OutputProfileDocument {
         var profiles = OutputProfile.builtIns
         if let layout = defaults?.string(forKey: "presentationLyricsLayout") { profiles[0].layout = layout }
@@ -174,8 +201,6 @@ nonisolated struct OutputContentSnapshot {
     var next: OutputTextContent?
     var visible = true
     var revision: UInt64 = 0
-    var clockVisible = false
-    var countdownEndDate: Date?
     // Internal native media references never enter the external wire model.
     var localMedia: Slide?
 }

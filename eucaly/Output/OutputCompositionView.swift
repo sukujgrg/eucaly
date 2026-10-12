@@ -16,10 +16,6 @@ struct OutputCompositionView: View {
                                          isMedia: coordinator.liveSlide.map { AltViewPresentationAdapter.mode(for: $0) == .media } ?? false)
                         .frame(width: size.width, height: size.height)
                     content(profile: profile, confidence: confidence, size: size).frame(width: size.width, height: size.height)
-                    if profile.includesOverlay, let session = coordinator.overlaySession,
-                       !(profile.kind == .confidence && confidence.isIdle && session.overlayMode == .clock) {
-                        TimeOverlay().environmentObject(session).padding(26).frame(width: size.width, height: size.height)
-                    }
                 }.frame(width: size.width, height: size.height).clipped()
             }
         }.ignoresSafeArea()

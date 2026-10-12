@@ -98,7 +98,6 @@ final class AltViewPresentationTests: XCTestCase {
         let count = sender.submissions.count
         session.isBackgroundVisualVisible.toggle()
         session.setBackgroundAudioVolume(0.25)
-        session.setOverlayMode(.clock)
         await settle()
         XCTAssertEqual(sender.submissions.count, count)
         session.clearSlides()

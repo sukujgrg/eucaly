@@ -118,7 +118,7 @@ struct OutputConfidenceView: View {
 }
 
 /// Confidence remains useful to the stage when there is no visible program.
-/// The clock is independent of optional overlays and never takes output ownership.
+/// The standby clock is local to Confidence and never takes output ownership.
 struct OutputConfidenceIdleClock: View {
     let size: CGSize
     var body: some View {

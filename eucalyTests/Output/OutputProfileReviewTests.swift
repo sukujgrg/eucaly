@@ -24,7 +24,7 @@ final class OutputProfileReviewTests: XCTestCase {
                 XCTAssertEqual(profiles.document, original)
             }
         }
-        for index in 1..<5 { XCTAssertFalse(displays.select(monitors[index].target)) }
+        for index in original.destinations.indices.dropFirst() { XCTAssertFalse(displays.select(monitors[index].target)) }
         XCTAssertEqual(displays.target, monitors[0].target)
         XCTAssertTrue(outputs.assignMonitor(nil, to: original.destinations[1].id))
         XCTAssertTrue(displays.select(monitors[1].target), "Toolbar and monitor settings use the same constraint")
@@ -110,30 +110,13 @@ final class OutputProfileReviewTests: XCTestCase {
             if kind == .confidence {
                 try assertCenteredClock(view)
             } else {
-                XCTAssertEqual(try brightSamples(view), 0, "\(kind) must hide all foreground and inactive overlays")
+                XCTAssertEqual(try brightSamples(view), 0, "\(kind) must hide all foreground")
             }
             XCTAssertTrue(outputs.isRunning); XCTAssertEqual(session.currentSlideID, slides[0].id)
             XCTAssertNil(outputs.ownership.source)
             session.showSlides(); await settle()
             XCTAssertGreaterThan(try brightSamples(view), 0)
         }
-    }
-
-    func testTimeOverlayRespectsHiddenInactiveCountdownAndExplicitControls() async throws {
-        let session = PresentationSession()
-        let view = NSHostingView(rootView: TimeOverlay().environmentObject(session).background(Color.black))
-        view.frame = CGRect(x: 0, y: 0, width: 480, height: 270)
-        XCTAssertEqual(try brightSamples(view), 0)
-        session.setOverlayMode(.countdown); await settle()
-        XCTAssertEqual(try brightSamples(view), 0, "An unstarted countdown must not project 00:00")
-        session.startCountdown(minutes: 1); await settle()
-        XCTAssertGreaterThan(try colouredSamples(view), 0)
-        session.stopCountdown(); await settle()
-        XCTAssertEqual(try brightSamples(view), 0)
-        session.setOverlayMode(.clock); await settle()
-        XCTAssertGreaterThan(try brightSamples(view), 0)
-        session.setOverlayMode(.hidden); await settle()
-        XCTAssertEqual(try brightSamples(view), 0)
     }
 
     func testImageAndPDFRenderInEveryProfileAndMediaDisappearsOnHide() async throws {
@@ -175,7 +158,7 @@ final class OutputProfileReviewTests: XCTestCase {
         }
     }
 
-    func testEveryVideoRendererUsesOneProgramPlayerAndProfileOverlayOptOutWorks() async throws {
+    func testEveryVideoRendererUsesOneProgramPlayerAndHideLeavesOnlyConfidenceClock() async throws {
         let (outputs, session, _) = setup(.audience)
         outputs.profiles.edit { doc in
             for profile in doc.profiles.dropFirst() {
@@ -207,17 +190,12 @@ final class OutputProfileReviewTests: XCTestCase {
         for (_, view) in hosts {
             XCTAssertEqual(descendants(view).compactMap { $0 as? AVPlayerView }.first?.videoGravity, .resizeAspectFill)
         }
-        session.hideSlides(); session.setOverlayMode(.clock); await settle()
-        for destination in outputs.profiles.document.destinations {
-            var profile = try XCTUnwrap(outputs.profiles.profile(destination.profileID)); profile.includesOverlay = false
-            outputs.profiles.update(profile)
-        }
-        await settle()
+        session.hideSlides(); await settle()
         for (index, pair) in hosts.enumerated() {
             if outputs.profiles.profile(outputs.profiles.document.destinations[index].profileID)?.kind == .confidence {
                 try assertCenteredClock(pair.1)
             } else {
-                XCTAssertEqual(try brightSamples(pair.1), 0, "Other profiles can opt out of an enabled clock")
+                XCTAssertEqual(try brightSamples(pair.1), 0, "Other profiles remain blank without a timer or clock overlay")
             }
             XCTAssertTrue(descendants(pair.1).compactMap { $0 as? AVPlayerView }.isEmpty)
         }
@@ -238,17 +216,12 @@ final class OutputProfileReviewTests: XCTestCase {
 
     func testIdleConfidenceClockIsAutomaticAfterEmptyShowClearAndExternalHide() async throws {
         let (outputs, session, destination) = setup(.confidence); defer { outputs.stop() }
-        var profile = try XCTUnwrap(outputs.profiles.profile(outputs.profiles.document.destinations[0].profileID))
-        profile.includesOverlay = false; outputs.profiles.update(profile)
+        let profile = try XCTUnwrap(outputs.profiles.profile(outputs.profiles.document.destinations[0].profileID))
         XCTAssertTrue(session.hasProjectionContent)
         PresentationFlowController().toggleSlidesVisibility(in: session)
         XCTAssertTrue(outputs.isRunning, "The toolbar flow must open an idle Confidence output without a slide")
         let (window, view) = host(outputs, destination: destination); defer { window.close() }
         await settle(); try assertCenteredClock(view)
-        XCTAssertFalse(session.isTimeOverlayVisible)
-        profile.includesOverlay = true; outputs.profiles.update(profile)
-        session.setOverlayMode(.clock); await settle(); try assertCenteredClock(view)
-        session.setOverlayMode(.hidden); await settle()
         outputs.stop(); outputs.toggleSlides(); await settle(); try assertCenteredClock(view)
         XCTAssertTrue(outputs.isRunning, "The app command must also open the idle clock without a slide")
         let connection = UUID()
@@ -361,15 +334,6 @@ final class OutputProfileReviewTests: XCTestCase {
             total + stride(from: 0, to: bitmap.pixelsWide, by: 3).filter { x in
                 guard let colour = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { return false }
                 return colour.redComponent > 0.6 && colour.greenComponent > 0.6 && colour.blueComponent > 0.6
-            }.count
-        }
-    }
-    private func colouredSamples(_ view: NSView) throws -> Int {
-        let bitmap = try bitmap(view)
-        return stride(from: 0, to: bitmap.pixelsHigh, by: 3).reduce(0) { total, y in
-            total + stride(from: 0, to: bitmap.pixelsWide, by: 3).filter { x in
-                guard let colour = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { return false }
-                return max(colour.redComponent, colour.greenComponent, colour.blueComponent) > 0.6
             }.count
         }
     }

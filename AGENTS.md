@@ -59,11 +59,11 @@ without writing local Preview or Current. See docs/external-presentation.md.
 - `AppDelegate` owns `OutputProfileStore`, `OutputCoordinator`, and the disabled-by-default `ExternalPresentationReceiver` independently of controls windows.
 - `eucaly/Output/` contains coherent snapshots, component adapters, versioned settings, ownership generations, native destinations, compositions, shared media, and loopback transport.
 - One output group follows one source. Profiles own typography and visual backgrounds; destinations separately reference monitor UUIDs and opaque profile IDs. Migration enables only the existing Audience destination and never chooses a fallback monitor.
-- External Present validates complete structured text before taking output. It has no path to local Preview/Current. Local Show, live Load/Switch, visible Current navigation and same-slide activation reclaim output. Hidden navigation stays private. Clear, Hide and Stop revoke external leases. Hide makes foreground text/media invisible in every profile, including Confidence, while retaining the last snapshot privately; Clear removes it. Timer/clock and background/audio controls remain independent. An open Confidence output always shows a large centered clock when empty, cleared or hidden, regardless of its optional overlay setting. Its stage layout has Current on the left and Next on the right, with no source-name header. Explicit Show can open an idle Confidence output without loading Current; startup, browsing and Stop never open it automatically.
+- External Present validates complete structured text before taking output. It has no path to local Preview/Current. Local Show, live Load/Switch, visible Current navigation and same-slide activation reclaim output. Hidden navigation stays private. Clear, Hide and Stop revoke external leases. Hide makes foreground text/media invisible in every profile, including Confidence, while retaining the last snapshot privately; Clear removes it. Background/audio controls remain independent. The optional Timer/Clock overlay has been removed. An open Confidence output always shows a large centered clock when empty, cleared or hidden. Its stage layout has Current on the left and Next on the right, with no source-name header. Explicit Show can open an idle Confidence output without loading Current; startup, browsing and Stop never open it automatically.
 - Record explicit input order before asynchronous preparation or queued navigation. Transport ingress and local commands share OutputActionClock. Superseded messages, leases, connection callbacks and native close generations cannot restore or clear newer output.
 - Physical display reservations and window teardown are per destination. Losing one destination retains the others, resources, Current and assignment. Explicit Show/Present is needed to reopen. Images, PDFs, program video and picked windows render in every enabled profile through the same media boundary. Live webpages permit one Audience output; companions show an explicit webpage status without additional WebKit playback. Enabled outputs cannot share a monitor; disabled rows retain assignments without reserving them. Enabled conflicts block presentation until corrected. Monitor pickers provide an explicit None option. Lower Third defaults to solid chroma green.
 - OutputMediaRuntime owns one program AVPlayer and pools matching muted background resources. ScreenCaptureManager owns one picker-approved stream with reference-counted consumers and GPU-backed sample-buffer fan-out. Views consume resources; closing one does not stop another. Independent background audio has one explicit session owner, recorded by the coordinator.
-- Output settings use native Forms, Pickers, colour controls and NSFontPanel. Requested font identifiers are retained during fallback. Audience thumbnails use its typeface/layout with independent thumbnail size controls. Readability notices are operator-only.
+- Manage Outputs is available from the display toolbar menu and the App Settings tab, using the same app-owned editor. Appearance and backgrounds live there; thumbnail controls live in General settings. Built-in profiles are Audience, Confidence and Lower Third. Retired Meaning/Translation presets migrate assigned outputs to Audience while retaining monitors; custom copies retain their components and appearance. Output settings use native Forms, Pickers, colour controls and NSFontPanel. Disclosure headers are clickable across the full row. Requested font identifiers are retained during fallback. Audience thumbnails use its typeface/layout with independent thumbnail size controls. Readability notices are operator-only.
 - Receiver setup and credentials are explicit. Bind loopback only, keep Keychain/framing/encoding/files off the UI thread, and preserve bounded controls/latest state. Test hosts never restore receiver credentials or start listeners.
 - See docs/output-profiles-implementation.md for validation and physical/profiling limits. Do not claim GPU cadence or physical delivery from snapshot acceptance.
 
@@ -94,7 +94,7 @@ These isolate rendering concerns from orchestration.
 - `eucaly/PresentationWindowController.swift`
   - `PresentationSession`
   - Local Current document, navigation, playback controls, and presentation events
-  - Layer visibility state (`areSlidesVisible`, background visibility, overlay)
+  - Layer visibility state (`areSlidesVisible`, background visibility)
   - Media playback controls
   - Window-capture slide support
 
@@ -147,7 +147,7 @@ If a new type cannot follow this contract, treat it as a design bug and refactor
 - `OutputCoordinator` holds one `ProjectionSleepPrevention` activity while any physical projection window is open, preventing idle system and display sleep. Hide Slides, Clear Current, and background/layer changes retain it. Stop Projection, native window close, display-loss shutdown, and teardown release it; browsing, naming, Identify, audio alone, and failed projection starts do not acquire it.
 - Background and audio are independent from slides visibility.
 - Projection target display is user-selectable from the toolbar (`display` menu).
-- `ProjectionDisplayManager` is shared by the toolbar, Projection settings, and sessions. Assignments, monitor numbers, and custom names are persisted by macOS display UUID; the old `projectionScreenDisplayID` preference is migrated once.
+- `ProjectionDisplayManager` is shared by the toolbar, Manage Outputs, and sessions. Assignments, monitor numbers, and custom names are persisted by macOS display UUID; the old `projectionScreenDisplayID` preference is migrated once.
 - Identify briefly labels an idle monitor without changing Current or opening projection. Stop projection before selecting another monitor.
 - Projection requires an explicitly selected monitor; there is no Auto selection or fallback. A previous Auto preference becomes unassigned and requires a choice. Each active projection pins the selected physical identity. Disconnect, mirroring, or ambiguous identity closes projection immediately, retaining Current, audio, names, and the saved assignment; reconnect requires an explicit Show Slides. Never silently move output to another monitor.
 
@@ -163,7 +163,6 @@ If a new type cannot follow this contract, treat it as a design bug and refactor
 Order in projection:
 1. Background visual layer
 2. Slides layer (lyrics/PDF/image/video/window)
-3. Timer/clock overlay layer
 
 Projection layout rule:
 - Pin each projection layer to the same explicit full-screen geometry frame.
@@ -174,11 +173,10 @@ Projection screen rule:
 - All projection entry points must resolve target display through the same selection source.
 - Do not hardcode screen selection (`NSScreen.screens[1]`) in call sites.
 
-### Timer / Clock Overlay
-- Sidebar controls are always available.
-- Overlay renders on projection and in Current thumbnails.
-- Overlay is fixed top-right with consistent padding.
-- Overlay writes are debounced and deferred to avoid publish-during-update issues.
+### Confidence Standby Clock
+- An open Confidence output with no visible text or media always shows a large centered clock.
+- This clock is local to Confidence and does not change ownership or Current.
+- The old optional Timer/Clock overlay and countdown controls have been removed.
 
 ## Window Capture Support (Authoritative)
 
@@ -265,12 +263,12 @@ Window capture supports live streaming of a user-picked app window into a slide.
 - Grid layout: `eucaly/ThumbnailGridLayout.swift`
 - Grid cell: `eucaly/SlideGridCellView.swift`
 - Lyrics layout: `eucaly/PresentationLyricsLayout.swift`, `eucaly/LyricsSlideContentView.swift`
-  - Appearance offers Stacked / Columns plus Top / Middle / Bottom positioning.
+  - Manage Outputs offers Stacked / Columns plus Top / Middle / Bottom positioning.
   - Lyrics Padding scales outer margins and component gaps in both layouts, from 0% (full slide) to 200%; 100% preserves the default spacing. The saved setting also applies to Preview and Current thumbnails.
   - Columns group existing lyric components (lyrics, meaning, translation, transliteration); missing components do not reserve space.
   - Column widths follow relative font sizes: Meaning gets half the width of each full-size component (40% / 20% / 40% for lyrics / meaning / transliteration, after margins and gaps). A single component always uses the full available width.
   - Preview and Current thumbnails share the projection text layout. SwiftUI measures and fits its own text, including multilingual fallback fonts.
-  - Appearance separates shared slide layout, Projection Font Size, and thumbnail controls. Projection and thumbnail font sizes remain independent.
+  - Manage Outputs owns per-profile layout and projection fonts; General settings owns thumbnail controls. Projection and thumbnail font sizes remain independent.
   - Preview and Current lyrics cards show an advisory when a component cannot fit at 32 projection points, or its requested font is smaller. The check uses the selected display's full frame, shared layout geometry, and SwiftUI font metrics. It does not guarantee readability at every viewing distance. Keep the full text fitting behavior; never silently truncate, change layout, or project operator warnings.
   - The advisory is a visible status row and is included in the card button's accessibility value. Suggest increasing Projection Font Size only for components that fit at the threshold; overflow needs more space or shorter content. Apply measured status outside the layout update and reserve no warning space on unaffected cards.
 - Media slide views:
@@ -345,7 +343,7 @@ Window capture supports live streaming of a user-picked app window into a slide.
 ### 3) SwiftUI state safety
 - Never publish observable changes while the view tree is being evaluated.
 - Defer lifecycle-edge writes to a safe boundary on main queue when required.
-- Debounce rapid user-driven state writes (overlay/audio sliders and similar).
+- Debounce rapid user-driven state writes (audio sliders and similar).
 
 ### 4) Keep boundaries clean
 - `ContentView` orchestrates.
@@ -397,7 +395,7 @@ When changing behavior, verify:
 - Background visual/audio remain independent from slides visibility.
 - Projection display picker selects the correct monitor across start/toggle/background actions.
 - Display unplug/hot-plug closes invalid output and keeps the chosen identity; reconnect and a new Show Slides use that identity even with a new runtime ID.
-- Timer/clock controls and rendering still work.
+- Confidence shows its centered standby clock when empty, cleared or hidden, and other profiles have no Timer/Clock overlay.
 - No new SwiftUI publish-during-update warnings.
 - No stale capture streams after slide/session teardown.
 

@@ -16,8 +16,8 @@ explicit presentation and verifies that Clear does not restore Preview.
 `OutputModels` adapts lyrics using LyricsSectionCatalog without duplicating parser
 rules. Primary, Meaning, Translation and Transliteration remain distinct.
 Structured scripture/text also has Heading, Reference and Footer roles. A coherent
-snapshot contains source, content kind, current/next, visibility, native media,
-clock/countdown metadata and revision. External content never enters local
+snapshot contains source, content kind, current/next, visibility, native media
+and revision. External content never enters local
 Preview, Current, the library or saved webpage entries.
 
 `OutputProfileStore` migrates only one enabled Audience destination, using the
@@ -60,7 +60,7 @@ webpage delivery is explicitly rejected before takeover.
 Lower Third through native text/media layers pinned to identical geometry.
 Confidence places Current in the left two-thirds and Next in the right third,
 using slightly smaller Next text. It has no source-name header. Component labels,
-controlled timers, native media and playback status remain. Images, PDFs, videos and picked
+native media and playback status remain. Images, PDFs, videos and picked
 windows render in every enabled profile. Hide/Escape makes every foreground
 invisible; Confidence shows its automatic idle clock while local Current and
 independent layers remain. Missing companions collapse and never inherit
@@ -99,10 +99,9 @@ workspace/group; inactive controls cannot accidentally reclaim output.
 The 2026-10-12 operator review supersedes the earlier Confidence Hidden/status-only
 behavior. Escape hides program text/media and labels in all profiles. An open
 Confidence output replaces empty, cleared or hidden content with a large centered
-24-hour clock, including when its optional overlay setting is off. A dark backing
-keeps its bold white digits legible against profile backgrounds. The optional
-small clock is suppressed while idle to avoid duplicate clocks; an explicitly
-running countdown remains independent. Explicit Show can open an idle Confidence
+24-hour clock. A dark backing keeps its bold white digits legible against profile
+backgrounds. The optional Timer/Clock overlay, countdown runtime and controls have
+been removed from every output. Explicit Show can open an idle Confidence
 output with no Current slide. Startup and browsing never open it automatically,
 and Stop still closes the window.
 
@@ -111,7 +110,6 @@ source-name bar. Current expands when Next is absent. Next text requests 80% of 
 configured font size, including explicit component overrides, without rewriting
 saved settings. A lone primary text component needs no redundant role label.
 Native fitting and readability probes use the same labeled text and column boxes.
-TimeOverlay still respects hidden or inactive countdown controls.
 
 The output picker, toolbar and monitor settings share saved assignment constraints.
 A monitor used by an enabled output cannot be selected for another enabled row,
@@ -124,7 +122,7 @@ Lower Third defaults to solid #00FF00 with no dimming. The old built-in default
 background upgrades once; customized backgrounds and later explicit choices are
 preserved.
 
-The media renderer is shared by all five profiles. Confidence places actual native
+The media renderer is shared by all three built-in profiles. Confidence places actual native
 media in its Current pane and reserves space for headings/playback/optional Next;
 other profiles present media over their full frame. Every video view uses the one
 program AVPlayer; picked-window views join the existing shared capture. Text role
@@ -133,12 +131,21 @@ owner; companion outputs report that boundary explicitly rather than duplicating
 WebKit playback, and a webpage without an available Audience output is rejected.
 
 Regressions exercise real native Escape routing and rendered pixels, image/PDF
-views in each profile, shared native video views, timer controls and profile opt-out,
+views in each profile, shared native video views, automatic Confidence standby,
 all assignment entry points and persisted conflicts. Confidence playback status
 observes pause directly instead of waiting for a progress tick. Explicit and
 deferred Current refreshes share webpage preflight; rejected media does not leak
 into native output or AltView’s last-presented window report. Capture permission and physical
 multi-monitor delivery remain in the rehearsal scope below.
+
+Manage Outputs is shared between the display menu and App Settings, where its tab
+uses the same name. The toolbar Appearance/Background menus have been removed;
+thumbnail font and card sizes remain in General settings. All profile editor
+disclosure headers expand from their label and full row. Built-in profiles are
+Audience, Confidence and Lower Third. Legacy Meaning/Translation factory profiles
+are retired on restore; assigned outputs move to Audience with monitor identities
+and enabled state preserved. Custom copies retain their role selections and
+appearance as Audience profiles. Lower Third keeps its original stable ID.
 
 ## Validation record
 
@@ -162,13 +169,16 @@ those expected messages are not release attempts.
 
 Final validation on 2026-10-12:
 
-- `make test` passed: 371 XCTest cases, one Swift Testing case, seven offline
+- `make test` passed: 372 XCTest cases, one Swift Testing case, seven offline
   update-feed tests and 97 offline release-workflow tests, all with zero failures.
 - `make build` archived and exported the final source to `~/Applications/eucaly.app`.
 - The exported executable is arm64, its minimum macOS version is 14.0, and strict
   code-signature verification passed.
 - `git diff --check` passed. No publish-during-view-update warning appeared in the
-  final app test log. The native output settings render was inspected.
+  final app test log. Native output settings and disclosure rendering were
+  inspected. Native mouse events verify clicks on the disclosure label, middle
+  and trailing space; legacy preset migration is idempotent and retains monitor
+  assignments and custom copies.
 - Main’s separate nine-file AltView diff is unchanged. No push, merge, tag,
   notarization or release publication was performed.
 
@@ -183,7 +193,8 @@ IOSurface-backed capture supply the native GPU-capable rendering boundary.
 Before merging, rehearse on the operator's actual display/media setup:
 
 - Audience and Confidence with different fonts and image/video backgrounds;
-  Meaning and Translation on separate monitors; absent companions and all roles.
+  Lower Third with its green background; meaning/translation/transliteration
+  components, absent companions and all roles.
 - Multilingual fonts, unavailable-font restoration, NSFontPanel, VoiceOver,
   keyboard focus and Reduce Motion/increased contrast.
 - Reference scripture Present followed immediately by local Show, live Load,

@@ -65,7 +65,6 @@ final class ProjectionSleepPreventionTests: XCTestCase {
         session.clearSlides()
         session.setBackgroundVisual(nil)
         session.clearBackgroundAudio()
-        session.setOverlayMode(.clock)
         session.showSlides()
         XCTAssertEqual(recorder.begun.count, 1)
         XCTAssertTrue(recorder.ended.isEmpty, "An open output must remain awake even when blank.")

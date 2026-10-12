@@ -54,7 +54,6 @@ final class OutputCoordinator: ObservableObject {
         get { retainedAudio ?? audioWeak }
         set { audioWeak = newValue; retainedAudio = retainsPreparedSessions ? newValue : nil }
     }
-    private(set) var overlaySession: PresentationSession?
     var isRunning: Bool { !windows.isEmpty }
     var hasEnabledConfidenceOutput: Bool {
         profiles.document.destinations.contains { $0.enabled && profiles.profile($0.profileID)?.kind == .confidence }
@@ -120,7 +119,7 @@ final class OutputCoordinator: ObservableObject {
         let previous = localSession
         guard ownership.take(.local(session.outputSourceID), action: order) != nil else { return false }
         if previous !== session { previous?.cancelPendingProjection(); previous?.emitOutputEvent(.stopped) }
-        localSession = session; preferredLocalSession = session; overlaySession = session; sourceName = "eucaly Current"
+        localSession = session; preferredLocalSession = session; sourceName = "eucaly Current"
         liveSlide = session.currentSlide
         updateText(from: session)
         visible = show
@@ -157,14 +156,8 @@ final class OutputCoordinator: ObservableObject {
         let action = ownership.beginAction()
         guard let current = message.current, let source = message.sourceID, let revision = message.revision else { throw ExternalPresentationError.invalid("Incomplete Present") }
         if let id = message.profileID {
-            guard let profile = profiles.profile(id), profiles.document.destinations.contains(where: { $0.enabled && $0.profileID == id }) else {
+            guard profiles.profile(id) != nil, profiles.document.destinations.contains(where: { $0.enabled && $0.profileID == id }) else {
                 throw ExternalPresentationError.invalid("Requested profile is not assigned to an enabled output")
-            }
-            if profile.kind == .meaning && !current.components.contains(where: { $0.role == .meaning && !$0.text.isEmpty }) {
-                throw ExternalPresentationError.invalid("Meaning profile requires a Meaning component")
-            }
-            if profile.kind == .translation && !current.components.contains(where: { $0.role == .translation && !$0.text.isEmpty }) {
-                throw ExternalPresentationError.invalid("Translation profile requires a Translation component")
             }
         }
         guard openDestinations(activate: false) else { throw ExternalPresentationError.invalid(issue ?? "No destination is ready") }
@@ -173,7 +166,6 @@ final class OutputCoordinator: ObservableObject {
         localSession?.cancelPendingProjection()
         localSession?.emitOutputEvent(.stopped)
         localSession = nil; liveSlide = nil
-        if overlaySession == nil { overlaySession = preferredLocalSession }
         text = current; nextText = message.next; sourceName = name; visible = true
         changed(); return lease
     }
@@ -252,7 +244,7 @@ final class OutputCoordinator: ObservableObject {
         ownership.revoke()
         let previous = localSession
         for id in Array(windows.keys) { closeDestination(id) }
-        localSession = nil; overlaySession = nil; liveSlide = nil; text = .empty; nextText = nil
+        localSession = nil; liveSlide = nil; text = .empty; nextText = nil
         changed(); previous?.emitOutputEvent(.stopped)
     }
     func destinationClosed(_ id: UUID, generation: UUID) {
@@ -261,7 +253,7 @@ final class OutputCoordinator: ObservableObject {
         closeDestination(id); changed()
         if !isRunning {
             ownership.revoke(); localSession?.emitOutputEvent(.stopped)
-            localSession = nil; overlaySession = nil
+            localSession = nil
         } else {
             // Clear Audience identity without stopping another output or AltView text.
             localSession?.emitOutputEvent(.changed(localSession!.outputSnapshot))
@@ -324,16 +316,13 @@ final class OutputCoordinator: ObservableObject {
             }
         }
         changed()
-        if !isRunning { ownership.revoke(); localSession?.emitOutputEvent(.stopped); localSession = nil; overlaySession = nil }
+        if !isRunning { ownership.revoke(); localSession?.emitOutputEvent(.stopped); localSession = nil }
     }
     func refreshMedia() {
         media.updateProgram(slide: liveSlide, session: localSession, running: isRunning, visible: visible)
         let active = Set(windows.keys.compactMap { id in profiles.document.destinations.first { $0.id == id }?.profileID })
         media.syncBackgrounds(profiles: profiles.document.profiles.filter { active.contains($0.id) }, visible: visible,
                               media: liveSlide.map { AltViewPresentationAdapter.mode(for: $0) == .media } ?? false) { [weak self] in self?.changed() }
-    }
-    func refreshOverlay(_ session: PresentationSession) {
-        if overlaySession === session { changed() }
     }
     private func changed() {
         refreshMedia()
@@ -342,7 +331,7 @@ final class OutputCoordinator: ObservableObject {
             kind = slide.videoURL != nil ? .video : slide.pdfURL != nil ? .pdf : slide.imageURL != nil ? .image : slide.webpageURL != nil ? .webpage : slide.captureWindowID != nil ? .capturedWindow : .lyrics
         } else { kind = text.isEmpty ? .empty : text.kind == .scripture ? .scripture : text.kind == .lyrics ? .lyrics : .text }
         snapshot = .init(source: ownership.source, kind: kind, current: text, next: nextText, visible: visible, revision: revision &+ 1,
-                         clockVisible: overlaySession?.isClockVisible ?? false, countdownEndDate: overlaySession?.countdownEndDate, localMedia: liveSlide)
+                         localMedia: liveSlide)
         revision &+= 1
         sessions = sessions.filter { $0.value.value != nil }
         if isRunning || wasRunning {

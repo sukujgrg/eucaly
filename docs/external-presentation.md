@@ -54,9 +54,8 @@ A successful `accepted` reply echoes the action ID and revision and grants
 the action ID and detail. With no valid enabled destination, Present is rejected
 without changing the live source. Optional `profileID` hints are accepted only
 for profiles already assigned to enabled outputs. They do not change monitor
-assignments or enable outputs. A Meaning hint requires Meaning; a Translation
-hint requires Translation. With default assigned profiles, absent components
-render empty rather than substituting primary text or retaining a previous song.
+assignments or enable outputs. Profiles select components by role; absent
+components render empty rather than substituting primary text or retaining a previous song.
 An empty component list is supported and clears presented text.
 
 ```json

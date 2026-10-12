@@ -64,8 +64,8 @@ final class ExternalPresentationTests: XCTestCase {
         XCTAssertEqual(session.currentSlideID, current[0].id); XCTAssertEqual(flow.previewSlideCount, 1)
         // Private preparation and passive refresh never take back external output.
         session.setSlides(current); flow.selectPreviewSlide(flow.previewSlides[0].id)
-        session.setOverlayMode(.clock); session.setBackgroundAudioVolume(0.2)
-        var meaning = outputs.profiles.document.profiles[2]; meaning.typography.size = 100; outputs.profiles.update(meaning)
+        session.setBackgroundAudioVolume(0.2)
+        var confidence = outputs.profiles.document.profiles[1]; confidence.typography.size = 100; outputs.profiles.update(confidence)
         try await Task.sleep(for: .milliseconds(30))
         XCTAssertTrue(outputs.isExternal)
         session.selectCurrentSlide(current[0].id) // Same-slide action reclaims.
@@ -110,7 +110,7 @@ final class ExternalPresentationTests: XCTestCase {
         outputs.profiles.edit { $0.destinations[0].enabled = false }
         XCTAssertThrowsError(try outputs.presentExternal(connection: UUID(), name: "App", message: present("No destination")))
         XCTAssertEqual(outputs.text.components.first?.text, "Current")
-        let meaning = outputs.profiles.document.profiles[2]
+        let meaning = OutputProfile(id: UUID(), name: "Custom", kind: .audience, roles: [.meaning])
         XCTAssertTrue(meaning.components(in: present("Scripture").current!).isEmpty)
     }
     func testDisplacementCancelsDeferredAltViewRequestAndExactAudienceIdentity() async throws {

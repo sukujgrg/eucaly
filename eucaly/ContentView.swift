@@ -32,15 +32,10 @@ public struct ContentView: View {
     @AppStorage("presentationPaddingScale") private var presentationPaddingScale: Double = 1.0
     @AppStorage("presentationTextAlignment") private var presentationTextAlignment: PresentationTextAlignment = .center
     @AppStorage("presentationVerticalPosition") private var presentationVerticalPosition: PresentationVerticalPosition = .middle
-    @AppStorage("thumbnailFontScale") private var thumbnailFontScale: Double = 1.0
-    @AppStorage("countdownMinutes") private var countdownMinutes: Int = 5
-    @AppStorage("overlayScale") private var overlayScale: Double = 1.0
     @AppStorage("windowCaptureFrameRate") private var windowCaptureFrameRate: Int = 30
     @AppStorage("savedWebpageURLs") private var savedWebpageURLs: String = ""
     @AppStorage("savedSelectedWebpageURL") private var savedSelectedWebpageURL: String = ""
     @AppStorage("savedWebpageTitles") private var savedWebpageTitles: String = ""
-    @State private var overlayScaleDraft: Double = 1.0
-    @State private var overlayScaleDebounceToken = UUID()
     @State private var backgroundAudioVolumeDraft: Double = 1.0
     @State private var backgroundAudioVolumeDebounceToken = UUID()
     @State private var fileDisplayNames: [URL: String] = [:]
@@ -134,10 +129,6 @@ public struct ContentView: View {
         default:
             return false
         }
-    }
-
-    private var canControlProjectedOverlay: Bool {
-        session.isPresenting
     }
 
     private var isWindowCaptureSupported: Bool {
@@ -258,9 +249,6 @@ public struct ContentView: View {
         }
         .onChange(of: session.backgroundAudioURL) { _, newValue in
             selectedAudioURL = newValue?.standardizedFileURL
-        }
-        .onChange(of: overlayScale) { _, newValue in
-            handleOverlayScaleChange(newValue)
         }
         .onChange(of: backgroundAudioVolume) { _, newValue in
             handleBackgroundAudioVolumeChange(newValue)
@@ -418,45 +406,7 @@ public struct ContentView: View {
             OutputSourceToolbarStatus(coordinator: session.outputCoordinator)
             AltViewToolbarButton(service: altView, session: session)
             AppUpdateToolbarButton(viewModel: appUpdateViewModel)
-            backgroundSettingsButton
-            timerSettingsButton
-            appearanceSettingsButton
         }
-    }
-
-    private var backgroundSettingsButton: some View {
-        BackgroundSettingsMenu(
-            session: session,
-            visualName: session.backgroundVisualURL.map { displayName(for: $0) },
-            isMediaCurrent: isCurrentSelectionMediaFile,
-            onChooseVisual: chooseBackgroundVisual,
-            onClearVisual: clearBackgroundVisual,
-            onToggleVisibility: toggleBackgroundVisualFromUI
-        )
-    }
-
-    private var timerSettingsButton: some View {
-        TimerSettingsMenu(
-            session: session,
-            overlayScaleDraft: $overlayScaleDraft,
-            countdownMinutes: $countdownMinutes,
-            onOverlayScaleDraftChange: handleOverlayScaleDraftChange,
-            onSetOverlayMode: setOverlayMode,
-            onStartCountdown: startCountdown,
-            onStopCountdown: stopCountdown
-        )
-    }
-
-    private var appearanceSettingsButton: some View {
-        AppearanceSettingsMenu(
-            presentationFontScale: $presentationFontScale,
-            presentationLyricsLayout: $presentationLyricsLayout,
-            presentationTextAlignment: $presentationTextAlignment,
-            presentationVerticalPosition: $presentationVerticalPosition,
-            presentationPaddingScale: $presentationPaddingScale,
-            thumbnailFontScale: $thumbnailFontScale,
-            thumbnailScale: $thumbnailScale
-        )
     }
 
     private var projectionScreenPicker: some View {
@@ -488,7 +438,7 @@ public struct ContentView: View {
         }
         .labelStyle(.iconOnly)
         .buttonStyle(.bordered)
-        .help("Projection: \(projectionDisplays.selectionLabel). Manage names and identify monitors.")
+        .help("Projection: \(projectionDisplays.selectionLabel). Manage outputs, appearance and monitors.")
         .sheet(isPresented: $isProjectionSettingsPresented) {
             VStack(spacing: 0) {
                 OutputSettingsView(coordinator: session.outputCoordinator)
@@ -523,17 +473,10 @@ public struct ContentView: View {
         refreshBackgroundAudioAccess()
         restoreWebpageState()
         loadPlaylists()
-        overlayScaleDraft = overlayScale
         backgroundAudioVolumeDraft = backgroundAudioVolume
         deferSessionChange {
             session.setBackgroundAudioLoop(backgroundAudioLoop)
             session.setBackgroundAudioVolume(backgroundAudioVolume)
-        }
-    }
-
-    private func handleOverlayScaleChange(_ newValue: Double) {
-        if abs(overlayScaleDraft - newValue) > 0.0001 {
-            overlayScaleDraft = newValue
         }
     }
 
@@ -962,12 +905,6 @@ public struct ContentView: View {
 
     private func toggleSlidesFromUI() { flow.toggleSlidesVisibility(in: session) }
 
-    private func toggleBackgroundVisualFromUI() {
-        DispatchQueue.main.async {
-            session.toggleBackgroundVisualVisibility()
-        }
-    }
-
     private func updateLyricsProjectionSize() {
         let size = projectionDisplays.resolvedMonitor()?.frame.size
         deferSessionChange {
@@ -1241,31 +1178,6 @@ public struct ContentView: View {
             }
             index += 1
         }
-    }
-
-    private func chooseBackgroundVisual() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = backgroundVisualContentTypes()
-        if panel.runModal() == .OK, let url = panel.url {
-            if let bookmark = SecurityScopedBookmarks.createBookmark(for: url) {
-                backgroundVisualBookmark = bookmark
-            }
-            updateBackgroundVisualSelection(url)
-        }
-    }
-
-    private func backgroundVisualContentTypes() -> [UTType] {
-        var types: [UTType] = [.image, .movie, .video, .mpeg4Movie, .quickTimeMovie]
-        if let webp = UTType(filenameExtension: "webp") {
-            types.append(webp)
-        }
-        if let mkv = UTType(filenameExtension: "mkv") {
-            types.append(mkv)
-        }
-        return types
     }
 
     private func isUnderLibraryRoot(_ url: URL) -> Bool {
@@ -1903,33 +1815,6 @@ public struct ContentView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
             guard backgroundAudioVolumeDebounceToken == token else { return }
             applyBackgroundAudioVolume(newValue)
-        }
-    }
-
-    private func handleOverlayScaleDraftChange(_ newValue: Double) {
-        let token = UUID()
-        overlayScaleDebounceToken = token
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            guard overlayScaleDebounceToken == token else { return }
-            overlayScale = newValue
-        }
-    }
-
-    private func setOverlayMode(_ newMode: PresentationSession.OverlayMode) {
-        deferSessionChange {
-            session.setOverlayMode(newMode)
-        }
-    }
-
-    private func startCountdown(_ minutes: Int) {
-        deferSessionChange {
-            session.startCountdown(minutes: minutes)
-        }
-    }
-
-    private func stopCountdown() {
-        deferSessionChange {
-            session.stopCountdown()
         }
     }
 

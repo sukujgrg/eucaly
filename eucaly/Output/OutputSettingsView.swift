@@ -129,7 +129,6 @@ private struct OutputProfileEditor: View {
                     Picker("Alignment", selection: $profile.alignment) { Text("Left").tag("left"); Text("Centre").tag("center"); Text("Right").tag("right") }
                     Picker("Position", selection: $profile.position) { Text("Top").tag("top"); Text("Middle").tag("middle"); Text("Bottom").tag("bottom") }
                     Slider(value: $profile.padding, in: 0...2) { Text("Padding") }
-                    Toggle(profile.kind == .confidence ? "Timer and clock over content" : "Timer and clock", isOn: $profile.includesOverlay)
                     if profile.kind == .confidence {
                         Text("When Confidence has no visible content, it always shows a large centered clock.").font(.callout).foregroundStyle(.secondary)
                     }
@@ -169,6 +168,7 @@ private struct OutputProfileEditor: View {
                     Text("Background videos loop silently. Background audio is controlled separately.").font(.callout).foregroundStyle(.secondary)
                 }
             }.formStyle(.grouped)
+                .disclosureGroupStyle(SettingsDisclosureGroupStyle())
             HStack {
                 if !isValid { Text("Use a shorter name or a font size between 1 and 800 points.").font(.caption).foregroundStyle(.secondary) }
                 Spacer()

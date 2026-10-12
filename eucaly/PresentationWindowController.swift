@@ -62,21 +62,6 @@ final class PresentationSession: NSObject, ObservableObject {
         case playing
     }
 
-    enum OverlayMode: String, CaseIterable, Identifiable {
-        case hidden = "Hidden"
-        case clock = "Clock"
-        case countdown = "Countdown"
-
-        var id: String { rawValue }
-    }
-
-    struct OverlayState: Equatable {
-        var mode: OverlayMode = .hidden
-        var isClockVisible: Bool = false
-        var isCountdownRunning: Bool = false
-        var countdownEndDate: Date? = nil
-    }
-
     @Published var slides: [Slide] = [] { didSet { scheduleOutputChange() } }
     @Published private(set) var pdfSlideSource: PDFSlideSource? { didSet { scheduleOutputChange() } }
     @Published var currentSlideID: Slide.ID? { didSet { scheduleOutputChange() } }
@@ -97,8 +82,6 @@ final class PresentationSession: NSObject, ObservableObject {
     @Published private(set) var backgroundAudioLoop = true
     @Published private(set) var backgroundAudioVolume: Double = 1.0
     @Published var areSlidesVisible = true { didSet { scheduleOutputChange() } }
-    @Published private(set) var overlay = OverlayState()
-    private var countdownToken = UUID()
 
     private var backgroundAudioGeneration = UUID()
     private var backgroundAudioPlayer: AVPlayer?
@@ -215,11 +198,6 @@ final class PresentationSession: NSObject, ObservableObject {
         if let backgroundAudioEndObserver { NotificationCenter.default.removeObserver(backgroundAudioEndObserver) }
         if let backgroundAudioTimeObserver, let backgroundAudioPlayer { backgroundAudioPlayer.removeTimeObserver(backgroundAudioTimeObserver) }
     }
-
-    var overlayMode: OverlayMode { overlay.mode }
-    var isClockVisible: Bool { overlay.isClockVisible }
-    var isCountdownRunning: Bool { overlay.isCountdownRunning }
-    var countdownEndDate: Date? { overlay.countdownEndDate }
 
     var currentSlide: Slide? {
         guard let currentSlideID else { return nil }
@@ -460,82 +438,6 @@ final class PresentationSession: NSObject, ObservableObject {
         outputCoordinator.refreshMedia()
     }
 
-    func startCountdown(minutes: Int) {
-        let safeMinutes = max(1, minutes)
-        let endDate = Date().addingTimeInterval(Double(safeMinutes) * 60.0)
-        applyOverlay { state in
-            state.mode = .countdown
-            state.isClockVisible = false
-            state.isCountdownRunning = true
-            state.countdownEndDate = endDate
-        }
-        let token = UUID()
-        countdownToken = token
-        let duration = Double(safeMinutes) * 60.0
-        DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
-            guard let self else { return }
-            guard self.countdownToken == token else { return }
-            self.stopCountdown()
-        }
-    }
-
-    func stopCountdown() {
-        countdownToken = UUID()
-        applyOverlay { state in
-            state.isCountdownRunning = false
-            state.countdownEndDate = nil
-        }
-    }
-
-    func setOverlayMode(_ mode: OverlayMode) {
-        if mode != .countdown {
-            countdownToken = UUID()
-        }
-        applyOverlay { state in
-            state.mode = mode
-            switch mode {
-            case .hidden:
-                state.isClockVisible = false
-                state.isCountdownRunning = false
-                state.countdownEndDate = nil
-            case .countdown:
-                state.isClockVisible = false
-            case .clock:
-                state.isCountdownRunning = false
-                state.countdownEndDate = nil
-                state.isClockVisible = true
-            }
-        }
-    }
-
-    func remainingCountdownSeconds(at date: Date = Date()) -> Int {
-        guard isCountdownRunning, let end = countdownEndDate else { return 0 }
-        let remaining = Int(ceil(end.timeIntervalSince(date)))
-        return max(0, remaining)
-    }
-
-    func countdownDisplay(at date: Date = Date()) -> String {
-        let totalSeconds = remainingCountdownSeconds(at: date)
-        let minutes = totalSeconds / 60
-        let seconds = totalSeconds % 60
-        return String(format: "%02d:%02d", minutes, seconds)
-    }
-
-    var isTimeOverlayVisible: Bool {
-        switch overlay.mode {
-        case .hidden:
-            return false
-        case .countdown:
-            return overlay.isCountdownRunning
-        case .clock:
-            return overlay.isClockVisible
-        }
-    }
-
-    func clockDisplay(at date: Date = Date()) -> String {
-        Self.clockFormatter.string(from: date)
-    }
-
     func setBackgroundVisual(_ url: URL?) {
         backgroundVisualURL = url
         isBackgroundVisualVisible = (url != nil)
@@ -616,31 +518,6 @@ final class PresentationSession: NSObject, ObservableObject {
         let current = player.currentTime().seconds
         let duration = player.currentItem?.duration.seconds ?? 0
         playbackProgress.updateBackgroundAudio(currentTime: current, duration: duration)
-    }
-
-    func overlayTintColor(remaining: Int) -> Color {
-        if overlay.mode == .countdown && remaining <= 60 {
-            return .orange
-        }
-        return AccentColorProvider.color
-    }
-
-    private static let clockFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm"
-        return formatter
-    }()
-
-    private func applyOverlay(_ update: @escaping (inout OverlayState) -> Void) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            var next = self.overlay
-            update(&next)
-            if next != self.overlay {
-                self.overlay = next
-                self.outputCoordinator.refreshOverlay(self)
-            }
-        }
     }
 
     private func configureBackgroundAudioPlayer(for url: URL?, autoplay: Bool) {
@@ -745,46 +622,8 @@ struct PresentationView: View {
                         OutputTextView(content: OutputContentAdapter.text(for: slide), profile: previewProfile, size: size)
                     }
                 }
-                if session.isTimeOverlayVisible { TimeOverlay().environmentObject(session).padding(26).frame(width: size.width, height: size.height) }
             }.frame(width: size.width, height: size.height).clipped()
         }.ignoresSafeArea()
-    }
-}
-
-struct TimeOverlay: View {
-    @EnvironmentObject var session: PresentationSession
-    @AppStorage("overlayScale") private var overlayScale: Double = 1.0
-
-    var body: some View {
-        if session.isTimeOverlayVisible {
-            TimelineView(.periodic(from: .now, by: 1.0)) { context in
-                let remaining = session.remainingCountdownSeconds(at: context.date)
-                overlayView(remaining: remaining, date: context.date)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                    .padding(.trailing, 28)
-                    .padding(.top, 28)
-            }
-        }
-    }
-
-    private func overlayView(remaining: Int, date: Date) -> some View {
-        let mode = session.overlayMode
-        let timeText = mode == .clock
-            ? session.clockDisplay(at: date)
-            : session.countdownDisplay(at: date)
-        return Text(timeText)
-            .font(.system(size: 36 * overlayScale, weight: .bold))
-            .monospacedDigit()
-            .foregroundStyle(foregroundColor(remaining: remaining))
-            .shadow(color: .black.opacity(0.45), radius: 4, x: 0, y: 2)
-            .accessibilityLabel(mode == .clock ? "Clock" : "Countdown")
-    }
-
-    private func foregroundColor(remaining: Int) -> Color {
-        if session.overlayMode == .countdown && remaining <= 60 {
-            return .orange
-        }
-        return .white
     }
 }
 

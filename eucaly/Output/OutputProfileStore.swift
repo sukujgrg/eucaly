@@ -19,7 +19,7 @@ final class OutputProfileStore: ObservableObject {
                 guard data.count <= 1_048_576 else { throw StoreError.invalid }
                 let saved = try JSONDecoder().decode(OutputProfileDocument.self, from: data)
                 guard saved.isValid else { throw StoreError.invalid }
-                document = saved
+                document = OutputProfileMigration.retireLegacyPresets(in: saved)
                 if (defaults?.integer(forKey: Self.defaultsRevisionKey) ?? 0) < 1 {
                     // Upgrade the untouched built-in background once. Subsequent
                     // explicit black/colour/asset choices remain operator settings.
@@ -28,8 +28,8 @@ final class OutputProfileStore: ObservableObject {
                        document.profiles[index].background == OutputBackground() {
                         document.profiles[index].background = lowerThird.background
                     }
-                    persist()
                 }
+                if document != saved || (defaults?.integer(forKey: Self.defaultsRevisionKey) ?? 0) < 1 { persist() }
             } catch {
                 document = Self.salvageAssignments(data, fallback: fallback)
                 recoveryNotice = "Saved output settings could not be read. The original data is retained; choose Recover Settings to save a fresh configuration."

@@ -26,7 +26,7 @@ The last paired receiver connects automatically at launch, without taking output
 | Explicitly project PDF, image, video, webpage, or captured window | Clears Audience text; local AltView Confidence can capture the reported projection window |
 | Stop Projection | Releases output; connection stays available |
 | Stop Sending to AltView | Releases output without stopping local projection |
-| Change background visual, audio, timer, or appearance | No remote text change |
+| Change background visual, audio, or appearance | No remote text change |
 
 The body contains all primary lyric components in order, with their line breaks preserved. Meaning, translation, and transliteration companion components are excluded using `LyricsSectionCatalog`; a companion never substitutes for absent primary lyrics. Title and footer are empty, with unused space collapsed. The parser remains the only source of component classification.
 
