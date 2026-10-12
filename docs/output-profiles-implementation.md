@@ -100,10 +100,15 @@ TimeOverlay applies its own session visibility check, including an unstarted or
 stopped countdown. Profile overlay opt-out remains independent.
 
 The output picker, toolbar and monitor settings share saved assignment constraints.
-An assigned monitor cannot be selected for another row, even while projection is
-stopped. Existing duplicate enabled assignments are retained for correction, shown
+A monitor used by an enabled output cannot be selected for another enabled row,
+even while projection is stopped. Disabled rows can reuse saved assignments.
+Existing duplicate enabled assignments are retained for correction, shown
 as unavailable, and rejected before local/external takeover or window creation.
-Disabled rows retain their assignments until explicitly cleared or removed.
+Disabled rows retain assignments without reserving the monitor. None explicitly
+removes an assignment in output settings, monitor settings and the toolbar.
+Lower Third defaults to solid #00FF00 with no dimming. The old built-in default
+background upgrades once; customized backgrounds and later explicit choices are
+preserved.
 
 The media renderer is shared by all five profiles. Confidence places actual native
 media in its Current pane and reserves space for chrome/playback/optional Next;
@@ -143,7 +148,7 @@ those expected messages are not release attempts.
 
 Final validation on 2026-10-12:
 
-- `make test` passed: 366 XCTest cases, one Swift Testing case, seven offline
+- `make test` passed: 369 XCTest cases, one Swift Testing case, seven offline
   update-feed tests and 97 offline release-workflow tests, all with zero failures.
 - `make build` archived and exported the final source to `~/Applications/eucaly.app`.
 - The exported executable is arm64, its minimum macOS version is 14.0, and strict

@@ -35,6 +35,37 @@ final class OutputProfileReviewTests: XCTestCase {
         XCTAssertFalse(outputs.assignMonitor(monitors[5].target, to: original.destinations[0].id))
     }
 
+    func testDisabledOutputsKeepAssignmentsAndAllowMonitorReuseAndNone() throws {
+        let monitors = (1...2).map { ProjectionMonitor(id: UInt32($0), identity: UUID().uuidString, name: "Monitor", frame: CGRect(x: 0, y: 0, width: 1920, height: 1080)) }
+        let displays = ProjectionDisplayManager(displays: { monitors }); displays.select(monitors[0].target)
+        let profiles = OutputProfileStore(monitor: monitors[0].target)
+        profiles.edit { $0.destinations.append(.init(name: "Confidence", profileID: $0.profiles[1].id, monitor: monitors[1].target, enabled: false)) }
+        var opens = 0
+        let outputs = OutputCoordinator(profiles: profiles, displays: displays, driverFactory: { opens += 1; return FakeOutputDriver() })
+        let audienceID = profiles.document.destinations[0].id, confidenceID = profiles.document.destinations[1].id
+        XCTAssertTrue(outputs.assignMonitor(monitors[1].target, to: audienceID))
+        XCTAssertEqual(profiles.document.destinations[1].monitor, monitors[1].target)
+        XCTAssertNil(profiles.monitorConflictNotice)
+        XCTAssertNil(displays.selectionProblem(for: monitors[1].target))
+        XCTAssertTrue(outputs.assignMonitor(monitors[1].target, to: confidenceID), "Disabled rows can be prepared without reserving an enabled output's monitor")
+        let session = PresentationSession(projectionDisplays: displays, outputCoordinator: outputs)
+        session.setSlides(LyricsParser.parseDocument("Verse\nCurrent").slides); session.showSlides()
+        XCTAssertTrue(outputs.isRunning); XCTAssertEqual(opens, 1)
+        outputs.stop()
+        profiles.edit { $0.destinations[0].enabled = false; $0.destinations[1].enabled = true }
+        session.showSlides(); XCTAssertTrue(outputs.isRunning); XCTAssertEqual(opens, 2)
+        XCTAssertNil(profiles.monitorConflictNotice)
+        outputs.stop()
+        profiles.edit { $0.destinations[0].enabled = true }
+        session.showSlides(); XCTAssertFalse(outputs.isRunning); XCTAssertEqual(opens, 2)
+        XCTAssertNotNil(profiles.monitorConflictNotice)
+        XCTAssertTrue(outputs.assignMonitor(nil, to: confidenceID))
+        XCTAssertNil(profiles.document.destinations[1].monitor)
+        XCTAssertTrue(displays.clearSelection(), "None in the primary picker/toolbar clears the saved assignment")
+        XCTAssertNil(profiles.document.destinations[0].monitor)
+        displays.refresh(); XCTAssertNil(displays.target)
+    }
+
     func testSavedDuplicateAssignmentsBlockLocalAndExternalPresentationWithoutDiscardingSettings() throws {
         let monitor = ProjectionMonitor(id: 1, identity: UUID().uuidString, name: "Monitor", frame: CGRect(x: 0, y: 0, width: 1920, height: 1080))
         let displays = ProjectionDisplayManager(displays: { [monitor] }); displays.select(monitor.target)

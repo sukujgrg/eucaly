@@ -466,6 +466,8 @@ public struct ContentView: View {
                 Text(problem)
             }
             Divider()
+            Button("None") { projectionDisplays.clearSelection() }
+                .disabled(projectionDisplays.isLocked)
             ForEach(projectionDisplays.displays) { display in
                 Button {
                     projectionDisplays.select(display.target)

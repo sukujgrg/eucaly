@@ -116,7 +116,7 @@ final class ProjectionDisplayManager: ObservableObject {
     }
 
     var selectionLabel: String {
-        guard let target else { return "Choose a monitor" }
+        guard let target else { return "None" }
         return label(for: target)
     }
 

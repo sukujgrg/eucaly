@@ -24,7 +24,7 @@ struct OutputSettingsView: View {
                 }
             }
             Section("Outputs") {
-                Text("Each output needs its own monitor. Monitors assigned to another output cannot be selected.").font(.callout).foregroundStyle(.secondary)
+                Text("Enabled outputs need different monitors. Disabled outputs keep their assignments without reserving a monitor.").font(.callout).foregroundStyle(.secondary)
                 ForEach(store.document.destinations) { destination in
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
@@ -40,7 +40,7 @@ struct OutputSettingsView: View {
                             let target = coordinator.displays.displays.first { $0.identity == id }?.target
                             coordinator.assignMonitor(target, to: destination.id)
                         })) {
-                            Text("Choose a monitor…").tag("")
+                            Text("None").tag("")
                             ForEach(coordinator.displays.displays) { display in
                                 Text(coordinator.displays.label(for: display.target)).tag(display.target.identity)
                                     .disabled(coordinator.monitorAssignmentProblem(for: display.target, destinationID: destination.id) != nil)

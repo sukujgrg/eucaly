@@ -99,7 +99,7 @@ final class ProjectionDisplayTests: XCTestCase {
         let manager = ProjectionDisplayManager(displays: { inventory.displays })
         XCTAssertNil(manager.target)
         XCTAssertNil(manager.resolvedMonitor())
-        XCTAssertEqual(manager.selectionLabel, "Choose a monitor")
+        XCTAssertEqual(manager.selectionLabel, "None")
         XCTAssertTrue(manager.selectionProblem?.contains("Choose a projection monitor") == true)
         inventory.displays.reverse()
         manager.refresh()

@@ -45,6 +45,7 @@ nonisolated struct OutputColour: Codable, Equatable, Sendable {
     var alpha: Double = 1
     static let black = Self()
     static let white = Self(red: 1, green: 1, blue: 1)
+    static let chromaGreen = Self(red: 0, green: 1, blue: 0)
 }
 
 nonisolated struct OutputTypography: Codable, Equatable, Sendable {
@@ -126,6 +127,8 @@ nonisolated struct OutputProfile: Codable, Equatable, Sendable, Identifiable {
                 profile.roles = [.primary, .heading, .reference, .footer]
                 profile.position = "bottom"
                 profile.typography.size = 48
+                profile.background.colour = .chromaGreen
+                profile.background.dimming = 0
             }
             return profile
         }

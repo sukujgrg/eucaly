@@ -4,6 +4,7 @@ import Combine
 @MainActor
 final class OutputProfileStore: ObservableObject {
     static let key = "outputProfilesV1"
+    private static let defaultsRevisionKey = "outputProfileDefaultsRevision"
     @Published private(set) var document: OutputProfileDocument
     @Published private(set) var recoveryNotice: String?
     private let defaults: UserDefaults?
@@ -19,6 +20,16 @@ final class OutputProfileStore: ObservableObject {
                 let saved = try JSONDecoder().decode(OutputProfileDocument.self, from: data)
                 guard saved.isValid else { throw StoreError.invalid }
                 document = saved
+                if (defaults?.integer(forKey: Self.defaultsRevisionKey) ?? 0) < 1 {
+                    // Upgrade the untouched built-in background once. Subsequent
+                    // explicit black/colour/asset choices remain operator settings.
+                    let lowerThird = OutputProfile.builtIns.first { $0.kind == .lowerThird }!
+                    if let index = document.profiles.firstIndex(where: { $0.id == lowerThird.id && $0.kind == .lowerThird }),
+                       document.profiles[index].background == OutputBackground() {
+                        document.profiles[index].background = lowerThird.background
+                    }
+                    persist()
+                }
             } catch {
                 document = Self.salvageAssignments(data, fallback: fallback)
                 recoveryNotice = "Saved output settings could not be read. The original data is retained; choose Recover Settings to save a fresh configuration."
@@ -50,8 +61,9 @@ final class OutputProfileStore: ObservableObject {
     private enum StoreError: Error { case invalid }
     func profile(_ id: UUID) -> OutputProfile? { document.profiles.first { $0.id == id } }
     func monitorAssignmentProblem(for target: ProjectionMonitorTarget, excluding destinationID: UUID) -> String? {
-        guard let other = document.destinations.first(where: { $0.id != destinationID && $0.monitor?.identity == target.identity }) else { return nil }
-        return "This monitor is assigned to \(other.name). Choose a different monitor or remove that assignment first."
+        guard document.destinations.first(where: { $0.id == destinationID })?.enabled == true,
+              let other = document.destinations.first(where: { $0.id != destinationID && $0.enabled && $0.monitor?.identity == target.identity }) else { return nil }
+        return "This monitor is used by \(other.name). Disable that output or choose a different monitor."
     }
     var conflictingDestinationIDs: Set<UUID> {
         let assigned = document.destinations.filter { $0.enabled && $0.monitor != nil }
@@ -124,7 +136,10 @@ final class OutputProfileStore: ObservableObject {
         guard recoveryNotice == nil, let defaults else { return }
         let value = document
         persistenceQueue.async {
-            if let data = try? JSONEncoder().encode(value) { defaults.set(data, forKey: Self.key) }
+            if let data = try? JSONEncoder().encode(value) {
+                defaults.set(data, forKey: Self.key)
+                defaults.set(1, forKey: Self.defaultsRevisionKey)
+            }
         }
     }
     // Deterministic persistence barrier for tests and orderly shutdown.

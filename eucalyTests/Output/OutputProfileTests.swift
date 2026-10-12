@@ -32,6 +32,36 @@ final class OutputProfileTests: XCTestCase {
         XCTAssertEqual(store.audience.background.dimming, 0.35)
         XCTAssertEqual(defaults.double(forKey: "thumbnailFontScale"), 0.7)
     }
+    func testLowerThirdGreenDefaultUpgradesOnceAndPreservesLaterExplicitBlack() throws {
+        let name = "LowerThirdDefaults.\(UUID())", defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        var legacy = OutputProfileMigration.migrate(defaults: nil, monitor: nil)
+        let index = try XCTUnwrap(legacy.profiles.firstIndex { $0.kind == .lowerThird })
+        XCTAssertEqual(legacy.profiles[index].background.colour, .chromaGreen)
+        XCTAssertEqual(legacy.profiles[index].background.dimming, 0)
+        XCTAssertEqual(legacy.profiles[0].background.colour, .black)
+        legacy.profiles[index].background = OutputBackground()
+        defaults.set(try JSONEncoder().encode(legacy), forKey: OutputProfileStore.key)
+        let upgraded = OutputProfileStore(defaults: defaults); upgraded.flush()
+        var lowerThird = try XCTUnwrap(upgraded.profile(legacy.profiles[index].id))
+        XCTAssertEqual(lowerThird.background.colour, .chromaGreen)
+        XCTAssertEqual(lowerThird.background.dimming, 0)
+        lowerThird.background = OutputBackground() // A later explicit choice, matching the old factory black.
+        upgraded.update(lowerThird); upgraded.flush()
+        XCTAssertEqual(OutputProfileStore(defaults: defaults).profile(lowerThird.id)?.background, lowerThird.background)
+    }
+    func testLowerThirdDefaultUpgradePreservesCustomizedSavedBackground() throws {
+        let name = "LowerThirdCustom.\(UUID())", defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        var legacy = OutputProfileMigration.migrate(defaults: nil, monitor: nil)
+        let index = try XCTUnwrap(legacy.profiles.firstIndex { $0.kind == .lowerThird })
+        legacy.profiles[index].background = .init(colour: .init(red: 0.2, green: 0.3, blue: 0.4), bookmark: "chosen visual", dimming: 0.7)
+        defaults.set(try JSONEncoder().encode(legacy), forKey: OutputProfileStore.key)
+        let restored = OutputProfileStore(defaults: defaults); restored.flush()
+        XCTAssertEqual(restored.document, legacy)
+        XCTAssertNil(restored.recoveryNotice)
+    }
+
     func testMeaningRelativeSizeAndExplicitOverridesSurviveLegacyControlEdits() {
         let name = "ProfileRelative.\(UUID())", defaults = UserDefaults(suiteName: name)!
         defer { defaults.removePersistentDomain(forName: name) }

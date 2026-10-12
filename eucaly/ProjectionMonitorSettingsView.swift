@@ -9,16 +9,15 @@ struct ProjectionMonitorSettingsView: View {
         Form {
             Section {
                 Picker("Projection Monitor", selection: Binding(
-                    get: { displays.target?.identity ?? "unselected" },
+                    get: { displays.target?.identity ?? "" },
                     set: { identity in
-                        if let display = displays.displays.first(where: { $0.identity == identity }) {
+                        if identity.isEmpty { displays.clearSelection() }
+                        else if let display = displays.displays.first(where: { $0.identity == identity }) {
                             displays.select(display.target)
                         }
                     }
                 )) {
-                    if displays.target == nil {
-                        Text("Choose a monitor…").tag("unselected").disabled(true)
-                    }
+                    Text("None").tag("")
                     ForEach(displays.displays) { display in
                         Text(displays.label(for: display.target) + (display.isBuiltIn ? " · Built-in" : ""))
                             .tag(display.target.identity)
