@@ -32,6 +32,22 @@ final class OutputProfileTests: XCTestCase {
         XCTAssertEqual(store.audience.background.dimming, 0.35)
         XCTAssertEqual(defaults.double(forKey: "thumbnailFontScale"), 0.7)
     }
+    func testMeaningRelativeSizeAndExplicitOverridesSurviveLegacyControlEdits() {
+        let name = "ProfileRelative.\(UUID())", defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        let store = OutputProfileStore(defaults: defaults)
+        var audience = store.audience
+        audience.typography.size = 100
+        store.update(audience)
+        XCTAssertEqual(store.audience.typography(for: .meaning).size, 50)
+        audience.componentTypography[.meaning]?.size = 72
+        store.update(audience)
+        defaults.set(1.5, forKey: "presentationFontScale")
+        store.importLegacyAudience()
+        XCTAssertEqual(store.audience.typography.size, 126)
+        XCTAssertEqual(store.audience.typography(for: .meaning).size, 72)
+        store.flush()
+    }
     func testCorruptOrFutureDataIsRetainedUntilExplicitRecovery() throws {
         let name = "Profiles.\(UUID())", defaults = UserDefaults(suiteName: name)!
         defer { defaults.removePersistentDomain(forName: name) }
@@ -55,5 +71,25 @@ final class OutputProfileTests: XCTestCase {
         let base = OutputTypography(fontName: "Requested font", size: 70)
         XCTAssertEqual(OutputTypographyOverride(italic: true).resolve(inheriting: base).fontName, base.fontName)
         XCTAssertEqual(OutputTypographyOverride(italic: true).resolve(inheriting: base).size, 70)
+    }
+}
+
+@MainActor
+final class OutputProfileRecoveryTests: XCTestCase {
+    func testUnsupportedVersionRecoversEveryMonitorAssignmentWithoutEnablingOutputs() throws {
+        let name = "ProfilesRecovery.\(UUID())", defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        var doc = OutputProfileMigration.migrate(defaults: nil, monitor: .init(identity: UUID().uuidString, name: "Audience"))
+        doc.destinations.append(.init(name: "Confidence", profileID: doc.profiles[1].id, monitor: .init(identity: UUID().uuidString, name: "Confidence")))
+        doc.version = 99
+        let original = try JSONEncoder().encode(doc)
+        defaults.set(original, forKey: OutputProfileStore.key)
+        let store = OutputProfileStore(defaults: defaults)
+        XCTAssertNotNil(store.recoveryNotice)
+        XCTAssertEqual(store.document.destinations.map(\.monitor), doc.destinations.map(\.monitor))
+        XCTAssertEqual(store.document.destinations.map(\.id), doc.destinations.map(\.id))
+        XCTAssertTrue(store.document.destinations.allSatisfy { !$0.enabled })
+        XCTAssertFalse(store.document.receiverEnabled)
+        store.flush(); XCTAssertEqual(defaults.data(forKey: OutputProfileStore.key), original)
     }
 }
