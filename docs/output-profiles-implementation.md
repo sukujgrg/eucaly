@@ -138,8 +138,13 @@ deferred Current refreshes share webpage preflight; rejected media does not leak
 into native output or AltView’s last-presented window report. Capture permission and physical
 multi-monitor delivery remain in the rehearsal scope below.
 
-Manage Outputs is shared between the display menu and App Settings, where its tab
-uses the same name. The toolbar Appearance/Background menus have been removed;
+Manage Outputs in the display menu and unavailable-monitor alert selects its tab
+in App Settings and calls SwiftUI's native openSettings action. SwiftUI owns the
+Settings window; the separate output-settings sheet and its presentation state
+have been removed. This follows Apple's documented selected-tab/openSettings
+pattern and the existing AltView Connection Settings action. See Apple's
+[OpenSettingsAction documentation](https://developer.apple.com/documentation/swiftui/opensettingsaction).
+The toolbar Appearance/Background menus have been removed;
 thumbnail font and card sizes remain in General settings. All profile editor
 disclosure headers expand from their label and full row. Built-in profiles are
 Audience, Confidence and Lower Third. Legacy Meaning/Translation factory profiles
@@ -167,7 +172,7 @@ failures. Subsequent complete runs passed that suite without changing its TLS
 implementation. Release tests deliberately exercise failing fake signing paths;
 those expected messages are not release attempts.
 
-Final validation on 2026-10-12:
+Final validation on 2026-10-13:
 
 - `make test` passed: 372 XCTest cases, one Swift Testing case, seven offline
   update-feed tests and 97 offline release-workflow tests, all with zero failures.

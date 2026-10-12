@@ -6,6 +6,8 @@ import Combine
 
 public struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.openSettings) private var openSettings
+    @AppStorage("settingsTab") private var settingsTab = "general"
     @State private var workspaceCommands = OutputWorkspaceCommands()
     @State private var lyricsEditor = LyricsEditorSession()
     @State private var lyricsEditorFocusController = PlainTextEditorFocusController()
@@ -62,7 +64,6 @@ public struct ContentView: View {
     @State private var libraryLoadFailure: LibraryLoadFailure?
     @State private var libraryRevision: Int = 0
     @State private var displayedLibraryRootURL: URL? = nil
-    @State private var isProjectionSettingsPresented = false
     @State private var lyricsProjectionSize: CGSize?
     @FocusState private var focusedDetailTarget: DetailFocusTarget?
     @State private var securityScopedRoot: URL? = nil
@@ -432,35 +433,28 @@ public struct ContentView: View {
                 Button("Identify Selected Monitor") { projectionDisplays.identify(target) }
                     .disabled(!projectionDisplays.canIdentify(target))
             }
-            Button("Manage Outputs…") { isProjectionSettingsPresented = true }
+            Button("Manage Outputs…", action: showOutputSettings)
         } label: {
             Label("Projection Screen", systemImage: "display")
         }
         .labelStyle(.iconOnly)
         .buttonStyle(.bordered)
         .help("Projection: \(projectionDisplays.selectionLabel). Manage outputs, appearance and monitors.")
-        .sheet(isPresented: $isProjectionSettingsPresented) {
-            VStack(spacing: 0) {
-                OutputSettingsView(coordinator: session.outputCoordinator)
-                HStack {
-                    Spacer()
-                    Button("Done") { isProjectionSettingsPresented = false }
-                        .keyboardShortcut(.defaultAction)
-                }
-                .padding()
-            }
-            .frame(width: 560, height: 500)
-        }
         .alert(projectionDisplays.target == nil ? "Choose a Projection Monitor" : "Projection Monitor Unavailable",
                isPresented: Binding(
             get: { session.projectionDisplayIssue != nil },
             set: { if !$0 { session.projectionDisplayIssue = nil } }
         )) {
-            Button("Manage Outputs…") { isProjectionSettingsPresented = true }
+            Button("Manage Outputs…", action: showOutputSettings)
             Button("OK", role: .cancel) { }
         } message: {
             Text(session.projectionDisplayIssue ?? "")
         }
+    }
+
+    private func showOutputSettings() {
+        settingsTab = "projection"
+        openSettings()
     }
 
     private func handleRootOnAppear() {
