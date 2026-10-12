@@ -139,6 +139,10 @@ final class PresentationSession: NSObject, ObservableObject {
     private var outputChangeScheduled = false
     private var outputProjectionRequested = false
 
+    var hasProjectionContent: Bool {
+        !isEmpty || hasAvailableBackgroundVisual || outputCoordinator.hasEnabledConfidenceOutput
+    }
+
     var canSendCurrentToAltView: Bool {
         isPresenting && areSlidesVisible && (!outputCoordinator.isRunning ||
             (outputCoordinator.localSession === self && outputCoordinator.liveSlide?.id == currentSlide?.id))

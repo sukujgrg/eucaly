@@ -186,7 +186,7 @@ final class PresentationFlowController: ObservableObject {
             return
         }
 
-        guard !session.isEmpty || session.hasAvailableBackgroundVisual else { return }
+        guard session.hasProjectionContent else { return }
 
         selectCurrentSlideForPresentationStart(in: session)
         session.showSlides()

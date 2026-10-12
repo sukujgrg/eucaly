@@ -986,7 +986,7 @@ public struct ContentView: View {
     }
 
     private var canToggleSlides: Bool {
-        session.isPresenting || !session.isEmpty || session.hasAvailableBackgroundVisual
+        session.isPresenting || session.hasProjectionContent
     }
 
     private func buildPDFSlides(pageCount: Int, url: URL) -> [Slide] {

@@ -64,7 +64,11 @@ struct OutputSettingsView: View {
                         }.controlSize(.small)
                         if let profile = store.profile(destination.profileID), let target = destination.monitor,
                            let monitor = coordinator.displays.resolve(target) {
-                            OutputReadabilityProbe(content: coordinator.text, profile: profile, size: monitor.frame.size)
+                            if profile.kind == .confidence {
+                                OutputConfidenceReadabilityProbe(snapshot: coordinator.snapshot, profile: profile, size: monitor.frame.size)
+                            } else {
+                                OutputReadabilityProbe(content: coordinator.text, profile: profile, size: monitor.frame.size)
+                            }
                         }
                     }.padding(.vertical, 4)
                 }
@@ -125,7 +129,10 @@ private struct OutputProfileEditor: View {
                     Picker("Alignment", selection: $profile.alignment) { Text("Left").tag("left"); Text("Centre").tag("center"); Text("Right").tag("right") }
                     Picker("Position", selection: $profile.position) { Text("Top").tag("top"); Text("Middle").tag("middle"); Text("Bottom").tag("bottom") }
                     Slider(value: $profile.padding, in: 0...2) { Text("Padding") }
-                    Toggle("Timer and clock", isOn: $profile.includesOverlay)
+                    Toggle(profile.kind == .confidence ? "Timer and clock over content" : "Timer and clock", isOn: $profile.includesOverlay)
+                    if profile.kind == .confidence {
+                        Text("When Confidence has no visible content, it always shows a large centered clock.").font(.callout).foregroundStyle(.secondary)
+                    }
                     DisclosureGroup("Text Components") {
                         ForEach(OutputComponentRole.allCases, id: \.self) { role in
                             Toggle(role.rawValue.capitalized, isOn: Binding(get: { profile.roles.contains(role) }, set: { selected in

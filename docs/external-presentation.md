@@ -71,7 +71,8 @@ ownership. Present is the sole external takeover action.
 `hide`, `clear`, and `release` carry the current lease and a fresh `actionID`.
 They return a correlated `accepted` or `rejected`. All revoke the lease; Hide and
 Release hide foreground text and media in every profile, including Confidence.
-The last-presented snapshot is retained privately until Clear removes it. No former source
+Confidence shows a large centered idle clock while program content is hidden or
+empty. The last-presented snapshot is retained privately until Clear removes it. No former source
 resumes. A new explicit Present is required to present again.
 
 `ownership` reports current connection authority separately from `readiness`,

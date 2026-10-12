@@ -107,7 +107,11 @@ final class OutputProfileReviewTests: XCTestCase {
                 windowNumber: commandWindow.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
             commandWindow.keyDown(with: escape)
             await settle()
-            XCTAssertEqual(try brightSamples(view), 0, "\(kind) must hide all foreground, including Confidence labels and inactive overlays")
+            if kind == .confidence {
+                try assertCenteredClock(view)
+            } else {
+                XCTAssertEqual(try brightSamples(view), 0, "\(kind) must hide all foreground and inactive overlays")
+            }
             XCTAssertTrue(outputs.isRunning); XCTAssertEqual(session.currentSlideID, slides[0].id)
             XCTAssertNil(outputs.ownership.source)
             session.showSlides(); await settle()
@@ -209,9 +213,13 @@ final class OutputProfileReviewTests: XCTestCase {
             outputs.profiles.update(profile)
         }
         await settle()
-        for (_, view) in hosts {
-            XCTAssertEqual(try brightSamples(view), 0, "Each profile can opt out of an enabled clock")
-            XCTAssertTrue(descendants(view).compactMap { $0 as? AVPlayerView }.isEmpty)
+        for (index, pair) in hosts.enumerated() {
+            if outputs.profiles.profile(outputs.profiles.document.destinations[index].profileID)?.kind == .confidence {
+                try assertCenteredClock(pair.1)
+            } else {
+                XCTAssertEqual(try brightSamples(pair.1), 0, "Other profiles can opt out of an enabled clock")
+            }
+            XCTAssertTrue(descendants(pair.1).compactMap { $0 as? AVPlayerView }.isEmpty)
         }
     }
 
@@ -226,6 +234,103 @@ final class OutputProfileReviewTests: XCTestCase {
         XCTAssertEqual(session.outputSnapshot.slide?.id, previous.id, "AltView identity and content must describe the actual presented slide")
         XCTAssertFalse(session.canSendCurrentToAltView)
         XCTAssertNotNil(outputs.issue)
+    }
+
+    func testIdleConfidenceClockIsAutomaticAfterEmptyShowClearAndExternalHide() async throws {
+        let (outputs, session, destination) = setup(.confidence); defer { outputs.stop() }
+        var profile = try XCTUnwrap(outputs.profiles.profile(outputs.profiles.document.destinations[0].profileID))
+        profile.includesOverlay = false; outputs.profiles.update(profile)
+        XCTAssertTrue(session.hasProjectionContent)
+        PresentationFlowController().toggleSlidesVisibility(in: session)
+        XCTAssertTrue(outputs.isRunning, "The toolbar flow must open an idle Confidence output without a slide")
+        let (window, view) = host(outputs, destination: destination); defer { window.close() }
+        await settle(); try assertCenteredClock(view)
+        XCTAssertFalse(session.isTimeOverlayVisible)
+        profile.includesOverlay = true; outputs.profiles.update(profile)
+        session.setOverlayMode(.clock); await settle(); try assertCenteredClock(view)
+        session.setOverlayMode(.hidden); await settle()
+        outputs.stop(); outputs.toggleSlides(); await settle(); try assertCenteredClock(view)
+        XCTAssertTrue(outputs.isRunning, "The app command must also open the idle clock without a slide")
+        let connection = UUID()
+        let message = ExternalPresentationMessage(kind: .present, sourceID: UUID(), actionID: UUID(), revision: 1,
+            current: .init(components: [.init(role: .primary, text: "External content")]))
+        let lease = try outputs.presentExternal(connection: connection, name: "Do not project this source name", message: message)
+        await settle(); XCTAssertFalse(OutputConfidenceContent(snapshot: outputs.snapshot, profile: profile).isIdle)
+        XCTAssertTrue(outputs.externalControl(connection: connection, message: .init(kind: .hide, actionID: UUID(), lease: lease)))
+        await settle(); try assertCenteredClock(view)
+        XCTAssertNil(outputs.ownership.source)
+        session.setSlides(LyricsParser.parseDocument("Verse\nPrivate Current").slides)
+        await settle(); try assertCenteredClock(view)
+        session.showSlides(); await settle()
+        XCTAssertFalse(OutputConfidenceContent(snapshot: outputs.snapshot, profile: profile).isIdle)
+        session.clearSlides(); await settle(); try assertCenteredClock(view)
+        XCTAssertTrue(session.isEmpty); XCTAssertTrue(outputs.isRunning)
+        try bitmap(view).representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/eucaly-confidence-idle-clock.png"))
+    }
+
+    func testConfidenceCurrentAndNextUseSeparateFullHeightColumnsWithoutSourceHeader() async throws {
+        let (outputs, session, destination) = setup(.confidence); defer { outputs.stop() }
+        let slides = LyricsParser.parseDocument("Verse 1\nCurrent words\n\nVerse 2\nUpcoming words").slides
+        session.setSlides(slides); session.showSlides()
+        let profile = try XCTUnwrap(outputs.profiles.profile(outputs.profiles.document.destinations[0].profileID))
+        let content = OutputConfidenceContent(snapshot: outputs.snapshot, profile: profile)
+        XCTAssertNotNil(content.next); XCTAssertFalse(content.isIdle)
+        XCTAssertEqual(OutputConfidenceContent.labeled(content.current, profile: profile).components.first?.text, "Current words")
+        var custom = profile; custom.componentTypography[.meaning] = .init(size: 60, italic: true)
+        let nextStyle = OutputConfidenceContent.nextProfile(custom)
+        XCTAssertEqual(nextStyle.typography.size, custom.typography.size * 0.8)
+        XCTAssertEqual(nextStyle.typography(for: .meaning).size, 48)
+        XCTAssertTrue(nextStyle.typography(for: .meaning).italic)
+        XCTAssertEqual(custom.componentTypography[.meaning]?.size, 60, "Presentation scaling must not rewrite saved profile settings")
+        let size = CGSize(width: 960, height: 540)
+        let geometry = OutputConfidenceGeometry(size: size, hasNext: true, hasPlayback: false)
+        XCTAssertGreaterThan(geometry.currentSize.width, geometry.nextSize.width)
+        XCTAssertEqual(geometry.currentSize.height, geometry.nextSize.height)
+        XCTAssertEqual(geometry.currentSize.width + geometry.nextSize.width + geometry.spacing * 2 + 1, geometry.width, accuracy: 0.01)
+        let full = OutputConfidenceGeometry(size: size, hasNext: false, hasPlayback: false)
+        XCTAssertEqual(full.currentSize.width, full.width); XCTAssertEqual(full.nextSize.width, 0)
+        let (window, view) = host(outputs, destination: destination); defer { window.close() }
+        window.setContentSize(size); await settle()
+        let rendered = try bitmap(view)
+        for range in [0..<(rendered.pixelsWide / 2), (rendered.pixelsWide * 3 / 4)..<rendered.pixelsWide] {
+            let headerPixels = stride(from: 0, to: rendered.pixelsHigh / 5, by: 3).reduce(0) { count, y in
+                count + stride(from: range.lowerBound, to: range.upperBound, by: 3).filter { x in
+                    guard let colour = rendered.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { return false }
+                    return colour.redComponent > 0.6 && colour.greenComponent > 0.6 && colour.blueComponent > 0.6
+                }.count
+            }
+            XCTAssertGreaterThan(headerPixels, 0, "Current and Next must retain compact labels in their own columns")
+        }
+        let original = rendered.representation(using: .png, properties: [:])
+        // The sender name remains operator metadata and must not occupy stage pixels.
+        let connection = UUID()
+        var message = ExternalPresentationMessage(kind: .present, sourceID: UUID(), actionID: UUID(), revision: 1,
+            current: outputs.snapshot.current, next: outputs.snapshot.next)
+        _ = try outputs.presentExternal(connection: connection, name: "Unneeded source header", message: message)
+        await settle()
+        XCTAssertEqual(original, try bitmap(view).representation(using: .png, properties: [:]))
+        message.actionID = UUID(); message.revision = 2
+        _ = try outputs.presentExternal(connection: connection, name: "A different source header", message: message)
+        await settle()
+        XCTAssertEqual(original, try bitmap(view).representation(using: .png, properties: [:]))
+        try original?.write(to: URL(fileURLWithPath: "/tmp/eucaly-confidence-columns.png"))
+    }
+
+    private func assertCenteredClock(_ view: NSView, file: StaticString = #filePath, line: UInt = #line) throws {
+        let bitmap = try bitmap(view)
+        var minX = bitmap.pixelsWide, maxX = 0, minY = bitmap.pixelsHigh, maxY = 0
+        for y in stride(from: 0, to: bitmap.pixelsHigh, by: 3) {
+            for x in stride(from: 0, to: bitmap.pixelsWide, by: 3) {
+                guard let colour = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB),
+                      colour.redComponent > 0.6, colour.greenComponent > 0.6, colour.blueComponent > 0.6 else { continue }
+                minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
+            }
+        }
+        XCTAssertGreaterThan(maxX - minX, Int(Double(bitmap.pixelsWide) * 0.45), "Idle clock must be large enough for the stage", file: file, line: line)
+        XCTAssertGreaterThan(maxY - minY, Int(Double(bitmap.pixelsHigh) * 0.18), file: file, line: line)
+        XCTAssertEqual(Double(minX + maxX) / 2, Double(bitmap.pixelsWide) / 2, accuracy: Double(bitmap.pixelsWide) * 0.05, file: file, line: line)
+        XCTAssertEqual(Double(minY + maxY) / 2, Double(bitmap.pixelsHigh) / 2, accuracy: Double(bitmap.pixelsHigh) * 0.05, file: file, line: line)
+        XCTAssertGreaterThan(minY, bitmap.pixelsHigh / 4, "No source/header text should remain above the idle clock", file: file, line: line)
     }
 
     private func setup(_ kind: OutputProfile.Kind) -> (OutputCoordinator, PresentationSession, UUID) {

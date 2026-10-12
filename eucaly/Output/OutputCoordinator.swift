@@ -56,6 +56,9 @@ final class OutputCoordinator: ObservableObject {
     }
     private(set) var overlaySession: PresentationSession?
     var isRunning: Bool { !windows.isEmpty }
+    var hasEnabledConfidenceOutput: Bool {
+        profiles.document.destinations.contains { $0.enabled && profiles.profile($0.profileID)?.kind == .confidence }
+    }
     var isExternal: Bool { if case .external = ownership.source { return true }; return false }
     var onReadinessChange: (() -> Void)?
 
@@ -83,7 +86,7 @@ final class OutputCoordinator: ObservableObject {
     func focusWorkspace(_ session: PresentationSession) { preferredLocalSession = session }
     func toggleSlides() {
         if isRunning && visible { hide() }
-        else if let session = preferredLocalSession, isRunning || !session.isEmpty || session.hasAvailableBackgroundVisual { session.showSlides() }
+        else if let session = preferredLocalSession, isRunning || session.hasProjectionContent { session.showSlides() }
     }
     func clearBackgrounds() {
         let clearsAudience = profiles.document.destinations.contains { $0.enabled && $0.profileID == profiles.audience.id }

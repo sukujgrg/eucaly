@@ -58,10 +58,12 @@ webpage delivery is explicitly rejected before takeover.
 
 `OutputCompositionView` implements Audience, Confidence, Meaning, Translation and
 Lower Third through native text/media layers pinned to identical geometry.
-Confidence includes current/next component labels, source, controlled clocks and
-countdowns, native media and playback status. Images, PDFs, videos and picked
+Confidence places Current in the left two-thirds and Next in the right third,
+using slightly smaller Next text. It has no source-name header. Component labels,
+controlled timers, native media and playback status remain. Images, PDFs, videos and picked
 windows render in every enabled profile. Hide/Escape makes every foreground
-invisible, including Confidence; local Current and independent layers remain. Missing companions collapse and never inherit
+invisible; Confidence shows its automatic idle clock while local Current and
+independent layers remain. Missing companions collapse and never inherit
 primary verse text. Native Text shapes and fits the selected fonts, including
 multilingual fallback; requested settings remain intact. Appearance controls use
 native Forms, Pickers, colour controls and NSFontPanel. Font fallback and
@@ -95,9 +97,21 @@ workspace/group; inactive controls cannot accidentally reclaim output.
 ## Operator review corrections
 
 The 2026-10-12 operator review supersedes the earlier Confidence Hidden/status-only
-behavior. Escape now hides text, media, labels and source chrome in all profiles.
-TimeOverlay applies its own session visibility check, including an unstarted or
-stopped countdown. Profile overlay opt-out remains independent.
+behavior. Escape hides program text/media and labels in all profiles. An open
+Confidence output replaces empty, cleared or hidden content with a large centered
+24-hour clock, including when its optional overlay setting is off. A dark backing
+keeps its bold white digits legible against profile backgrounds. The optional
+small clock is suppressed while idle to avoid duplicate clocks; an explicitly
+running countdown remains independent. Explicit Show can open an idle Confidence
+output with no Current slide. Startup and browsing never open it automatically,
+and Stop still closes the window.
+
+Live Confidence uses full-height Current/Next columns, roughly 68%/32%, with no
+source-name bar. Current expands when Next is absent. Next text requests 80% of the
+configured font size, including explicit component overrides, without rewriting
+saved settings. A lone primary text component needs no redundant role label.
+Native fitting and readability probes use the same labeled text and column boxes.
+TimeOverlay still respects hidden or inactive countdown controls.
 
 The output picker, toolbar and monitor settings share saved assignment constraints.
 A monitor used by an enabled output cannot be selected for another enabled row,
@@ -111,7 +125,7 @@ background upgrades once; customized backgrounds and later explicit choices are
 preserved.
 
 The media renderer is shared by all five profiles. Confidence places actual native
-media in its Current pane and reserves space for chrome/playback/optional Next;
+media in its Current pane and reserves space for headings/playback/optional Next;
 other profiles present media over their full frame. Every video view uses the one
 program AVPlayer; picked-window views join the existing shared capture. Text role
 filters continue to apply only to text. Webpages still have one Audience playback
@@ -148,7 +162,7 @@ those expected messages are not release attempts.
 
 Final validation on 2026-10-12:
 
-- `make test` passed: 369 XCTest cases, one Swift Testing case, seven offline
+- `make test` passed: 371 XCTest cases, one Swift Testing case, seven offline
   update-feed tests and 97 offline release-workflow tests, all with zero failures.
 - `make build` archived and exported the final source to `~/Applications/eucaly.app`.
 - The exported executable is arm64, its minimum macOS version is 14.0, and strict
