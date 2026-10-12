@@ -58,8 +58,10 @@ webpage delivery is explicitly rejected before takeover.
 
 `OutputCompositionView` implements Audience, Confidence, Meaning, Translation and
 Lower Third through native text/media layers pinned to identical geometry.
-Confidence includes current/next component labels, source, Hidden state, clocks,
-countdown and media/playback status. Missing companions collapse and never inherit
+Confidence includes current/next component labels, source, controlled clocks and
+countdowns, native media and playback status. Images, PDFs, videos and picked
+windows render in every enabled profile. Hide/Escape makes every foreground
+invisible, including Confidence; local Current and independent layers remain. Missing companions collapse and never inherit
 primary verse text. Native Text shapes and fits the selected fonts, including
 multilingual fallback; requested settings remain intact. Appearance controls use
 native Forms, Pickers, colour controls and NSFontPanel. Font fallback and
@@ -90,6 +92,35 @@ the external source’s Audience window identity. Local Show/activation resumes
 the existing takeover path. App commands and native window keys use the active
 workspace/group; inactive controls cannot accidentally reclaim output.
 
+## Operator review corrections
+
+The 2026-10-12 operator review supersedes the earlier Confidence Hidden/status-only
+behavior. Escape now hides text, media, labels and source chrome in all profiles.
+TimeOverlay applies its own session visibility check, including an unstarted or
+stopped countdown. Profile overlay opt-out remains independent.
+
+The output picker, toolbar and monitor settings share saved assignment constraints.
+An assigned monitor cannot be selected for another row, even while projection is
+stopped. Existing duplicate enabled assignments are retained for correction, shown
+as unavailable, and rejected before local/external takeover or window creation.
+Disabled rows retain their assignments until explicitly cleared or removed.
+
+The media renderer is shared by all five profiles. Confidence places actual native
+media in its Current pane and reserves space for chrome/playback/optional Next;
+other profiles present media over their full frame. Every video view uses the one
+program AVPlayer; picked-window views join the existing shared capture. Text role
+filters continue to apply only to text. Webpages still have one Audience playback
+owner; companion outputs report that boundary explicitly rather than duplicating
+WebKit playback, and a webpage without an available Audience output is rejected.
+
+Regressions exercise real native Escape routing and rendered pixels, image/PDF
+views in each profile, shared native video views, timer controls and profile opt-out,
+all assignment entry points and persisted conflicts. Confidence playback status
+observes pause directly instead of waiting for a progress tick. Explicit and
+deferred Current refreshes share webpage preflight; rejected media does not leak
+into native output or AltView’s last-presented window report. Capture permission and physical
+multi-monitor delivery remain in the rehearsal scope below.
+
 ## Validation record
 
 Required validation uses `make test`, including all app tests and offline
@@ -112,7 +143,7 @@ those expected messages are not release attempts.
 
 Final validation on 2026-10-12:
 
-- `make test` passed: 359 XCTest cases, one Swift Testing case, seven offline
+- `make test` passed: 366 XCTest cases, one Swift Testing case, seven offline
   update-feed tests and 97 offline release-workflow tests, all with zero failures.
 - `make build` archived and exported the final source to `~/Applications/eucaly.app`.
 - The exported executable is arm64, its minimum macOS version is 14.0, and strict

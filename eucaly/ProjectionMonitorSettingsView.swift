@@ -22,7 +22,7 @@ struct ProjectionMonitorSettingsView: View {
                     ForEach(displays.displays) { display in
                         Text(displays.label(for: display.target) + (display.isBuiltIn ? " · Built-in" : ""))
                             .tag(display.target.identity)
-                            .disabled(displays.problem(for: display.target) != nil)
+                            .disabled(displays.selectionProblem(for: display.target) != nil)
                     }
                     if let target = displays.target,
                        !displays.displays.contains(where: { $0.identity == target.identity }) {

@@ -473,7 +473,7 @@ public struct ContentView: View {
                     Label(projectionDisplays.label(for: display.target),
                           systemImage: projectionDisplays.target?.identity == display.identity ? "checkmark" : "display")
                 }
-                .disabled(projectionDisplays.isLocked || projectionDisplays.problem(for: display.target) != nil)
+                .disabled(projectionDisplays.isLocked || projectionDisplays.selectionProblem(for: display.target) != nil)
             }
             Divider()
             if let target = projectionDisplays.target {

@@ -24,6 +24,7 @@ struct OutputSettingsView: View {
                 }
             }
             Section("Outputs") {
+                Text("Each output needs its own monitor. Monitors assigned to another output cannot be selected.").font(.callout).foregroundStyle(.secondary)
                 ForEach(store.document.destinations) { destination in
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
@@ -37,20 +38,21 @@ struct OutputSettingsView: View {
                         }
                         Picker("Monitor", selection: Binding(get: { destination.monitor?.identity ?? "" }, set: { id in
                             let target = coordinator.displays.displays.first { $0.identity == id }?.target
-                            store.edit { doc in if let index = doc.destinations.firstIndex(where: { $0.id == destination.id }) { doc.destinations[index].monitor = target } }
-                            if destination.id == store.document.destinations.first?.id {
-                                if let target { coordinator.displays.select(target) } else { coordinator.displays.clearSelection() }
-                            }
+                            coordinator.assignMonitor(target, to: destination.id)
                         })) {
                             Text("Choose a monitor…").tag("")
                             ForEach(coordinator.displays.displays) { display in
                                 Text(coordinator.displays.label(for: display.target)).tag(display.target.identity)
-                                    .disabled(coordinator.displays.problem(for: display.target) != nil)
+                                    .disabled(coordinator.monitorAssignmentProblem(for: display.target, destinationID: destination.id) != nil)
                             }
                             if let target = destination.monitor, coordinator.displays.resolve(target) == nil {
                                 Text("\(target.name) · Unavailable").tag(target.identity)
                             }
                         }.disabled(coordinator.isRunning)
+                        if let target = destination.monitor,
+                           let problem = store.monitorAssignmentProblem(for: target, excluding: destination.id) {
+                            Label(problem, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange)
+                        }
                         HStack {
                             Button("Appearance…") { editing = store.profile(destination.profileID) }
                             Button("Clear Background") {

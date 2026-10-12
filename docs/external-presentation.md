@@ -70,8 +70,8 @@ ownership. Present is the sole external takeover action.
 
 `hide`, `clear`, and `release` carry the current lease and a fresh `actionID`.
 They return a correlated `accepted` or `rejected`. All revoke the lease; Hide and
-Release hide slide text while Confidence retains an immutable last-presented
-snapshot marked Hidden. Clear removes that retained text. No former source
+Release hide foreground text and media in every profile, including Confidence.
+The last-presented snapshot is retained privately until Clear removes it. No former source
 resumes. A new explicit Present is required to present again.
 
 `ownership` reports current connection authority separately from `readiness`,
@@ -85,8 +85,7 @@ reconnected client cannot update or clear a newer source with an old lease.
 Eucaly keeps its Preview and Current throughout external presentation. Local
 Show, live Load/Switch Current, visible Current navigation, and same-slide
 activation reclaim the group. Hidden navigation is private. Clear Current
-revokes external ownership and clears text. Escape/Hide freezes hidden Confidence
-text; Stop closes managed windows and revokes all ownership. Group Clear
+revokes external ownership and clears text. Escape/Hide hides foreground content on every profile; Stop closes managed windows and revokes all ownership. Group Clear
 Background Visual clears enabled profile assets; Clear All Layers also hides text
 and clears eucaly's independent background audio. Background videos are muted.
 Closing or losing one destination stops only that window and does not fall back

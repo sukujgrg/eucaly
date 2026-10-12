@@ -65,6 +65,10 @@ final class OutputCoordinator: ObservableObject {
         self.retainsPreparedSessions = retainsPreparedSessions
         self.profiles = profiles; self.displays = displays
         self.sleepPrevention = sleepPrevention; self.driverFactory = driverFactory
+        displays.selectionConstraint = { [weak profiles] target in
+            guard let profiles, let primary = profiles.document.destinations.first else { return nil }
+            return profiles.monitorAssignmentProblem(for: target, excluding: primary.id)
+        }
         displayObservation = displays.observe { [weak self] in self?.displaysChanged() }
         profileObservation = profiles.observe { [weak self] in self?.profilesChanged() }
         stopObserver = NotificationCenter.default.addObserver(forName: .stopProjection, object: nil, queue: .main) { [weak self] _ in
@@ -105,13 +109,9 @@ final class OutputCoordinator: ObservableObject {
     func presentLocal(_ session: PresentationSession, show: Bool = true) -> Bool {
         _ = actionClock.next()
         let order = ownership.beginAction()
-        if session.currentSlide?.webpageURL != nil {
-            let audience = profiles.document.destinations.filter { $0.enabled && profiles.profile($0.profileID)?.kind == .audience }
-            if audience.count > 1 {
-                issue = "Live webpages support one Audience output. Disable the extra Audience output or use a companion profile."
-                session.projectionDisplayIssue = issue
-                return false
-            }
+        if let problem = localPresentationProblem(for: session.currentSlide) {
+            issue = problem; session.projectionDisplayIssue = problem
+            return false
         }
         guard openDestinations() else { session.projectionDisplayIssue = issue; return false }
         let previous = localSession
@@ -125,8 +125,22 @@ final class OutputCoordinator: ObservableObject {
         changed()
         return true
     }
+    private func localPresentationProblem(for slide: Slide?) -> String? {
+        guard slide?.webpageURL != nil else { return nil }
+        let audience = profiles.document.destinations.filter { $0.enabled && profiles.profile($0.profileID)?.kind == .audience }
+        if audience.count > 1 { return "Live webpages support one Audience output. Disable the extra Audience output or use a companion profile." }
+        if !audience.contains(where: { $0.monitor.flatMap { displays.resolve($0) } != nil }) {
+            return "Live webpages need an enabled Audience output with an available monitor."
+        }
+        return nil
+    }
     func passiveLocal(_ session: PresentationSession) {
         guard ownership.source == .local(session.outputSourceID) else { return }
+        // A deferred model refresh must not bypass the same media preflight as Show.
+        if let problem = localPresentationProblem(for: session.currentSlide) {
+            issue = problem; session.projectionDisplayIssue = problem
+            return
+        }
         liveSlide = session.currentSlide; updateText(from: session); changed()
     }
     private func updateText(from session: PresentationSession) {
@@ -174,10 +188,31 @@ final class OutputCoordinator: ObservableObject {
         guard case .external(let owner, _) = ownership.source, owner == connection else { return }
         hide()
     }
+    func monitorAssignmentProblem(for target: ProjectionMonitorTarget, destinationID: UUID) -> String? {
+        displays.problem(for: target) ?? profiles.monitorAssignmentProblem(for: target, excluding: destinationID)
+    }
+    @discardableResult
+    func assignMonitor(_ target: ProjectionMonitorTarget?, to destinationID: UUID) -> Bool {
+        guard !isRunning, profiles.document.destinations.contains(where: { $0.id == destinationID }) else { return false }
+        if let target, let problem = monitorAssignmentProblem(for: target, destinationID: destinationID) {
+            issue = problem
+            return false
+        }
+        if destinationID == profiles.document.destinations.first?.id {
+            guard target.map({ displays.select($0) }) ?? displays.clearSelection() else { return false }
+        }
+        profiles.edit { doc in
+            if let index = doc.destinations.firstIndex(where: { $0.id == destinationID }) { doc.destinations[index].monitor = target }
+        }
+        issue = profiles.monitorConflictNotice
+        return true
+    }
     func destinationStatuses() -> [ExternalDestinationStatus] {
-        profiles.document.destinations.filter(\.enabled).map { destination in
+        let conflicts = profiles.conflictingDestinationIDs
+        return profiles.document.destinations.filter(\.enabled).map { destination in
             let state: OutputReadiness
-            if let target = destination.monitor, displays.resolve(target) != nil {
+            if conflicts.contains(destination.id) { state = .unavailable }
+            else if let target = destination.monitor, displays.resolve(target) != nil {
                 state = windows[destination.id] != nil ? .ready : displays.isReserved(target) ? .unavailable : .closed
             } else { state = .displayMissing }
             return .init(id: destination.id, name: destination.name, profileID: destination.profileID, readiness: state)
@@ -200,7 +235,7 @@ final class OutputCoordinator: ObservableObject {
         cancelPendingLocalRequests()
         ownership.revoke()
         visible = false
-        // Retain a frozen last-presented value for Confidence; updates are revoked.
+        // Keep the last-presented snapshot private while every foreground is hidden.
         changed()
         localSession?.emitOutputEvent(.changed(localSession!.outputSnapshot))
     }
@@ -237,6 +272,11 @@ final class OutputCoordinator: ObservableObject {
     private func openDestinations(activate: Bool = true) -> Bool {
         displays.refresh()
         issue = nil
+        if let conflict = profiles.monitorConflictNotice {
+            issue = conflict
+            for id in profiles.conflictingDestinationIDs { readiness[id] = .unavailable }
+            return false
+        }
         for destination in profiles.document.destinations where destination.enabled {
             guard windows[destination.id] == nil else { continue }
             guard let target = destination.monitor, let monitor = displays.resolve(target) else {
@@ -256,6 +296,7 @@ final class OutputCoordinator: ObservableObject {
         sleepPrevention.start(); return true
     }
     private func profilesChanged() {
+        issue = profiles.monitorConflictNotice
         for id in Array(windows.keys) {
             guard let config = profiles.document.destinations.first(where: { $0.id == id }), config.enabled,
                   config.monitor == targets[id] else { closeDestination(id); continue }

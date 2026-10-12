@@ -49,6 +49,21 @@ final class OutputProfileStore: ObservableObject {
     }
     private enum StoreError: Error { case invalid }
     func profile(_ id: UUID) -> OutputProfile? { document.profiles.first { $0.id == id } }
+    func monitorAssignmentProblem(for target: ProjectionMonitorTarget, excluding destinationID: UUID) -> String? {
+        guard let other = document.destinations.first(where: { $0.id != destinationID && $0.monitor?.identity == target.identity }) else { return nil }
+        return "This monitor is assigned to \(other.name). Choose a different monitor or remove that assignment first."
+    }
+    var conflictingDestinationIDs: Set<UUID> {
+        let assigned = document.destinations.filter { $0.enabled && $0.monitor != nil }
+        let grouped = Dictionary(grouping: assigned, by: { $0.monitor!.identity })
+        return Set(grouped.values.filter { $0.count > 1 }.flatMap { $0.map(\.id) })
+    }
+    var monitorConflictNotice: String? {
+        let conflicts = conflictingDestinationIDs
+        guard !conflicts.isEmpty else { return nil }
+        let names = document.destinations.filter { conflicts.contains($0.id) }.map(\.name).joined(separator: ", ")
+        return "\(names) share a monitor. Assign a different monitor to each output before presenting."
+    }
     var audience: OutputProfile {
         if let destination = document.destinations.first, let profile = profile(destination.profileID), profile.kind == .audience { return profile }
         return profile(OutputProfile.audienceID) ?? document.profiles[0]

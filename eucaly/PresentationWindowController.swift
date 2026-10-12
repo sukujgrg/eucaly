@@ -140,12 +140,14 @@ final class PresentationSession: NSObject, ObservableObject {
     private var outputProjectionRequested = false
 
     var canSendCurrentToAltView: Bool {
-        isPresenting && areSlidesVisible && (!outputCoordinator.isRunning || outputCoordinator.localSession === self)
+        isPresenting && areSlidesVisible && (!outputCoordinator.isRunning ||
+            (outputCoordinator.localSession === self && outputCoordinator.liveSlide?.id == currentSlide?.id))
     }
 
     var outputSnapshot: PresentationOutputSnapshot {
         let identity = outputCoordinator.localSession === self ? outputCoordinator.audienceIdentity : (nil, nil)
-        return PresentationOutputSnapshot(slide: currentSlide, isPresenting: isPresenting, slidesVisible: areSlidesVisible,
+        let presentedSlide = outputCoordinator.localSession === self && outputCoordinator.isRunning ? outputCoordinator.liveSlide : currentSlide
+        return PresentationOutputSnapshot(slide: presentedSlide, isPresenting: isPresenting, slidesVisible: areSlidesVisible,
                                           projectionWindowID: identity.0,
                                           projectionWindowGeneration: identity.1)
     }
@@ -750,12 +752,14 @@ struct TimeOverlay: View {
     @AppStorage("overlayScale") private var overlayScale: Double = 1.0
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1.0)) { context in
-            let remaining = session.remainingCountdownSeconds(at: context.date)
-            overlayView(remaining: remaining, date: context.date)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                .padding(.trailing, 28)
-                .padding(.top, 28)
+        if session.isTimeOverlayVisible {
+            TimelineView(.periodic(from: .now, by: 1.0)) { context in
+                let remaining = session.remainingCountdownSeconds(at: context.date)
+                overlayView(remaining: remaining, date: context.date)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .padding(.trailing, 28)
+                    .padding(.top, 28)
+            }
         }
     }
 
