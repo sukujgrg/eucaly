@@ -241,6 +241,50 @@ final class OutputProfileReviewTests: XCTestCase {
         try bitmap(view).representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/eucaly-confidence-idle-clock.png"))
     }
 
+    func testConfidenceWaitsForNativeWorkspaceWindowBeforeOpeningAtLaunch() async throws {
+        let monitor = ProjectionMonitor(id: 1, identity: UUID().uuidString, name: "Stage", frame: CGRect(x: 0, y: 0, width: 1920, height: 1080))
+        let displays = ProjectionDisplayManager(displays: { [monitor] }); displays.select(monitor.target)
+        let profiles = OutputProfileStore(monitor: monitor.target)
+        profiles.edit { $0.destinations[0].profileID = OutputProfile.confidenceID }
+        let workspace = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 480, height: 270),
+                                 styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        workspace.isReleasedWhenClosed = false
+        var opens = 0
+        let outputs = OutputCoordinator(profiles: profiles, displays: displays, driverFactory: {
+            let driver = RecordingStandbyDriver()
+            driver.didOpen = { _, activate in
+                opens += 1
+                XCTAssertTrue(workspace.isVisible, "The native workspace must exist and be visible before projection opens")
+                XCTAssertFalse(activate)
+            }
+            return driver
+        })
+        let session = PresentationSession(projectionDisplays: displays, outputCoordinator: outputs)
+        let commands = OutputWorkspaceCommands()
+        let scope = OutputWorkspaceScope.ScopeView(commands: commands, session: session)
+        defer { outputs.stop(); scope.detach(); workspace.close() }
+        await settle()
+        XCTAssertEqual(opens, 0, "Constructing the runtime must not suppress SwiftUI's initial WindowGroup")
+        workspace.contentView = scope
+        workspace.orderBack(nil)
+        await settle(); XCTAssertEqual(opens, 0)
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: workspace)
+        await settle()
+        XCTAssertEqual(opens, 1)
+        XCTAssertTrue(commands.window === workspace)
+        XCTAssertTrue(outputs.isRunning); XCTAssertFalse(session.isPresenting)
+        XCTAssertNil(outputs.ownership.source)
+    }
+
+    func testProjectionCanReceiveKeysButCannotBecomeTheMainDocumentWindow() {
+        let projection = PresentationWindow(contentRect: NSRect(x: -10000, y: -10000, width: 480, height: 270),
+                                            styleMask: .borderless, backing: .buffered, defer: false)
+        projection.isReleasedWhenClosed = false
+        defer { projection.close() }
+        XCTAssertTrue(projection.canBecomeKey, "Projection keeps its native slide shortcuts")
+        XCTAssertFalse(projection.canBecomeMain, "Projection must never stand in for the app's document window")
+    }
+
     func testConfidenceAutomaticallyOpensBeforeFirstShowWithoutPublishingPrivateCurrent() async throws {
         let monitors = (1...3).map { ProjectionMonitor(id: UInt32($0), identity: UUID().uuidString, name: "Monitor", frame: CGRect(x: 0, y: 0, width: 1920, height: 1080)) }
         let displays = ProjectionDisplayManager(displays: { monitors }); displays.select(monitors[0].target)
@@ -265,6 +309,7 @@ final class OutputProfileReviewTests: XCTestCase {
         service.receive(sender.connectedStatus); service.attach(session)
         session.setSlides(LyricsParser.parseDocument("Verse\nPrivate prepared lyrics").slides)
         let selection = session.currentSlideID
+        outputs.workspaceWindowReady(session)
         await settle()
         let destination = profiles.document.destinations[1].id
         XCTAssertEqual(opened.map { $0.0 }, [destination], "Only Confidence opens automatically")
@@ -295,6 +340,7 @@ final class OutputProfileReviewTests: XCTestCase {
         defer { outputs.stop() }
         let session = PresentationSession(projectionDisplays: displays, outputCoordinator: outputs)
         let destination = profiles.document.destinations[1].id
+        outputs.workspaceWindowReady(session)
         await settle(); XCTAssertFalse(outputs.isRunning)
         profiles.edit { $0.destinations[1].enabled = true }
         await settle(); XCTAssertFalse(outputs.isRunning, "Unassigned Confidence cannot choose a fallback monitor")
@@ -322,6 +368,8 @@ final class OutputProfileReviewTests: XCTestCase {
         profiles.edit { $0.destinations.append(.init(name: "Stage", profileID: OutputProfile.confidenceID, monitor: saved)) }
         let outputs = OutputCoordinator(profiles: profiles, displays: displays, driverFactory: { FakeOutputDriver() })
         defer { outputs.stop() }
+        let session = PresentationSession(projectionDisplays: displays, outputCoordinator: outputs)
+        outputs.workspaceWindowReady(session)
         outputs.stop(); await settle()
         XCTAssertFalse(outputs.isRunning, "A pending startup action must honor Stop")
         let destination = profiles.document.destinations[1].id
@@ -344,6 +392,8 @@ final class OutputProfileReviewTests: XCTestCase {
         profiles.edit { $0.destinations.append(.init(name: "Stage", profileID: OutputProfile.confidenceID, monitor: monitors[1].target, enabled: false)) }
         let outputs = OutputCoordinator(profiles: profiles, displays: displays, driverFactory: { FakeOutputDriver() })
         defer { outputs.stop() }
+        let session = PresentationSession(projectionDisplays: displays, outputCoordinator: outputs)
+        outputs.workspaceWindowReady(session)
         let connection = UUID()
         let message = ExternalPresentationMessage(kind: .present, sourceID: UUID(), actionID: UUID(), revision: 1,
             current: .init(kind: .scripture, components: [.init(role: .primary, text: "Presented scripture")]))
@@ -373,6 +423,7 @@ final class OutputProfileReviewTests: XCTestCase {
         defer { outputs.stop() }
         let session = PresentationSession(projectionDisplays: displays, outputCoordinator: outputs)
         session.setSlides(LyricsParser.parseDocument("Verse\nPrevious visible lyrics").slides)
+        outputs.workspaceWindowReady(session)
         session.showSlides()
         let destination = profiles.document.destinations[0].id
         outputs.closeOutput(destination)

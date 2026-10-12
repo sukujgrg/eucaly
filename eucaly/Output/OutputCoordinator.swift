@@ -26,6 +26,7 @@ final class OutputCoordinator: ObservableObject {
     private var wasPresenting = false
     private var programStarted = false
     private var standbyScheduled = false
+    private var workspaceReady = false
     private var standbySuppressed: Set<UUID> = []
     private var standbyConfigurations: [OutputDestinationConfiguration]
     private var windows: [UUID: any OutputDestinationDriving] = [:]
@@ -92,7 +93,6 @@ final class OutputCoordinator: ObservableObject {
         stopObserver = NotificationCenter.default.addObserver(forName: .stopProjection, object: nil, queue: .main) { [weak self] _ in
             DispatchQueue.main.async { self?.stop() }
         }
-        scheduleConfidenceStandby()
     }
     func attach(_ session: PresentationSession) {
         sessions[session.outputSourceID] = WeakSession(value: session)
@@ -100,6 +100,13 @@ final class OutputCoordinator: ObservableObject {
         session.applyOutputState(running: isPresenting, visible: visible)
     }
     func focusWorkspace(_ session: PresentationSession) { preferredLocalSession = session }
+    /// Called by the native workspace window after it becomes key. Constructors
+    /// never create projection windows ahead of SwiftUI's initial WindowGroup.
+    func workspaceWindowReady(_ session: PresentationSession) {
+        focusWorkspace(session)
+        workspaceReady = true
+        scheduleConfidenceStandby()
+    }
     func toggleSlides() {
         if isPresenting && visible { hide() }
         else if let session = preferredLocalSession, isRunning || session.hasProjectionContent { session.showSlides() }
@@ -317,7 +324,7 @@ final class OutputCoordinator: ObservableObject {
         return true
     }
     private func scheduleConfidenceStandby() {
-        guard !standbyScheduled else { return }
+        guard workspaceReady, !standbyScheduled else { return }
         standbyScheduled = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }

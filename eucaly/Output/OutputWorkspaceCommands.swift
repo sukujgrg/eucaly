@@ -30,9 +30,9 @@ struct OutputWorkspaceScope: NSViewRepresentable {
             commands.window = window
             if let window {
                 keyObserver = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] _ in
-                    DispatchQueue.main.async { if let session = self?.session { session.outputCoordinator.focusWorkspace(session) } }
+                    DispatchQueue.main.async { if let session = self?.session { session.outputCoordinator.workspaceWindowReady(session) } }
                 }
-                if window.isKeyWindow { DispatchQueue.main.async { [weak session] in if let session { session.outputCoordinator.focusWorkspace(session) } } }
+                if window.isKeyWindow { DispatchQueue.main.async { [weak session] in if let session { session.outputCoordinator.workspaceWindowReady(session) } } }
             }
         }
         func detach() {

@@ -24,6 +24,8 @@ final class OutputWindowDestination: NSObject, OutputDestinationDriving, NSWindo
         let output = PresentationWindow(contentRect: ProjectionScreenResolver.screenRelativeContentRect(for: screen.frame),
                                         styleMask: .borderless, backing: .buffered, defer: false, screen: screen)
         output.isReleasedWhenClosed = false
+        // Saved assignments are restored by the coordinator, not window restoration.
+        output.isRestorable = false
         output.level = .screenSaver; output.backgroundColor = .black
         output.isOpaque = true; output.hasShadow = false
         output.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]

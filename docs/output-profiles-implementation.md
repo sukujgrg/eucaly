@@ -103,7 +103,8 @@ Confidence output replaces empty, cleared or hidden content with a large centere
 backgrounds. The optional Timer/Clock overlay, countdown runtime and controls have
 been removed from every output. Explicit Show can open an idle Confidence
 output with no Current slide. Enabled Confidence now opens automatically on its
-assigned, available monitor at startup or after explicit assignment/enable. Only
+assigned, available monitor after the native workspace window is ready at startup,
+or after explicit assignment/enable. Only
 Confidence opens in standby, without stealing focus, taking a source lease,
 publishing private Current to AltView, marking a session as presenting, or
 starting program playback. Stop, native close and monitor loss retain a closed
@@ -168,6 +169,17 @@ without displacing an external lease. A regression captures the snapshot supplie
 to the native driver before its first render: a reopened clock receives hidden
 standby state before window creation, preventing a flash of the previous slide.
 
+The launch follow-up fixes a lifecycle regression: creating a fullscreen window
+while SwiftUI was still constructing its initial WindowGroup could leave only the
+clock visible. Runtime constructors now register state without opening windows.
+The existing workspace NSWindow didBecomeKey notification enables automatic
+standby after SwiftUI has created its real document window. Projection windows
+remain key-capable for shortcuts, cannot become main document windows, and do not
+participate in automatic window restoration. This uses native scene/window
+lifecycle events rather than a timed delay, polling or a manually created main
+window. A native-window regression verifies the workspace is visible before the
+projection driver opens; separate checks retain projection keyboard eligibility.
+
 ## Validation record
 
 Required validation uses `make test`, including all app tests and offline
@@ -190,7 +202,7 @@ those expected messages are not release attempts.
 
 Final validation on 2026-10-13:
 
-- `make test` passed: 378 XCTest cases, one Swift Testing case, seven offline
+- `make test` passed: 380 XCTest cases, one Swift Testing case, seven offline
   update-feed tests and 97 offline release-workflow tests, all with zero failures.
 - `make build` archived and exported the final source to `~/Applications/eucaly.app`.
 - The exported executable is arm64, its minimum macOS version is 14.0, and strict
@@ -200,6 +212,11 @@ Final validation on 2026-10-13:
   inspected. Native mouse events verify clicks on the disclosure label, middle
   and trailing space; legacy preset migration is idempotent and retains monitor
   assignments and custom copies.
+- A normal quit and launch of the installed build opened the real SwiftUI
+  workspace and assigned Confidence window before any slide was shown. Native
+  accessibility and screenshot inspection verified the large standby clock on
+  the connected display while the workspace was minimized; the native Window
+  menu restored the workspace while Confidence remained open.
 - Main’s separate nine-file AltView diff is unchanged. No push, merge, tag,
   notarization or release publication was performed.
 

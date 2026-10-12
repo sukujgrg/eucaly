@@ -1335,7 +1335,9 @@ final class PresentationWindow: NSWindow {
     weak var outputCoordinator: OutputCoordinator?
 
     override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { true }
+    // Projection can receive slide shortcuts without replacing the workspace
+    // as the app's main document window.
+    override var canBecomeMain: Bool { false }
 
     override func keyDown(with event: NSEvent) {
         switch event.keyCode {
