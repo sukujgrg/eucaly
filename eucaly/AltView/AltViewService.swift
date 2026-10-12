@@ -38,6 +38,8 @@ final class AltViewService: ObservableObject {
     private var pairedReceiverID: UUID?
     private var savedThisConnection = false
     private var activeSourceID: UUID?
+    private struct OutputSubscription { weak var session: PresentationSession?; let token: UUID }
+    private var sessionSubscriptions: [UUID: OutputSubscription] = [:]
     private var pendingTake: AltViewSubmission?
     private var submissionID: UUID?
     private var submittedSlideID: UUID?
@@ -213,14 +215,17 @@ final class AltViewService: ObservableObject {
 
     func attach(_ session: PresentationSession) {
         let id = session.outputSourceID
-        session.onOutputEvent = { [weak self] event in self?.handle(event, from: id) }
+        sessionSubscriptions = sessionSubscriptions.filter { $0.value.session != nil }
+        guard sessionSubscriptions[id] == nil else { return }
+        let token = session.observeOutput { [weak self] event in self?.handle(event, from: id) }
+        sessionSubscriptions[id] = .init(session: session, token: token)
     }
 
     func detach(_ session: PresentationSession) {
         // The projection window retains its session after controls close. Keep
         // its event bridge until runtime Stop/native close/display loss emits stopped.
         guard !session.isPresenting else { return }
-        session.onOutputEvent = nil
+        if let subscription = sessionSubscriptions.removeValue(forKey: session.outputSourceID) { session.removeOutputObserver(subscription.token) }
         if activeSourceID == session.outputSourceID { stopSending() }
     }
 

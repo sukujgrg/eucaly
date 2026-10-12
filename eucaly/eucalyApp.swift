@@ -19,6 +19,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Read monitor preferences after EucalyApp has migrated sandbox preferences.
     lazy var projectionDisplays = ProjectionDisplayManager(defaults: AppLaunchContext.isRunningTests ? nil : .standard)
 
+    lazy var outputProfiles = OutputProfileStore(defaults: AppLaunchContext.isRunningTests ? nil : .standard, monitor: projectionDisplays.target)
+    lazy var outputs = OutputCoordinator(profiles: outputProfiles, displays: projectionDisplays)
+    lazy var receiver = ExternalPresentationReceiver(coordinator: outputs)
+
     private var isTerminatingAfterCaptureCleanup = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -29,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !AppLaunchContext.isRunningTests {
             updates.start()
             altView.restoreConnection()
+            receiver.startIfEnabled()
         }
     }
 
@@ -53,9 +58,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         Task { @MainActor in
+            receiver.stop()
+            outputs.stop()
             altView.disconnect()
             await ScreenCaptureManager.shared.stopAllCaptures()
             closePresentationWindows(in: sender)
+            await outputProfiles.waitForPersistence()
             isTerminatingAfterCaptureCleanup = true
             sender.reply(toApplicationShouldTerminate: true)
         }
@@ -89,7 +97,7 @@ struct EucalyApp: App {
             // Unit tests construct their own views and sessions. Restoring the
             // user's library here would perform unrelated file/network access.
             if !AppLaunchContext.isRunningTests {
-                ContentView(projectionDisplays: appDelegate.projectionDisplays)
+                ContentView(projectionDisplays: appDelegate.projectionDisplays, outputs: appDelegate.outputs)
                     .environmentObject(appDelegate.updates)
                     .environmentObject(appDelegate.altView)
                     .frame(minWidth: 1060, minHeight: 600)
@@ -101,6 +109,8 @@ struct EucalyApp: App {
                 .environmentObject(appDelegate.updates)
                 .environmentObject(appDelegate.altView)
                 .environmentObject(appDelegate.projectionDisplays)
+                .environmentObject(appDelegate.outputs)
+                .environmentObject(appDelegate.receiver)
         }
         .windowResizability(.contentSize)
         .commands {
@@ -141,39 +151,41 @@ struct EucalyApp: App {
             }
             CommandMenu("Slides") {
                 Button("Stop Projection") {
-                    NotificationCenter.default.post(name: .stopProjection, object: nil)
+                    appDelegate.outputs.stop()
                 }
                 .keyboardShortcut("1", modifiers: .command)
 
                 Divider()
 
                 Button("Show/Hide Slides") {
-                    NotificationCenter.default.post(name: .toggleSlidesVisibility, object: nil)
+                    appDelegate.outputs.toggleSlides()
                 }
                 .keyboardShortcut("2", modifiers: .command)
 
                 Button("Show/Hide Background") {
-                    NotificationCenter.default.post(name: .toggleBackgroundVisibility, object: nil)
+                    appDelegate.outputs.preferredLocalSession?.toggleBackgroundVisualVisibility()
                 }
 
                 Button("Pause/Play Background Audio") {
-                    NotificationCenter.default.post(name: .toggleBackgroundAudio, object: nil)
+                    if let session = appDelegate.outputs.audioSession ?? appDelegate.outputs.preferredLocalSession {
+                        if session.isBackgroundAudioPlaying { session.pauseBackgroundAudio() } else { session.playBackgroundAudio() }
+                    }
                 }
 
                 Divider()
 
                 Button("Clear Background Visual") {
-                    NotificationCenter.default.post(name: .clearBackgroundVisual, object: nil)
+                    appDelegate.outputs.clearBackgrounds()
                 }
                 .keyboardShortcut("3", modifiers: .command)
 
                 Button("Clear Background Audio") {
-                    NotificationCenter.default.post(name: .clearBackgroundAudio, object: nil)
+                    appDelegate.outputs.clearAudio()
                 }
                 .keyboardShortcut("4", modifiers: .command)
 
                 Button("Clear All Layers") {
-                    NotificationCenter.default.post(name: .clearAllLayers, object: nil)
+                    appDelegate.outputs.clearAllLayers()
                 }
                 .keyboardShortcut("5", modifiers: .command)
             }

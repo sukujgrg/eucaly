@@ -1,7 +1,7 @@
 import Foundation
 
-struct SecurityScopedBookmarks {
-    struct Resolution {
+nonisolated struct SecurityScopedBookmarks {
+    struct Resolution: Sendable {
         let url: URL
         let updatedBookmark: String?
     }

@@ -3,6 +3,8 @@ import AppKit
 
 struct AppSettingsView: View {
     @EnvironmentObject private var appUpdateViewModel: AppUpdateViewModel
+    @EnvironmentObject private var receiver: ExternalPresentationReceiver
+    @EnvironmentObject private var outputs: OutputCoordinator
     @EnvironmentObject private var projectionDisplays: ProjectionDisplayManager
     @AppStorage("libraryRootPath") private var libraryRootPath: String = ""
     @AppStorage("libraryRootBookmark") private var libraryRootBookmark: String = ""
@@ -19,9 +21,12 @@ struct AppSettingsView: View {
             AltViewSettingsView()
                 .tabItem { Label("AltView", systemImage: "network") }
                 .tag("altView")
-            ProjectionMonitorSettingsView(displays: projectionDisplays)
+            OutputSettingsView(coordinator: outputs)
                 .tabItem { Label("Projection", systemImage: "display") }
                 .tag("projection")
+            ExternalReceiverSettingsView(receiver: receiver)
+                .tabItem { Label("Receiver", systemImage: "antenna.radiowaves.left.and.right") }
+                .tag("receiver")
         }
         .frame(width: 560, height: 500)
     }

@@ -55,7 +55,7 @@ final class PlaybackProgressStore: ObservableObject {
 }
 
 @MainActor
-final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
+final class PresentationSession: NSObject, ObservableObject {
     enum BackgroundAudioPlaybackState: Equatable {
         case stopped
         case paused
@@ -81,17 +81,17 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     @Published private(set) var pdfSlideSource: PDFSlideSource? { didSet { scheduleOutputChange() } }
     @Published var currentSlideID: Slide.ID? { didSet { scheduleOutputChange() } }
     @Published var isPresenting = false { didSet { scheduleOutputChange() } }
-    @Published var videoMuted = false
+    @Published var videoMuted = false { didSet { outputCoordinator.refreshMedia() } }
     // Current and projection webpage mute state; Preview keeps a separate local mute state.
     @Published var webpageMuted = false
-    @Published var videoPaused = false
-    @Published var videoLoop = false
-    @Published var videoFill = false
+    @Published var videoPaused = false { didSet { outputCoordinator.refreshMedia() } }
+    @Published var videoLoop = false { didSet { outputCoordinator.refreshMedia() } }
+    @Published var videoFill = false { didSet { outputCoordinator.refreshMedia() } }
     @Published private(set) var videoSeekRevision = 0
     private(set) var videoSeekTarget: Double = 0
     let playbackProgress = PlaybackProgressStore()
     @Published private(set) var backgroundVisualURL: URL? = nil
-    @Published var isBackgroundVisualVisible = true
+    @Published var isBackgroundVisualVisible = true { didSet { outputCoordinator.setAudienceBackgroundVisibility(isBackgroundVisualVisible) } }
     @Published private(set) var backgroundAudioURL: URL? = nil
     @Published private(set) var backgroundAudioPlaybackState = BackgroundAudioPlaybackState.stopped
     @Published private(set) var backgroundAudioLoop = true
@@ -100,31 +100,45 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     @Published private(set) var overlay = OverlayState()
     private var countdownToken = UUID()
 
+    private var backgroundAudioGeneration = UUID()
     private var backgroundAudioPlayer: AVPlayer?
     private var backgroundAudioEndObserver: NSObjectProtocol?
     private var backgroundAudioTimeObserver: Any?
 
-    private var window: NSWindow?
-    private var projectionWindowGeneration: UUID?
-    private let projectionSleepPrevention: ProjectionSleepPrevention
+    let outputCoordinator: OutputCoordinator
     let projectionDisplays: ProjectionDisplayManager
-    private(set) var activePresentationTarget: ProjectionMonitorTarget?
+    var activePresentationTarget: ProjectionMonitorTarget? { outputCoordinator.audienceTarget }
     @Published var projectionDisplayIssue: String?
-    private var displayObservation: UUID?
-    private var stopProjectionObserver: NSObjectProtocol?
-    private var screenRepositionWorkItem: DispatchWorkItem?
     private var currentThumbnailColumnCount: Int = 1
     private var currentDocumentRevision: UInt64 = 0
+    private var pendingNavigationCount = 0
+    private var navigationActionOrder: UInt64?
 
     let outputSourceID = UUID()
     var onOutputEvent: ((PresentationOutputEvent) -> Void)?
+    private var outputObservers: [UUID: (PresentationOutputEvent) -> Void] = [:]
+    @discardableResult func observeOutput(_ action: @escaping (PresentationOutputEvent) -> Void) -> UUID {
+        let id = UUID(); outputObservers[id] = action; return id
+    }
+    func removeOutputObserver(_ id: UUID) { outputObservers.removeValue(forKey: id) }
+    func emitOutputEvent(_ event: PresentationOutputEvent) {
+        onOutputEvent?(event)
+        for observer in Array(outputObservers.values) { observer(event) }
+    }
+    func cancelPendingProjection() { outputProjectionRequested = false }
+
+    func applyOutputState(running: Bool, visible: Bool) {
+        if isPresenting != running { isPresenting = running }
+        if areSlidesVisible != visible { areSlidesVisible = visible }
+    }
+
     private var outputChangeScheduled = false
     private var outputProjectionRequested = false
 
     var outputSnapshot: PresentationOutputSnapshot {
         PresentationOutputSnapshot(slide: currentSlide, isPresenting: isPresenting, slidesVisible: areSlidesVisible,
-                                   projectionWindowID: window.map { UInt32($0.windowNumber) },
-                                   projectionWindowGeneration: projectionWindowGeneration)
+                                   projectionWindowID: outputCoordinator.audienceIdentity.0,
+                                   projectionWindowGeneration: outputCoordinator.audienceIdentity.1)
     }
 
     private func scheduleOutputChange(explicit: Bool = false) {
@@ -137,9 +151,11 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
             guard let self else { return }
             self.outputChangeScheduled = false
             let snapshot = self.outputSnapshot
-            let project = self.outputProjectionRequested && snapshot.isPresenting && snapshot.slidesVisible
+            let ownsGroup = self.outputCoordinator.ownership.source == .local(self.outputSourceID) || !self.outputCoordinator.isRunning
+            let project = self.outputProjectionRequested && snapshot.isPresenting && snapshot.slidesVisible && ownsGroup
             self.outputProjectionRequested = false
-            self.onOutputEvent?(project ? .project(snapshot) : .changed(snapshot))
+            self.outputCoordinator.passiveLocal(self)
+            self.emitOutputEvent(project ? .project(self.outputSnapshot) : .changed(self.outputSnapshot))
         }
     }
 
@@ -152,6 +168,7 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
 
     func requestCurrentProjection() {
         guard isPresenting, areSlidesVisible else { return }
+        if outputCoordinator.isRunning { guard outputCoordinator.presentLocal(self) else { return } }
         scheduleOutputChange(explicit: true)
     }
 
@@ -164,38 +181,18 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     init(projectionDisplays: ProjectionDisplayManager,
-         sleepPrevention: ProjectionSleepPrevention = ProjectionSleepPrevention()) {
+         sleepPrevention: ProjectionSleepPrevention = ProjectionSleepPrevention(),
+         outputCoordinator: OutputCoordinator? = nil) {
         self.projectionDisplays = projectionDisplays
-        projectionSleepPrevention = sleepPrevention
+        self.outputCoordinator = outputCoordinator ?? OutputCoordinator(
+            profiles: OutputProfileStore(monitor: projectionDisplays.target), displays: projectionDisplays, sleepPrevention: sleepPrevention)
         super.init()
-        displayObservation = projectionDisplays.observe { [weak self] in
-            self?.handleProjectionDisplaysChanged()
-        }
-        // Projection can outlive its controls window. Keep Stop Projection with
-        // the session so the app command still closes that output after reopen.
-        stopProjectionObserver = NotificationCenter.default.addObserver(
-            forName: .stopProjection, object: nil, queue: .main
-        ) { [weak self] _ in
-            DispatchQueue.main.async { self?.stopPresentation() }
-        }
+        self.outputCoordinator.attach(self)
     }
 
     deinit {
-        if let stopProjectionObserver { NotificationCenter.default.removeObserver(stopProjectionObserver) }
-        if let backgroundAudioEndObserver {
-            NotificationCenter.default.removeObserver(backgroundAudioEndObserver)
-        }
-        if let backgroundAudioTimeObserver, let backgroundAudioPlayer {
-            backgroundAudioPlayer.removeTimeObserver(backgroundAudioTimeObserver)
-        }
-        screenRepositionWorkItem?.cancel()
-        let displays = projectionDisplays
-        let observation = displayObservation
-        let owner = outputSourceID
-        DispatchQueue.main.async {
-            if let observation { displays.removeObserver(observation) }
-            displays.unlock(owner: owner)
-        }
+        if let backgroundAudioEndObserver { NotificationCenter.default.removeObserver(backgroundAudioEndObserver) }
+        if let backgroundAudioTimeObserver, let backgroundAudioPlayer { backgroundAudioPlayer.removeTimeObserver(backgroundAudioTimeObserver) }
     }
 
     var overlayMode: OverlayMode { overlay.mode }
@@ -301,6 +298,8 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     func clearSlides() {
+        outputProjectionRequested = false
+        outputCoordinator.clear()
         currentDocumentRevision &+= 1
         slides = []
         pdfSlideSource = nil
@@ -322,99 +321,35 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
         PDFDocumentCache.shared.releaseDocuments(notIn: retainedURLs)
     }
 
-    @discardableResult
-    private func startPresentation(slidesVisible: Bool = true) -> Bool {
-        guard window == nil else { return true }
-        projectionDisplays.refresh()
-        guard !projectionDisplays.isLocked else {
-            projectionDisplayIssue = "Projection is already open in another eucaly window. Stop that projection first."
-            return false
-        }
-        guard let monitor = projectionDisplays.resolvedMonitor(),
-              let screen = ProjectionScreenResolver.screen(for: monitor) else {
-            projectionDisplayIssue = projectionDisplays.selectionProblem ?? "The projection monitor is not ready. Choose it again."
-            return false
-        }
-        projectionDisplayIssue = nil
-        activePresentationTarget = monitor.target
-        let frame = screen.frame
-
-        let view = PresentationView()
-            .environmentObject(self)
-
-        let hostingView = NSHostingView(rootView: view)
-        hostingView.translatesAutoresizingMaskIntoConstraints = false
-
-        let presentationWindow = PresentationWindow(
-            contentRect: ProjectionScreenResolver.screenRelativeContentRect(for: frame),
-            styleMask: [.borderless],
-            backing: .buffered,
-            defer: false,
-            screen: screen
-        )
-        presentationWindow.isReleasedWhenClosed = false
-        presentationWindow.level = .screenSaver
-        presentationWindow.backgroundColor = .black
-        presentationWindow.isOpaque = true
-        presentationWindow.hasShadow = false
-        presentationWindow.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        presentationWindow.delegate = self
-        presentationWindow.session = self
-        let container = NSView(frame: NSRect(origin: .zero, size: frame.size))
-        container.wantsLayer = true
-        container.layer?.backgroundColor = NSColor.black.cgColor
-        container.addSubview(hostingView)
-        NSLayoutConstraint.activate([
-            hostingView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            hostingView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            hostingView.topAnchor.constraint(equalTo: container.topAnchor),
-            hostingView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
-        ])
-        presentationWindow.contentView = container
-        if frame != .zero {
-            presentationWindow.setFrame(frame, display: true)
-        }
-        projectionSleepPrevention.start()
-        presentationWindow.makeKeyAndOrderFront(nil)
-        presentationWindow.makeFirstResponder(presentationWindow)
-
-        window = presentationWindow
-        projectionWindowGeneration = UUID()
-        isPresenting = true
-        areSlidesVisible = slidesVisible
-        projectionDisplays.lock(monitor.target, owner: outputSourceID)
-        return true
-    }
-
     func stopPresentation() {
-        if let window {
-            // Closing is already at an event boundary. Prevent a delayed delegate
-            // teardown from closing a newly opened projection after hot-plug.
-            window.delegate = nil
-            window.orderOut(nil)
-            window.close()
-        }
-        teardownPresentationState()
+        outputProjectionRequested = false
+        outputCoordinator.stop()
+        isPresenting = false
+        emitOutputEvent(.stopped)
     }
 
     func showSlides() {
-        if !isPresenting {
-            guard startPresentation() else { return }
+        if !outputCoordinator.presentLocal(self) {
+            // A synthetic session can exercise events without a physical window.
+            // An actual running group must keep its current source after preflight fails.
+            guard isPresenting, !outputCoordinator.isRunning else { return }
         }
         areSlidesVisible = true
         outputProjectionRequested = false
-        onOutputEvent?(.show(outputSnapshot))
+        emitOutputEvent(.show(outputSnapshot))
     }
 
     func hideSlides() {
         guard isPresenting else { return }
+        outputProjectionRequested = false
         areSlidesVisible = false
+        if outputCoordinator.isRunning { outputCoordinator.hide() }
     }
 
     func toggleBackgroundVisualVisibility() {
         guard backgroundVisualURL != nil else { return }
         if !isPresenting {
-            guard startPresentation(slidesVisible: false) else { return }
+            guard outputCoordinator.presentLocal(self, show: false) else { return }
             isBackgroundVisualVisible = true
             return
         }
@@ -443,10 +378,16 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
 
     private func enqueueSelectionMove(_ targetIndex: @escaping (Int, Int, Int) -> Int) {
         let revision = currentDocumentRevision
+        if pendingNavigationCount == 0 { navigationActionOrder = nil }
+        pendingNavigationCount += 1
+        if isPresenting && areSlidesVisible { navigationActionOrder = outputCoordinator.actionClock.next() }
         // SwiftUI can invoke onKeyPress during its update pass. Resolve each
         // queued move in order, after that pass, against the same Current document.
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.currentDocumentRevision == revision, !self.isEmpty else { return }
+            guard let self else { return }
+            self.pendingNavigationCount = max(0, self.pendingNavigationCount - 1)
+            guard self.currentDocumentRevision == revision, !self.isEmpty else { return }
+            if let order = self.navigationActionOrder, order != self.outputCoordinator.actionClock.current { return }
             let nextID: Slide.ID?
             if let currentID = self.currentSlideID, let index = self.slideIndex(for: currentID) {
                 let nextIndex = targetIndex(index, self.slideCount, self.currentThumbnailColumnCount)
@@ -455,8 +396,11 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
                 nextID = self.firstSlideID
             }
             if self.currentSlideID != nextID {
-                if let nextID { self.selectCurrentSlide(nextID) }
-            }
+                if let nextID {
+                    if self.pendingNavigationCount == 0 { self.navigationActionOrder = nil; self.selectCurrentSlide(nextID) }
+                    else { self.currentSlideID = nextID }
+                }
+            } else if self.pendingNavigationCount == 0 { self.navigationActionOrder = nil }
         }
     }
 
@@ -465,6 +409,7 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
         videoSeekTarget = clamped
         playbackProgress.seekVideo(to: clamped)
         videoSeekRevision += 1
+        outputCoordinator.refreshMedia()
     }
 
     var videoCurrentTime: Double {
@@ -491,67 +436,7 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
         playbackProgress.resetVideo()
         videoSeekTarget = 0
         videoSeekRevision += 1
-    }
-
-    private func teardownPresentationState() {
-        projectionSleepPrevention.stop()
-        outputProjectionRequested = false
-        onOutputEvent?(.stopped)
-        screenRepositionWorkItem?.cancel()
-        screenRepositionWorkItem = nil
-        window = nil
-        projectionWindowGeneration = nil
-        isPresenting = false
-        activePresentationTarget = nil
-        projectionDisplays.unlock(owner: outputSourceID)
-        stopWindowCapturesForShutdown()
-    }
-
-    private func handleProjectionDisplaysChanged() {
-        guard window != nil, let target = activePresentationTarget else { return }
-        if let problem = projectionDisplays.problem(for: target) {
-            // Close immediately before macOS can leave the full-screen window on
-            // another display. Keep the saved assignment and Current intact.
-            projectionDisplayIssue = "Projection stopped. \(problem) Show slides again when the monitor is ready."
-            stopPresentation()
-            return
-        }
-        schedulePresentationWindowReposition()
-    }
-
-    private func schedulePresentationWindowReposition() {
-        guard isPresenting else { return }
-        screenRepositionWorkItem?.cancel()
-        let workItem = DispatchWorkItem { [weak self] in
-            self?.repositionPresentationWindowIfNeeded()
-        }
-        screenRepositionWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: workItem)
-    }
-
-    private func repositionPresentationWindowIfNeeded() {
-        guard let window else { return }
-        guard let target = activePresentationTarget,
-              let monitor = projectionDisplays.resolve(target),
-              let targetScreen = ProjectionScreenResolver.screen(for: monitor) else {
-            projectionDisplayIssue = "Projection stopped because its monitor is unavailable. Reconnect it and show slides again."
-            stopPresentation()
-            return
-        }
-        let targetFrame = targetScreen.frame
-        guard targetFrame != .zero else { return }
-        guard window.frame != targetFrame else { return }
-        window.setFrame(targetFrame, display: true)
-    }
-
-    private func stopWindowCapturesForShutdown() {
-        Task { @MainActor in
-            await ScreenCaptureManager.shared.stopAllCaptures()
-        }
-    }
-
-    func windowWillClose(_ notification: Notification) {
-        deferTeardownPresentationState()
+        outputCoordinator.refreshMedia()
     }
 
     func startCountdown(minutes: Int) {
@@ -647,6 +532,10 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     func playBackgroundAudio() {
+        outputCoordinator.claimBackgroundAudio(self)
+        backgroundAudioGeneration = UUID()
+        configureBackgroundAudioEndObserver()
+        configureBackgroundAudioTimeObserver()
         guard let player = backgroundAudioPlayer else {
             if let url = backgroundAudioURL {
                 configureBackgroundAudioPlayer(for: url, autoplay: true)
@@ -658,12 +547,14 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     func pauseBackgroundAudio() {
+        backgroundAudioGeneration = UUID()
         backgroundAudioPlayer?.pause()
         backgroundAudioPlaybackState = backgroundAudioURL == nil ? .stopped : .paused
         refreshBackgroundAudioProgress()
     }
 
     func stopBackgroundAudioPlayback() {
+        backgroundAudioGeneration = UUID()
         backgroundAudioPlayer?.pause()
         backgroundAudioPlayer?.seek(to: .zero)
         playbackProgress.seekBackgroundAudio(to: 0)
@@ -726,19 +617,13 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
             update(&next)
             if next != self.overlay {
                 self.overlay = next
+                self.outputCoordinator.refreshOverlay(self)
             }
         }
     }
 
-    private func deferTeardownPresentationState() {
-        let generation = projectionWindowGeneration
-        DispatchQueue.main.async { [weak self] in
-            guard let self, self.projectionWindowGeneration == generation else { return }
-            self.teardownPresentationState()
-        }
-    }
-
     private func configureBackgroundAudioPlayer(for url: URL?, autoplay: Bool) {
+        backgroundAudioGeneration = UUID()
         backgroundAudioPlayer?.pause()
         removeBackgroundAudioTimeObserver()
         backgroundAudioPlayer = nil
@@ -747,21 +632,12 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
         removeBackgroundAudioEndObserver()
 
         guard let url else { return }
+        if autoplay { outputCoordinator.claimBackgroundAudio(self) }
 
         let player = AVPlayer(url: url)
         player.volume = Float(backgroundAudioVolume)
         backgroundAudioPlayer = player
-        if let item = player.currentItem {
-            backgroundAudioEndObserver = NotificationCenter.default.addObserver(
-                forName: .AVPlayerItemDidPlayToEndTime,
-                object: item,
-                queue: .main
-            ) { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    self?.handleBackgroundAudioEnded()
-                }
-            }
-        }
+        configureBackgroundAudioEndObserver()
         configureBackgroundAudioTimeObserver()
         refreshBackgroundAudioProgress()
         if autoplay {
@@ -770,6 +646,17 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
         }
     }
 
+    private func configureBackgroundAudioEndObserver() {
+        removeBackgroundAudioEndObserver()
+        guard let item = backgroundAudioPlayer?.currentItem else { return }
+        let generation = backgroundAudioGeneration
+        backgroundAudioEndObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.backgroundAudioGeneration == generation, self.outputCoordinator.audioSession === self else { return }
+                self.handleBackgroundAudioEnded()
+            }
+        }
+    }
     private func handleBackgroundAudioEnded() {
         guard let player = backgroundAudioPlayer else { return }
         if backgroundAudioLoop {
@@ -814,241 +701,32 @@ final class PresentationSession: NSObject, ObservableObject, NSWindowDelegate {
 
 struct PresentationView: View {
     @EnvironmentObject var session: PresentationSession
-    @AppStorage("presentationFontScale") private var presentationFontScale: Double = 1.0
-    @AppStorage("presentationLyricsLayout") private var presentationLyricsLayout: PresentationLyricsLayout = .stacked
-    @AppStorage("presentationPaddingScale") private var presentationPaddingScale: Double = 1.0
-    @AppStorage("presentationTextAlignment") private var presentationTextAlignment: PresentationTextAlignment = .center
-    @AppStorage("presentationVerticalPosition") private var presentationVerticalPosition: PresentationVerticalPosition = .middle
-
+    @AppStorage("presentationFontScale") private var scale: Double = 1
+    @AppStorage("presentationLyricsLayout") private var layout: PresentationLyricsLayout = .stacked
+    @AppStorage("presentationPaddingScale") private var padding: Double = 1
+    @AppStorage("presentationTextAlignment") private var alignment: PresentationTextAlignment = .center
+    @AppStorage("presentationVerticalPosition") private var position: PresentationVerticalPosition = .middle
+    private var previewProfile: OutputProfile {
+        var profile = OutputProfile.builtIns[0]
+        profile.layout = layout.rawValue; profile.alignment = alignment.rawValue; profile.position = position.rawValue
+        profile.padding = padding; profile.typography.size = 84 * scale
+        return profile
+    }
     var body: some View {
-        GeometryReader { proxy in
-            let size = proxy.size
+        GeometryReader { geometry in
+            let size = geometry.size
             ZStack {
-                Color.black
-                    .frame(width: size.width, height: size.height)
-
-                backgroundLayer
-                    .frame(width: size.width, height: size.height)
-
-                slidesLayer(in: size)
-                    .frame(width: size.width, height: size.height)
-
-                overlayLayer
-                    .frame(width: size.width, height: size.height)
-            }
-            .frame(width: size.width, height: size.height)
-            .clipped()
-        }
-        .ignoresSafeArea()
-    }
-
-    @ViewBuilder
-    private var backgroundLayer: some View {
-        if let backgroundURL = session.backgroundVisualURL,
-           session.hasAvailableBackgroundVisual,
-           session.isBackgroundVisualVisible {
-            let isVisible = shouldShowBackground(for: session.currentSlide)
-            BackgroundVisualView(url: backgroundURL, isVisible: isVisible)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .clipped()
-                .overlay(Color.black.opacity(0.35))
-                .opacity(isVisible ? 1.0 : 0.0)
-                .allowsHitTesting(false)
-        }
-    }
-
-    @ViewBuilder
-    private func slidesLayer(in size: CGSize) -> some View {
-        ZStack {
-            let currentSlide = session.currentSlide
-            // Show black background only when a non-lyrics slide is actively shown.
-            // When there is no selected slide, keep projection visually equivalent to "slides hidden".
-            let isLyricsVisible = session.areSlidesVisible && (currentSlide.map(isLyricsSlide) ?? false)
-            let shouldShowBlackBg = session.areSlidesVisible && currentSlide != nil && !isLyricsVisible
-            if shouldShowBlackBg {
-                Color.black
-            }
-            VStack(spacing: 28) {
-                if session.areSlidesVisible, let slide = currentSlide {
-                    Group {
-                        if let windowID = slide.captureWindowID {
-                            WindowCaptureSlideView(windowID: windowID)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        } else if let videoURL = slide.videoURL {
-                            VideoSlideView(
-                                url: videoURL,
-                                isMuted: $session.videoMuted,
-                                isPaused: $session.videoPaused,
-                                isLooping: $session.videoLoop,
-                                isFill: $session.videoFill
-                            )
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        } else if let pdfURL = slide.pdfURL, let pageIndex = slide.pdfPageIndex {
-                            PDFSlideView(url: pdfURL, pageIndex: pageIndex)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        } else if let webpageURL = slide.webpageURL {
-                            WebpageSlideView(
-                                url: webpageURL,
-                                navigationRevision: slide.webpageNavigationRevision,
-                                isMuted: session.webpageMuted
-                            )
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        } else if let imageURL = slide.imageURL {
-                            ImageSlideView(url: imageURL)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        } else {
-                            LyricsSlideContentView(
-                                lines: slide.lines,
-                                size: size,
-                                layout: presentationLyricsLayout,
-                                textAlignment: presentationTextAlignment,
-                                verticalPosition: presentationVerticalPosition,
-                                fontScale: presentationFontScale,
-                                paddingScale: presentationPaddingScale,
-                                rendering: .projection
-                            )
-                        }
+                Color.black.frame(width: size.width, height: size.height)
+                if session.areSlidesVisible, let slide = session.currentSlide {
+                    if AltViewPresentationAdapter.mode(for: slide) == .media {
+                        OutputMediaSlideView(slide: slide, session: session, runtime: session.outputCoordinator.media)
+                    } else {
+                        OutputTextView(content: OutputContentAdapter.text(for: slide), profile: previewProfile, size: size)
                     }
-                    .id(slide.id)
                 }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-    }
-
-    @ViewBuilder
-    private var overlayLayer: some View {
-        if session.isTimeOverlayVisible {
-            TimeOverlay()
-                .environmentObject(session)
-                .padding(26)
-        }
-    }
-
-    private func isLyricsSlide(_ slide: Slide) -> Bool {
-        slide.videoURL == nil
-            && slide.pdfURL == nil
-            && slide.imageURL == nil
-            && slide.webpageURL == nil
-            && slide.captureWindowID == nil
-    }
-
-    private func shouldShowBackground(for slide: Slide?) -> Bool {
-        if !session.isBackgroundVisualVisible { return false }
-        if !session.areSlidesVisible { return true }
-        guard let slide else { return true }
-        return isLyricsSlide(slide)
-    }
-
-}
-
-struct BackgroundVisualView: View {
-    let url: URL
-    let isVisible: Bool
-
-    var body: some View {
-        if isVideoURL(url) {
-            BackgroundVideoView(url: url, isVisible: isVisible)
-        } else {
-            ImageSlideView(
-                url: url,
-                contentMode: .fill,
-                showsLoadingIndicator: false,
-                retainsPreviousImageWhileLoading: true
-            )
-        }
-    }
-
-    private func isVideoURL(_ url: URL) -> Bool {
-        let ext = url.pathExtension.lowercased()
-        return ["mp4", "mov", "m4v", "avi", "mkv"].contains(ext)
-    }
-}
-
-struct BackgroundVideoView: View {
-    let url: URL
-    let isVisible: Bool
-    @State private var player: AVPlayer? = nil
-    @State private var endObserver: Any? = nil
-    @State private var configuredURL: URL? = nil
-
-    var body: some View {
-        AVPlayerViewRepresentable(
-            player: player,
-            isMuted: true,
-            isFill: true
-        )
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onAppear {
-            configurePlayer()
-        }
-        .onChange(of: url) { _, _ in
-            configurePlayer()
-        }
-        .onChange(of: isVisible) { _, newValue in
-            if newValue {
-                player?.play()
-            } else {
-                player?.pause()
-            }
-            configureLoopObserver()
-        }
-        .onDisappear {
-            teardownPlayer()
-        }
-    }
-
-    private func configurePlayer() {
-        if configuredURL == url, let currentPlayer = player {
-            currentPlayer.isMuted = true
-            if isVisible {
-                currentPlayer.play()
-            } else {
-                currentPlayer.pause()
-            }
-            configureLoopObserver()
-            return
-        }
-
-        teardownPlayer()
-        let newPlayer = AVPlayer(url: url)
-        newPlayer.allowsExternalPlayback = false
-        newPlayer.isMuted = true
-        player = newPlayer
-        configuredURL = url
-        if isVisible {
-            newPlayer.play()
-        }
-        configureLoopObserver()
-    }
-
-    private func teardownPlayer() {
-        removeLoopObserver()
-        endObserver = nil
-        player?.pause()
-        player = nil
-        configuredURL = nil
-    }
-
-    private func configureLoopObserver() {
-        removeLoopObserver()
-        guard let currentItem = player?.currentItem else { return }
-        let currentPlayer = player
-        endObserver = NotificationCenter.default.addObserver(
-            forName: .AVPlayerItemDidPlayToEndTime,
-            object: currentItem,
-            queue: .main
-        ) { _ in
-            guard isVisible else { return }
-            currentPlayer?.seek(to: .zero)
-            currentPlayer?.play()
-        }
-    }
-
-    private func removeLoopObserver() {
-        if let endObserver {
-            NotificationCenter.default.removeObserver(endObserver)
-        }
+                if session.isTimeOverlayVisible { TimeOverlay().environmentObject(session).padding(26).frame(width: size.width, height: size.height) }
+            }.frame(width: size.width, height: size.height).clipped()
+        }.ignoresSafeArea()
     }
 }
 
@@ -1084,176 +762,6 @@ struct TimeOverlay: View {
             return .orange
         }
         return .white
-    }
-}
-
-struct VideoSlideView: View {
-    let url: URL
-    @Binding var isMuted: Bool
-    @Binding var isPaused: Bool
-    @Binding var isLooping: Bool
-    @Binding var isFill: Bool
-    @EnvironmentObject private var session: PresentationSession
-    @State private var player: AVPlayer? = nil
-    @State private var endObserver: Any? = nil
-    @State private var timeObserver: Any? = nil
-    @State private var configuredURL: URL? = nil
-    @State private var loadedDuration: Double = 0
-
-    var body: some View {
-        AVPlayerViewRepresentable(
-            player: player,
-            isMuted: isMuted,
-            isFill: isFill
-        )
-            .onAppear {
-                configurePlayer()
-            }
-            .onChange(of: url) { _, _ in
-                configurePlayer()
-            }
-            .onChange(of: isMuted) { _, newValue in
-                player?.isMuted = newValue
-            }
-            .onChange(of: isPaused) { _, newValue in
-                if newValue {
-                    player?.pause()
-                } else {
-                    player?.play()
-                }
-            }
-            .onChange(of: isLooping) { _, _ in
-                configureLoopObserver()
-            }
-            .onChange(of: isFill) { _, _ in
-                // handled in AVPlayerViewRepresentable
-            }
-            .onChange(of: session.videoSeekRevision) { _, _ in
-                seekToSessionTarget()
-            }
-            .onDisappear {
-                teardownPlayer()
-            }
-    }
-
-    private func configurePlayer() {
-        if configuredURL == url, let currentPlayer = player {
-            currentPlayer.isMuted = isMuted
-            if isPaused {
-                currentPlayer.pause()
-            } else {
-                currentPlayer.play()
-            }
-            configureLoopObserver()
-            configureTimeObserver()
-            loadVideoDurationIfNeeded()
-            updateSessionProgress()
-            return
-        }
-
-        teardownPlayer()
-        loadedDuration = 0
-        let newPlayer = AVPlayer(url: url)
-        newPlayer.allowsExternalPlayback = false
-        player = newPlayer
-        configuredURL = url
-        newPlayer.isMuted = isMuted
-        if isPaused {
-            newPlayer.pause()
-        } else {
-            newPlayer.play()
-        }
-        configureLoopObserver()
-        configureTimeObserver()
-        loadVideoDurationIfNeeded()
-        seekToSessionTarget()
-        updateSessionProgress()
-    }
-
-    private func teardownPlayer() {
-        removeLoopObserver()
-        removeTimeObserver()
-        endObserver = nil
-        timeObserver = nil
-        player?.pause()
-        player = nil
-        configuredURL = nil
-        loadedDuration = 0
-    }
-
-    private func configureLoopObserver() {
-        removeLoopObserver()
-        guard isLooping, let currentItem = player?.currentItem else { return }
-        let currentPlayer = player
-        endObserver = NotificationCenter.default.addObserver(
-            forName: .AVPlayerItemDidPlayToEndTime,
-            object: currentItem,
-            queue: .main
-        ) { _ in
-            currentPlayer?.seek(to: .zero)
-            currentPlayer?.play()
-        }
-    }
-
-    private func configureTimeObserver() {
-        removeTimeObserver()
-        guard let player else { return }
-        let interval = CMTime(seconds: 0.25, preferredTimescale: 600)
-        timeObserver = player.addPeriodicTimeObserver(
-            forInterval: interval,
-            queue: .main
-        ) { _ in
-            updateSessionProgress()
-        }
-    }
-
-    private func removeLoopObserver() {
-        if let endObserver {
-            NotificationCenter.default.removeObserver(endObserver)
-        }
-    }
-
-    private func removeTimeObserver() {
-        guard let timeObserver, let player else { return }
-        player.removeTimeObserver(timeObserver)
-    }
-
-    private func seekToSessionTarget() {
-        guard let player else { return }
-        let target = CMTime(seconds: session.videoSeekTarget, preferredTimescale: 600)
-        player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
-            updateSessionProgress()
-        }
-    }
-
-    private func updateSessionProgress() {
-        guard let player else { return }
-        let currentTime = player.currentTime().seconds
-        let itemDuration = player.currentItem?.duration.seconds ?? 0
-        let duration = itemDuration.isFinite && itemDuration > 0
-            ? itemDuration
-            : loadedDuration
-        session.updateVideoPlaybackProgress(
-            currentTime: currentTime,
-            duration: duration
-        )
-    }
-
-    private func loadVideoDurationIfNeeded() {
-        guard loadedDuration <= 0 else { return }
-        let durationURL = url
-        let asset = AVURLAsset(url: durationURL)
-        asset.loadValuesAsynchronously(forKeys: ["duration"]) {
-            var error: NSError?
-            let status = asset.statusOfValue(forKey: "duration", error: &error)
-            guard status == .loaded else { return }
-            let seconds = asset.duration.seconds
-            DispatchQueue.main.async {
-                guard configuredURL == durationURL, seconds.isFinite, seconds > 0 else { return }
-                loadedDuration = seconds
-                updateSessionProgress()
-            }
-        }
     }
 }
 
@@ -1962,7 +1470,7 @@ struct AVPlayerViewRepresentable: NSViewRepresentable {
 }
 
 final class PresentationWindow: NSWindow {
-    weak var session: PresentationSession?
+    weak var outputCoordinator: OutputCoordinator?
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
@@ -2002,55 +1510,20 @@ final class PresentationWindow: NSWindow {
         requestHideSlides()
     }
 
-    private func requestHideSlides() {
-        DispatchQueue.main.async { [weak self] in
-            self?.session?.hideSlides()
-        }
-    }
+    private var commandSession: PresentationSession? { outputCoordinator?.preferredLocalSession ?? outputCoordinator?.localSession }
 
-    private func requestStopProjection() {
-        DispatchQueue.main.async { [weak self] in
-            self?.session?.stopPresentation()
-        }
-    }
-
-    private func requestToggleSlidesVisibility() {
-        DispatchQueue.main.async { [weak self] in
-            guard let session = self?.session else { return }
-            if session.areSlidesVisible {
-                session.hideSlides()
-            } else {
-                session.showSlides()
-            }
-        }
-    }
-
-    private func requestClearBackgroundVisual() {
-        DispatchQueue.main.async { [weak self] in
-            self?.session?.setBackgroundVisual(nil)
-        }
-    }
-
-    private func requestClearBackgroundAudio() {
-        DispatchQueue.main.async { [weak self] in
-            self?.session?.clearBackgroundAudio()
-        }
-    }
-
-    private func requestClearAllLayers() {
-        DispatchQueue.main.async { [weak self] in
-            guard let session = self?.session else { return }
-            session.hideSlides()
-            session.setBackgroundVisual(nil)
-            session.clearBackgroundAudio()
-        }
-    }
+    private func requestHideSlides() { outputCoordinator?.hide() }
+    private func requestStopProjection() { outputCoordinator?.stop() }
+    private func requestToggleSlidesVisibility() { outputCoordinator?.toggleSlides() }
+    private func requestClearBackgroundVisual() { outputCoordinator?.clearBackgrounds() }
+    private func requestClearBackgroundAudio() { outputCoordinator?.clearAudio() }
+    private func requestClearAllLayers() { outputCoordinator?.clearAllLayers() }
 
     private func requestMoveSelection(_ delta: Int) {
-        session?.moveSelection(delta)
+        commandSession?.moveSelection(delta)
     }
 
     private func requestMoveSelection(direction: ThumbnailGridNavigationDirection) {
-        session?.moveSelection(direction: direction)
+        commandSession?.moveSelection(direction: direction)
     }
 }

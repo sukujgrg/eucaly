@@ -4,6 +4,7 @@ import Combine
 
 struct ImageSlideView: View {
     let url: URL
+    var backgroundColour: Color = .black
     var contentMode: ProjectionImageContentMode = .fit
     var showsLoadingIndicator = true
     var retainsPreviousImageWhileLoading = false
@@ -19,7 +20,7 @@ struct ImageSlideView: View {
                 contentMode: contentMode
             )
             ZStack {
-                Color.black
+                backgroundColour
                 if let image = presentation.image(for: request, retainingPreviousImage: retainsPreviousImageWhileLoading) {
                     Image(decorative: image, scale: displayScale)
                         .resizable()

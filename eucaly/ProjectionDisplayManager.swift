@@ -95,6 +95,10 @@ final class ProjectionDisplayManager: ObservableObject {
 
     var isLocked: Bool { !activeOutputs.isEmpty }
 
+    func isReserved(_ target: ProjectionMonitorTarget) -> Bool {
+        activeOutputs.values.contains { $0.identity == target.identity }
+    }
+
     var knownTargets: [ProjectionMonitorTarget] {
         labels.map { ProjectionMonitorTarget(identity: $0.key, name: $0.value.modelName) }
             .sorted { (number(for: $0) ?? Int.max) < (number(for: $1) ?? Int.max) }

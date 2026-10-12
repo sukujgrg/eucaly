@@ -14,7 +14,10 @@ Primary UX model:
 - explicitly load it into **Current**
 - project **Current** to display
 
-Browsing must never silently replace Current.
+Browsing must never silently replace Current. The local media flow remains
+Sidebar -> Preview -> Current. Authenticated external structured text is a scoped
+exception: its explicit Present takes the output group through OutputCoordinator
+without writing local Preview or Current. See docs/external-presentation.md.
 
 ## Tech Stack
 - SwiftUI (main UI)
@@ -52,6 +55,18 @@ Browsing must never silently replace Current.
     - `@StateObject var flow = PresentationFlowController()`
   - Hosts split view, toolbar controls, selection handling, and sidebar callbacks
 
+### Output Profiles and External Sources
+- `AppDelegate` owns `OutputProfileStore`, `OutputCoordinator`, and the disabled-by-default `ExternalPresentationReceiver` independently of controls windows.
+- `eucaly/Output/` contains coherent snapshots, component adapters, versioned settings, ownership generations, native destinations, compositions, shared media, and loopback transport.
+- One output group follows one source. Profiles own typography and visual backgrounds; destinations separately reference monitor UUIDs and opaque profile IDs. Migration enables only the existing Audience destination and never chooses a fallback monitor.
+- External Present validates complete structured text before taking output. It has no path to local Preview/Current. Local Show, live Load/Switch, visible Current navigation and same-slide activation reclaim output. Hidden navigation stays private. Clear, Hide and Stop revoke external leases. Hide retains an immutable last-presented Confidence snapshot; Clear removes it.
+- Record explicit input order before asynchronous preparation or queued navigation. Transport ingress and local commands share OutputActionClock. Superseded messages, leases, connection callbacks and native close generations cannot restore or clear newer output.
+- Physical display reservations and window teardown are per destination. Losing one destination retains the others, resources, Current and assignment. Explicit Show/Present is needed to reopen. Live webpages permit one Audience output; companions render status or selected text without additional WebKit playback.
+- OutputMediaRuntime owns one program AVPlayer and pools matching muted background resources. ScreenCaptureManager owns one picker-approved stream with reference-counted consumers and GPU-backed sample-buffer fan-out. Views consume resources; closing one does not stop another. Independent background audio has one explicit session owner, recorded by the coordinator.
+- Output settings use native Forms, Pickers, colour controls and NSFontPanel. Requested font identifiers are retained during fallback. Audience thumbnails use its typeface/layout with independent thumbnail size controls. Readability notices are operator-only.
+- Receiver setup and credentials are explicit. Bind loopback only, keep Keychain/framing/encoding/files off the UI thread, and preserve bounded controls/latest state. Test hosts never restore receiver credentials or start listeners.
+- See docs/output-profiles-implementation.md for validation and physical/profiling limits. Do not claim GPU cadence or physical delivery from snapshot acceptance.
+
 ### AltView Text Output
 - `AppDelegate` owns one `AltViewService`; it is independent of projection views and local window lifetime.
 - `PresentationSession` emits coherent Current snapshots plus explicit project/show/stop events. Preview never publishes. Visible Current activation (including the same slide), keyboard navigation, and explicit Load/Switch Current request projection; background model refreshes and hidden navigation do not.
@@ -78,7 +93,7 @@ These isolate rendering concerns from orchestration.
 ### Presentation Runtime
 - `eucaly/PresentationWindowController.swift`
   - `PresentationSession`
-  - Projection window lifecycle
+  - Local Current document, navigation, playback controls, and presentation events
   - Layer visibility state (`areSlidesVisible`, background visibility, overlay)
   - Media playback controls
   - Window-capture slide support
@@ -92,7 +107,7 @@ This is the mandatory pattern for every existing and future media type.
 3. Current changes only via explicit user action:
    - `Load to Current` / `Switch Current`
    - `Clear`
-4. Projection renders Current only.
+4. Local projection renders Current only. The external-source exception above renders a separate leased snapshot and never replaces Current.
 5. If a type needs special runtime handling (streaming, async, permissions), this must be an implementation detail. It must still follow the same Sidebar -> Preview -> Current contract.
 6. Any new type must integrate with:
    - sidebar selection model (`SidebarSelection`)
@@ -129,7 +144,7 @@ If a new type cannot follow this contract, treat it as a design bug and refactor
 - Toolbar and menu control slide visibility separately from background layer visibility.
 - ESC hides slides.
 - Projection can remain active while slides are hidden.
-- `PresentationSession` holds one `ProjectionSleepPrevention` activity while its projection window is open, preventing idle system and display sleep. Hide Slides, Clear Current, and background/layer changes retain it. Stop Projection, native window close, display-loss shutdown, and teardown release it; browsing, naming, Identify, audio alone, and failed projection starts do not acquire it.
+- `OutputCoordinator` holds one `ProjectionSleepPrevention` activity while any physical projection window is open, preventing idle system and display sleep. Hide Slides, Clear Current, and background/layer changes retain it. Stop Projection, native window close, display-loss shutdown, and teardown release it; browsing, naming, Identify, audio alone, and failed projection starts do not acquire it.
 - Background and audio are independent from slides visibility.
 - Projection target display is user-selectable from the toolbar (`display` menu).
 - `ProjectionDisplayManager` is shared by the toolbar, Projection settings, and sessions. Assignments, monitor numbers, and custom names are persisted by macOS display UUID; the old `projectionScreenDisplayID` preference is migrated once.
@@ -223,8 +238,8 @@ Window capture supports live streaming of a user-picked app window into a slide.
 - `isLyricsSlide` must continue excluding window slides.
 
 ### Lifecycle and Cleanup
-- Capture starts when window slide appears and stops when it disappears.
-- Session teardown must stop all active captures.
+- Capture consumers attach when a window slide appears and detach when it disappears. The shared source stream stops after its last consumer releases it.
+- Destination/session teardown releases its own consumers; app shutdown stops all active captures.
 - Missing window or permission failure must degrade gracefully (error state, no crash).
 
 ### Known Design Constraint
@@ -375,7 +390,7 @@ When changing behavior, verify:
 - Lyrics/PDF/Image/Video/Webpage/Window all load into Preview.
 - Preview does not implicitly overwrite Current.
 - Load to Current works identically across media types.
-- Projection only renders Current.
+- Local projection only renders Current; external snapshots remain separate and ordinary local actions reclaim or clear them.
 - Webpage navigation in Current updates Current/runtime state and projection without forcing Preview to reload.
 - Webpage navigation in Preview updates Preview only and does not rewrite sidebar saved entries.
 - Webpage mute affects Preview, Current, and projection consistently.
