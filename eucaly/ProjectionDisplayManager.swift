@@ -169,6 +169,13 @@ final class ProjectionDisplayManager: ObservableObject {
         return true
     }
 
+    @discardableResult
+    func clearSelection() -> Bool {
+        guard !isLocked else { return false }
+        target = nil; saveTarget(); identifier.close(); changed()
+        return true
+    }
+
     nonisolated static func normalizedName(_ text: String) -> String? {
         let name = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let forbidden = CharacterSet.controlCharacters.union(.newlines)

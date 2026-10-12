@@ -29,7 +29,7 @@ struct OutputSettingsView: View {
                         HStack {
                             TextField("Output name", text: destinationBinding(destination, \.name)).labelsHidden().fontWeight(.medium)
                             Spacer()
-                            Text(coordinator.destinationStatuses().first { $0.id == destination.id }?.readiness.rawValue.capitalized ?? "Disabled").foregroundStyle(.secondary)
+                            Text(coordinator.destinationStatuses().first { $0.id == destination.id }?.readiness.title ?? "Disabled").foregroundStyle(.secondary)
                             Toggle("Enabled", isOn: destinationBinding(destination, \.enabled)).labelsHidden().accessibilityLabel("\(destination.name) enabled")
                         }
                         Picker("Profile", selection: destinationBinding(destination, \.profileID)) {
@@ -38,7 +38,9 @@ struct OutputSettingsView: View {
                         Picker("Monitor", selection: Binding(get: { destination.monitor?.identity ?? "" }, set: { id in
                             let target = coordinator.displays.displays.first { $0.identity == id }?.target
                             store.edit { doc in if let index = doc.destinations.firstIndex(where: { $0.id == destination.id }) { doc.destinations[index].monitor = target } }
-                            if destination.id == store.document.destinations.first?.id, let target { coordinator.displays.select(target) }
+                            if destination.id == store.document.destinations.first?.id {
+                                if let target { coordinator.displays.select(target) } else { coordinator.displays.clearSelection() }
+                            }
                         })) {
                             Text("Choose a monitor…").tag("")
                             ForEach(coordinator.displays.displays) { display in

@@ -67,6 +67,61 @@ final class OutputLifecycleTests: XCTestCase {
         coordinator.stop(); XCTAssertEqual(ends, 1)
         XCTAssertEqual(session.currentSlideID, slides[0].id)
     }
+    func testDuplicatedAudienceUsesDefaultMonitorControlAndUnassignmentSurvivesRefresh() throws {
+        var monitors = [1, 2].map { ProjectionMonitor(id: UInt32($0), identity: UUID().uuidString, name: "Monitor", frame: CGRect(x: 0, y: 0, width: 1920, height: 1080)) }
+        let displays = ProjectionDisplayManager(displays: { monitors }); displays.select(monitors[0].target)
+        let profiles = OutputProfileStore(monitor: monitors[0].target)
+        var copy = profiles.audience; copy.id = UUID(); copy.name = "Custom Audience"
+        profiles.edit { $0.profiles.append(copy); $0.destinations[0].profileID = copy.id }
+        let outputs = OutputCoordinator(profiles: profiles, displays: displays, driverFactory: { FakeOutputDriver() })
+        XCTAssertEqual(profiles.audience.id, copy.id)
+        XCTAssertTrue(displays.select(monitors[1].target))
+        XCTAssertEqual(profiles.document.destinations[0].monitor, monitors[1].target)
+        XCTAssertTrue(displays.clearSelection())
+        XCTAssertNil(profiles.document.destinations[0].monitor)
+        monitors.removeFirst(); displays.refresh()
+        XCTAssertNil(displays.target); XCTAssertNil(profiles.document.destinations[0].monitor)
+        let message = ExternalPresentationMessage(kind: .present, sourceID: UUID(), actionID: UUID(), revision: 1, current: .init(components: [.init(role: .primary, text: "No monitor")]))
+        XCTAssertThrowsError(try outputs.presentExternal(connection: UUID(), name: "App", message: message))
+        XCTAssertFalse(outputs.isRunning)
+    }
+    func testUnusedStandaloneSessionAndCoordinatorAreReleased() {
+        weak var releasedSession: PresentationSession?
+        weak var releasedCoordinator: OutputCoordinator?
+        do {
+            let session = PresentationSession()
+            releasedSession = session; releasedCoordinator = session.outputCoordinator
+            session.setBackgroundAudio(url: URL(fileURLWithPath: "/tmp/audio-lifetime.mov"), autoplay: true)
+        }
+        XCTAssertNil(releasedSession)
+        XCTAssertNil(releasedCoordinator)
+    }
+    func testInjectedCoordinatorCanTearDownAfterRetainingPreparedCurrent() {
+        weak var releasedSession: PresentationSession?
+        weak var releasedCoordinator: OutputCoordinator?
+        do {
+            let displays = ProjectionDisplayManager(displays: { [] })
+            let outputs = OutputCoordinator(profiles: OutputProfileStore(), displays: displays, retainsPreparedSessions: true)
+            let session = PresentationSession(projectionDisplays: displays, outputCoordinator: outputs)
+            releasedSession = session; releasedCoordinator = outputs
+            session.setSlides(LyricsParser.parseDocument("Verse\nPrepared").slides)
+            outputs.stop()
+        }
+        XCTAssertNil(releasedSession); XCTAssertNil(releasedCoordinator)
+    }
+    func testAppOwnedCoordinatorRetainsPreparedCurrentAfterStop() {
+        let displays = ProjectionDisplayManager(displays: { [] })
+        let outputs = OutputCoordinator(profiles: OutputProfileStore(), displays: displays, retainsPreparedSessions: true)
+        weak var retainedSession: PresentationSession?
+        do {
+            let session = PresentationSession(projectionDisplays: displays, outputCoordinator: outputs)
+            session.setSlides(LyricsParser.parseDocument("Verse\nRetain Current").slides)
+            retainedSession = session
+        }
+        outputs.stop()
+        XCTAssertNotNil(retainedSession)
+        XCTAssertEqual(outputs.preferredLocalSession?.currentSlide?.lines.first?.text, "Retain Current")
+    }
     func testEventSubscriptionsDoNotReplaceExistingObservers() async {
         let session = PresentationSession()
         var legacy = 0, first = 0, second = 0

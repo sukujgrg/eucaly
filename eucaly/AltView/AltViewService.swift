@@ -230,7 +230,7 @@ final class AltViewService: ObservableObject {
     }
 
     func sendCurrent(from session: PresentationSession) {
-        guard session.isPresenting, session.areSlidesVisible else { return }
+        guard session.canSendCurrentToAltView else { return }
         publish(session.outputSnapshot, from: session.outputSourceID)
     }
 

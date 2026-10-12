@@ -18,6 +18,13 @@ struct AltViewSettingsView: NSViewControllerRepresentable {
 struct AltViewToolbarButton: View {
     @ObservedObject var service: AltViewService
     @ObservedObject var session: PresentationSession
+    @ObservedObject private var outputs: OutputCoordinator
+
+    init(service: AltViewService, session: PresentationSession) {
+        self.service = service
+        self.session = session
+        self.outputs = session.outputCoordinator
+    }
     @Environment(\.openSettings) private var openSettings
     @AppStorage("settingsTab") private var settingsTab = "general"
 
@@ -39,7 +46,7 @@ struct AltViewToolbarButton: View {
 
                 Divider()
                 Button("Send Current to AltView") { service.sendCurrent(from: session) }
-                    .disabled(!service.status.connected || !session.isPresenting || !session.areSlidesVisible)
+                    .disabled(!service.status.connected || !session.canSendCurrentToAltView)
                 if service.isSending {
                     Button("Stop Sending to AltView") { service.stopSending() }
                 }

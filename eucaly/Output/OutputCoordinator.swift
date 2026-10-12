@@ -1,7 +1,18 @@
 import AppKit
 import Combine
 
-nonisolated enum OutputReadiness: String, Codable, Sendable { case closed, ready, displayMissing, unavailable, unsupported }
+nonisolated enum OutputReadiness: String, Codable, Sendable {
+    case closed, ready, displayMissing, unavailable, unsupported
+    var title: String {
+        switch self {
+        case .closed: return "Stopped"
+        case .ready: return "Open"
+        case .displayMissing: return "Monitor unavailable"
+        case .unavailable: return "Unavailable"
+        case .unsupported: return "Not supported"
+        }
+    }
+}
 
 @MainActor
 final class OutputCoordinator: ObservableObject {
@@ -11,6 +22,7 @@ final class OutputCoordinator: ObservableObject {
     let displays: ProjectionDisplayManager
     private let sleepPrevention: ProjectionSleepPrevention
     private let driverFactory: @MainActor () -> any OutputDestinationDriving
+    private let retainsPreparedSessions: Bool
     private var wasRunning = false
     private var windows: [UUID: any OutputDestinationDriving] = [:]
     private var targets: [UUID: ProjectionMonitorTarget] = [:]
@@ -29,17 +41,28 @@ final class OutputCoordinator: ObservableObject {
     @Published private(set) var nextText: OutputTextContent?
     @Published private(set) var sourceName = "Local Current"
     private(set) var liveSlide: Slide?
-    private(set) var preferredLocalSession: PresentationSession?
+    private weak var preferredWeak: PresentationSession?
+    private var retainedPreferred: PresentationSession?
+    private(set) var preferredLocalSession: PresentationSession? {
+        get { retainedPreferred ?? preferredWeak }
+        set { preferredWeak = newValue; retainedPreferred = retainsPreparedSessions ? newValue : nil }
+    }
     private(set) var localSession: PresentationSession?
-    private(set) var audioSession: PresentationSession?
+    private weak var audioWeak: PresentationSession?
+    private var retainedAudio: PresentationSession?
+    private(set) var audioSession: PresentationSession? {
+        get { retainedAudio ?? audioWeak }
+        set { audioWeak = newValue; retainedAudio = retainsPreparedSessions ? newValue : nil }
+    }
     private(set) var overlaySession: PresentationSession?
     var isRunning: Bool { !windows.isEmpty }
     var isExternal: Bool { if case .external = ownership.source { return true }; return false }
     var onReadinessChange: (() -> Void)?
 
-    init(profiles: OutputProfileStore, displays: ProjectionDisplayManager,
+    init(profiles: OutputProfileStore, displays: ProjectionDisplayManager, retainsPreparedSessions: Bool = false,
          sleepPrevention: ProjectionSleepPrevention = ProjectionSleepPrevention(),
          driverFactory: @escaping @MainActor () -> any OutputDestinationDriving = { OutputWindowDestination() }) {
+        self.retainsPreparedSessions = retainsPreparedSessions
         self.profiles = profiles; self.displays = displays
         self.sleepPrevention = sleepPrevention; self.driverFactory = driverFactory
         displayObservation = displays.observe { [weak self] in self?.displaysChanged() }
@@ -200,6 +223,7 @@ final class OutputCoordinator: ObservableObject {
         closeDestination(id); changed()
         if !isRunning {
             ownership.revoke(); localSession?.emitOutputEvent(.stopped)
+            localSession = nil; overlaySession = nil
         } else {
             // Clear Audience identity without stopping another output or AltView text.
             localSession?.emitOutputEvent(.changed(localSession!.outputSnapshot))
@@ -256,7 +280,7 @@ final class OutputCoordinator: ObservableObject {
             }
         }
         changed()
-        if !isRunning { ownership.revoke(); localSession?.emitOutputEvent(.stopped) }
+        if !isRunning { ownership.revoke(); localSession?.emitOutputEvent(.stopped); localSession = nil; overlaySession = nil }
     }
     func refreshMedia() {
         media.updateProgram(slide: liveSlide, session: localSession, running: isRunning, visible: visible)

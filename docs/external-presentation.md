@@ -8,8 +8,7 @@ Keychain under `com.suku.eucaly.presentation.v1`, account `receiver`. It is not
 stored with profiles, sent through discovery, or logged. Treat it as permission
 to present. The initial receiver has no LAN transport or external media input.
 
-Run the reference sender with `python3 scripts/external-presentation-sender.py
---demo`. It prompts privately for the credential and demonstrates direct
+Run the reference sender with `python3 scripts/external-presentation-sender.py --demo`. It prompts privately for the credential and demonstrates direct
 scripture presentation, rapid state updates, Hide, stale rejection, local Show
 takeover, Clear, Release and reconnect without takeover. It requires no Preview
 selection, Load to Current, or source switch inside eucaly. ViewTheWord and AltView

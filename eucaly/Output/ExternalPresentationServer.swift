@@ -143,11 +143,11 @@ nonisolated final class ExternalPresentationServer: @unchecked Sendable {
         queue.async { [self] in if let peer = peers[id] { enqueue(reply, peer: peer) } }
     }
     func broadcast(_ reply: ExternalPresentationReply) {
-        queue.async { [self] in for peer in peers.values where peer.authenticated { enqueue(reply, peer: peer) } }
+        queue.async { [self] in for peer in Array(peers.values) where peer.authenticated { enqueue(reply, peer: peer) } }
     }
     func reportOwnership(owner: UUID?, lease: OutputLease?) {
         queue.async { [self] in
-            for peer in peers.values where peer.authenticated {
+            for peer in Array(peers.values) where peer.authenticated {
                 enqueue(.init(kind: "ownership", lease: owner == peer.id ? lease : nil, ownsOutput: owner == peer.id), peer: peer)
             }
         }

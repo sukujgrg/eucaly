@@ -20,7 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     lazy var projectionDisplays = ProjectionDisplayManager(defaults: AppLaunchContext.isRunningTests ? nil : .standard)
 
     lazy var outputProfiles = OutputProfileStore(defaults: AppLaunchContext.isRunningTests ? nil : .standard, monitor: projectionDisplays.target)
-    lazy var outputs = OutputCoordinator(profiles: outputProfiles, displays: projectionDisplays)
+    lazy var outputs = OutputCoordinator(profiles: outputProfiles, displays: projectionDisplays, retainsPreparedSessions: true)
     lazy var receiver = ExternalPresentationReceiver(coordinator: outputs)
 
     private var isTerminatingAfterCaptureCleanup = false

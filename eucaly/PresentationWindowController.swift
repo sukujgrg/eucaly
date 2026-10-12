@@ -105,7 +105,11 @@ final class PresentationSession: NSObject, ObservableObject {
     private var backgroundAudioEndObserver: NSObjectProtocol?
     private var backgroundAudioTimeObserver: Any?
 
-    let outputCoordinator: OutputCoordinator
+    // The app owns injected coordinators; a standalone session owns its test/runtime
+    // coordinator. Prepared Current retention must not form an app/session cycle.
+    private let standaloneOutputCoordinator: OutputCoordinator?
+    private unowned let linkedOutputCoordinator: OutputCoordinator
+    var outputCoordinator: OutputCoordinator { linkedOutputCoordinator }
     let projectionDisplays: ProjectionDisplayManager
     var activePresentationTarget: ProjectionMonitorTarget? { outputCoordinator.audienceTarget }
     @Published var projectionDisplayIssue: String?
@@ -135,10 +139,15 @@ final class PresentationSession: NSObject, ObservableObject {
     private var outputChangeScheduled = false
     private var outputProjectionRequested = false
 
+    var canSendCurrentToAltView: Bool {
+        isPresenting && areSlidesVisible && (!outputCoordinator.isRunning || outputCoordinator.localSession === self)
+    }
+
     var outputSnapshot: PresentationOutputSnapshot {
-        PresentationOutputSnapshot(slide: currentSlide, isPresenting: isPresenting, slidesVisible: areSlidesVisible,
-                                   projectionWindowID: outputCoordinator.audienceIdentity.0,
-                                   projectionWindowGeneration: outputCoordinator.audienceIdentity.1)
+        let identity = outputCoordinator.localSession === self ? outputCoordinator.audienceIdentity : (nil, nil)
+        return PresentationOutputSnapshot(slide: currentSlide, isPresenting: isPresenting, slidesVisible: areSlidesVisible,
+                                          projectionWindowID: identity.0,
+                                          projectionWindowGeneration: identity.1)
     }
 
     private func scheduleOutputChange(explicit: Bool = false) {
@@ -184,8 +193,14 @@ final class PresentationSession: NSObject, ObservableObject {
          sleepPrevention: ProjectionSleepPrevention = ProjectionSleepPrevention(),
          outputCoordinator: OutputCoordinator? = nil) {
         self.projectionDisplays = projectionDisplays
-        self.outputCoordinator = outputCoordinator ?? OutputCoordinator(
-            profiles: OutputProfileStore(monitor: projectionDisplays.target), displays: projectionDisplays, sleepPrevention: sleepPrevention)
+        if let outputCoordinator {
+            standaloneOutputCoordinator = nil
+            linkedOutputCoordinator = outputCoordinator
+        } else {
+            let coordinator = OutputCoordinator(profiles: OutputProfileStore(monitor: projectionDisplays.target), displays: projectionDisplays, sleepPrevention: sleepPrevention)
+            standaloneOutputCoordinator = coordinator
+            linkedOutputCoordinator = coordinator
+        }
         super.init()
         self.outputCoordinator.attach(self)
     }
