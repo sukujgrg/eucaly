@@ -241,6 +241,175 @@ final class OutputProfileReviewTests: XCTestCase {
         try bitmap(view).representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/eucaly-confidence-idle-clock.png"))
     }
 
+    func testConfidenceAutomaticallyOpensBeforeFirstShowWithoutPublishingPrivateCurrent() async throws {
+        let monitors = (1...3).map { ProjectionMonitor(id: UInt32($0), identity: UUID().uuidString, name: "Monitor", frame: CGRect(x: 0, y: 0, width: 1920, height: 1080)) }
+        let displays = ProjectionDisplayManager(displays: { monitors }); displays.select(monitors[0].target)
+        let profiles = OutputProfileStore(monitor: monitors[0].target)
+        profiles.edit {
+            $0.destinations.append(.init(name: "Stage", profileID: OutputProfile.confidenceID, monitor: monitors[1].target))
+            $0.destinations.append(.init(name: "Lower Third", profileID: OutputProfile.lowerThirdID, monitor: monitors[2].target))
+        }
+        var opened: [(UUID, Bool)] = []
+        var begins = 0, ends = 0
+        let sleep = ProjectionSleepPrevention(beginActivity: { _, _ in begins += 1; return NSObject() }, endActivity: { _ in ends += 1 })
+        let outputs = OutputCoordinator(profiles: profiles, displays: displays, sleepPrevention: sleep, driverFactory: {
+            let driver = RecordingStandbyDriver(); driver.didOpen = { opened.append(($0, $1)) }; return driver
+        })
+        defer { outputs.stop() }
+        let session = PresentationSession(projectionDisplays: displays, outputCoordinator: outputs)
+        let sender = RecordingAltViewSender()
+        let suite = "ConfidenceStartup.\(UUID())", defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let service = AltViewService(defaults: defaults, restorePreferences: false, pairingStore: RecordingAltViewPairingStore(), senderFactory: { _ in sender })
+        service.connect(to: .manual(host: "127.0.0.1", port: "49721")!, code: "ABCD2345")
+        service.receive(sender.connectedStatus); service.attach(session)
+        session.setSlides(LyricsParser.parseDocument("Verse\nPrivate prepared lyrics").slides)
+        let selection = session.currentSlideID
+        await settle()
+        let destination = profiles.document.destinations[1].id
+        XCTAssertEqual(opened.map { $0.0 }, [destination], "Only Confidence opens automatically")
+        XCTAssertFalse(try XCTUnwrap(opened.first).1, "Startup must not steal keyboard focus")
+        XCTAssertEqual(begins, 1); XCTAssertEqual(ends, 0)
+        XCTAssertTrue(outputs.isRunning); XCTAssertFalse(outputs.isPresenting); XCTAssertFalse(session.isPresenting)
+        XCTAssertNil(outputs.ownership.source); XCTAssertNil(outputs.localSession); XCTAssertNil(outputs.audienceIdentity.0)
+        XCTAssertEqual(outputs.actionClock.current, 0)
+        XCTAssertTrue(outputs.text.isEmpty); XCTAssertNil(outputs.media.program)
+        XCTAssertEqual(session.currentSlideID, selection)
+        XCTAssertEqual(sender.takes, 0); XCTAssertTrue(sender.submissions.isEmpty)
+        let (window, view) = host(outputs, destination: destination); defer { window.close() }
+        await settle(); try assertCenteredClock(view)
+        outputs.toggleSlides(); await settle()
+        XCTAssertEqual(opened.count, 3); XCTAssertTrue(session.isPresenting)
+        XCTAssertEqual(outputs.text.components.first?.text, "Private prepared lyrics")
+        outputs.stop(); await settle()
+        XCTAssertEqual(ends, 1); XCTAssertFalse(outputs.isRunning)
+        XCTAssertEqual(session.currentSlideID, selection)
+    }
+
+    func testAssigningOrEnablingConfidenceOpensClockAndStopRequiresExplicitResume() async throws {
+        let monitors = (1...2).map { ProjectionMonitor(id: UInt32($0), identity: UUID().uuidString, name: "Monitor", frame: CGRect(x: 0, y: 0, width: 1920, height: 1080)) }
+        let displays = ProjectionDisplayManager(displays: { monitors }); displays.select(monitors[0].target)
+        let profiles = OutputProfileStore(monitor: monitors[0].target)
+        profiles.edit { $0.destinations.append(.init(name: "Stage", profileID: OutputProfile.confidenceID, monitor: nil, enabled: false)) }
+        let outputs = OutputCoordinator(profiles: profiles, displays: displays, driverFactory: { FakeOutputDriver() })
+        defer { outputs.stop() }
+        let session = PresentationSession(projectionDisplays: displays, outputCoordinator: outputs)
+        let destination = profiles.document.destinations[1].id
+        await settle(); XCTAssertFalse(outputs.isRunning)
+        profiles.edit { $0.destinations[1].enabled = true }
+        await settle(); XCTAssertFalse(outputs.isRunning, "Unassigned Confidence cannot choose a fallback monitor")
+        XCTAssertTrue(outputs.assignMonitor(monitors[1].target, to: destination))
+        await settle(); XCTAssertTrue(outputs.isOpen(destination)); XCTAssertFalse(session.isPresenting)
+        outputs.stop()
+        var profile = try XCTUnwrap(profiles.profile(OutputProfile.confidenceID))
+        profile.typography.size = 60; profiles.update(profile)
+        displays.refresh(); await settle()
+        XCTAssertFalse(outputs.isRunning, "Appearance edits and refresh must not undo Stop")
+        outputs.openConfidence(destination); await settle()
+        XCTAssertTrue(outputs.isOpen(destination)); XCTAssertFalse(session.isPresenting)
+        outputs.closeOutput(destination); await settle()
+        XCTAssertFalse(outputs.isRunning)
+        profiles.edit { $0.destinations[1].enabled = false }
+        profiles.edit { $0.destinations[1].enabled = true }
+        await settle(); XCTAssertTrue(outputs.isOpen(destination), "Explicit enable resumes the standby clock")
+    }
+
+    func testQueuedStartupClockCannotUndoStopAndDisconnectedClockNeverFallsBack() async throws {
+        var monitors = [ProjectionMonitor(id: 1, identity: UUID().uuidString, name: "Stage", frame: CGRect(x: 0, y: 0, width: 1920, height: 1080))]
+        let saved = monitors[0].target
+        let displays = ProjectionDisplayManager(displays: { monitors })
+        let profiles = OutputProfileStore()
+        profiles.edit { $0.destinations.append(.init(name: "Stage", profileID: OutputProfile.confidenceID, monitor: saved)) }
+        let outputs = OutputCoordinator(profiles: profiles, displays: displays, driverFactory: { FakeOutputDriver() })
+        defer { outputs.stop() }
+        outputs.stop(); await settle()
+        XCTAssertFalse(outputs.isRunning, "A pending startup action must honor Stop")
+        let destination = profiles.document.destinations[1].id
+        outputs.openConfidence(destination); await settle(); XCTAssertTrue(outputs.isOpen(destination))
+        monitors.removeAll(); displays.refresh(); await settle()
+        XCTAssertFalse(outputs.isRunning)
+        XCTAssertEqual(profiles.document.destinations[1].monitor, saved)
+        monitors = [.init(id: 99, identity: saved.identity, name: "Stage", frame: CGRect(x: 0, y: 0, width: 1920, height: 1080))]
+        displays.refresh(); await settle()
+        XCTAssertFalse(outputs.isRunning, "Reconnection still requires an explicit action")
+        outputs.openConfidence(destination); await settle(); XCTAssertTrue(outputs.isOpen(destination))
+        outputs.closeOutput(destination); displays.refresh(); await settle()
+        XCTAssertFalse(outputs.isRunning, "Native/manual close must remain closed")
+    }
+
+    func testAutomaticConfidenceOpeningRetainsAnExternalLeaseAndItsCurrent() async throws {
+        let monitors = (1...2).map { ProjectionMonitor(id: UInt32($0), identity: UUID().uuidString, name: "Monitor", frame: CGRect(x: 0, y: 0, width: 1920, height: 1080)) }
+        let displays = ProjectionDisplayManager(displays: { monitors }); displays.select(monitors[0].target)
+        let profiles = OutputProfileStore(monitor: monitors[0].target)
+        profiles.edit { $0.destinations.append(.init(name: "Stage", profileID: OutputProfile.confidenceID, monitor: monitors[1].target, enabled: false)) }
+        let outputs = OutputCoordinator(profiles: profiles, displays: displays, driverFactory: { FakeOutputDriver() })
+        defer { outputs.stop() }
+        let connection = UUID()
+        let message = ExternalPresentationMessage(kind: .present, sourceID: UUID(), actionID: UUID(), revision: 1,
+            current: .init(kind: .scripture, components: [.init(role: .primary, text: "Presented scripture")]))
+        let lease = try outputs.presentExternal(connection: connection, name: "Scripture app", message: message)
+        let action = outputs.actionClock.current
+        profiles.edit { $0.destinations[1].enabled = true }
+        await settle()
+        XCTAssertTrue(outputs.isOpen(profiles.document.destinations[1].id))
+        XCTAssertEqual(outputs.actionClock.current, action)
+        XCTAssertTrue(outputs.ownership.permits(connection: connection, lease: lease))
+        XCTAssertEqual(outputs.snapshot.current, message.current)
+        XCTAssertTrue(outputs.visible); XCTAssertTrue(outputs.isPresenting)
+        XCTAssertTrue(outputs.updateExternal(connection: connection, message: .init(kind: .state, revision: 2, lease: lease, current: .empty)))
+    }
+
+    func testReopenedConfidenceStartsWithClockSnapshotBeforeTheWindowFirstRenders() async throws {
+        let monitor = ProjectionMonitor(id: 1, identity: UUID().uuidString, name: "Stage", frame: CGRect(x: 0, y: 0, width: 1920, height: 1080))
+        let displays = ProjectionDisplayManager(displays: { [monitor] }); displays.select(monitor.target)
+        let profiles = OutputProfileStore(monitor: monitor.target)
+        profiles.edit { $0.destinations[0].profileID = OutputProfile.confidenceID }
+        var initialSnapshots: [OutputContentSnapshot] = []
+        let outputs = OutputCoordinator(profiles: profiles, displays: displays, driverFactory: {
+            let driver = RecordingStandbyDriver()
+            driver.snapshotOnOpen = { initialSnapshots.append($0) }
+            return driver
+        })
+        defer { outputs.stop() }
+        let session = PresentationSession(projectionDisplays: displays, outputCoordinator: outputs)
+        session.setSlides(LyricsParser.parseDocument("Verse\nPrevious visible lyrics").slides)
+        session.showSlides()
+        let destination = profiles.document.destinations[0].id
+        outputs.closeOutput(destination)
+        XCTAssertFalse(outputs.isRunning); XCTAssertNil(outputs.ownership.source)
+        outputs.openConfidence(destination); await settle()
+        let snapshot = try XCTUnwrap(initialSnapshots.last)
+        XCTAssertTrue(OutputConfidenceContent(snapshot: snapshot, profile: profiles.profile(OutputProfile.confidenceID)!).isIdle,
+                      "Clock state must be published before creating the new native view")
+        XCTAssertFalse(session.isPresenting)
+        XCTAssertEqual(session.currentSlide?.lines.first?.text, "Previous visible lyrics")
+        XCTAssertNil(outputs.media.program)
+    }
+
+    func testConfidenceMediaFilenameNeverOccupiesStagePixels() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("ConfidenceNames-\(UUID())")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let pixels = try XCTUnwrap(CGContext(data: nil, width: 64, height: 36, bitsPerComponent: 8, bytesPerRow: 64 * 4,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        pixels.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1)); pixels.fill(CGRect(x: 0, y: 0, width: 64, height: 36))
+        let data = try XCTUnwrap(NSBitmapImageRep(cgImage: XCTUnwrap(pixels.makeImage())).representation(using: .png, properties: [:]))
+        let urls = ["private-media-name.png", "another-private-media-name.png"].map { folder.appendingPathComponent($0) }
+        for url in urls { try data.write(to: url) }
+        let (outputs, session, destination) = setup(.confidence); defer { outputs.stop() }
+        let (window, view) = host(outputs, destination: destination); defer { window.close() }
+        var first: Data?
+        for url in urls {
+            session.setSlides([.init(index: 1, lines: [], label: nil, videoURL: nil, pdfURL: nil, pdfPageIndex: nil, imageURL: url)])
+            session.showSlides(); await settle()
+            XCTAssertGreaterThan(try redSamples(view), 0)
+            let rendered = try XCTUnwrap(bitmap(view).representation(using: .png, properties: [:]))
+            if let first { XCTAssertEqual(rendered, first, "Changing the media filename must not change Confidence pixels") }
+            else { first = rendered }
+        }
+        try first?.write(to: URL(fileURLWithPath: "/tmp/eucaly-confidence-media.png"))
+    }
+
     func testConfidenceCurrentAndNextUseSeparateFullHeightColumnsWithoutSourceHeader() async throws {
         let (outputs, session, destination) = setup(.confidence); defer { outputs.stop() }
         let slides = LyricsParser.parseDocument("Verse 1\nCurrent words\n\nVerse 2\nUpcoming words").slides
@@ -348,4 +517,19 @@ final class OutputProfileReviewTests: XCTestCase {
     }
     private func descendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + descendants($0) } }
     private func settle() async { try? await Task.sleep(for: .milliseconds(100)) }
+}
+
+
+@MainActor
+private final class RecordingStandbyDriver: OutputDestinationDriving {
+    let generation = UUID()
+    var windowNumber: UInt32? = 42
+    var didOpen: ((UUID, Bool) -> Void)?
+    var snapshotOnOpen: ((OutputContentSnapshot) -> Void)?
+    func open(monitor: ProjectionMonitor, coordinator: OutputCoordinator, destinationID: UUID, activate: Bool) -> Bool {
+        snapshotOnOpen?(coordinator.snapshot)
+        didOpen?(destinationID, activate); return true
+    }
+    func reposition(monitor: ProjectionMonitor) -> Bool { true }
+    func close() {}
 }

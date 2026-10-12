@@ -74,7 +74,7 @@ struct OutputConfidenceView: View {
         let geometry = OutputConfidenceGeometry(size: size, hasNext: content.next != nil, hasPlayback: content.media?.videoURL != nil)
         HStack(alignment: .top, spacing: geometry.spacing) {
             VStack(alignment: .leading, spacing: geometry.spacing / 3) {
-                heading("Current", label: content.media?.title ?? content.current.label, width: geometry.currentSize.width, geometry: geometry)
+                heading("Current", label: content.media == nil ? content.current.label : nil, width: geometry.currentSize.width, geometry: geometry)
                 current(size: geometry.currentSize)
                 if let session = coordinator.localSession, content.media?.videoURL != nil {
                     OutputPlaybackStatus(session: session, progress: session.playbackProgress,

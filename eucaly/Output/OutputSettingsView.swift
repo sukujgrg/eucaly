@@ -16,7 +16,7 @@ struct OutputSettingsView: View {
         Form {
             Section("Live Output") {
                 LabeledContent("Source", value: coordinator.ownership.source == nil ? "No live source" : coordinator.sourceName)
-                LabeledContent("Slides", value: coordinator.isRunning ? coordinator.visible ? "Visible" : "Hidden" : "Stopped")
+                LabeledContent("Slides", value: coordinator.isPresenting ? coordinator.visible ? "Visible" : "Hidden" : "Stopped")
                 if let issue = coordinator.issue { Text(issue).foregroundStyle(.orange) }
                 if let notice = store.recoveryNotice {
                     Text(notice).foregroundStyle(.orange)
@@ -54,6 +54,12 @@ struct OutputSettingsView: View {
                             Label(problem, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange)
                         }
                         HStack {
+                            if store.profile(destination.profileID)?.kind == .confidence {
+                                Button(coordinator.isOpen(destination.id) ? "Close Confidence" : "Open Confidence") {
+                                    if coordinator.isOpen(destination.id) { coordinator.closeOutput(destination.id) }
+                                    else { coordinator.openConfidence(destination.id) }
+                                }.disabled(!destination.enabled || destination.monitor.flatMap { coordinator.displays.resolve($0) } == nil)
+                            }
                             Button("Appearance…") { editing = store.profile(destination.profileID) }
                             Button("Clear Background") {
                                 if var profile = store.profile(destination.profileID) { profile.background.bookmark = nil; profile.background.colour = .black; store.update(profile) }

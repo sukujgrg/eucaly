@@ -102,12 +102,17 @@ Confidence output replaces empty, cleared or hidden content with a large centere
 24-hour clock. A dark backing keeps its bold white digits legible against profile
 backgrounds. The optional Timer/Clock overlay, countdown runtime and controls have
 been removed from every output. Explicit Show can open an idle Confidence
-output with no Current slide. Startup and browsing never open it automatically,
-and Stop still closes the window.
+output with no Current slide. Enabled Confidence now opens automatically on its
+assigned, available monitor at startup or after explicit assignment/enable. Only
+Confidence opens in standby, without stealing focus, taking a source lease,
+publishing private Current to AltView, marking a session as presenting, or
+starting program playback. Stop, native close and monitor loss retain a closed
+state through passive refreshes; Open Confidence, Show Slides or explicit
+assignment/enable can resume it. Reconnection never chooses a fallback screen.
 
 Live Confidence uses full-height Current/Next columns, roughly 68%/32%, with no
-source-name bar. Current expands when Next is absent. Next text requests 80% of the
-configured font size, including explicit component overrides, without rewriting
+source-name bar or media filename. Current expands when Next is absent. Next text
+requests 80% of the configured font size, including explicit component overrides, without rewriting
 saved settings. A lone primary text component needs no redundant role label.
 Native fitting and readability probes use the same labeled text and column boxes.
 
@@ -152,6 +157,17 @@ are retired on restore; assigned outputs move to Audience with monitor identitie
 and enabled state preserved. Custom copies retain their role selections and
 appearance as Audience profiles. Lower Third keeps its original stable ID.
 
+The 2026-10-13 Confidence follow-up verifies that no first-slide activation is
+needed for the clock. Startup and settings callbacks defer window opening outside
+SwiftUI evaluation, share the normal destination/reservation path, and keep
+clock-only state separate from explicit program presentation. Native rendered
+media remains identical when only the filename changes. Regressions cover
+startup with private Current/AltView, assignment and enable, Stop before a queued
+open, manual close, monitor loss/reconnect, sleep balance, and enabling Confidence
+without displacing an external lease. A regression captures the snapshot supplied
+to the native driver before its first render: a reopened clock receives hidden
+standby state before window creation, preventing a flash of the previous slide.
+
 ## Validation record
 
 Required validation uses `make test`, including all app tests and offline
@@ -174,7 +190,7 @@ those expected messages are not release attempts.
 
 Final validation on 2026-10-13:
 
-- `make test` passed: 372 XCTest cases, one Swift Testing case, seven offline
+- `make test` passed: 378 XCTest cases, one Swift Testing case, seven offline
   update-feed tests and 97 offline release-workflow tests, all with zero failures.
 - `make build` archived and exported the final source to `~/Applications/eucaly.app`.
 - The exported executable is arm64, its minimum macOS version is 14.0, and strict

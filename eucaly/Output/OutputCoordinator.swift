@@ -23,7 +23,11 @@ final class OutputCoordinator: ObservableObject {
     private let sleepPrevention: ProjectionSleepPrevention
     private let driverFactory: @MainActor () -> any OutputDestinationDriving
     private let retainsPreparedSessions: Bool
-    private var wasRunning = false
+    private var wasPresenting = false
+    private var programStarted = false
+    private var standbyScheduled = false
+    private var standbySuppressed: Set<UUID> = []
+    private var standbyConfigurations: [OutputDestinationConfiguration]
     private var windows: [UUID: any OutputDestinationDriving] = [:]
     private var targets: [UUID: ProjectionMonitorTarget] = [:]
     private var displayObservation: UUID?
@@ -55,6 +59,17 @@ final class OutputCoordinator: ObservableObject {
         set { audioWeak = newValue; retainedAudio = retainsPreparedSessions ? newValue : nil }
     }
     var isRunning: Bool { !windows.isEmpty }
+    // A physical standby clock is independent of explicit program presentation.
+    var isPresenting: Bool { programStarted && isRunning }
+    func isOpen(_ destinationID: UUID) -> Bool { windows[destinationID] != nil }
+    func openConfidence(_ destinationID: UUID) {
+        guard profiles.document.destinations.contains(where: { $0.id == destinationID && $0.enabled && profiles.profile($0.profileID)?.kind == .confidence }) else { return }
+        standbySuppressed.remove(destinationID)
+        scheduleConfidenceStandby()
+    }
+    func closeOutput(_ destinationID: UUID) {
+        if let generation = windows[destinationID]?.generation { destinationClosed(destinationID, generation: generation) }
+    }
     var hasEnabledConfidenceOutput: Bool {
         profiles.document.destinations.contains { $0.enabled && profiles.profile($0.profileID)?.kind == .confidence }
     }
@@ -66,6 +81,7 @@ final class OutputCoordinator: ObservableObject {
          driverFactory: @escaping @MainActor () -> any OutputDestinationDriving = { OutputWindowDestination() }) {
         self.retainsPreparedSessions = retainsPreparedSessions
         self.profiles = profiles; self.displays = displays
+        standbyConfigurations = profiles.document.destinations
         self.sleepPrevention = sleepPrevention; self.driverFactory = driverFactory
         displays.selectionConstraint = { [weak profiles] target in
             guard let profiles, let primary = profiles.document.destinations.first else { return nil }
@@ -76,15 +92,16 @@ final class OutputCoordinator: ObservableObject {
         stopObserver = NotificationCenter.default.addObserver(forName: .stopProjection, object: nil, queue: .main) { [weak self] _ in
             DispatchQueue.main.async { self?.stop() }
         }
+        scheduleConfidenceStandby()
     }
     func attach(_ session: PresentationSession) {
         sessions[session.outputSourceID] = WeakSession(value: session)
         if preferredLocalSession == nil { preferredLocalSession = session }
-        session.applyOutputState(running: isRunning, visible: visible)
+        session.applyOutputState(running: isPresenting, visible: visible)
     }
     func focusWorkspace(_ session: PresentationSession) { preferredLocalSession = session }
     func toggleSlides() {
-        if isRunning && visible { hide() }
+        if isPresenting && visible { hide() }
         else if let session = preferredLocalSession, isRunning || session.hasProjectionContent { session.showSlides() }
     }
     func clearBackgrounds() {
@@ -119,6 +136,7 @@ final class OutputCoordinator: ObservableObject {
         let previous = localSession
         guard ownership.take(.local(session.outputSourceID), action: order) != nil else { return false }
         if previous !== session { previous?.cancelPendingProjection(); previous?.emitOutputEvent(.stopped) }
+        programStarted = true
         localSession = session; preferredLocalSession = session; sourceName = "eucaly Current"
         liveSlide = session.currentSlide
         updateText(from: session)
@@ -166,6 +184,7 @@ final class OutputCoordinator: ObservableObject {
         localSession?.cancelPendingProjection()
         localSession?.emitOutputEvent(.stopped)
         localSession = nil; liveSlide = nil
+        programStarted = true
         text = current; nextText = message.next; sourceName = name; visible = true
         changed(); return lease
     }
@@ -243,12 +262,14 @@ final class OutputCoordinator: ObservableObject {
         cancelPendingLocalRequests()
         ownership.revoke()
         let previous = localSession
+        standbySuppressed.formUnion(profiles.document.destinations.map(\.id))
         for id in Array(windows.keys) { closeDestination(id) }
         localSession = nil; liveSlide = nil; text = .empty; nextText = nil
         changed(); previous?.emitOutputEvent(.stopped)
     }
     func destinationClosed(_ id: UUID, generation: UUID) {
         guard windows[id]?.generation == generation else { return }
+        standbySuppressed.insert(id)
         cancelPendingLocalRequests()
         closeDestination(id); changed()
         if !isRunning {
@@ -262,7 +283,7 @@ final class OutputCoordinator: ObservableObject {
     private func closeDestination(_ id: UUID) {
         windows.removeValue(forKey: id)?.close(); targets.removeValue(forKey: id)
         readiness[id] = .closed; displays.unlock(owner: id)
-        if windows.isEmpty { sleepPrevention.stop() }
+        if windows.isEmpty { programStarted = false; sleepPrevention.stop() }
     }
     private func openDestinations(activate: Bool = true) -> Bool {
         displays.refresh()
@@ -273,30 +294,76 @@ final class OutputCoordinator: ObservableObject {
             return false
         }
         for destination in profiles.document.destinations where destination.enabled {
-            guard windows[destination.id] == nil else { continue }
-            guard let target = destination.monitor, let monitor = displays.resolve(target) else {
-                readiness[destination.id] = .displayMissing; continue
-            }
-            guard !displays.isReserved(target), !targets.values.contains(where: { $0.identity == target.identity }) else {
-                readiness[destination.id] = .unavailable; continue
-            }
-            let driver = driverFactory()
-            guard driver.open(monitor: monitor, coordinator: self, destinationID: destination.id, activate: activate) else {
-                readiness[destination.id] = .unavailable; continue
-            }
-            windows[destination.id] = driver; targets[destination.id] = target
-            readiness[destination.id] = .ready; displays.lock(target, owner: destination.id)
+            _ = openDestination(destination, activate: activate)
         }
         if windows.isEmpty { issue = "Choose an available monitor in Projection settings before presenting."; return false }
         sleepPrevention.start(); return true
     }
+    private func openDestination(_ destination: OutputDestinationConfiguration, activate: Bool) -> Bool {
+        if windows[destination.id] != nil { return true }
+        guard let target = destination.monitor, let monitor = displays.resolve(target) else {
+            readiness[destination.id] = .displayMissing; return false
+        }
+        guard !displays.isReserved(target), !targets.values.contains(where: { $0.identity == target.identity }) else {
+            readiness[destination.id] = .unavailable; return false
+        }
+        let driver = driverFactory()
+        guard driver.open(monitor: monitor, coordinator: self, destinationID: destination.id, activate: activate) else {
+            readiness[destination.id] = .unavailable; return false
+        }
+        standbySuppressed.remove(destination.id)
+        windows[destination.id] = driver; targets[destination.id] = target
+        readiness[destination.id] = .ready; displays.lock(target, owner: destination.id)
+        return true
+    }
+    private func scheduleConfidenceStandby() {
+        guard !standbyScheduled else { return }
+        standbyScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.standbyScheduled = false
+            self.openConfidenceStandbys()
+        }
+    }
+    private func openConfidenceStandbys() {
+        let candidates = profiles.document.destinations.filter {
+            $0.enabled && $0.monitor != nil && profiles.profile($0.profileID)?.kind == .confidence
+                && windows[$0.id] == nil && !standbySuppressed.contains($0.id)
+        }
+        guard !candidates.isEmpty, profiles.recoveryNotice == nil else { return }
+        guard profiles.monitorConflictNotice == nil else { return }
+        displays.refresh()
+        // Publish standby before the native view can read a retained old slide.
+        if !programStarted && snapshot.visible {
+            visible = false
+            changed()
+        }
+        var opened = false
+        for destination in candidates {
+            guard !standbySuppressed.contains(destination.id),
+                  profiles.document.destinations.contains(destination) else { continue }
+            if openDestination(destination, activate: false) { opened = true }
+            else { standbySuppressed.insert(destination.id) }
+        }
+        if opened { sleepPrevention.start(); changed() }
+    }
     private func profilesChanged() {
         issue = profiles.monitorConflictNotice
+        let previous = standbyConfigurations
+        standbyConfigurations = profiles.document.destinations
+        standbySuppressed.formIntersection(Set(standbyConfigurations.map(\.id)))
+        for config in standbyConfigurations where config.enabled {
+            let old = previous.first { $0.id == config.id }
+            if old?.enabled != true || old?.profileID != config.profileID || old?.monitor != config.monitor {
+                standbySuppressed.remove(config.id)
+            }
+        }
         for id in Array(windows.keys) {
             guard let config = profiles.document.destinations.first(where: { $0.id == id }), config.enabled,
-                  config.monitor == targets[id] else { closeDestination(id); continue }
+                  config.monitor == targets[id], programStarted || profiles.profile(config.profileID)?.kind == .confidence else { closeDestination(id); continue }
         }
         changed()
+        scheduleConfidenceStandby()
     }
     private func displaysChanged() {
         // The simple toolbar controls Audience's saved assignment only while idle.
@@ -312,14 +379,16 @@ final class OutputCoordinator: ObservableObject {
                 cancelPendingLocalRequests()
                 issue = "An output monitor disconnected. Show Slides to reopen it after reconnecting."
                 for session in sessions.values.compactMap(\.value) { session.projectionDisplayIssue = issue }
+                standbySuppressed.insert(id)
                 closeDestination(id); readiness[id] = .displayMissing
             }
         }
         changed()
         if !isRunning { ownership.revoke(); localSession?.emitOutputEvent(.stopped); localSession = nil }
+        scheduleConfidenceStandby()
     }
     func refreshMedia() {
-        media.updateProgram(slide: liveSlide, session: localSession, running: isRunning, visible: visible)
+        media.updateProgram(slide: liveSlide, session: localSession, running: isPresenting, visible: visible)
         let active = Set(windows.keys.compactMap { id in profiles.document.destinations.first { $0.id == id }?.profileID })
         media.syncBackgrounds(profiles: profiles.document.profiles.filter { active.contains($0.id) }, visible: visible,
                               media: liveSlide.map { AltViewPresentationAdapter.mode(for: $0) == .media } ?? false) { [weak self] in self?.changed() }
@@ -334,13 +403,13 @@ final class OutputCoordinator: ObservableObject {
                          localMedia: liveSlide)
         revision &+= 1
         sessions = sessions.filter { $0.value.value != nil }
-        if isRunning || wasRunning {
+        if isPresenting || wasPresenting {
             for session in sessions.values.compactMap(\.value) {
-                session.applyOutputState(running: isRunning, visible: visible)
+                session.applyOutputState(running: isPresenting, visible: visible)
                 if let issue { session.projectionDisplayIssue = issue }
             }
         }
-        wasRunning = isRunning
+        wasPresenting = isPresenting
         onReadinessChange?()
     }
     deinit {
