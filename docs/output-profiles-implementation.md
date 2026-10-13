@@ -112,7 +112,9 @@ state through passive refreshes; Open Confidence, Show Slides or explicit
 assignment/enable can resume it. Reconnection never chooses a fallback screen.
 
 Live Confidence uses full-height Current/Next columns, roughly 68%/32%, with no
-source-name bar or media filename. Current expands when Next is absent. Next text
+source-name bar, Current heading or media filename. Presented content uses the full
+column height and expands to full width when Next is absent. Next retains its
+heading to identify upcoming content. The existing standby clock remains. Next text
 requests 80% of the configured font size, including explicit component overrides, without rewriting
 saved settings. A lone primary text component needs no redundant role label.
 Native fitting and readability probes use the same labeled text and column boxes.
@@ -129,7 +131,7 @@ background upgrades once; customized backgrounds and later explicit choices are
 preserved.
 
 The media renderer is shared by all three built-in profiles. Confidence places actual native
-media in its Current pane and reserves space for headings/playback/optional Next;
+media in its Current pane and reserves space only for playback and optional Next;
 other profiles present media over their full frame. Every video view uses the one
 program AVPlayer; picked-window views join the existing shared capture. Text role
 filters continue to apply only to text. Webpages still have one Audience playback

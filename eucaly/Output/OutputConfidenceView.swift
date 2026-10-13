@@ -57,10 +57,10 @@ nonisolated struct OutputConfidenceGeometry {
         fontSize = min(24, max(1, size.height * 0.04))
         headingHeight = fontSize * 1.4
         let columnsWidth = max(0, width - (hasNext ? spacing * 2 + 1 : 0))
-        let textHeight = max(0, height - headingHeight - spacing / 3)
         currentSize = CGSize(width: columnsWidth * (hasNext ? 0.68 : 1),
-                             height: max(0, textHeight - (hasPlayback ? headingHeight + spacing / 3 : 0)))
-        nextSize = CGSize(width: hasNext ? columnsWidth * 0.32 : 0, height: textHeight)
+                             height: max(0, height - (hasPlayback ? headingHeight + spacing / 3 : 0)))
+        nextSize = CGSize(width: hasNext ? columnsWidth * 0.32 : 0,
+                          height: max(0, height - headingHeight - spacing / 3))
     }
 }
 
@@ -74,7 +74,6 @@ struct OutputConfidenceView: View {
         let geometry = OutputConfidenceGeometry(size: size, hasNext: content.next != nil, hasPlayback: content.media?.videoURL != nil)
         HStack(alignment: .top, spacing: geometry.spacing) {
             VStack(alignment: .leading, spacing: geometry.spacing / 3) {
-                heading("Current", label: content.media == nil ? content.current.label : nil, width: geometry.currentSize.width, geometry: geometry)
                 current(size: geometry.currentSize)
                 if let session = coordinator.localSession, content.media?.videoURL != nil {
                     OutputPlaybackStatus(session: session, progress: session.playbackProgress,

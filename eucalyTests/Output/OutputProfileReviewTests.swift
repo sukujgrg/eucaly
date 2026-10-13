@@ -478,21 +478,27 @@ final class OutputProfileReviewTests: XCTestCase {
         let size = CGSize(width: 960, height: 540)
         let geometry = OutputConfidenceGeometry(size: size, hasNext: true, hasPlayback: false)
         XCTAssertGreaterThan(geometry.currentSize.width, geometry.nextSize.width)
-        XCTAssertEqual(geometry.currentSize.height, geometry.nextSize.height)
+        XCTAssertEqual(geometry.currentSize.height, geometry.height)
+        XCTAssertEqual(geometry.nextSize.height + geometry.headingHeight + geometry.spacing / 3, geometry.height, accuracy: 0.01)
         XCTAssertEqual(geometry.currentSize.width + geometry.nextSize.width + geometry.spacing * 2 + 1, geometry.width, accuracy: 0.01)
         let full = OutputConfidenceGeometry(size: size, hasNext: false, hasPlayback: false)
         XCTAssertEqual(full.currentSize.width, full.width); XCTAssertEqual(full.nextSize.width, 0)
+        XCTAssertEqual(full.currentSize.height, full.height)
         let (window, view) = host(outputs, destination: destination); defer { window.close() }
         window.setContentSize(size); await settle()
         let rendered = try bitmap(view)
-        for range in [0..<(rendered.pixelsWide / 2), (rendered.pixelsWide * 3 / 4)..<rendered.pixelsWide] {
+        for (isCurrent, range) in [(true, 0..<(rendered.pixelsWide / 2)), (false, (rendered.pixelsWide * 3 / 4)..<rendered.pixelsWide)] {
             let headerPixels = stride(from: 0, to: rendered.pixelsHigh / 5, by: 3).reduce(0) { count, y in
                 count + stride(from: range.lowerBound, to: range.upperBound, by: 3).filter { x in
                     guard let colour = rendered.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { return false }
                     return colour.redComponent > 0.6 && colour.greenComponent > 0.6 && colour.blueComponent > 0.6
                 }.count
             }
-            XCTAssertGreaterThan(headerPixels, 0, "Current and Next must retain compact labels in their own columns")
+            if isCurrent {
+                XCTAssertEqual(headerPixels, 0, "Presented content needs no Current heading or reserved header row")
+            } else {
+                XCTAssertGreaterThan(headerPixels, 0, "Next retains its heading to identify upcoming content")
+            }
         }
         let original = rendered.representation(using: .png, properties: [:])
         // The sender name remains operator metadata and must not occupy stage pixels.
