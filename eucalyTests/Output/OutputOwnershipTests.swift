@@ -1,45 +1,32 @@
 import XCTest
 @testable import eucaly
 
+@MainActor
 final class OutputOwnershipTests: XCTestCase {
-    func testSameExplicitIntentRetainsIngressOrderThroughRetries() {
-        let clock = OutputActionClock(), sender = UUID(), intent = UUID()
-        let first = clock.record(sender: sender, intent: intent)
-        let newerLocal = clock.next()
-        XCTAssertLessThan(first, newerLocal)
-        XCTAssertEqual(clock.record(sender: sender, intent: intent), first)
-        XCTAssertEqual(clock.current, newerLocal, "An old grant/reconnect retry cannot supersede a newer operator action")
-        let fresh = clock.record(sender: sender, intent: UUID())
-        XCTAssertGreaterThan(fresh, newerLocal)
-        XCTAssertGreaterThan(clock.record(sender: UUID(), intent: intent), fresh)
+    func testLocalCommandsAdvanceQueuedNavigationOrder() {
+        let clock = OutputActionClock()
+        let first = clock.next(), newer = clock.next()
+        XCTAssertLessThan(first, newer); XCTAssertEqual(clock.current, newer)
     }
-
-    func testLatePreparationAndDisplacedConnectionCannotCommitOrClear() throws {
+    func testLateWorkspacePreparationCannotDisplaceNewerAction() {
         var ownership = OutputOwnership()
         let a = UUID(), b = UUID()
         let oldAction = ownership.beginAction()
         let newer = ownership.beginAction()
-        let lease = try XCTUnwrap(ownership.take(.external(connection: b, source: UUID()), action: newer))
-        XCTAssertNil(ownership.take(.external(connection: a, source: UUID()), action: oldAction))
-        XCTAssertFalse(ownership.update(connection: a, lease: lease, revision: 1))
-        XCTAssertTrue(ownership.update(connection: b, lease: lease, revision: 1))
-        XCTAssertFalse(ownership.update(connection: b, lease: lease, revision: 1))
+        XCTAssertTrue(ownership.take(b, action: newer))
+        XCTAssertFalse(ownership.take(a, action: oldAction)); XCTAssertEqual(ownership.source, b)
         ownership.revoke()
-        XCTAssertFalse(ownership.permits(connection: b, lease: lease))
-        XCTAssertNil(ownership.take(.external(connection: a, source: UUID()), action: newer))
+        XCTAssertNil(ownership.source); XCTAssertFalse(ownership.take(a, action: newer))
     }
-    func testLocalSameSlideGetsFreshGenerationAndReconnectDoesNotRestoreLease() throws {
+    func testSameLocalSlideGetsFreshGeneration() {
         var ownership = OutputOwnership()
-        let local = UUID(), connection = UUID()
-        let action = ownership.beginAction()
-        let external = try XCTUnwrap(ownership.take(.external(connection: connection, source: UUID()), action: action))
+        let local = UUID()
         let firstAction = ownership.beginAction()
-        let first = try XCTUnwrap(ownership.take(.local(local), action: firstAction))
+        XCTAssertTrue(ownership.take(local, action: firstAction))
+        let first = ownership.generation
         let secondAction = ownership.beginAction()
-        let second = try XCTUnwrap(ownership.take(.local(local), action: secondAction))
-        XCTAssertGreaterThan(second.generation, first.generation)
-        XCTAssertFalse(ownership.permits(connection: connection, lease: external))
-        XCTAssertFalse(ownership.permits(connection: UUID(), lease: external))
+        XCTAssertTrue(ownership.take(local, action: secondAction))
+        XCTAssertGreaterThan(ownership.generation, first); XCTAssertEqual(ownership.source, local)
     }
 }
 
@@ -93,8 +80,9 @@ final class OutputLifecycleTests: XCTestCase {
         XCTAssertNil(profiles.document.destinations[0].monitor)
         monitors.removeFirst(); displays.refresh()
         XCTAssertNil(displays.target); XCTAssertNil(profiles.document.destinations[0].monitor)
-        XCTAssertThrowsError(try outputs.presentReceived(connection: UUID(), sourceID: UUID(), name: "App", revision: 1,
-            content: .init(body: "No monitor"), ingressOrder: outputs.actionClock.next()))
+        let session = PresentationSession(projectionDisplays: displays, outputCoordinator: outputs)
+        session.setSlides(LyricsParser.parseDocument("Verse\nNo monitor").slides); session.showSlides()
+        XCTAssertNotNil(session.projectionDisplayIssue); XCTAssertNil(outputs.ownership.source)
         XCTAssertFalse(outputs.isRunning)
     }
     func testUnusedStandaloneSessionAndCoordinatorAreReleased() {
@@ -136,7 +124,7 @@ final class OutputLifecycleTests: XCTestCase {
     }
     func testDestinationCloseCancelsQueuedNavigationWithoutReopeningTheWindow() async throws {
         let sender = RecordingAltViewSender(), service = AltViewService(pairingStore: RecordingAltViewPairingStore(), senderFactory: { _ in sender })
-        let hub = HubOutputHarness(service: service); defer { hub.stop() }
+        let hub = LocalOutputHarness(service: service); defer { hub.stop() }
         service.receive(sender.connectedStatus)
         hub.load("Verse\nFirst\n\nChorus\nSecond"); hub.session.showSlides()
         let current = hub.session.currentSlideID, takes = sender.takes

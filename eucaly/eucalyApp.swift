@@ -15,19 +15,12 @@ private enum AppLaunchContext {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let updates = AppUpdateViewModel(driver: SparkleUpdateDriver())
-    lazy var hubReceiverID: UUID = {
-        if AppLaunchContext.isRunningTests { return UUID() }
-        let id = UserDefaults.standard.string(forKey: "hubReceiverID").flatMap(UUID.init(uuidString:)) ?? UUID()
-        UserDefaults.standard.set(id.uuidString, forKey: "hubReceiverID")
-        return id
-    }()
-    lazy var altView = AltViewOutputRouter(store: outputProfiles, receiverID: hubReceiverID)
+    lazy var altView = AltViewOutputRouter(store: outputProfiles)
     // Read monitor preferences after EucalyApp has migrated sandbox preferences.
     lazy var projectionDisplays = ProjectionDisplayManager(defaults: AppLaunchContext.isRunningTests ? nil : .standard)
 
     lazy var outputProfiles = OutputProfileStore(defaults: AppLaunchContext.isRunningTests ? nil : .standard, monitor: projectionDisplays.target)
     lazy var outputs = OutputCoordinator(profiles: outputProfiles, displays: projectionDisplays, retainsPreparedSessions: true)
-    lazy var receiver = ExternalPresentationReceiver(coordinator: outputs, receiverID: hubReceiverID)
 
     private var isTerminatingAfterCaptureCleanup = false
 
@@ -39,7 +32,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !AppLaunchContext.isRunningTests {
             updates.start()
             altView.start(coordinator: outputs)
-            receiver.startIfEnabled()
         }
     }
 
@@ -64,7 +56,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         Task { @MainActor in
-            receiver.stop()
             outputs.stop()
             altView.shutdown()
             await ScreenCaptureManager.shared.stopAllCaptures()
@@ -116,7 +107,6 @@ struct EucalyApp: App {
                 .environmentObject(appDelegate.altView)
                 .environmentObject(appDelegate.projectionDisplays)
                 .environmentObject(appDelegate.outputs)
-                .environmentObject(appDelegate.receiver)
         }
         .windowResizability(.contentSize)
         .commands {

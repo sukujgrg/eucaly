@@ -104,7 +104,7 @@ final class AltViewNetworkTests: XCTestCase {
         defer { service.disconnect(); other.disconnect(); server.stop(); defaults.removePersistentDomain(forName: name) }
         eventually("listener") { output.port != nil }
         let port = try XCTUnwrap(output.port)
-        let hub = HubOutputHarness(service: service, receiverID: receiverID, port: port)
+        let hub = LocalOutputHarness(service: service, receiverID: receiverID, port: port)
         defer { hub.stop() }
         let session = hub.session, flow = hub.flow
         session.setSlides(slides)

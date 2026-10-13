@@ -16,7 +16,7 @@ final class OutputProfileTests: XCTestCase {
         store.flush()
         XCTAssertEqual(store.document.destinations.count, 1)
         XCTAssertEqual(store.document.destinations.first?.monitor, target)
-        XCTAssertFalse(store.document.receiverEnabled)
+        XCTAssertEqual(store.document.version, 3)
         XCTAssertEqual(store.audience.typography.size, 126)
         XCTAssertEqual(store.audience.typography(for: .meaning).size, 63)
         XCTAssertEqual(store.audience.background.bookmark, "bookmark")
@@ -162,12 +162,10 @@ final class OutputProfileTests: XCTestCase {
         let slide = try XCTUnwrap(LyricsParser.parseDocument("Verse\nMain\nMeaning\nMeaning text\nTranslation\nTranslated\nTransliteration\nSounds").slides.first)
         let content = OutputContentAdapter.text(for: slide)
         XCTAssertEqual(content.components.map(\.role), [.primary, .meaning, .translation, .transliteration])
-        var profile = OutputProfile(id: UUID(), name: "Custom", kind: .audience, roles: [.meaning])
+        let profile = OutputProfile(id: UUID(), name: "Custom", kind: .audience, roles: [.meaning])
         XCTAssertEqual(profile.components(in: content).map(\.text), ["Meaning text"])
-        XCTAssertEqual(profile.components(in: .init(kind: .scripture, components: [.init(role: .primary, text: "Verse")])).map(\.text), ["Verse"])
-        profile.scriptureRoles = [.secondary]
-        XCTAssertTrue(profile.components(in: .init(kind: .scripture, components: [.init(role: .primary, text: "Verse")])).isEmpty,
-            "Missing second translation cannot substitute the primary verse")
+        XCTAssertTrue(profile.components(in: .init(components: [.init(role: .primary, text: "Main")])).isEmpty,
+            "Missing meaning cannot substitute the primary lyrics")
         let base = OutputTypography(fontName: "Requested font", size: 70)
         XCTAssertEqual(OutputTypographyOverride(italic: true).resolve(inheriting: base).fontName, base.fontName)
         XCTAssertEqual(OutputTypographyOverride(italic: true).resolve(inheriting: base).size, 70)
@@ -189,7 +187,7 @@ final class OutputProfileRecoveryTests: XCTestCase {
         XCTAssertEqual(store.document.destinations.map(\.monitor), doc.destinations.map(\.monitor))
         XCTAssertEqual(store.document.destinations.map(\.id), doc.destinations.map(\.id))
         XCTAssertTrue(store.document.destinations.allSatisfy { !$0.enabled })
-        XCTAssertFalse(store.document.receiverEnabled)
+        XCTAssertEqual(store.document.version, 3)
         store.flush(); XCTAssertEqual(defaults.data(forKey: OutputProfileStore.key), original)
     }
 }

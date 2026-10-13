@@ -16,7 +16,7 @@ nonisolated enum OutputReadiness: String, Codable, Sendable {
 
 @MainActor
 final class OutputCoordinator: ObservableObject {
-    nonisolated let actionClock = OutputActionClock()
+    let actionClock = OutputActionClock()
     let media = OutputMediaRuntime()
     let profiles: OutputProfileStore
     let displays: ProjectionDisplayManager
@@ -45,7 +45,6 @@ final class OutputCoordinator: ObservableObject {
     @Published private(set) var visible = true
     @Published private(set) var text = OutputTextContent.empty
     @Published private(set) var nextText: OutputTextContent?
-    @Published private(set) var sourceName = "Local Current"
     private(set) var liveSlide: Slide?
     private weak var preferredWeak: PresentationSession?
     private var retainedPreferred: PresentationSession?
@@ -61,7 +60,6 @@ final class OutputCoordinator: ObservableObject {
         set { audioWeak = newValue; retainedAudio = retainsPreparedSessions ? newValue : nil }
     }
     var remoteOutputs: (any OutputRemoteRouting)?
-    private var remoteContent: AltViewDisplayContent?
     var isRunning: Bool { !windows.isEmpty || remoteOutputs?.isRunning == true }
     // A physical standby clock is independent of explicit program presentation.
     var isPresenting: Bool { programStarted && isRunning }
@@ -77,8 +75,6 @@ final class OutputCoordinator: ObservableObject {
     var hasEnabledConfidenceOutput: Bool {
         profiles.document.destinations.contains { $0.enabled && profiles.profile($0.profileID)?.kind == .confidence }
     }
-    var isExternal: Bool { if case .external = ownership.source { return true }; return false }
-    var onReadinessChange: (() -> Void)?
 
     init(profiles: OutputProfileStore, displays: ProjectionDisplayManager, retainsPreparedSessions: Bool = false,
          sleepPrevention: ProjectionSleepPrevention = ProjectionSleepPrevention(),
@@ -158,18 +154,16 @@ final class OutputCoordinator: ObservableObject {
             return false
         }
         guard openDestinations() else { session.projectionDisplayIssue = issue; return false }
-        if windows.isEmpty && (session.currentSlide.map { AltViewPresentationAdapter.mode(for: $0) == .media } == true || !show) {
-            issue = "Media and background visuals need an available native output. AltView LAN destinations support text."
-            session.projectionDisplayIssue = issue
+        if let problem = nativeContentProblem(for: session.currentSlide, show: show) {
+            issue = problem; session.projectionDisplayIssue = problem
             return false
         }
         let previous = localSession
-        guard ownership.take(.local(session.outputSourceID), action: order) != nil else { return false }
+        guard ownership.take(session.outputSourceID, action: order) else { return false }
         if previous !== session { previous?.cancelPendingProjection() }
         programStarted = true
-        localSession = session; preferredLocalSession = session; sourceName = "eucaly Current"
+        localSession = session; preferredLocalSession = session
         liveSlide = session.currentSlide
-        remoteContent = nil
         updateText(from: session)
         visible = show
         session.projectionDisplayIssue = nil
@@ -185,10 +179,14 @@ final class OutputCoordinator: ObservableObject {
         }
         return nil
     }
+    private func nativeContentProblem(for slide: Slide?, show: Bool = true) -> String? {
+        guard windows.isEmpty, slide.map({ AltViewPresentationAdapter.mode(for: $0) == .media }) == true || !show else { return nil }
+        return "Media and background visuals need an available native output. AltView LAN destinations support text."
+    }
     func passiveLocal(_ session: PresentationSession) {
-        guard ownership.source == .local(session.outputSourceID) else { return }
+        guard ownership.source == session.outputSourceID else { return }
         // A deferred model refresh must not bypass the same media preflight as Show.
-        if let problem = localPresentationProblem(for: session.currentSlide) {
+        if let problem = localPresentationProblem(for: session.currentSlide) ?? nativeContentProblem(for: session.currentSlide) {
             issue = problem; session.projectionDisplayIssue = problem
             return
         }
@@ -197,29 +195,6 @@ final class OutputCoordinator: ObservableObject {
     private func updateText(from session: PresentationSession) {
         text = OutputContentAdapter.text(for: session.currentSlide)
         nextText = session.currentSlideID.flatMap { session.slideIndex(for: $0) }.flatMap { session.slide(at: $0 + 1) }.map { OutputContentAdapter.text(for: $0) }
-    }
-    func presentReceived(connection: UUID, sourceID: UUID, name: String, revision: UInt64,
-                         content: AltViewDisplayContent, ingressOrder: UInt64, explicit: Bool = true) throws -> OutputLease {
-        guard content.isValid else { throw ExternalPresentationError.invalid("Invalid received content") }
-        guard ingressOrder == actionClock.current else { throw ExternalPresentationError.invalid("Present was superseded by a newer action") }
-        let action = ownership.beginAction()
-        guard openDestinations(activate: false) else { throw ExternalPresentationError.invalid(issue ?? "No destination is ready") }
-        guard let lease = ownership.take(.external(connection: connection, source: sourceID), action: action, revision: revision) else { throw ExternalPresentationError.invalid("Present was superseded") }
-        localSession?.cancelPendingProjection()
-        localSession = nil; liveSlide = nil; programStarted = true
-        remoteContent = content; text = OutputAltViewAdapter.text(content); nextText = nil
-        sourceName = name; visible = content.visible
-        changed(explicit: explicit)
-        return lease
-    }
-    func updateReceived(connection: UUID, lease: OutputLease, revision: UInt64, content: AltViewDisplayContent) -> Bool {
-        guard content.isValid, ownership.update(connection: connection, lease: lease, revision: revision) else { return false }
-        remoteContent = content; text = OutputAltViewAdapter.text(content); nextText = nil; visible = content.visible
-        changed(); return true
-    }
-    func externalDisconnected(_ connection: UUID) {
-        guard case .external(let owner, _) = ownership.source, owner == connection else { return }
-        hide()
     }
     func monitorAssignmentProblem(for target: ProjectionMonitorTarget, destinationID: UUID) -> String? {
         displays.problem(for: target) ?? profiles.monitorAssignmentProblem(for: target, excluding: destinationID)
@@ -272,14 +247,14 @@ final class OutputCoordinator: ObservableObject {
     }
     func clear() {
         cancelPendingLocalRequests()
-        ownership.revoke(); text = .empty; nextText = nil; liveSlide = nil; remoteContent = nil
+        ownership.revoke(); text = .empty; nextText = nil; liveSlide = nil
         changed()
     }
     func stop() {
         cancelPendingLocalRequests()
         ownership.revoke()
         remoteOutputs?.stop()
-        programStarted = false; backgroundWindowsOpen = false; remoteContent = nil
+        programStarted = false; backgroundWindowsOpen = false
         standbySuppressed.formUnion(profiles.document.destinations.map(\.id))
         for id in Array(windows.keys) { closeDestination(id) }
         localSession = nil; liveSlide = nil; text = .empty; nextText = nil
@@ -430,16 +405,15 @@ final class OutputCoordinator: ObservableObject {
         for session in sessions.values.compactMap(\.value) {
             session.applyOutputState(running: isPresenting && localSession === session, visible: visible)
         }
-        onReadinessChange?()
     }
     private func changed(explicit: Bool = false) {
         refreshMedia()
         let kind: OutputContentSnapshot.Kind
         if let slide = liveSlide {
             kind = slide.videoURL != nil ? .video : slide.pdfURL != nil ? .pdf : slide.imageURL != nil ? .image : slide.webpageURL != nil ? .webpage : slide.captureWindowID != nil ? .capturedWindow : .lyrics
-        } else { kind = text.isEmpty ? .empty : text.kind == .scripture ? .scripture : text.kind == .lyrics ? .lyrics : .text }
+        } else { kind = text.isEmpty ? .empty : text.kind == .lyrics ? .lyrics : .text }
         snapshot = .init(source: ownership.source, kind: kind, current: text, next: nextText, visible: visible, revision: revision &+ 1,
-                         localMedia: liveSlide, remoteContent: remoteContent)
+                         localMedia: liveSlide)
         revision &+= 1
         remoteOutputs?.publish(snapshot, explicit: explicit)
         sessions = sessions.filter { $0.value.value != nil }
@@ -450,7 +424,6 @@ final class OutputCoordinator: ObservableObject {
             }
         }
         wasPresenting = isPresenting
-        onReadinessChange?()
     }
     deinit {
         if let stopObserver { NotificationCenter.default.removeObserver(stopObserver) }

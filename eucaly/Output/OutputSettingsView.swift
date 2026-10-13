@@ -16,7 +16,7 @@ struct OutputSettingsView: View {
     var body: some View {
         Form {
             Section("Live Output") {
-                LabeledContent("Source", value: coordinator.ownership.source == nil ? "No live source" : coordinator.sourceName)
+                LabeledContent("Source", value: coordinator.ownership.source == nil ? "No live source" : "eucaly Current")
                 LabeledContent("Slides", value: coordinator.isPresenting ? coordinator.visible ? "Visible" : "Hidden" : "Stopped")
                 if let issue = coordinator.issue { Text(issue).foregroundStyle(.orange) }
                 if let notice = store.recoveryNotice {
@@ -143,13 +143,9 @@ private struct OutputProfileEditor: View {
                 Section("Profile") {
                     TextField("Name", text: $profile.name)
                 }
-                Section("Text Components · Lyrics") {
-                    Text("Used automatically for eucaly lyrics.").font(.callout).foregroundStyle(.secondary)
-                    componentToggles(OutputComponentRole.lyricRoles, selection: $profile.roles, kind: .lyrics)
-                }
-                Section("Text Components · Scripture") {
-                    Text("Used automatically for verses from ViewTheWord. Both Bible translations are included when sent; single-language verses leave no empty space. Lyrics choices are independent.").font(.callout).foregroundStyle(.secondary)
-                    componentToggles(OutputComponentRole.scriptureRoles, selection: $profile.scriptureRoles, kind: .scripture)
+                Section("Text Components") {
+                    Text("Choose the lyric components for this profile. Missing components leave no empty space.").font(.callout).foregroundStyle(.secondary)
+                    componentToggles(OutputComponentRole.lyricRoles, selection: $profile.roles)
                 }
                 Section("Layout") {
                     Picker("Layout", selection: $profile.layout) { Text("Stacked").tag("stacked"); Text("Columns").tag("columns") }
@@ -165,7 +161,7 @@ private struct OutputProfileEditor: View {
                     Toggle("Use existing Audience font scaling", isOn: $profile.usesLegacySizing)
                         .help("Preserves the existing size adjustment for short displays.")
                     ForEach(OutputComponentRole.allCases, id: \.self) { role in
-                        DisclosureGroup(role.title(for: role == .secondary || role == .reference || role == .footer ? .scripture : .lyrics) + " Overrides") {
+                        DisclosureGroup(role.title + " Overrides") {
                             OutputComponentTypographyControls(base: profile.typography, override: Binding(
                                 get: { profile.componentTypography[role] ?? .init() }, set: { profile.componentTypography[role] = $0 }))
                         }
@@ -198,9 +194,9 @@ private struct OutputProfileEditor: View {
             }.padding()
         }.frame(width: 540, height: 650)
     }
-    private func componentToggles(_ roles: [OutputComponentRole], selection: Binding<[OutputComponentRole]>, kind: OutputTextContent.Kind) -> some View {
+    private func componentToggles(_ roles: [OutputComponentRole], selection: Binding<[OutputComponentRole]>) -> some View {
         ForEach(roles, id: \.self) { role in
-            Toggle(role.title(for: kind), isOn: Binding(get: { selection.wrappedValue.contains(role) }, set: { selected in
+            Toggle(role.title, isOn: Binding(get: { selection.wrappedValue.contains(role) }, set: { selected in
                 var values = selection.wrappedValue
                 values.removeAll { $0 == role }
                 if selected { values.append(role) }
@@ -291,17 +287,5 @@ private final class OutputFontChooser: NSObject {
     }
     @objc func changeFont(_ sender: NSFontManager) {
         selected = sender.convert(selected); changed?(selected)
-    }
-}
-
-struct OutputSourceToolbarStatus: View {
-    @ObservedObject var coordinator: OutputCoordinator
-    var body: some View {
-        if coordinator.isExternal {
-            Label(coordinator.sourceName, systemImage: "antenna.radiowaves.left.and.right")
-                .font(.callout).foregroundStyle(.secondary)
-                .help("External content is live. Show Slides or activate Current to present eucaly.")
-                .accessibilityLabel("Live external source: \(coordinator.sourceName)")
-        }
     }
 }

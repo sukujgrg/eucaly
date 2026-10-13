@@ -123,7 +123,7 @@ final class OutputSettingsRenderingTests: XCTestCase {
     func testNativeSettingsRenderForVisualReview() throws {
         let displays = ProjectionDisplayManager(displays: { [] })
         let outputs = OutputCoordinator(profiles: OutputProfileStore(), displays: displays)
-        let router = AltViewOutputRouter(store: outputs.profiles, receiverID: UUID())
+        let router = AltViewOutputRouter(store: outputs.profiles, senderID: UUID())
         router.start(coordinator: outputs, discover: false)
         defer { router.shutdown() }
         let view = NSHostingView(rootView: OutputSettingsView(coordinator: outputs).environmentObject(router))

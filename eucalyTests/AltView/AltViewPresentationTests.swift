@@ -4,10 +4,10 @@ import Network
 
 @MainActor
 final class AltViewPresentationTests: XCTestCase {
-    private func setup(ready: Bool = true) -> (HubOutputHarness, RecordingAltViewSender) {
+    private func setup(ready: Bool = true) -> (LocalOutputHarness, RecordingAltViewSender) {
         let sender = RecordingAltViewSender()
         let service = AltViewService(pairingStore: RecordingAltViewPairingStore(), senderFactory: { _ in sender })
-        let hub = HubOutputHarness(service: service)
+        let hub = LocalOutputHarness(service: service)
         if ready { service.receive(sender.connectedStatus) }
         return (hub, sender)
     }
@@ -135,7 +135,7 @@ final class AltViewPresentationTests: XCTestCase {
     func testShowDuringSavedPairingReadSubmitsLatestAndRetainsExplicitSnapshot() {
         let store = RecordingAltViewPairingStore(), sender = RecordingAltViewSender()
         let service = AltViewService(pairingStore: store, senderFactory: { _ in sender })
-        let hub = HubOutputHarness(service: service, code: ""); defer { hub.stop() }
+        let hub = LocalOutputHarness(service: service, code: ""); defer { hub.stop() }
         hub.load("Verse\nFirst"); hub.session.showSlides()
         hub.load("Verse\nLatest"); hub.outputs.passiveLocal(hub.session)
         XCTAssertTrue(sender.submissions.isEmpty)
@@ -147,7 +147,7 @@ final class AltViewPresentationTests: XCTestCase {
     func testStopDuringSavedPairingReadCancelsBufferedPublication() {
         let store = RecordingAltViewPairingStore(), sender = RecordingAltViewSender()
         let service = AltViewService(pairingStore: store, senderFactory: { _ in sender })
-        let hub = HubOutputHarness(service: service, code: ""); defer { hub.stop() }
+        let hub = LocalOutputHarness(service: service, code: ""); defer { hub.stop() }
         hub.load("Verse\nStopped"); hub.session.showSlides(); hub.outputs.stop()
         store.readCompletion?(.init(key: Data("ABCD2345".utf8), receiverID: hub.remoteID), nil)
         service.receive(sender.connectedStatus)

@@ -15,7 +15,7 @@ final class AltViewConfidenceTests: XCTestCase {
         return (service, sender)
     }
     func testHiddenNavigationKeepsLastExplicitConfidenceTextAndClearClearsIt() {
-        let (service, sender) = service(), hub = HubOutputHarness(service: service)
+        let (service, sender) = service(), hub = LocalOutputHarness(service: service)
         defer { hub.stop() }
         service.receive(sender.connectedStatus)
         hub.load("Verse\nPresented\n\nChorus\nHidden navigation"); hub.session.showSlides()
@@ -67,11 +67,10 @@ final class AltViewConfidenceTests: XCTestCase {
         eventually { output.port != nil }
         sender.connect(to: .hostPort(host: "127.0.0.1", port: .init(rawValue: try XCTUnwrap(output.port))!), key: key)
         eventually { status.connected }
-        sender.submit(.init(body: "Ordinary", confidence: .init(body: "Ordinary"), projection: .init(sessionID: UUID(), mode: .media, windowID: 7, windowGeneration: UUID()), sourceKind: .scripture), submissionID: UUID()); sender.takeOutput()
+        sender.submit(.init(body: "Ordinary", confidence: .init(body: "Ordinary"), projection: .init(sessionID: UUID(), mode: .media, windowID: 7, windowGeneration: UUID())), submissionID: UUID()); sender.takeOutput()
         eventually { output.content.body == "Ordinary" && status.feedback.accepted }
         XCTAssertNil(output.content.confidence)
         XCTAssertNil(output.content.projection)
-        XCTAssertNil(output.content.sourceKind)
         XCTAssertTrue(status.connected)
     }
     func testNegotiatedFrameLimitKeepsLegacyTextAndClearsOversizeConfidenceWithoutDisconnect() throws {
@@ -103,7 +102,7 @@ final class AltViewConfidenceTests: XCTestCase {
         }
     }
     func testExplicitMediaModeHiddenNavigationAndWindowRecreation() throws {
-        let (service, sender) = service(), hub = HubOutputHarness(service: service)
+        let (service, sender) = service(), hub = LocalOutputHarness(service: service)
         defer { hub.stop() }
         service.receive(sender.connectedStatus)
         let url = URL(fileURLWithPath: "/tmp/media")
@@ -142,7 +141,7 @@ final class AltViewConfidenceTests: XCTestCase {
         XCTAssertFalse(service.isSending)
     }
     func testBackgroundAndConnectOnlyNeverPublishProjection() {
-        let (service, sender) = service(), hub = HubOutputHarness(service: service)
+        let (service, sender) = service(), hub = LocalOutputHarness(service: service)
         defer { hub.stop() }
         service.receive(sender.connectedStatus)
         hub.load("Verse\nUnpresented")

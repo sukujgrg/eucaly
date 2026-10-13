@@ -169,8 +169,8 @@ final class AltViewService: ObservableObject {
         if startedSender { sender?.cancelPendingPresentation() }
     }
 
-    /// Hub publications already contain the coherent live program. No session
-    /// event or projection window is needed to authorize a remote destination.
+    /// The coordinator provides eucaly's coherent live program. A native window
+    /// is not needed to authorize its direct AltView text destination.
     func publishProgram(_ content: AltViewDisplayContent, sourceID: UUID, explicit: Bool) {
         guard hasConnection else { return }
         if explicit { activeSourceID = sourceID }

@@ -67,7 +67,7 @@ final class OutputProfileReviewTests: XCTestCase {
         displays.refresh(); XCTAssertNil(displays.target)
     }
 
-    func testSavedDuplicateAssignmentsBlockLocalAndExternalPresentationWithoutDiscardingSettings() throws {
+    func testSavedDuplicateAssignmentsBlockPresentationWithoutDiscardingSettings() throws {
         let monitor = ProjectionMonitor(id: 1, identity: UUID().uuidString, name: "Monitor", frame: CGRect(x: 0, y: 0, width: 1920, height: 1080))
         let displays = ProjectionDisplayManager(displays: { [monitor] }); displays.select(monitor.target)
         let name = "OutputConflicts.\(UUID())", defaults = try XCTUnwrap(UserDefaults(suiteName: name))
@@ -82,8 +82,6 @@ final class OutputProfileReviewTests: XCTestCase {
         session.setSlides(LyricsParser.parseDocument("Verse\nRetained Current").slides); session.showSlides()
         XCTAssertFalse(outputs.isRunning); XCTAssertEqual(opens, 0); XCTAssertNotNil(outputs.issue)
         XCTAssertTrue(outputs.destinationStatuses().allSatisfy { $0.readiness == .unavailable })
-        XCTAssertThrowsError(try outputs.presentReceived(connection: UUID(), sourceID: UUID(), name: "Sender", revision: 1,
-            content: .init(body: "External"), ingressOrder: outputs.actionClock.next()))
         XCTAssertNil(outputs.ownership.source); XCTAssertEqual(session.currentSlide?.lines.first?.text, "Retained Current")
         XCTAssertTrue(outputs.assignMonitor(nil, to: profiles.document.destinations[1].id))
         session.showSlides(); XCTAssertTrue(outputs.isRunning); XCTAssertEqual(opens, 1)
@@ -213,7 +211,7 @@ final class OutputProfileReviewTests: XCTestCase {
         XCTAssertNotNil(outputs.issue)
     }
 
-    func testIdleConfidenceClockIsAutomaticAfterEmptyShowClearAndExternalHide() async throws {
+    func testIdleConfidenceClockIsAutomaticAfterEmptyShowClearAndHide() async throws {
         let (outputs, session, destination) = setup(.confidence); defer { outputs.stop() }
         let profile = try XCTUnwrap(outputs.profiles.profile(outputs.profiles.document.destinations[0].profileID))
         XCTAssertTrue(session.hasProjectionContent)
@@ -223,11 +221,9 @@ final class OutputProfileReviewTests: XCTestCase {
         await settle(); try assertCenteredClock(view)
         outputs.stop(); outputs.toggleSlides(); await settle(); try assertCenteredClock(view)
         XCTAssertTrue(outputs.isRunning, "The app command must also open the idle clock without a slide")
-        let connection = UUID()
-        _ = try outputs.presentReceived(connection: connection, sourceID: UUID(), name: "Do not project this source name", revision: 1,
-            content: .init(body: "External content"), ingressOrder: outputs.actionClock.next())
+        session.setSlides(LyricsParser.parseDocument("Verse\nPresented lyrics").slides); session.showSlides()
         await settle(); XCTAssertFalse(OutputConfidenceContent(snapshot: outputs.snapshot, profile: profile).isIdle)
-        outputs.externalDisconnected(connection)
+        session.hideSlides()
         await settle(); try assertCenteredClock(view)
         XCTAssertNil(outputs.ownership.source)
         session.setSlides(LyricsParser.parseDocument("Verse\nPrivate Current").slides)
@@ -303,7 +299,7 @@ final class OutputProfileReviewTests: XCTestCase {
         let suite = "ConfidenceStartup.\(UUID())", defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let service = AltViewService(defaults: defaults, pairingStore: RecordingAltViewPairingStore(), senderFactory: { _ in sender })
-        let router = AltViewOutputRouter(store: profiles, receiverID: UUID(), defaults: defaults,
+        let router = AltViewOutputRouter(store: profiles, senderID: UUID(), defaults: defaults,
             pairingStore: RecordingAltViewPairingStore(), channelFactory: { service })
         let receiverID = UUID()
         var remote = OutputDestinationConfiguration(name: "AltView", profileID: OutputProfile.altViewID, monitor: nil)
@@ -391,7 +387,7 @@ final class OutputProfileReviewTests: XCTestCase {
         XCTAssertFalse(outputs.isRunning, "Native/manual close must remain closed")
     }
 
-    func testAutomaticConfidenceOpeningRetainsAnExternalLeaseAndItsCurrent() async throws {
+    func testAutomaticConfidenceOpeningRetainsLocalOwnershipAndCurrent() async throws {
         let monitors = (1...2).map { ProjectionMonitor(id: UInt32($0), identity: UUID().uuidString, name: "Monitor", frame: CGRect(x: 0, y: 0, width: 1920, height: 1080)) }
         let displays = ProjectionDisplayManager(displays: { monitors }); displays.select(monitors[0].target)
         let profiles = OutputProfileStore(monitor: monitors[0].target)
@@ -400,19 +396,18 @@ final class OutputProfileReviewTests: XCTestCase {
         defer { outputs.stop() }
         let session = PresentationSession(projectionDisplays: displays, outputCoordinator: outputs)
         outputs.workspaceWindowReady(session)
-        let connection = UUID()
-        let content = AltViewDisplayContent(body: "Presented scripture", template: .scripture)
-        let lease = try outputs.presentReceived(connection: connection, sourceID: UUID(), name: "Scripture app", revision: 1,
-            content: content, ingressOrder: outputs.actionClock.next())
+        session.setSlides(LyricsParser.parseDocument("Verse\nPresented lyrics").slides); session.showSlides()
+        let current = outputs.snapshot.current, generation = outputs.ownership.generation
         let action = outputs.actionClock.current
         profiles.edit { $0.destinations[1].enabled = true }
         await settle()
         XCTAssertTrue(outputs.isOpen(profiles.document.destinations[1].id))
         XCTAssertEqual(outputs.actionClock.current, action)
-        XCTAssertTrue(outputs.ownership.permits(connection: connection, lease: lease))
-        XCTAssertEqual(outputs.snapshot.remoteContent, content)
+        XCTAssertEqual(outputs.ownership.source, session.outputSourceID)
+        XCTAssertEqual(outputs.ownership.generation, generation)
+        XCTAssertEqual(outputs.snapshot.current, current)
         XCTAssertTrue(outputs.visible); XCTAssertTrue(outputs.isPresenting)
-        XCTAssertTrue(outputs.updateReceived(connection: connection, lease: lease, revision: 2, content: .empty))
+        session.clearSlides(); XCTAssertTrue(outputs.snapshot.current.isEmpty)
     }
 
     func testReopenedConfidenceStartsWithClockSnapshotBeforeTheWindowFirstRenders() async throws {
@@ -458,8 +453,12 @@ final class OutputProfileReviewTests: XCTestCase {
         var first: Data?
         for url in urls {
             session.setSlides([.init(index: 1, lines: [], label: nil, videoURL: nil, pdfURL: nil, pdfPageIndex: nil, imageURL: url)])
-            session.showSlides(); await settle()
-            XCTAssertGreaterThan(try redSamples(view), 0)
+            session.showSlides()
+            let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+            while try redSamples(view) == 0, ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(25))
+            }
+            XCTAssertGreaterThan(try redSamples(view), 0, "Wait for the async image before comparing stage pixels")
             let rendered = try XCTUnwrap(bitmap(view).representation(using: .png, properties: [:]))
             if let first { XCTAssertEqual(rendered, first, "Changing the media filename must not change Confidence pixels") }
             else { first = rendered }
@@ -507,17 +506,11 @@ final class OutputProfileReviewTests: XCTestCase {
             }
         }
         try rendered.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/eucaly-confidence-columns.png"))
-        // v2 supplies a complete Confidence snapshot, without a Next field.
-        // Changing the sender's operator name must not alter those stage pixels.
-        let connection = UUID(), received = AltViewDisplayContent(body: "Stage text", template: .scripture)
-        _ = try outputs.presentReceived(connection: connection, sourceID: UUID(), name: "Unneeded source header", revision: 1,
-            content: received, ingressOrder: outputs.actionClock.next())
+        let original = try bitmap(view).representation(using: .png, properties: [:])
+        let other = PresentationSession(projectionDisplays: outputs.displays, outputCoordinator: outputs)
+        other.setSlides(session.slides); other.showSlides()
         await settle()
-        let externalPixels = try bitmap(view).representation(using: .png, properties: [:])
-        _ = try outputs.presentReceived(connection: connection, sourceID: UUID(), name: "A different source header", revision: 2,
-            content: received, ingressOrder: outputs.actionClock.next())
-        await settle()
-        XCTAssertEqual(externalPixels, try bitmap(view).representation(using: .png, properties: [:]))
+        XCTAssertEqual(original, try bitmap(view).representation(using: .png, properties: [:]), "Workspace ownership must not occupy stage pixels")
     }
 
     private func assertCenteredClock(_ view: NSView, file: StaticString = #filePath, line: UInt = #line) throws {

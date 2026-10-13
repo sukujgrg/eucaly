@@ -450,7 +450,6 @@ nonisolated final class AltViewSenderClient: AltViewSending, @unchecked Sendable
         var content = status.templateCapabilities.contentForSending(snapshot)
         if !status.capabilities.contains(AltViewProtocol.confidenceText) { content.confidence = nil }
         if !status.capabilities.contains(AltViewProtocol.localProjection) { content.projection = nil }
-        if !status.capabilities.contains(AltViewProtocol.textSource) { content.sourceKind = nil }
         return content
     }
     private func validName(_ name: String?) -> Bool {

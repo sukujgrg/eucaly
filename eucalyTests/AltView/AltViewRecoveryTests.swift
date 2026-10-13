@@ -69,7 +69,7 @@ final class AltViewRecoveryTests: XCTestCase {
         let service = AltViewService(defaults: defaults, pairingStore: store, senderFactory: { _ in sender })
         let profiles = OutputProfileStore(), displays = ProjectionDisplayManager(displays: { [] })
         let outputs = OutputCoordinator(profiles: profiles, displays: displays)
-        let router = AltViewOutputRouter(store: profiles, receiverID: UUID(), defaults: defaults, pairingStore: store, channelFactory: { service })
+        let router = AltViewOutputRouter(store: profiles, senderID: UUID(), defaults: defaults, pairingStore: store, channelFactory: { service })
         defer { outputs.stop(); router.shutdown() }
         router.start(coordinator: outputs, discover: false)
         store.readCompletion?(.init(key: Data("ABCD2345".utf8), receiverID: id), nil) // Migrate the former single selection.
@@ -118,7 +118,7 @@ final class AltViewRecoveryTests: XCTestCase {
     }
 
     func testAppOwnedRouteKeepsRuntimeHideClearAndStop() async throws {
-        let (service, sender) = service(), hub = HubOutputHarness(service: service)
+        let (service, sender) = service(), hub = LocalOutputHarness(service: service)
         defer { hub.stop() }
         service.receive(sender.connectedStatus)
         let session = hub.session
@@ -139,7 +139,7 @@ final class AltViewRecoveryTests: XCTestCase {
     }
 
     func testDetachedProjectionStopCancelsPublicationQueuedDuringReconnect() {
-        let (service, sender) = service(), hub = HubOutputHarness(service: service)
+        let (service, sender) = service(), hub = LocalOutputHarness(service: service)
         defer { hub.stop() }
         let session = hub.session
         session.setSlides(LyricsParser.parseDocument("Verse 1\nQueued lyrics").slides)
@@ -168,7 +168,7 @@ final class AltViewRecoveryTests: XCTestCase {
     }
 
     func testNativeProjectionCloseRetainsIndependentRemoteOutputAndClearsIdentity() async throws {
-        let (service, sender) = service(), hub = HubOutputHarness(service: service)
+        let (service, sender) = service(), hub = LocalOutputHarness(service: service)
         defer { hub.stop() }
         service.receive(sender.connectedStatus)
         let session = hub.session

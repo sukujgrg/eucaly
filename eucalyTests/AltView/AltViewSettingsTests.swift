@@ -12,7 +12,7 @@ final class AltViewSettingsTests: XCTestCase {
         let store = OutputProfileStore(), displays = ProjectionDisplayManager(displays: { [] })
         let outputs = OutputCoordinator(profiles: store, displays: displays)
         var senders: [RecordingAltViewSender] = []
-        let router = AltViewOutputRouter(store: store, receiverID: UUID(), defaults: defaults,
+        let router = AltViewOutputRouter(store: store, senderID: UUID(), defaults: defaults,
             pairingStore: RecordingAltViewPairingStore(), channelFactory: {
                 let sender = RecordingAltViewSender(); senders.append(sender)
                 return AltViewService(defaults: defaults,

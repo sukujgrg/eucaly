@@ -6,11 +6,9 @@ import Darwin
 
 nonisolated enum AltViewProtocol {
     static let version = 2
-    static let presentationIntent = "presentationIntentV1"
-    static let textSource = "textSourceV1"
     static let confidenceText = "confidenceTextV1"
     static let localProjection = "localProjectionV1"
-    static let capabilities = [confidenceText, localProjection, textSource]
+    static let capabilities = [confidenceText, localProjection]
     static let serviceType = "_altview._tcp"
     static let maximumFrameSize = 65_536
     static let maximumClients = 8
@@ -21,20 +19,13 @@ nonisolated enum AltViewProtocol {
     static let timeout: TimeInterval = 5
 }
 
-nonisolated struct AltViewConfidenceTranslation: Codable, Equatable, Sendable {
-    var body = ""
-    var footer = ""
-    var isValid: Bool { body.utf8.count <= 24_000 && footer.utf8.count <= 1_024 }
-}
-
 nonisolated struct AltViewConfidenceText: Codable, Equatable, Sendable {
     var title = ""
     var body = ""
     var footer = ""
-    var secondary: AltViewConfidenceTranslation?
     static let empty = Self()
-    var hasText: Bool { [title, body, footer, secondary?.body ?? "", secondary?.footer ?? ""].contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } }
-    var isValid: Bool { title.utf8.count <= 512 && body.utf8.count <= 24_000 && footer.utf8.count <= 1_024 && (secondary?.isValid ?? true) }
+    var hasText: Bool { [title, body, footer].contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } }
+    var isValid: Bool { title.utf8.count <= 512 && body.utf8.count <= 24_000 && footer.utf8.count <= 1_024 }
 }
 
 /// Same-boot process identity. Public metadata, never a pairing credential.
@@ -154,8 +145,6 @@ nonisolated struct AltViewTemplateCapabilities: Equatable, Sendable {
     }
 }
 
-nonisolated enum AltViewTextSource: String, Codable, Sendable { case lyrics, scripture, text }
-
 nonisolated struct AltViewDisplayContent: Codable, Equatable, Sendable {
     var title = ""
     var body = ""
@@ -165,7 +154,6 @@ nonisolated struct AltViewDisplayContent: Codable, Equatable, Sendable {
     var template: AltViewContentTemplate?
     var confidence: AltViewConfidenceText?
     var projection: AltViewProjectionPresentation?
-    var sourceKind: AltViewTextSource?
 
     var hasTitle: Bool { !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     var hasFooter: Bool { !footer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -178,7 +166,7 @@ nonisolated struct AltViewDisplayContent: Codable, Equatable, Sendable {
 }
 
 extension AltViewDisplayContent {
-    private enum CodingKeys: String, CodingKey { case title, body, footer, visible, emptyRegions, template, confidence, projection, sourceKind }
+    private enum CodingKeys: String, CodingKey { case title, body, footer, visible, emptyRegions, template, confidence, projection }
 
     nonisolated init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -191,7 +179,6 @@ extension AltViewDisplayContent {
         template = try values.decodeIfPresent(AltViewContentTemplate.self, forKey: .template)
         confidence = try values.decodeIfPresent(AltViewConfidenceText.self, forKey: .confidence)
         projection = try values.decodeIfPresent(AltViewProjectionPresentation.self, forKey: .projection)
-        sourceKind = try values.decodeIfPresent(AltViewTextSource.self, forKey: .sourceKind)
     }
 }
 
@@ -202,8 +189,6 @@ nonisolated struct AltViewWireMessage: Codable, Equatable, Sendable {
         case hello, welcome, take, resume, granted, state, ownership, release, heartbeat, error, feedback
     }
     var version = AltViewProtocol.version
-    var presentationIntent: UUID?
-    var rejectedPresentationIntent: UUID?
     var kind: Kind
     var senderID: UUID?
     var name: String?

@@ -389,7 +389,6 @@ public struct ContentView: View {
         }
 
         ToolbarItemGroup(placement: .primaryAction) {
-            OutputSourceToolbarStatus(coordinator: session.outputCoordinator)
             AppUpdateToolbarButton(viewModel: appUpdateViewModel)
         }
     }

@@ -5,7 +5,7 @@ import XCTest
 final class OutputCharacterizationTests: XCTestCase {
     func testPassiveReplacementAndPreviewNeverRequestPresentation() async throws {
         let sender = RecordingAltViewSender(), service = AltViewService(pairingStore: RecordingAltViewPairingStore(), senderFactory: { _ in sender })
-        let hub = HubOutputHarness(service: service); defer { hub.stop() }
+        let hub = LocalOutputHarness(service: service); defer { hub.stop() }
         service.receive(sender.connectedStatus)
         let session = hub.session, flow = hub.flow
         let current = LyricsParser.parseDocument("Verse\nCurrent").slides
@@ -27,7 +27,7 @@ final class OutputCharacterizationTests: XCTestCase {
 
     func testSameSlideActivationIsExplicitAndClearRetainsPreview() async {
         let sender = RecordingAltViewSender(), service = AltViewService(pairingStore: RecordingAltViewPairingStore(), senderFactory: { _ in sender })
-        let hub = HubOutputHarness(service: service); defer { hub.stop() }
+        let hub = LocalOutputHarness(service: service); defer { hub.stop() }
         service.receive(sender.connectedStatus)
         let session = hub.session, flow = hub.flow
         let slides = LyricsParser.parseDocument("Verse\nOne").slides

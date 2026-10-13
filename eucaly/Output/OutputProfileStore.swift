@@ -56,7 +56,6 @@ final class OutputProfileStore: ObservableObject {
             recovered.append(destination)
         }
         if !recovered.isEmpty { result.destinations = recovered }
-        result.receiverEnabled = false
         return result.isValid ? result : fallback
     }
     private enum StoreError: Error { case invalid }

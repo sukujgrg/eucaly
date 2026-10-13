@@ -35,7 +35,7 @@ Browsing never silently replaces **Current**.
 - Recursive text search under library root
 - [Named projection monitors](docs/projection-monitors.md) with remembered numbers, physical display identity, and an Identify action
 - Keeps the Mac and displays awake while projection is open, including hidden slides and background-only output
-- [AltView text output](docs/altview.md) with encrypted pairing, received Scripture forwarding, stable discovered receiver destinations, and independent nonblocking delivery
+- [AltView text output](docs/altview.md) with encrypted pairing, stable discovered receiver destinations, and independent nonblocking delivery of eucaly's own lyrics
 - Sparkle self-updates with quiet toolbar reminders during presentations
 
 Webpage behavior:

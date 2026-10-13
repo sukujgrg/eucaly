@@ -5,7 +5,7 @@ import Network
 /// Exercises the real coordinator/router boundary with a native destination
 /// driver and an injected transport. It never synthesizes session output events.
 @MainActor
-final class HubOutputHarness {
+final class LocalOutputHarness {
     let outputs: OutputCoordinator
     let session: PresentationSession
     let flow = PresentationFlowController()
@@ -32,8 +32,8 @@ final class HubOutputHarness {
         store.edit { $0.destinations.append(remote) }
         outputs = OutputCoordinator(profiles: store, displays: displays, driverFactory: { driver })
         session = PresentationSession(projectionDisplays: displays, outputCoordinator: outputs)
-        let suite = "HubHarness.\(UUID())", defaults = UserDefaults(suiteName: suite)!
-        router = AltViewOutputRouter(store: store, receiverID: UUID(), defaults: defaults,
+        let suite = "LocalOutputs.\(UUID())", defaults = UserDefaults(suiteName: suite)!
+        router = AltViewOutputRouter(store: store, senderID: UUID(), defaults: defaults,
             pairingStore: RecordingAltViewPairingStore(), channelFactory: { service })
         router.start(coordinator: outputs, discover: false)
         router.receiveDiscovered([AltViewDestination(.init(name: "Test receiver",
