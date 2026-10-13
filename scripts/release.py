@@ -522,10 +522,11 @@ def prepare(directory, state, args):
             if archive.exists():
                 shutil.rmtree(archive)
             source_commit(state["commit"])
+            # Preserve Sparkle's pre-signed copied binaries; strip only the app.
             run("xcodebuild", "-project", PROJECT, "-scheme", APP_NAME, "-configuration", "Release",
                 "-derivedDataPath", derived, "-archivePath", archive, "archive",
                 "ARCHS=arm64", "ONLY_ACTIVE_ARCH=NO", "SKIP_INSTALL=NO",
-                "STRIP_INSTALLED_PRODUCT=YES", "COPY_PHASE_STRIP=YES",
+                "STRIP_INSTALLED_PRODUCT=YES", "COPY_PHASE_STRIP=NO",
                 f"CURRENT_PROJECT_VERSION={state['build']}", f"EUCALY_SOURCE_COMMIT={state['commit']}")
             source_commit(state["commit"])
             checkpoint(directory, state, archive_hash=digest(archive))

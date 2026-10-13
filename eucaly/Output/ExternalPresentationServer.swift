@@ -4,6 +4,7 @@ import Network
 /// Queue-confined transport, framing, authentication and bounded mailboxes.
 /// Only validated intents cross to the main actor; credentials never do.
 nonisolated final class ExternalPresentationServer: @unchecked Sendable {
+    // Mutable peers stay on the transport queue. Callbacks carry only their IDs.
     private final class Peer {
         let id = UUID()
         let connection: NWConnection
@@ -70,8 +71,9 @@ nonisolated final class ExternalPresentationServer: @unchecked Sendable {
     private func accept(_ connection: NWConnection) {
         guard peers.count < ExternalPresentationProtocol.maximumClients else { connection.cancel(); return }
         let peer = Peer(connection); peers[peer.id] = peer
-        connection.stateUpdateHandler = { [weak self, weak peer] state in
-            guard let self, let peer else { return }
+        let id = peer.id
+        connection.stateUpdateHandler = { [weak self] state in
+            guard let self, let peer = self.peers[id] else { return }
             switch state {
             case .ready: self.read(peer)
             case .failed, .cancelled: self.close(peer)
@@ -79,15 +81,16 @@ nonisolated final class ExternalPresentationServer: @unchecked Sendable {
             }
         }
         connection.start(queue: queue)
-        queue.asyncAfter(deadline: .now() + 5) { [weak self, weak peer] in
-            guard let self, let peer, !peer.authenticated else { return }
+        queue.asyncAfter(deadline: .now() + 5) { [weak self] in
+            guard let self, let peer = self.peers[id], !peer.authenticated else { return }
             self.close(peer)
         }
     }
     private func read(_ peer: Peer) {
         guard peers[peer.id] === peer else { return }
-        peer.connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self, weak peer] data, _, complete, error in
-            guard let self, let peer, self.peers[peer.id] === peer else { return }
+        let id = peer.id
+        peer.connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] data, _, complete, error in
+            guard let self, let peer = self.peers[id] else { return }
             if let data, !data.isEmpty {
                 do {
                     for frame in try peer.decoder.append(data) {
@@ -128,15 +131,16 @@ nonisolated final class ExternalPresentationServer: @unchecked Sendable {
     private func scheduleDrain(_ peer: Peer) {
         guard !peer.drainScheduled else { return }
         peer.drainScheduled = true
+        let id = peer.id
         Task { @MainActor [weak self] in
             guard let self else { return }
             let batch: (String, [ExternalPresentationMessage])? = self.queue.sync {
-                guard self.peers[peer.id] === peer else { return nil }
+                guard let peer = self.peers[id] else { return nil }
                 peer.drainScheduled = false
                 return (peer.name, peer.mailbox.drain())
             }
             guard let batch else { return }
-            for message in batch.1 { self.intent(peer.id, batch.0, message) }
+            for message in batch.1 { self.intent(id, batch.0, message) }
         }
     }
     func send(_ reply: ExternalPresentationReply, to id: UUID) {
@@ -169,8 +173,9 @@ nonisolated final class ExternalPresentationServer: @unchecked Sendable {
         else { packet = nil }
         guard let packet else { return }
         peer.sending = true
-        peer.connection.send(content: packet, completion: .contentProcessed { [weak self, weak peer] error in
-            guard let self, let peer, self.peers[peer.id] === peer else { return }
+        let id = peer.id
+        peer.connection.send(content: packet, completion: .contentProcessed { [weak self] error in
+            guard let self, let peer = self.peers[id] else { return }
             peer.sending = false
             if error != nil { self.close(peer) } else { self.sendNext(peer) }
         })
@@ -178,6 +183,7 @@ nonisolated final class ExternalPresentationServer: @unchecked Sendable {
     private func close(_ peer: Peer) {
         guard peers.removeValue(forKey: peer.id) != nil else { return }
         peer.connection.stateUpdateHandler = nil; peer.connection.cancel()
-        Task { @MainActor in disconnected(peer.id) }
+        let id = peer.id
+        Task { @MainActor in disconnected(id) }
     }
 }

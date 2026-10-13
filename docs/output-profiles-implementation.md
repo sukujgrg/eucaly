@@ -182,11 +182,32 @@ lifecycle events rather than a timed delay, polling or a manually created main
 window. A native-window regression verifies the workspace is visible before the
 projection driver opens; separate checks retain projection keyboard eligibility.
 
+The build-warning follow-up preserves the separate Confidence heading change.
+Transport callbacks carry peer UUIDs and resolve mutable peers only on the
+transport queue, including the mailbox drain before returning value snapshots to
+the main actor. Native destination drivers explicitly require Sendable with their
+existing main-actor isolation; AVPlayer callbacks use independent weak captures
+for main-actor tasks. Profile persistence owns its serial encoding/write queue,
+accepting document and key values without capturing UI-isolated settings. Its
+narrow unchecked conformance covers Foundation's
+[thread-safe UserDefaults](https://developer.apple.com/documentation/foundation/userdefaults),
+with a shutdown regression restoring the latest snapshot after 100 queued edits.
+The loopback fixture uses a stable main-actor reply relay with a weak server
+reference, removing its captured-initialization warning and handler retain cycle.
+
+The project uses the system accent without referencing a missing AccentColor
+asset. Both local and release archives strip the app while preserving Sparkle's
+pre-signed copied binaries. The Swift compiler, missing-accent and signed-copy
+warnings are resolved. Xcode still emits its metadata-extraction notice because
+there is no AppIntents.framework dependency; no framework or warning suppression
+was added merely to silence it.
+
 ## Validation record
 
 Required validation uses `make test`, including all app tests and offline
-release/feed regressions, and `make build` for the final local arm64 app. No
-signing, release, version, deployment-target or sandbox configuration was changed.
+release/feed regressions, and `make build` for the final local arm64 app. Signing
+identities, versioning, release publication, deployment target and sandbox settings
+remain unchanged; copied signed binaries are preserved during archiving.
 
 Focused and full runs verify migration, recovery, typography inheritance,
 component/font geometry, unavailable-font and native multilingual rendering,
@@ -204,7 +225,7 @@ those expected messages are not release attempts.
 
 Final validation on 2026-10-13:
 
-- `make test` passed: 380 XCTest cases, one Swift Testing case, seven offline
+- `make test` passed: 381 XCTest cases, one Swift Testing case, seven offline
   update-feed tests and 97 offline release-workflow tests, all with zero failures.
 - `make build` archived and exported the final source to `~/Applications/eucaly.app`.
 - The exported executable is arm64, its minimum macOS version is 14.0, and strict

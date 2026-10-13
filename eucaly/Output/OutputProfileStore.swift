@@ -9,10 +9,11 @@ final class OutputProfileStore: ObservableObject {
     @Published private(set) var recoveryNotice: String?
     private let defaults: UserDefaults?
     private var observers: [UUID: () -> Void] = [:]
-    private let persistenceQueue = DispatchQueue(label: "com.suku.eucaly.output-profiles")
+    private let persistence: OutputProfilePersistence?
 
     init(defaults: UserDefaults? = nil, monitor: ProjectionMonitorTarget? = nil) {
         self.defaults = defaults
+        persistence = defaults.map { OutputProfilePersistence(defaults: $0) }
         let fallback = OutputProfileMigration.migrate(defaults: defaults, monitor: monitor)
         if let data = defaults?.data(forKey: Self.key) {
             do {
@@ -133,18 +134,30 @@ final class OutputProfileStore: ObservableObject {
         }
     }
     private func persist() {
-        guard recoveryNotice == nil, let defaults else { return }
-        let value = document
-        persistenceQueue.async {
-            if let data = try? JSONEncoder().encode(value) {
-                defaults.set(data, forKey: Self.key)
-                defaults.set(1, forKey: Self.defaultsRevisionKey)
-            }
-        }
+        guard recoveryNotice == nil else { return }
+        persistence?.save(document, documentKey: Self.key, revisionKey: Self.defaultsRevisionKey)
     }
     // Deterministic persistence barrier for tests and orderly shutdown.
-    func flush() { persistenceQueue.sync {} }
+    func flush() { persistence?.flush() }
+    func waitForPersistence() async { await persistence?.waitForPersistence() }
+}
+
+/// Foundation guarantees UserDefaults is thread-safe. This narrow boundary only
+/// accepts value snapshots and serializes encoding/writes on its own queue;
+/// UI state and actor-isolated settings keys never enter the queued closures.
+nonisolated private final class OutputProfilePersistence: @unchecked Sendable {
+    private let defaults: UserDefaults
+    private let queue = DispatchQueue(label: "com.suku.eucaly.output-profiles")
+    init(defaults: UserDefaults) { self.defaults = defaults }
+    func save(_ document: OutputProfileDocument, documentKey: String, revisionKey: String) {
+        queue.async { [self] in
+            guard let data = try? JSONEncoder().encode(document) else { return }
+            defaults.set(data, forKey: documentKey)
+            defaults.set(1, forKey: revisionKey)
+        }
+    }
+    func flush() { queue.sync {} }
     func waitForPersistence() async {
-        await withCheckedContinuation { continuation in persistenceQueue.async { continuation.resume() } }
+        await withCheckedContinuation { continuation in queue.async { continuation.resume() } }
     }
 }

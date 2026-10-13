@@ -55,13 +55,13 @@ final class OutputMediaRuntime: ObservableObject {
                 programPlayer = player
                 let generation = programGeneration
                 timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main) { [weak self] _ in
-                    Task { @MainActor in
+                    Task { @MainActor [weak self] in
                         guard let self, self.programGeneration == generation, let player = self.program else { return }
                         self.session?.updateVideoPlaybackProgress(currentTime: player.currentTime().seconds, duration: player.currentItem?.duration.seconds ?? 0)
                     }
                 }
                 loopObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: player.currentItem, queue: .main) { [weak self] _ in
-                    Task { @MainActor in
+                    Task { @MainActor [weak self] in
                         guard let self, self.programGeneration == generation, self.session?.videoLoop == true, self.programVisible, self.session?.videoPaused != true else { return }
                         self.program?.seek(to: .zero); self.program?.play()
                     }

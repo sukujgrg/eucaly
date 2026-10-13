@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 @MainActor
-protocol OutputDestinationDriving: AnyObject {
+protocol OutputDestinationDriving: AnyObject, Sendable {
     var windowNumber: UInt32? { get }
     var generation: UUID { get }
     func open(monitor: ProjectionMonitor, coordinator: OutputCoordinator, destinationID: UUID, activate: Bool) -> Bool

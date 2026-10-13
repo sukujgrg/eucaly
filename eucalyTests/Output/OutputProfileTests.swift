@@ -32,6 +32,25 @@ final class OutputProfileTests: XCTestCase {
         XCTAssertEqual(store.audience.background.dimming, 0.35)
         XCTAssertEqual(defaults.double(forKey: "thumbnailFontScale"), 0.7)
     }
+    func testShutdownBarrierPersistsLatestSnapshotAfterRapidEdits() async throws {
+        let name = "ProfileShutdown.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        let store = OutputProfileStore(defaults: defaults)
+        for revision in 1...100 {
+            store.edit { document in
+                document.destinations[0].name = "Audience \(revision)"
+                document.profiles[0].typography.size = Double(40 + revision)
+            }
+        }
+        let expected = store.document
+        await store.waitForPersistence()
+        let data = try XCTUnwrap(defaults.data(forKey: OutputProfileStore.key))
+        XCTAssertEqual(try JSONDecoder().decode(OutputProfileDocument.self, from: data), expected)
+        XCTAssertEqual(OutputProfileStore(defaults: defaults).document, expected)
+        XCTAssertEqual(defaults.integer(forKey: "outputProfileDefaultsRevision"), 1)
+    }
+
     func testRetiredPresetsRestoreAssignmentsAndCustomComponentsWithoutRecovery() throws {
         let name = "RetiredProfiles.\(UUID())", defaults = try XCTUnwrap(UserDefaults(suiteName: name))
         defer { defaults.removePersistentDomain(forName: name) }

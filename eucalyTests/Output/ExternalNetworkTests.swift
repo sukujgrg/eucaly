@@ -13,21 +13,22 @@ final class ExternalNetworkTests: XCTestCase {
         let session = PresentationSession(projectionDisplays: displays, outputCoordinator: outputs)
         session.setSlides(LyricsParser.parseDocument("Verse\nLocal Current").slides)
         var port: UInt16?, replies: [ExternalPresentationReply] = []
-        var server: ExternalPresentationServer!
-        server = ExternalPresentationServer(credential: key, port: 0, intent: { id, name, message in
+        let repliesToClient = ExternalTestReplyRelay()
+        let server = ExternalPresentationServer(credential: key, port: 0, intent: { id, name, message in
             do {
                 switch message.kind {
-                case .hello: server.send(outputs.discoveryReply(), to: id)
+                case .hello: repliesToClient.send(outputs.discoveryReply(), to: id)
                 case .present:
                     let lease = try outputs.presentExternal(connection: id, name: name, message: message)
-                    server.send(.init(kind: "accepted", actionID: message.actionID, lease: lease), to: id)
+                    repliesToClient.send(.init(kind: "accepted", actionID: message.actionID, lease: lease), to: id)
                 case .state:
-                    server.send(.init(kind: outputs.updateExternal(connection: id, message: message) ? "feedback" : "rejected", revision: message.revision), to: id)
+                    repliesToClient.send(.init(kind: outputs.updateExternal(connection: id, message: message) ? "feedback" : "rejected", revision: message.revision), to: id)
                 case .hide, .clear, .release:
-                    server.send(.init(kind: outputs.externalControl(connection: id, message: message) ? "accepted" : "rejected", actionID: message.actionID), to: id)
+                    repliesToClient.send(.init(kind: outputs.externalControl(connection: id, message: message) ? "accepted" : "rejected", actionID: message.actionID), to: id)
                 }
-            } catch { server.send(.init(kind: "rejected", actionID: message.actionID), to: id) }
+            } catch { repliesToClient.send(.init(kind: "rejected", actionID: message.actionID), to: id) }
         }, disconnected: { outputs.externalDisconnected($0) }, status: { port = $0; XCTAssertNil($1) })
+        repliesToClient.server = server
         server.start(); defer { server.stop(); outputs.stop() }
         try await eventually { port != nil }
         let client = ExternalTestClient(port: try XCTUnwrap(port)) { replies.append($0) }
@@ -66,6 +67,14 @@ final class ExternalNetworkTests: XCTestCase {
         XCTAssertTrue(predicate(), "Loopback request timed out")
         if !predicate() { throw ExternalPresentationError.invalid("Timed out") }
     }
+}
+
+/// A stable main-actor reference avoids capturing a variable while assigning
+/// the server, and the weak backlink prevents the test handler retaining it.
+@MainActor
+private final class ExternalTestReplyRelay {
+    weak var server: ExternalPresentationServer?
+    func send(_ reply: ExternalPresentationReply, to id: UUID) { server?.send(reply, to: id) }
 }
 
 nonisolated final class ExternalTestClient: @unchecked Sendable {
