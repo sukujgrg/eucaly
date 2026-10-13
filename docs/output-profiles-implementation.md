@@ -208,6 +208,8 @@ warning filtering, dummy intents, unused framework imports and log filtering are
 not used. Remove this opt-out from any target when introducing real App Intents.
 The unfiltered `make build` log confirms no extractor invocation and zero warnings;
 archive, export and strict code-signature verification pass.
+Both archive entry points select `generic/platform=macOS` explicitly, removing
+the ambiguous-destination warning while retaining their arm64-only architecture.
 
 ## Validation record
 

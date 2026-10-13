@@ -41,6 +41,7 @@ mkdir -p "$EXPORT_PATH"
 xcodebuild \
   -project eucaly.xcodeproj \
   -scheme eucaly \
+  -destination 'generic/platform=macOS' \
   -configuration Release \
   -derivedDataPath build/DerivedData \
   -archivePath "$ARCHIVE_PATH" \

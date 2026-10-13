@@ -523,7 +523,8 @@ def prepare(directory, state, args):
                 shutil.rmtree(archive)
             source_commit(state["commit"])
             # Preserve Sparkle's pre-signed copied binaries; strip only the app.
-            run("xcodebuild", "-project", PROJECT, "-scheme", APP_NAME, "-configuration", "Release",
+            run("xcodebuild", "-project", PROJECT, "-scheme", APP_NAME,
+                "-destination", "generic/platform=macOS", "-configuration", "Release",
                 "-derivedDataPath", derived, "-archivePath", archive, "archive",
                 "ARCHS=arm64", "ONLY_ACTIVE_ARCH=NO", "SKIP_INSTALL=NO",
                 "STRIP_INSTALLED_PRODUCT=YES", "COPY_PHASE_STRIP=NO",
