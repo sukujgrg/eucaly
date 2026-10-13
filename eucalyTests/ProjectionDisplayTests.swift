@@ -357,6 +357,56 @@ final class ProjectionDisplayTests: XCTestCase {
         }
     }
 
+    func testConfidenceKeepsFullMonitorFrameAfterStandbyAndContentChanges() async throws {
+        let monitors = try usableConnectedMonitors()
+        for monitor in monitors {
+            let manager = ProjectionDisplayManager(displays: { monitors })
+            XCTAssertTrue(manager.select(monitor.target))
+            let profiles = OutputProfileStore(monitor: monitor.target)
+            profiles.edit { $0.destinations[0].profileID = OutputProfile.confidenceID }
+            let driver = OutputWindowDestination()
+            let outputs = OutputCoordinator(profiles: profiles, displays: manager, driverFactory: { driver })
+            defer { outputs.stop() }
+            let session = PresentationSession(projectionDisplays: manager, outputCoordinator: outputs)
+            let operatorWindow = NSWindow(contentRect: CGRect(x: 30, y: 30, width: 400, height: 300),
+                                          styleMask: .titled, backing: .buffered, defer: false)
+            operatorWindow.isReleasedWhenClosed = false
+            defer { operatorWindow.close() }
+            operatorWindow.makeKeyAndOrderFront(nil)
+            let keyWindowBeforeStandby = NSApplication.shared.keyWindow
+            outputs.workspaceWindowReady(session)
+            try await Task.sleep(for: .milliseconds(150))
+            let windowID = try XCTUnwrap(driver.windowNumber)
+            let window = try XCTUnwrap(NSApplication.shared.windows.first { $0.windowNumber == Int(windowID) })
+            let content = try XCTUnwrap(window.contentView)
+            func assertFullFrame(_ state: String) {
+                content.layoutSubtreeIfNeeded()
+                XCTAssertEqual(window.frame, monitor.frame, state)
+                XCTAssertEqual(window.screen?.displayIdentity, monitor.identity, state)
+                XCTAssertEqual(content.frame, CGRect(origin: .zero, size: monitor.frame.size), state)
+                XCTAssertEqual(content.bounds, CGRect(origin: .zero, size: monitor.frame.size), state)
+            }
+            assertFullFrame("Standby")
+            XCTAssertTrue(NSApplication.shared.keyWindow === keyWindowBeforeStandby,
+                          "Automatic standby must preserve operator focus, including when another app is active")
+            XCTAssertFalse(window.isMainWindow)
+            XCTAssertNil(outputs.ownership.source)
+            session.setSlides(LyricsParser.parseDocument("Verse 1\nCurrent words\n\nVerse 2\nUpcoming words").slides)
+            session.showSlides()
+            try await Task.sleep(for: .milliseconds(150))
+            assertFullFrame("Current and Next")
+            session.hideSlides()
+            try await Task.sleep(for: .milliseconds(150))
+            assertFullFrame("Hidden clock")
+            session.clearSlides()
+            try await Task.sleep(for: .milliseconds(150))
+            assertFullFrame("Cleared clock")
+            XCTAssertTrue(driver.reposition(monitor: monitor))
+            try await Task.sleep(for: .milliseconds(150))
+            assertFullFrame("Same monitor reposition")
+        }
+    }
+
     func testStopProjectionCommandWorksWithoutAControlsViewAndReleasesAssignmentLock() throws {
         let actual = try usableConnectedMonitors()[0]
         let manager = ProjectionDisplayManager(displays: { [actual] })

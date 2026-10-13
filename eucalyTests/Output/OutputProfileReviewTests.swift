@@ -152,7 +152,7 @@ final class OutputProfileReviewTests: XCTestCase {
             let pdf = try XCTUnwrap(descendants(view).compactMap { $0 as? PDFView }.first, "\(kind) needs a native PDF renderer")
             XCTAssertEqual(pdf.document?.documentURL, pdfURL)
             XCTAssertEqual(pdf.currentPage?.pageRef?.getBoxRect(.mediaBox), page)
-            XCTAssertGreaterThan(pdf.bounds.width, 0); XCTAssertGreaterThan(pdf.bounds.height, 0)
+            XCTAssertEqual(pdf.bounds.size, view.bounds.size, "\(kind) must give PDF the full output canvas")
         }
     }
 
@@ -177,7 +177,8 @@ final class OutputProfileReviewTests: XCTestCase {
             let playerViews = descendants(pair.1).compactMap { $0 as? AVPlayerView }
             XCTAssertEqual(playerViews.count, 1, "Each profile needs a native program video view")
             XCTAssertTrue(playerViews.first?.player === program)
-            XCTAssertGreaterThan(playerViews.first?.bounds.width ?? 0, 0)
+            XCTAssertEqual(playerViews.first?.bounds.size, pair.1.bounds.size,
+                           "Program video must fill every profile's output canvas; status cannot shrink playback")
             XCTAssertEqual(outputs.profiles.document.destinations[index].enabled, true)
         }
         let confidence = try XCTUnwrap(hosts.enumerated().first { outputs.profiles.profile(outputs.profiles.document.destinations[$0.offset].profileID)?.kind == .confidence }?.element.1)
@@ -459,7 +460,14 @@ final class OutputProfileReviewTests: XCTestCase {
                 try await Task.sleep(for: .milliseconds(25))
             }
             XCTAssertGreaterThan(try redSamples(view), 0, "Wait for the async image before comparing stage pixels")
-            let rendered = try XCTUnwrap(bitmap(view).representation(using: .png, properties: [:]))
+            let pixels = try bitmap(view)
+            for (x, y) in [(1, pixels.pixelsHigh / 2), (pixels.pixelsWide - 2, pixels.pixelsHigh / 2),
+                           (pixels.pixelsWide / 2, 1), (pixels.pixelsWide / 2, pixels.pixelsHigh - 2)] {
+                let colour = try XCTUnwrap(pixels.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB))
+                XCTAssertGreaterThan(colour.redComponent, 0.9,
+                                     "An image matching the output aspect ratio must reach every edge, without Confidence insets")
+            }
+            let rendered = try XCTUnwrap(pixels.representation(using: .png, properties: [:]))
             if let first { XCTAssertEqual(rendered, first, "Changing the media filename must not change Confidence pixels") }
             else { first = rendered }
         }
@@ -481,12 +489,12 @@ final class OutputProfileReviewTests: XCTestCase {
         XCTAssertTrue(nextStyle.typography(for: .meaning).italic)
         XCTAssertEqual(custom.componentTypography[.meaning]?.size, 60, "Presentation scaling must not rewrite saved profile settings")
         let size = CGSize(width: 960, height: 540)
-        let geometry = OutputConfidenceGeometry(size: size, hasNext: true, hasPlayback: false)
+        let geometry = OutputConfidenceGeometry(size: size, hasNext: true)
         XCTAssertGreaterThan(geometry.currentSize.width, geometry.nextSize.width)
         XCTAssertEqual(geometry.currentSize.height, geometry.height)
         XCTAssertEqual(geometry.nextSize.height + geometry.headingHeight + geometry.spacing / 3, geometry.height, accuracy: 0.01)
         XCTAssertEqual(geometry.currentSize.width + geometry.nextSize.width + geometry.spacing * 2 + 1, geometry.width, accuracy: 0.01)
-        let full = OutputConfidenceGeometry(size: size, hasNext: false, hasPlayback: false)
+        let full = OutputConfidenceGeometry(size: size, hasNext: false)
         XCTAssertEqual(full.currentSize.width, full.width); XCTAssertEqual(full.nextSize.width, 0)
         XCTAssertEqual(full.currentSize.height, full.height)
         let (window, view) = host(outputs, destination: destination); defer { window.close() }

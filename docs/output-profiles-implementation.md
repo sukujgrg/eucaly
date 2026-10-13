@@ -41,6 +41,13 @@ boundary in all native profiles. Webpages require one Audience monitor; companio
 profiles show a status without duplicate WebKit playback. Remote-only media,
 including deferred model refresh, cannot replace a valid lyrics program.
 
+Confidence media uses the same full monitor canvas as Audience, retaining each
+renderer's aspect-fit/fill policy. Only Confidence text uses the padded Current/Next
+columns; video playback status overlays the canvas without reserving a footer row.
+Previously media inherited the text insets and video footer, shrinking playback
+inside an otherwise correctly sized native window. Monitor resolution, window
+geometry and focus behavior use the existing shared destination path.
+
 ## Profiles and settings
 
 Profiles own typography, component overrides, stacked/column layout, alignment,
@@ -76,11 +83,15 @@ for ownership, TLS, reconnect and acknowledgement behavior.
 
 ## Validation
 
-On 14 October 2026, `make test` passed 371 app tests and 104 offline release/feed
+On 14 October 2026, `make test` passed 372 app tests and 104 offline release/feed
 tests. `make build` archived and exported the arm64 app to `~/Applications`;
 strict deep signature verification passed. The build emitted no compiler warnings.
 The Confidence filename rendering regression waits for its actual image pixels
 before comparison instead of assuming asynchronous loading finishes in 100 ms.
+Matching-aspect images now assert pixels at all four output edges; native PDF/video
+views must match the full canvas. A real-window regression checks Confidence's
+monitor identity, hosting bounds and retained focus through standby/content changes
+on every connected usable monitor.
 ViewTheWord is on its existing `master` implementation; no revert or additional
 changes are needed there.
 

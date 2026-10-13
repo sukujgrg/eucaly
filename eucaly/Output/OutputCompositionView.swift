@@ -24,21 +24,37 @@ struct OutputCompositionView: View {
         if profile.kind == .confidence {
             if confidence.isIdle {
                 OutputConfidenceIdleClock(size: size)
+            } else if let slide = confidence.media, let session = coordinator.localSession {
+                media(slide, profile: profile, session: session, size: size)
             } else {
-                OutputConfidenceView(coordinator: coordinator, profile: profile, content: confidence, size: size)
+                OutputConfidenceView(profile: profile, content: confidence, size: size)
             }
         } else if coordinator.visible {
             if let slide = coordinator.liveSlide, let session = coordinator.localSession,
                       AltViewPresentationAdapter.mode(for: slide) == .media {
-                if slide.webpageURL != nil && profile.kind != .audience {
-                    OutputWebpageCompanionView()
-                } else {
-                    OutputMediaSlideView(slide: slide, session: session, runtime: coordinator.media, showsBackground: profile.background.whenMediaShown).id(slide.id)
-                }
+                media(slide, profile: profile, session: session, size: size)
             } else {
                 OutputTextView(content: coordinator.text, profile: profile, size: size)
             }
         }
+    }
+    /// Media uses the whole output canvas in every profile. Confidence's text
+    /// columns and playback status must not reduce the native playback frame.
+    private func media(_ slide: Slide, profile: OutputProfile, session: PresentationSession, size: CGSize) -> some View {
+        Group {
+            if slide.webpageURL != nil && profile.kind != .audience {
+                OutputWebpageCompanionView()
+            } else {
+                OutputMediaSlideView(slide: slide, session: session, runtime: coordinator.media,
+                                     showsBackground: profile.background.whenMediaShown).id(slide.id)
+            }
+        }.frame(width: size.width, height: size.height)
+            .overlay(alignment: .bottomLeading) {
+                if profile.kind == .confidence && slide.videoURL != nil {
+                    OutputConfidencePlaybackStatus(session: session, progress: session.playbackProgress,
+                                                   typography: profile.typography(for: .footer), size: size)
+                }
+            }.clipped()
     }
 }
 

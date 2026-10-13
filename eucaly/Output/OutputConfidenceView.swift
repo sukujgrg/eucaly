@@ -37,7 +37,7 @@ nonisolated struct OutputConfidenceContent {
     }
 }
 
-/// Pin native media and text to explicit column boxes. Next reserves space only
+/// Pin text to explicit column boxes. Next reserves space only
 /// when it has selected text; Current otherwise receives the full inner frame.
 nonisolated struct OutputConfidenceGeometry {
     let width: CGFloat
@@ -49,7 +49,7 @@ nonisolated struct OutputConfidenceGeometry {
     let currentSize: CGSize
     let nextSize: CGSize
 
-    init(size: CGSize, hasNext: Bool, hasPlayback: Bool) {
+    init(size: CGSize, hasNext: Bool) {
         padding = min(32, max(0, min(size.width, size.height) * 0.05))
         width = max(0, size.width - padding * 2)
         height = max(0, size.height - padding * 2)
@@ -58,29 +58,21 @@ nonisolated struct OutputConfidenceGeometry {
         headingHeight = fontSize * 1.4
         let columnsWidth = max(0, width - (hasNext ? spacing * 2 + 1 : 0))
         currentSize = CGSize(width: columnsWidth * (hasNext ? 0.68 : 1),
-                             height: max(0, height - (hasPlayback ? headingHeight + spacing / 3 : 0)))
+                             height: height)
         nextSize = CGSize(width: hasNext ? columnsWidth * 0.32 : 0,
                           height: max(0, height - headingHeight - spacing / 3))
     }
 }
 
 struct OutputConfidenceView: View {
-    @ObservedObject var coordinator: OutputCoordinator
     let profile: OutputProfile
     let content: OutputConfidenceContent
     let size: CGSize
 
     var body: some View {
-        let geometry = OutputConfidenceGeometry(size: size, hasNext: content.next != nil, hasPlayback: content.media?.videoURL != nil)
+        let geometry = OutputConfidenceGeometry(size: size, hasNext: content.next != nil)
         HStack(alignment: .top, spacing: geometry.spacing) {
-            VStack(alignment: .leading, spacing: geometry.spacing / 3) {
-                current(size: geometry.currentSize)
-                if let session = coordinator.localSession, content.media?.videoURL != nil {
-                    OutputPlaybackStatus(session: session, progress: session.playbackProgress,
-                                         typography: profile.typography(for: .footer), fontSize: geometry.fontSize)
-                        .frame(height: geometry.headingHeight)
-                }
-            }.frame(width: geometry.currentSize.width, height: geometry.height, alignment: .topLeading)
+            text(content.current, size: geometry.currentSize)
             if let next = content.next {
                 Divider().frame(width: 1, height: geometry.height).accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: geometry.spacing / 3) {
@@ -90,19 +82,6 @@ struct OutputConfidenceView: View {
             }
         }.frame(width: geometry.width, height: geometry.height, alignment: .topLeading)
             .padding(geometry.padding).frame(width: size.width, height: size.height)
-    }
-    @ViewBuilder private func current(size: CGSize) -> some View {
-        if let slide = content.media, let session = coordinator.localSession {
-            if slide.webpageURL != nil {
-                OutputWebpageCompanionView().frame(width: size.width, height: size.height)
-            } else {
-                OutputMediaSlideView(slide: slide, session: session, runtime: coordinator.media,
-                                     showsBackground: profile.background.whenMediaShown)
-                    .frame(width: size.width, height: size.height).clipped().id(slide.id)
-            }
-        } else {
-            text(content.current, size: size)
-        }
     }
     private func heading(_ title: String, label: String?, width: CGFloat, geometry: OutputConfidenceGeometry) -> some View {
         Text(title + (label.map { " · \($0)" } ?? ""))
@@ -143,11 +122,9 @@ struct OutputConfidenceReadabilityProbe: View {
     let size: CGSize
     var body: some View {
         let content = OutputConfidenceContent(snapshot: snapshot, profile: profile)
-        let geometry = OutputConfidenceGeometry(size: size, hasNext: content.next != nil, hasPlayback: content.media?.videoURL != nil)
-        if !content.isIdle {
-            if content.media == nil {
-                OutputReadabilityProbe(content: OutputConfidenceContent.labeled(content.current, profile: profile), profile: profile, size: geometry.currentSize)
-            }
+        let geometry = OutputConfidenceGeometry(size: size, hasNext: content.next != nil)
+        if !content.isIdle && content.media == nil {
+            OutputReadabilityProbe(content: OutputConfidenceContent.labeled(content.current, profile: profile), profile: profile, size: geometry.currentSize)
             if let next = content.next {
                 let nextProfile = OutputConfidenceContent.nextProfile(profile)
                 OutputReadabilityProbe(content: OutputConfidenceContent.labeled(next, profile: nextProfile), profile: nextProfile, size: geometry.nextSize)
@@ -156,13 +133,17 @@ struct OutputConfidenceReadabilityProbe: View {
     }
 }
 
-private struct OutputPlaybackStatus: View {
+struct OutputConfidencePlaybackStatus: View {
     @ObservedObject var session: PresentationSession
     @ObservedObject var progress: PlaybackProgressStore
     let typography: OutputTypography
-    let fontSize: CGFloat
+    let size: CGSize
     var body: some View {
+        let geometry = OutputConfidenceGeometry(size: size, hasNext: false)
         Text("\(session.videoPaused ? "Paused" : "Playing") · \(Int(progress.videoCurrentTime)) / \(Int(progress.videoDuration)) seconds")
-            .font(typography.font(at: min(fontSize, typography.size))).foregroundStyle(typography.colour.color)
+            .font(typography.font(at: min(geometry.fontSize, typography.size))).foregroundStyle(typography.colour.color)
+            .lineLimit(1).minimumScaleFactor(0.5)
+            .padding(8).background(.black.opacity(0.85))
+            .padding(geometry.padding).allowsHitTesting(false)
     }
 }
