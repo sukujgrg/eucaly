@@ -4,44 +4,42 @@ import XCTest
 @MainActor
 final class OutputCharacterizationTests: XCTestCase {
     func testPassiveReplacementAndPreviewNeverRequestPresentation() async throws {
-        let session = PresentationSession()
-        let flow = PresentationFlowController()
-        var events: [PresentationOutputEvent] = []
-        session.onOutputEvent = { events.append($0) }
+        let sender = RecordingAltViewSender(), service = AltViewService(pairingStore: RecordingAltViewPairingStore(), senderFactory: { _ in sender })
+        let hub = HubOutputHarness(service: service); defer { hub.stop() }
+        service.receive(sender.connectedStatus)
+        let session = hub.session, flow = hub.flow
         let current = LyricsParser.parseDocument("Verse\nCurrent").slides
         session.setSlides(current)
-        session.isPresenting = true
+        session.showSlides()
         await settle()
-        events.removeAll()
+        let submissions = sender.submissions.count, takes = sender.takes
         flow.setPreviewSlides(LyricsParser.parseDocument("Verse\nPrivate draft").slides)
         flow.selectPreviewSlide(try XCTUnwrap(flow.previewSlides.first?.id))
         await settle()
-        XCTAssertTrue(events.isEmpty)
+        XCTAssertEqual(sender.submissions.count, submissions)
         XCTAssertEqual(session.currentSlide?.id, current.first?.id)
         session.setSlides(LyricsParser.parseDocument("Verse\nPassive refresh").slides)
         await settle()
-        XCTAssertFalse(events.isEmpty)
-        for event in events {
-            guard case .changed(let snapshot) = event else { return XCTFail("Passive replacement requested output") }
-            XCTAssertEqual(snapshot.slide?.lines.first?.text, "Passive refresh")
-        }
+        XCTAssertEqual(sender.submissions.last?.content.body, "Passive refresh")
+        XCTAssertEqual(sender.takes, takes)
         session.stopPresentation()
     }
 
     func testSameSlideActivationIsExplicitAndClearRetainsPreview() async {
-        let session = PresentationSession(), flow = PresentationFlowController()
-        var projects = 0
-        session.onOutputEvent = { if case .project = $0 { projects += 1 } }
+        let sender = RecordingAltViewSender(), service = AltViewService(pairingStore: RecordingAltViewPairingStore(), senderFactory: { _ in sender })
+        let hub = HubOutputHarness(service: service); defer { hub.stop() }
+        service.receive(sender.connectedStatus)
+        let session = hub.session, flow = hub.flow
         let slides = LyricsParser.parseDocument("Verse\nOne").slides
         session.setSlides(slides)
         flow.setPreviewSlides(slides)
-        session.isPresenting = true
+        session.showSlides()
         await settle()
         session.selectCurrentSlide(slides[0].id)
         await settle()
         session.selectCurrentSlide(slides[0].id)
         await settle()
-        XCTAssertEqual(projects, 2)
+        XCTAssertEqual(sender.takes, 3, "Show and two same-slide activations are distinct actions")
         session.clearSlides()
         await settle()
         XCTAssertTrue(session.isEmpty)

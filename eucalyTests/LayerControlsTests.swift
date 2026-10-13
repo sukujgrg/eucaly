@@ -5,6 +5,15 @@ import AppKit
 /// Tests for the three-layer rendering architecture and independent layer controls
 final class LayerControlsTests: XCTestCase {
 
+    @MainActor private func projectedSession() -> (OutputCoordinator, PresentationSession) {
+        let monitor = ProjectionMonitor(id: 1, identity: UUID().uuidString, name: "Audience", frame: CGRect(x: 0, y: 0, width: 1920, height: 1080))
+        let displays = ProjectionDisplayManager(displays: { [monitor] }); displays.select(monitor.target)
+        let outputs = OutputCoordinator(profiles: OutputProfileStore(monitor: monitor.target), displays: displays, driverFactory: { FakeOutputDriver() })
+        let session = PresentationSession(projectionDisplays: displays, outputCoordinator: outputs)
+        session.setSlides(LyricsParser.parseDocument("Verse\nLayer test").slides); session.showSlides()
+        return (outputs, session)
+    }
+
     // MARK: - Layer Independence Tests
 
     func testESCHidesSlidesKeepsBackgroundVisible() async {
@@ -32,7 +41,8 @@ final class LayerControlsTests: XCTestCase {
 
     func testCmdZTogglesSlidesIndependently() async {
         let result = await MainActor.run { () -> (firstSlides: Bool, firstBg: Bool, secondSlides: Bool, secondBg: Bool) in
-            let session = PresentationSession()
+            let (outputs, session) = projectedSession()
+            defer { outputs.stop() }
             let tempURL = URL(fileURLWithPath: NSTemporaryDirectory())
                 .appendingPathComponent("eucaly-test-cmdz.jpg")
             FileManager.default.createFile(atPath: tempURL.path, contents: Data([0x00]), attributes: nil)
@@ -411,7 +421,8 @@ final class LayerControlsTests: XCTestCase {
             step3Slides: Bool, step3Bg: Bool,
             step4Slides: Bool, step4Bg: Bool
         ) in
-            let session = PresentationSession()
+            let (outputs, session) = projectedSession()
+            defer { outputs.stop() }
             let tempURL = URL(fileURLWithPath: NSTemporaryDirectory())
                 .appendingPathComponent("eucaly-test-complex.jpg")
             FileManager.default.createFile(atPath: tempURL.path, contents: Data([0x00]), attributes: nil)

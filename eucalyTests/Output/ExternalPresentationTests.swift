@@ -4,39 +4,11 @@ import AppKit
 @testable import eucaly
 
 final class ExternalProtocolTests: XCTestCase {
-    func testFragmentedFramesBoundsAndAllRoles() throws {
-        let text = OutputTextContent(kind: .scripture, components: OutputComponentRole.allCases.map { .init(role: $0, text: "സ്തുതി · שלום · \($0.rawValue)", language: "mul") })
-        let message = ExternalPresentationMessage(kind: .present, sourceID: UUID(), actionID: UUID(), revision: 1, current: text)
-        try message.validate()
-        let frame = try ExternalPresentationProtocol.frame(message)
-        var decoder = ExternalFrameDecoder(), payloads: [Data] = []
-        for byte in frame { payloads += try decoder.append(Data([byte])) }
-        XCTAssertEqual(payloads.count, 1)
-        XCTAssertEqual(try JSONDecoder().decode(ExternalPresentationMessage.self, from: payloads[0]), message)
-        XCTAssertThrowsError(try decoder.append(Data([0, 1, 0, 1])))
-        XCTAssertThrowsError(try ExternalPresentationMessage(kind: .present).validate())
-        XCTAssertThrowsError(try ExternalPresentationMessage(kind: .hello, protocolVersion: "future", credential: "key", clientName: "app").validate())
-        let oversized = ExternalPresentationMessage(kind: .present, sourceID: UUID(), actionID: UUID(), revision: 1,
-            current: .init(components: [.init(role: .primary, text: String(repeating: "界", count: 30_000))]))
-        XCTAssertThrowsError(try ExternalPresentationProtocol.frame(oversized))
-        XCTAssertThrowsError(try oversized.validate())
-    }
-    func testMailboxKeepsExplicitActionsAndBoundsRapidUpdates() throws {
-        var mailbox = ExternalInboundMailbox()
-        let lease = OutputLease(id: UUID(), generation: 1)
-        for revision in 1...2_000 { try mailbox.enqueue(.init(kind: .state, revision: UInt64(revision), lease: lease, current: .empty)) }
-        XCTAssertEqual(mailbox.messages.count, 1)
-        try mailbox.enqueue(.init(kind: .clear, actionID: UUID(), lease: lease))
-        try mailbox.enqueue(.init(kind: .state, revision: 2_001, lease: lease, current: .empty))
-        XCTAssertEqual(mailbox.drain().map(\.kind), [.state, .clear, .state])
-        for _ in 0..<32 { try mailbox.enqueue(.init(kind: .hide, actionID: UUID(), lease: lease)) }
-        XCTAssertThrowsError(try mailbox.enqueue(.init(kind: .release, actionID: UUID(), lease: lease)))
-    }
-    func testCredentialAuthenticationRejectsMalformedAndWrongKeys() {
-        let key = Data(repeating: 7, count: 32).base64EncodedString()
-        XCTAssertTrue(ExternalAuthentication.matches(key, key))
-        XCTAssertFalse(ExternalAuthentication.matches("bad", key))
-        XCTAssertFalse(ExternalAuthentication.matches(Data(repeating: 8, count: 32).base64EncodedString(), key))
+    func testV2PairingCodeValidationPreservesItsWireAlphabet() throws {
+        let generated = try AltViewPairingKey.generate()
+        XCTAssertEqual(generated.count, 8)
+        XCTAssertEqual(AltViewPairingKey.parse(AltViewPairingKey.text(generated)), generated)
+        XCTAssertNil(AltViewPairingKey.parse("bad")); XCTAssertNil(AltViewPairingKey.parse("0000OOOO"))
     }
 }
 
@@ -49,9 +21,9 @@ final class ExternalPresentationTests: XCTestCase {
         let coordinator = OutputCoordinator(profiles: profiles, displays: displays, driverFactory: { FakeOutputDriver() })
         return (coordinator, PresentationSession(projectionDisplays: displays, outputCoordinator: coordinator), PresentationFlowController())
     }
-    private func present(_ text: String, role: OutputComponentRole = .primary) -> ExternalPresentationMessage {
-        .init(kind: .present, sourceID: UUID(), actionID: UUID(), revision: 1,
-              current: .init(kind: .scripture, components: [.init(role: role, text: text)]))
+    @discardableResult private func present(_ outputs: OutputCoordinator, _ text: String, connection: UUID = UUID(), name: String = "ViewTheWord") throws -> OutputLease {
+        try outputs.presentReceived(connection: connection, sourceID: UUID(), name: name, revision: 1,
+            content: .init(body: text, template: .scripture), ingressOrder: outputs.actionClock.next())
     }
     func testDirectPresentRetainsLocalPreparationAndOrdinaryActionsReclaim() async throws {
         let (outputs, session, flow) = setup(); defer { outputs.stop() }
@@ -59,7 +31,7 @@ final class ExternalPresentationTests: XCTestCase {
         session.setSlides(current)
         flow.setPreviewSlides(LyricsParser.parseDocument("Verse\nPrepared next song").slides)
         let connection = UUID()
-        let lease = try outputs.presentExternal(connection: connection, name: "Reference scripture", message: present("Verse text"))
+        let lease = try present(outputs, "Verse text", connection: connection)
         XCTAssertTrue(outputs.isExternal); XCTAssertEqual(outputs.text.components.first?.text, "Verse text")
         XCTAssertEqual(session.currentSlideID, current[0].id); XCTAssertEqual(flow.previewSlideCount, 1)
         // Private preparation and passive refresh never take back external output.
@@ -70,14 +42,14 @@ final class ExternalPresentationTests: XCTestCase {
         XCTAssertTrue(outputs.isExternal)
         session.selectCurrentSlide(current[0].id) // Same-slide action reclaims.
         XCTAssertEqual(outputs.ownership.source, .local(session.outputSourceID))
-        XCTAssertFalse(outputs.updateExternal(connection: connection, message: .init(kind: .state, revision: 2, lease: lease, current: present("Late").current)))
+        XCTAssertFalse(outputs.updateReceived(connection: connection, lease: lease, revision: 2, content: .init(body: "Late")))
         outputs.externalDisconnected(connection)
         XCTAssertTrue(outputs.visible); XCTAssertEqual(outputs.text.components.first?.text, "Local one")
-        _ = try outputs.presentExternal(connection: UUID(), name: "App", message: present("External again"))
+        try present(outputs, "External again")
         session.moveSelection(1)
         try await Task.sleep(for: .milliseconds(30))
         XCTAssertEqual(outputs.text.components.first?.text, "Local two")
-        _ = try outputs.presentExternal(connection: UUID(), name: "App", message: present("External load"))
+        try present(outputs, "External load")
         flow.setCurrentSlides(flow.previewSlides, in: session)
         session.requestCurrentProjection()
         XCTAssertEqual(outputs.text.components.first?.text, "Prepared next song")
@@ -88,14 +60,14 @@ final class ExternalPresentationTests: XCTestCase {
     func testHideFreezesConfidenceAndHiddenNavigationCannotReclaim() throws {
         let (outputs, session, _) = setup(); defer { outputs.stop() }
         session.setSlides(LyricsParser.parseDocument("Verse\nPrivate").slides)
-        let connection = UUID(), message = present("Frozen external")
-        let lease = try outputs.presentExternal(connection: connection, name: "Scripture", message: message)
+        let connection = UUID()
+        let lease = try present(outputs, "Frozen external", connection: connection)
         session.hideSlides()
         XCTAssertFalse(outputs.visible); XCTAssertNil(outputs.ownership.source)
         XCTAssertEqual(outputs.text.components.first?.text, "Frozen external")
         session.selectCurrentSlide(session.slides[0].id)
         XCTAssertNil(outputs.ownership.source)
-        XCTAssertFalse(outputs.updateExternal(connection: connection, message: .init(kind: .state, revision: 2, lease: lease, current: present("Late").current)))
+        XCTAssertFalse(outputs.updateReceived(connection: connection, lease: lease, revision: 2, content: .init(body: "Late")))
         outputs.clear(); XCTAssertTrue(outputs.text.isEmpty)
         session.showSlides(); XCTAssertEqual(outputs.text.components.first?.text, "Private")
     }
@@ -103,43 +75,39 @@ final class ExternalPresentationTests: XCTestCase {
         let (outputs, session, _) = setup(); defer { outputs.stop() }
         session.setSlides(LyricsParser.parseDocument("Verse\nCurrent").slides); session.showSlides()
         let oldSource = outputs.ownership.source
-        var request = present("Scripture")
-        request.profileID = outputs.profiles.document.profiles[2].id
-        XCTAssertThrowsError(try outputs.presentExternal(connection: UUID(), name: "App", message: request))
+        XCTAssertThrowsError(try present(outputs, String(repeating: "界", count: 30_000)))
         XCTAssertEqual(outputs.ownership.source, oldSource)
         outputs.profiles.edit { $0.destinations[0].enabled = false }
-        XCTAssertThrowsError(try outputs.presentExternal(connection: UUID(), name: "App", message: present("No destination")))
+        XCTAssertThrowsError(try present(outputs, "No destination"))
         XCTAssertEqual(outputs.text.components.first?.text, "Current")
         let meaning = OutputProfile(id: UUID(), name: "Custom", kind: .audience, roles: [.meaning])
-        XCTAssertTrue(meaning.components(in: present("Scripture").current!).isEmpty)
+        XCTAssertTrue(meaning.components(in: .init(components: [.init(role: .primary, text: "Text")])).isEmpty)
     }
     func testDisplacementCancelsDeferredAltViewRequestAndExactAudienceIdentity() async throws {
-        let (outputs, session, _) = setup(); defer { outputs.stop() }
         let sender = RecordingAltViewSender()
         let name = "OutputAltView.\(UUID())", defaults = UserDefaults(suiteName: name)!
         defer { defaults.removePersistentDomain(forName: name) }
-        let service = AltViewService(defaults: defaults, restorePreferences: false, pairingStore: RecordingAltViewPairingStore(), senderFactory: { _ in sender })
-        service.connect(to: .manual(host: "127.0.0.1", port: "49721")!, code: "ABCD2345")
-        service.receive(sender.connectedStatus); service.attach(session)
-        session.setSlides(LyricsParser.parseDocument("Verse\nLyrics\nMeaning\nCompanion").slides)
+        let service = AltViewService(defaults: defaults, pairingStore: RecordingAltViewPairingStore(), senderFactory: { _ in sender })
+        let hub = HubOutputHarness(service: service); defer { hub.stop() }
+        let outputs = hub.outputs, session = hub.session
+        service.receive(sender.connectedStatus)
+        session.setSlides(LyricsParser.parseDocument("Verse\nLyrics\nMeaning\nCompanion\n\nChorus\nNext lyrics").slides)
         session.showSlides()
         XCTAssertEqual(sender.submissions.last?.content.body, "Lyrics")
         XCTAssertEqual(sender.submissions.last?.content.projection?.windowID, 42)
         let takes = sender.takes
-        session.selectCurrentSlide(session.slides[0].id)
-        _ = try outputs.presentExternal(connection: UUID(), name: "Scripture", message: present("External must not relay"))
+        session.moveSelection(1)
+        try present(outputs, "External follows the live program")
         try await Task.sleep(for: .milliseconds(30))
-        XCTAssertEqual(sender.takes, takes)
-        XCTAssertEqual(sender.releases, 1)
-        XCTAssertFalse(service.isSending)
-        XCTAssertFalse(session.canSendCurrentToAltView)
-        XCTAssertNil(session.outputSnapshot.projectionWindowID)
-        XCTAssertNil(session.outputSnapshot.projectionWindowGeneration)
-        service.sendCurrent(from: session)
-        XCTAssertEqual(sender.takes, takes)
-        session.showSlides()
-        XCTAssertTrue(session.canSendCurrentToAltView)
         XCTAssertEqual(sender.takes, takes + 1)
+        XCTAssertEqual(sender.submissions.last?.content.body, "External follows the live program")
+        XCTAssertNil(sender.submissions.last?.content.projection)
+        XCTAssertTrue(service.isSending)
+        XCTAssertNil(outputs.localSession)
+        XCTAssertNil(outputs.snapshot.localMedia)
+        session.showSlides()
+        XCTAssertTrue(outputs.localSession === session)
+        XCTAssertEqual(sender.takes, takes + 2)
         XCTAssertEqual(sender.submissions.last?.content.body, "Lyrics")
         service.disconnect()
     }
@@ -147,7 +115,7 @@ final class ExternalPresentationTests: XCTestCase {
         let (outputs, session, _) = setup(); defer { outputs.stop() }
         session.setSlides(LyricsParser.parseDocument("Verse\nOne\n\nChorus\nTwo").slides)
         session.showSlides(); session.moveSelection(1)
-        _ = try outputs.presentExternal(connection: UUID(), name: "Newer scripture", message: present("Newer"))
+        try present(outputs, "Newer")
         try await Task.sleep(for: .milliseconds(30))
         XCTAssertTrue(outputs.isExternal)
         XCTAssertEqual(outputs.text.components.first?.text, "Newer")
@@ -157,10 +125,10 @@ final class ExternalPresentationTests: XCTestCase {
         session.setSlides(LyricsParser.parseDocument("Verse\nLocal").slides)
         for command in [session.showSlides, session.hideSlides, session.clearSlides, session.stopPresentation] {
             session.showSlides()
-            var queued = present("Queued old external")
-            queued.ingressOrder = outputs.actionClock.next()
+            let queuedOrder = outputs.actionClock.next()
             command()
-            XCTAssertThrowsError(try outputs.presentExternal(connection: UUID(), name: "Delayed app", message: queued))
+            XCTAssertThrowsError(try outputs.presentReceived(connection: UUID(), sourceID: UUID(), name: "Delayed app", revision: 1,
+                content: .init(body: "Queued old external"), ingressOrder: queuedOrder))
             XCTAssertNotEqual(outputs.text.components.first?.text, "Queued old external")
         }
     }

@@ -31,6 +31,7 @@ nonisolated protocol AltViewSending: AnyObject {
     func submit(_ content: AltViewDisplayContent, submissionID: UUID)
     func takeOutput(submission: AltViewSubmission?)
     func releaseOutput()
+    func cancelPendingPresentation()
     func disconnect()
 }
 
@@ -185,6 +186,15 @@ nonisolated final class AltViewSenderClient: AltViewSending, @unchecked Sendable
             self.status.feedback.resetSnapshot()
             self.status.submissionID = nil
             self.status.message = self.status.connected ? "Connected — output released" : self.status.message
+            self.publish()
+        }
+    }
+    /// Hide/Clear cancels an unaccepted take while retaining an already-owned
+    /// lease for its hidden snapshot. The existing late-grant path releases it.
+    func cancelPendingPresentation() {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.cancelPendingTake()
             self.publish()
         }
     }
@@ -440,6 +450,7 @@ nonisolated final class AltViewSenderClient: AltViewSending, @unchecked Sendable
         var content = status.templateCapabilities.contentForSending(snapshot)
         if !status.capabilities.contains(AltViewProtocol.confidenceText) { content.confidence = nil }
         if !status.capabilities.contains(AltViewProtocol.localProjection) { content.projection = nil }
+        if !status.capabilities.contains(AltViewProtocol.textSource) { content.sourceKind = nil }
         return content
     }
     private func validName(_ name: String?) -> Bool {

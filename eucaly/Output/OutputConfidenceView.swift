@@ -9,7 +9,10 @@ nonisolated struct OutputConfidenceContent {
     let isIdle: Bool
 
     init(snapshot: OutputContentSnapshot, profile: OutputProfile) {
-        current = snapshot.current
+        if var received = snapshot.remoteContent, let confidence = received.confidence {
+            received.title = confidence.title; received.body = confidence.body; received.footer = confidence.footer
+            current = OutputAltViewAdapter.text(received)
+        } else { current = snapshot.current }
         next = snapshot.next.flatMap { profile.components(in: $0).isEmpty ? nil : $0 }
         media = snapshot.localMedia.flatMap { AltViewPresentationAdapter.mode(for: $0) == .media ? $0 : nil }
         isIdle = !snapshot.visible || (media == nil && profile.components(in: current).isEmpty && next == nil)
@@ -21,7 +24,7 @@ nonisolated struct OutputConfidenceContent {
             guard selected.count > 1 || component.role != .primary || component.label != nil else { return component }
             var next = component
             let primaryLabel = content.kind == .lyrics ? "Lyrics" : content.kind == .scripture ? "Scripture" : "Text"
-            let roleLabel = component.role == .primary ? primaryLabel : component.role.rawValue.capitalized
+            let roleLabel = component.role == .primary ? primaryLabel : component.role.title(for: content.kind)
             next.text = "\(component.label ?? roleLabel)\n\(component.text)"
             return next
         }

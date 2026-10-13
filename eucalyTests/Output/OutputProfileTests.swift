@@ -96,7 +96,7 @@ final class OutputProfileTests: XCTestCase {
         XCTAssertEqual(store.profile(customID), custom)
         XCTAssertEqual(store.profile(OutputProfile.lowerThirdID)?.kind, .lowerThird)
         XCTAssertEqual(store.document, OutputProfileStore(defaults: defaults).document, "Migration is idempotent")
-        XCTAssertEqual(OutputProfile.builtIns.map(\.kind), [.audience, .confidence, .lowerThird])
+        XCTAssertEqual(OutputProfile.builtIns.map(\.kind), [.audience, .confidence, .lowerThird, .altView])
     }
 
     func testLowerThirdGreenDefaultUpgradesOnceAndPreservesLaterExplicitBlack() throws {
@@ -162,9 +162,12 @@ final class OutputProfileTests: XCTestCase {
         let slide = try XCTUnwrap(LyricsParser.parseDocument("Verse\nMain\nMeaning\nMeaning text\nTranslation\nTranslated\nTransliteration\nSounds").slides.first)
         let content = OutputContentAdapter.text(for: slide)
         XCTAssertEqual(content.components.map(\.role), [.primary, .meaning, .translation, .transliteration])
-        let profile = OutputProfile(id: UUID(), name: "Custom", kind: .audience, roles: [.meaning])
+        var profile = OutputProfile(id: UUID(), name: "Custom", kind: .audience, roles: [.meaning])
         XCTAssertEqual(profile.components(in: content).map(\.text), ["Meaning text"])
-        XCTAssertTrue(profile.components(in: .init(kind: .scripture, components: [.init(role: .primary, text: "Verse")])).isEmpty)
+        XCTAssertEqual(profile.components(in: .init(kind: .scripture, components: [.init(role: .primary, text: "Verse")])).map(\.text), ["Verse"])
+        profile.scriptureRoles = [.secondary]
+        XCTAssertTrue(profile.components(in: .init(kind: .scripture, components: [.init(role: .primary, text: "Verse")])).isEmpty,
+            "Missing second translation cannot substitute the primary verse")
         let base = OutputTypography(fontName: "Requested font", size: 70)
         XCTAssertEqual(OutputTypographyOverride(italic: true).resolve(inheriting: base).fontName, base.fontName)
         XCTAssertEqual(OutputTypographyOverride(italic: true).resolve(inheriting: base).size, 70)

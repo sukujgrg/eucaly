@@ -15,13 +15,19 @@ private enum AppLaunchContext {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let updates = AppUpdateViewModel(driver: SparkleUpdateDriver())
-    let altView = AltViewService(restorePreferences: !AppLaunchContext.isRunningTests)
+    lazy var hubReceiverID: UUID = {
+        if AppLaunchContext.isRunningTests { return UUID() }
+        let id = UserDefaults.standard.string(forKey: "hubReceiverID").flatMap(UUID.init(uuidString:)) ?? UUID()
+        UserDefaults.standard.set(id.uuidString, forKey: "hubReceiverID")
+        return id
+    }()
+    lazy var altView = AltViewOutputRouter(store: outputProfiles, receiverID: hubReceiverID)
     // Read monitor preferences after EucalyApp has migrated sandbox preferences.
     lazy var projectionDisplays = ProjectionDisplayManager(defaults: AppLaunchContext.isRunningTests ? nil : .standard)
 
     lazy var outputProfiles = OutputProfileStore(defaults: AppLaunchContext.isRunningTests ? nil : .standard, monitor: projectionDisplays.target)
     lazy var outputs = OutputCoordinator(profiles: outputProfiles, displays: projectionDisplays, retainsPreparedSessions: true)
-    lazy var receiver = ExternalPresentationReceiver(coordinator: outputs)
+    lazy var receiver = ExternalPresentationReceiver(coordinator: outputs, receiverID: hubReceiverID)
 
     private var isTerminatingAfterCaptureCleanup = false
 
@@ -32,7 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Hosted unit tests use an injected driver and never contact the feed.
         if !AppLaunchContext.isRunningTests {
             updates.start()
-            altView.restoreConnection()
+            altView.start(coordinator: outputs)
             receiver.startIfEnabled()
         }
     }
@@ -60,7 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             receiver.stop()
             outputs.stop()
-            altView.disconnect()
+            altView.shutdown()
             await ScreenCaptureManager.shared.stopAllCaptures()
             closePresentationWindows(in: sender)
             await outputProfiles.waitForPersistence()

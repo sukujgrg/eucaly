@@ -250,17 +250,15 @@ final class ProjectionDisplayTests: XCTestCase {
             session.setSlides(slides)
             let background = URL(fileURLWithPath: "/tmp/eucaly-projection-display-test.jpg")
             session.setBackgroundVisual(background)
-            var showCount = 0
-            session.onOutputEvent = { if case .show = $0 { showCount += 1 } }
             session.showSlides()
             session.toggleBackgroundVisualVisibility()
             XCTAssertFalse(session.isPresenting)
             XCTAssertFalse(manager.isLocked)
-            XCTAssertNil(session.outputSnapshot.projectionWindowID)
+            XCTAssertNil(session.outputCoordinator.audienceIdentity.0)
             XCTAssertNotNil(session.projectionDisplayIssue)
             XCTAssertEqual(session.slides.map(\.id), slides.map(\.id))
             XCTAssertEqual(session.backgroundVisualURL, background)
-            XCTAssertEqual(showCount, 0)
+            XCTAssertNil(session.outputCoordinator.ownership.source)
         }
     }
 
@@ -277,7 +275,7 @@ final class ProjectionDisplayTests: XCTestCase {
         inventory.displays = [monitor(actual.id, leftID)]
         manager.refresh()
         XCTAssertFalse(session.isPresenting)
-        XCTAssertNil(session.outputSnapshot.projectionWindowID)
+        XCTAssertNil(session.outputCoordinator.audienceIdentity.0)
         XCTAssertNotNil(session.projectionDisplayIssue)
         XCTAssertEqual(manager.target, actual.target, "Keep the assignment; never switch to another available monitor.")
         inventory.displays = [actual]
@@ -351,7 +349,7 @@ final class ProjectionDisplayTests: XCTestCase {
         for monitor in monitors {
             XCTAssertTrue(manager.select(monitor.target))
             session.showSlides()
-            let windowID = try XCTUnwrap(session.outputSnapshot.projectionWindowID)
+            let windowID = try XCTUnwrap(session.outputCoordinator.audienceIdentity.0)
             let window = try XCTUnwrap(NSApplication.shared.windows.first { $0.windowNumber == Int(windowID) })
             XCTAssertEqual(window.frame, monitor.frame)
             XCTAssertEqual(window.screen?.displayIdentity, monitor.identity)

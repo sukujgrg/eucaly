@@ -100,19 +100,14 @@ final class PresentationSession: NSObject, ObservableObject {
     private var currentDocumentRevision: UInt64 = 0
     private var pendingNavigationCount = 0
     private var navigationActionOrder: UInt64?
+    private var navigationGeneration = UUID()
 
     let outputSourceID = UUID()
-    var onOutputEvent: ((PresentationOutputEvent) -> Void)?
-    private var outputObservers: [UUID: (PresentationOutputEvent) -> Void] = [:]
-    @discardableResult func observeOutput(_ action: @escaping (PresentationOutputEvent) -> Void) -> UUID {
-        let id = UUID(); outputObservers[id] = action; return id
+    func cancelPendingProjection() {
+        navigationGeneration = UUID()
+        pendingNavigationCount = 0
+        navigationActionOrder = nil
     }
-    func removeOutputObserver(_ id: UUID) { outputObservers.removeValue(forKey: id) }
-    func emitOutputEvent(_ event: PresentationOutputEvent) {
-        onOutputEvent?(event)
-        for observer in Array(outputObservers.values) { observer(event) }
-    }
-    func cancelPendingProjection() { outputProjectionRequested = false }
 
     func applyOutputState(running: Bool, visible: Bool) {
         if isPresenting != running { isPresenting = running }
@@ -120,27 +115,12 @@ final class PresentationSession: NSObject, ObservableObject {
     }
 
     private var outputChangeScheduled = false
-    private var outputProjectionRequested = false
 
     var hasProjectionContent: Bool {
         !isEmpty || hasAvailableBackgroundVisual || outputCoordinator.hasEnabledConfidenceOutput
     }
 
-    var canSendCurrentToAltView: Bool {
-        isPresenting && areSlidesVisible && (!outputCoordinator.isRunning ||
-            (outputCoordinator.localSession === self && outputCoordinator.liveSlide?.id == currentSlide?.id))
-    }
-
-    var outputSnapshot: PresentationOutputSnapshot {
-        let identity = outputCoordinator.localSession === self ? outputCoordinator.audienceIdentity : (nil, nil)
-        let presentedSlide = outputCoordinator.localSession === self && outputCoordinator.isRunning ? outputCoordinator.liveSlide : currentSlide
-        return PresentationOutputSnapshot(slide: presentedSlide, isPresenting: isPresenting, slidesVisible: areSlidesVisible,
-                                          projectionWindowID: identity.0,
-                                          projectionWindowGeneration: identity.1)
-    }
-
-    private func scheduleOutputChange(explicit: Bool = false) {
-        outputProjectionRequested = outputProjectionRequested || explicit
+    private func scheduleOutputChange() {
         guard !outputChangeScheduled else { return }
         outputChangeScheduled = true
         // Read the completed model transaction, never @Published's willSet
@@ -148,12 +128,7 @@ final class PresentationSession: NSObject, ObservableObject {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.outputChangeScheduled = false
-            let snapshot = self.outputSnapshot
-            let ownsGroup = self.outputCoordinator.ownership.source == .local(self.outputSourceID) || !self.outputCoordinator.isRunning
-            let project = self.outputProjectionRequested && snapshot.isPresenting && snapshot.slidesVisible && ownsGroup
-            self.outputProjectionRequested = false
             self.outputCoordinator.passiveLocal(self)
-            self.emitOutputEvent(project ? .project(self.outputSnapshot) : .changed(self.outputSnapshot))
         }
     }
 
@@ -165,9 +140,8 @@ final class PresentationSession: NSObject, ObservableObject {
     }
 
     func requestCurrentProjection() {
-        guard isPresenting, areSlidesVisible else { return }
-        if outputCoordinator.isRunning { guard outputCoordinator.presentLocal(self) else { return } }
-        scheduleOutputChange(explicit: true)
+        guard (isPresenting && areSlidesVisible) || (outputCoordinator.isPresenting && outputCoordinator.visible) else { return }
+        guard outputCoordinator.presentLocal(self) else { return }
     }
 
     var isBackgroundAudioPlaying: Bool {
@@ -297,7 +271,7 @@ final class PresentationSession: NSObject, ObservableObject {
     }
 
     func clearSlides() {
-        outputProjectionRequested = false
+        cancelPendingProjection()
         outputCoordinator.clear()
         currentDocumentRevision &+= 1
         slides = []
@@ -321,34 +295,25 @@ final class PresentationSession: NSObject, ObservableObject {
     }
 
     func stopPresentation() {
-        outputProjectionRequested = false
         outputCoordinator.stop()
         isPresenting = false
-        emitOutputEvent(.stopped)
     }
 
     func showSlides() {
-        if !outputCoordinator.presentLocal(self) {
-            // A synthetic session can exercise events without a physical window.
-            // An actual running group must keep its current source after preflight fails.
-            guard isPresenting, !outputCoordinator.isRunning else { return }
-        }
+        guard outputCoordinator.presentLocal(self) else { return }
         areSlidesVisible = true
-        outputProjectionRequested = false
-        emitOutputEvent(.show(outputSnapshot))
     }
 
     func hideSlides() {
-        guard isPresenting else { return }
-        outputProjectionRequested = false
+        guard isPresenting || outputCoordinator.isPresenting else { return }
         areSlidesVisible = false
         if outputCoordinator.isRunning { outputCoordinator.hide() }
     }
 
     func toggleBackgroundVisualVisibility() {
         guard backgroundVisualURL != nil else { return }
-        if !isPresenting {
-            guard outputCoordinator.presentLocal(self, show: false) else { return }
+        if !isPresenting && !outputCoordinator.isPresenting && !outputCoordinator.hasOpenAudienceOutput {
+            guard outputCoordinator.openBackgroundOutputs() else { return }
             isBackgroundVisualVisible = true
             return
         }
@@ -377,13 +342,15 @@ final class PresentationSession: NSObject, ObservableObject {
 
     private func enqueueSelectionMove(_ targetIndex: @escaping (Int, Int, Int) -> Int) {
         let revision = currentDocumentRevision
+        let generation = navigationGeneration
         if pendingNavigationCount == 0 { navigationActionOrder = nil }
         pendingNavigationCount += 1
-        if isPresenting && areSlidesVisible { navigationActionOrder = outputCoordinator.actionClock.next() }
+        if (isPresenting && areSlidesVisible) || (outputCoordinator.isPresenting && outputCoordinator.visible) { navigationActionOrder = outputCoordinator.actionClock.next() }
         // SwiftUI can invoke onKeyPress during its update pass. Resolve each
         // queued move in order, after that pass, against the same Current document.
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            guard self.navigationGeneration == generation else { return }
             self.pendingNavigationCount = max(0, self.pendingNavigationCount - 1)
             guard self.currentDocumentRevision == revision, !self.isEmpty else { return }
             if let order = self.navigationActionOrder, order != self.outputCoordinator.actionClock.current { return }

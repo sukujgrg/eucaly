@@ -3,6 +3,29 @@ import Network
 @testable import eucaly
 
 final class AltViewNetworkTests: XCTestCase {
+    func testHideCancelsInFlightGrantWithoutDisconnectingAndFreshShowStillWorks() throws {
+        let key = Data("ABCD2345".utf8)
+        var output = ReferenceAltViewReceiverStatus(), status = AltViewSenderStatus()
+        let server = ReferenceAltViewReceiverServer(receiverID: UUID(), grantDelay: 0.3) { output = $0 }
+        let sender = AltViewSenderClient(name: "Cancelled Show") { status = $0 }
+        defer { sender.disconnect(); server.stop() }
+        server.start(name: "Cancel test", key: key, advertise: false)
+        eventually("listener") { output.port != nil }
+        sender.connect(to: .hostPort(host: "127.0.0.1", port: .init(rawValue: try XCTUnwrap(output.port))!), key: key)
+        eventually("connected") { status.connected }
+        sender.submit(.init(body: "Cancelled text"), submissionID: UUID()); sender.takeOutput()
+        eventually("grant in flight") { output.ownerName == "Cancelled Show" }
+        sender.cancelPendingPresentation()
+        sender.submit(.init(body: "Cancelled text", visible: false), submissionID: UUID())
+        eventually("late grant released") { status.connected && !status.followingOutput && output.ownerID == nil }
+        XCTAssertEqual(output.content, .empty)
+        sender.submit(.init(body: "Fresh Show"), submissionID: UUID()); sender.takeOutput()
+        eventually("new action accepted") { output.content.body == "Fresh Show" && status.feedback.accepted }
+        sender.cancelPendingPresentation()
+        sender.submit(.init(body: "Fresh Show", visible: false), submissionID: UUID())
+        eventually("owned hidden snapshot retained") { !output.content.visible && status.feedback.accepted }
+        XCTAssertTrue(status.ownsOutput)
+    }
     private func eventually(_ description: String, timeout: TimeInterval = 10, _ predicate: @escaping () -> Bool) {
         let done = expectation(description: description)
         let deadline = ProcessInfo.processInfo.systemUptime + timeout
@@ -67,24 +90,24 @@ final class AltViewNetworkTests: XCTestCase {
     func testCurrentSlideActivationTakesFromAnotherSenderWithoutManualReconnect() throws {
         let key = Data("ABCD2345".utf8)
         var output = ReferenceAltViewReceiverStatus(), otherStatus = AltViewSenderStatus()
-        let server = ReferenceAltViewReceiverServer(receiverID: UUID()) { output = $0 }
+        let receiverID = UUID()
+        let server = ReferenceAltViewReceiverServer(receiverID: receiverID) { output = $0 }
         let other = AltViewSenderClient(name: "ViewTheWord") { otherStatus = $0 }
         let name = "AltViewHandoffTests.\(UUID())"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
-        let service = AltViewService(defaults: defaults, restorePreferences: false,
+        let service = AltViewService(defaults: defaults,
             pairingStore: RecordingAltViewPairingStore(), senderFactory: {
                 AltViewSenderClient(name: "eucaly", onStatus: $0)
             })
-        let session = PresentationSession(), flow = PresentationFlowController()
-        service.attach(session)
         let slides = LyricsParser.parseDocument("Verse 1\nFirst lyrics\n\nChorus\nNext lyrics").slides
-        session.setSlides(slides)
-        session.isPresenting = true // Suppress physical local projection in tests.
         server.start(name: "Handoff", key: key, advertise: false)
         defer { service.disconnect(); other.disconnect(); server.stop(); defaults.removePersistentDomain(forName: name) }
         eventually("listener") { output.port != nil }
         let port = try XCTUnwrap(output.port)
-        service.connect(to: .manual(host: "127.0.0.1", port: String(port))!, code: "ABCD2345")
+        let hub = HubOutputHarness(service: service, receiverID: receiverID, port: port)
+        defer { hub.stop() }
+        let session = hub.session, flow = hub.flow
+        session.setSlides(slides)
         other.connect(to: .hostPort(host: "127.0.0.1", port: .init(rawValue: port)!), key: key)
         eventually("both connected without output") { service.status.connected && otherStatus.connected }
         XCTAssertNil(output.ownerID)

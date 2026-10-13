@@ -119,6 +119,7 @@ nonisolated final class AltViewReceiverDiscovery: AltViewReceiverDiscovering, @u
         if case .bonjour(let record) = metadata { id = record["receiverID"].flatMap(UUID.init(uuidString:)) }
         else { id = nil }
         if let id, id == excludingReceiverID { return nil }
+        if case .bonjour(let record) = metadata, record["presentationHub"] == "1" { return nil }
         if let id, let localMarker, case .bonjour(let record) = metadata,
            record["localMarker"] == localMarker, let raw = record["port"], let port = UInt16(raw), port > 0 {
             return AltViewDiscoveredReceiver(name: "This Mac · \(name)",

@@ -9,25 +9,23 @@ final class AltViewConfidenceTests: XCTestCase {
         let suite = "Confidence.\(UUID())", sender = RecordingAltViewSender()
         let defaults = UserDefaults(suiteName: suite)!
         addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
-        let service = AltViewService(defaults: defaults, restorePreferences: false, senderFactory: { _ in sender })
+        let service = AltViewService(defaults: defaults, senderFactory: { _ in sender })
         service.connect(to: .manual(host: "127.0.0.1", port: "54321")!, code: "ABCD2345")
         service.receive(sender.connectedStatus)
         return (service, sender)
     }
-    private func snapshot(_ text: String, visible: Bool = true) -> PresentationOutputSnapshot {
-        PresentationOutputSnapshot(slide: LyricsParser.parseDocument("Verse 1\n" + text).slides.first, isPresenting: true, slidesVisible: visible)
-    }
     func testHiddenNavigationKeepsLastExplicitConfidenceTextAndClearClearsIt() {
-        let (service, sender) = service(), source = UUID()
-        defer { service.disconnect() }
-        service.handle(.show(snapshot("Presented")), from: source)
-        service.handle(.changed(snapshot("Hidden navigation", visible: false)), from: source)
-        XCTAssertEqual(sender.submissions.last?.content.body, "Hidden navigation")
+        let (service, sender) = service(), hub = HubOutputHarness(service: service)
+        defer { hub.stop() }
+        service.receive(sender.connectedStatus)
+        hub.load("Verse\nPresented\n\nChorus\nHidden navigation"); hub.session.showSlides()
+        hub.session.hideSlides(); hub.session.selectCurrentSlide(hub.session.slides[1].id)
+        XCTAssertEqual(sender.submissions.last?.content.body, "Presented", "Hidden preparation stays private")
         XCTAssertEqual(sender.submissions.last?.content.confidence?.body, "Presented")
         XCTAssertEqual(sender.takes, 1)
-        service.handle(.project(snapshot("Next visible")), from: source)
-        XCTAssertEqual(sender.submissions.last?.content.confidence?.body, "Next visible")
-        service.handle(.changed(PresentationOutputSnapshot(slide: nil, isPresenting: true, slidesVisible: false)), from: source)
+        hub.session.showSlides()
+        XCTAssertEqual(sender.submissions.last?.content.confidence?.body, "Hidden navigation")
+        hub.session.clearSlides()
         XCTAssertEqual(sender.submissions.last?.content, .empty)
         XCTAssertEqual(sender.takes, 2)
     }
@@ -69,10 +67,11 @@ final class AltViewConfidenceTests: XCTestCase {
         eventually { output.port != nil }
         sender.connect(to: .hostPort(host: "127.0.0.1", port: .init(rawValue: try XCTUnwrap(output.port))!), key: key)
         eventually { status.connected }
-        sender.submit(.init(body: "Ordinary", confidence: .init(body: "Ordinary"), projection: .init(sessionID: UUID(), mode: .media, windowID: 7, windowGeneration: UUID())), submissionID: UUID()); sender.takeOutput()
+        sender.submit(.init(body: "Ordinary", confidence: .init(body: "Ordinary"), projection: .init(sessionID: UUID(), mode: .media, windowID: 7, windowGeneration: UUID()), sourceKind: .scripture), submissionID: UUID()); sender.takeOutput()
         eventually { output.content.body == "Ordinary" && status.feedback.accepted }
         XCTAssertNil(output.content.confidence)
         XCTAssertNil(output.content.projection)
+        XCTAssertNil(output.content.sourceKind)
         XCTAssertTrue(status.connected)
     }
     func testNegotiatedFrameLimitKeepsLegacyTextAndClearsOversizeConfidenceWithoutDisconnect() throws {
@@ -104,8 +103,9 @@ final class AltViewConfidenceTests: XCTestCase {
         }
     }
     func testExplicitMediaModeHiddenNavigationAndWindowRecreation() throws {
-        let (service, sender) = service(), source = UUID()
-        defer { service.disconnect() }
+        let (service, sender) = service(), hub = HubOutputHarness(service: service)
+        defer { hub.stop() }
+        service.receive(sender.connectedStatus)
         let url = URL(fileURLWithPath: "/tmp/media")
         let slides = [
             Slide(index: 1, lines: [], label: nil, videoURL: url, pdfURL: nil, pdfPageIndex: nil, imageURL: nil),
@@ -115,50 +115,41 @@ final class AltViewConfidenceTests: XCTestCase {
             Slide(index: 1, lines: [], label: nil, videoURL: nil, pdfURL: nil, pdfPageIndex: nil, imageURL: nil, captureWindowID: 42)
         ]
         for slide in slides {
-            let generation = UUID()
-            let media = PresentationOutputSnapshot(slide: slide, isPresenting: true, slidesVisible: true,
-                projectionWindowID: 77, projectionWindowGeneration: generation)
-            let count = sender.submissions.count
-            service.handle(.changed(media), from: UUID())
-            XCTAssertEqual(sender.submissions.count, count, "An inactive session cannot publish or take output")
-            service.handle(.project(media), from: source)
+            hub.session.setSlides([slide]); hub.session.showSlides()
             XCTAssertEqual(sender.submissions.last?.content.projection?.mode, .media)
-            XCTAssertEqual(sender.submissions.last?.content.projection?.sessionID, source)
-            XCTAssertEqual(sender.submissions.last?.content.projection?.windowID, 77)
+            XCTAssertEqual(sender.submissions.last?.content.projection?.sessionID, hub.session.outputSourceID)
+            XCTAssertEqual(sender.submissions.last?.content.projection?.windowID, 42)
             XCTAssertEqual(sender.submissions.last?.content.body, "")
             XCTAssertNil(sender.submissions.last?.content.confidence)
             let takes = sender.takes
-            var hiddenLyrics = snapshot("Private navigation", visible: false)
-            hiddenLyrics.projectionWindowID = 77; hiddenLyrics.projectionWindowGeneration = generation
-            service.handle(.changed(hiddenLyrics), from: source)
+            hub.session.hideSlides(); hub.load("Verse\nPrivate navigation")
+            hub.outputs.passiveLocal(hub.session)
             XCTAssertEqual(sender.submissions.last?.content.projection?.mode, .media)
             XCTAssertEqual(sender.takes, takes)
-            let newGeneration = UUID()
-            hiddenLyrics.projectionWindowID = 88; hiddenLyrics.projectionWindowGeneration = newGeneration
-            service.handle(.changed(hiddenLyrics), from: source)
-            XCTAssertEqual(sender.submissions.last?.content.projection?.windowID, 88)
-            XCTAssertEqual(sender.submissions.last?.content.projection?.windowGeneration, newGeneration)
+            hub.outputs.closeOutput(hub.nativeRow)
+            XCTAssertNil(sender.submissions.last?.content.projection?.windowID)
+            XCTAssertNil(sender.submissions.last?.content.projection?.windowGeneration)
             XCTAssertEqual(sender.submissions.last?.content.projection?.mode, .media)
-            service.handle(.show(snapshot("Presented lyrics")), from: source)
+            hub.load("Verse\nPresented lyrics"); hub.session.showSlides()
             XCTAssertEqual(sender.submissions.last?.content.projection?.mode, .lyrics)
             XCTAssertEqual(sender.submissions.last?.content.confidence?.body, "Presented lyrics")
-            service.handle(.changed(PresentationOutputSnapshot(slide: nil, isPresenting: true, slidesVisible: false)), from: source)
+            hub.session.clearSlides()
             XCTAssertNil(sender.submissions.last?.content.projection)
             XCTAssertEqual(sender.submissions.last?.content, .empty)
         }
-        service.handle(.stopped, from: source)
+        hub.outputs.stop()
         XCTAssertNil(service.submitted)
         XCTAssertFalse(service.isSending)
     }
     func testBackgroundAndConnectOnlyNeverPublishProjection() {
-        let (service, sender) = service()
-        defer { service.disconnect() }
-        let source = UUID()
-        service.handle(.changed(snapshot("Unpresented")), from: source)
+        let (service, sender) = service(), hub = HubOutputHarness(service: service)
+        defer { hub.stop() }
+        service.receive(sender.connectedStatus)
+        hub.load("Verse\nUnpresented")
         XCTAssertTrue(sender.submissions.isEmpty); XCTAssertEqual(sender.takes, 0)
-        service.handle(.show(snapshot("Primary")), from: source)
+        hub.load("Verse\nPrimary"); hub.session.showSlides()
         let original = service.submitted?.projection
-        service.handle(.changed(snapshot("Hidden different media", visible: false)), from: source)
+        hub.session.hideSlides(); hub.load("Verse\nHidden different media")
         XCTAssertEqual(service.submitted?.projection?.mode, original?.mode)
         XCTAssertEqual(service.submitted?.confidence?.body, "Primary")
         XCTAssertEqual(sender.takes, 1)

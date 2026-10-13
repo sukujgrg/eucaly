@@ -1,7 +1,19 @@
 import Foundation
 
 nonisolated enum OutputComponentRole: String, Codable, CaseIterable, Sendable {
-    case primary, meaning, translation, transliteration, heading, reference, footer
+    case primary, meaning, translation, transliteration, heading, reference, footer, secondary
+
+    static let lyricRoles: [Self] = [.primary, .meaning, .translation, .transliteration]
+    static let scriptureRoles: [Self] = [.primary, .secondary, .reference, .footer]
+    func title(for kind: OutputTextContent.Kind) -> String {
+        switch self {
+        case .primary: return kind == .scripture ? "Primary verse" : kind == .lyrics ? "Primary lyrics" : "Primary text"
+        case .secondary: return "Second Bible translation"
+        case .reference: return "Verse reference"
+        case .footer: return kind == .scripture ? "Bible versions" : "Footer"
+        default: return rawValue.capitalized
+        }
+    }
 }
 
 nonisolated struct OutputTextComponent: Codable, Equatable, Sendable, Identifiable {
@@ -87,7 +99,7 @@ nonisolated struct OutputBackground: Codable, Equatable, Sendable {
 
 nonisolated struct OutputProfile: Codable, Equatable, Sendable, Identifiable {
     enum Kind: String, Codable, CaseIterable, Sendable {
-        case audience, confidence, lowerThird
+        case audience, confidence, lowerThird, altView
 
         init(from decoder: any Decoder) throws {
             let value = try decoder.singleValueContainer().decode(String.self)
@@ -100,7 +112,10 @@ nonisolated struct OutputProfile: Codable, Equatable, Sendable, Identifiable {
     var id: UUID
     var name: String
     var kind: Kind
-    var roles: [OutputComponentRole] = OutputComponentRole.allCases
+    var roles: [OutputComponentRole] = OutputComponentRole.allCases.filter { $0 != .secondary }
+    // Song companion choices never suppress a Bible translation. Missing fields
+    // collapse naturally, so the sender chooses one or two languages.
+    var scriptureRoles: [OutputComponentRole] = OutputComponentRole.scriptureRoles
     var layout = "stacked"
     var alignment = "center"
     var position = "middle"
@@ -115,16 +130,19 @@ nonisolated struct OutputProfile: Codable, Equatable, Sendable, Identifiable {
         componentTypography[role]?.resolve(inheriting: typography) ?? typography
     }
     func components(in content: OutputTextContent) -> [OutputTextComponent] {
-        content.components.filter { roles.contains($0.role) && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        let selected = content.kind == .scripture ? scriptureRoles : roles
+        return content.components.filter { selected.contains($0.role) && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
     static let audienceID = UUID(uuidString: "00000000-0000-4000-8000-000000000001")!
     static let confidenceID = UUID(uuidString: "00000000-0000-4000-8000-000000000002")!
     static let lowerThirdID = UUID(uuidString: "00000000-0000-4000-8000-000000000005")!
+    static let altViewID = UUID(uuidString: "00000000-0000-4000-8000-000000000006")!
+    var isNative: Bool { kind != .altView }
     static var builtIns: [Self] {
-        let identities: [(Kind, UUID)] = [(.audience, audienceID), (.confidence, confidenceID), (.lowerThird, lowerThirdID)]
+        let identities: [(Kind, UUID)] = [(.audience, audienceID), (.confidence, confidenceID), (.lowerThird, lowerThirdID), (.altView, altViewID)]
         return identities.map { kind, identity in
             var profile = Self(id: identity,
-                               name: kind == .lowerThird ? "Lower Third" : kind.rawValue.capitalized, kind: kind)
+                               name: kind == .lowerThird ? "Lower Third" : kind == .altView ? "AltView" : kind.rawValue.capitalized, kind: kind)
             switch kind {
             case .audience:
                 profile.usesLegacySizing = true
@@ -133,6 +151,8 @@ nonisolated struct OutputProfile: Codable, Equatable, Sendable, Identifiable {
                 profile.typography.size = 48
                 profile.alignment = "left"
                 profile.background.dimming = 0
+            case .altView:
+                profile.roles = [] // Receiver owns composition and appearance.
             case .lowerThird:
                 profile.roles = [.primary, .heading, .reference, .footer]
                 profile.position = "bottom"
@@ -145,16 +165,58 @@ nonisolated struct OutputProfile: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
+nonisolated struct OutputReceiverTarget: Codable, Equatable, Sendable {
+    var receiverID: UUID
+    var name: String
+}
+
+nonisolated enum OutputDestination: Codable, Equatable, Sendable {
+    case none
+    case monitor(ProjectionMonitorTarget)
+    case altView(OutputReceiverTarget)
+}
+
 nonisolated struct OutputDestinationConfiguration: Codable, Equatable, Identifiable {
     var id: UUID = UUID()
     var name: String
     var profileID: UUID
-    var monitor: ProjectionMonitorTarget?
+    var destination: OutputDestination = .none
     var enabled = true
+    // Keep the native assignment while temporarily selecting the forwarding profile.
+    var savedMonitor: ProjectionMonitorTarget?
+    var savedReceiver: OutputReceiverTarget?
+    var monitor: ProjectionMonitorTarget? {
+        get { if case .monitor(let target) = destination { return target }; return nil }
+        set { destination = newValue.map(OutputDestination.monitor) ?? .none; savedMonitor = newValue }
+    }
+    var receiver: OutputReceiverTarget? {
+        if case .altView(let target) = destination { return target }; return nil
+    }
+    init(id: UUID = UUID(), name: String, profileID: UUID, monitor: ProjectionMonitorTarget?, enabled: Bool = true) {
+        self.id = id; self.name = name; self.profileID = profileID; self.enabled = enabled
+        self.monitor = monitor
+    }
+    private enum CodingKeys: String, CodingKey { case id, name, profileID, destination, monitor, enabled, savedMonitor, savedReceiver }
+    init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id); name = try c.decode(String.self, forKey: .name)
+        profileID = try c.decode(UUID.self, forKey: .profileID); enabled = try c.decode(Bool.self, forKey: .enabled)
+        savedMonitor = try c.decodeIfPresent(ProjectionMonitorTarget.self, forKey: .savedMonitor)
+            ?? c.decodeIfPresent(ProjectionMonitorTarget.self, forKey: .monitor)
+        savedReceiver = try c.decodeIfPresent(OutputReceiverTarget.self, forKey: .savedReceiver)
+        destination = try c.decodeIfPresent(OutputDestination.self, forKey: .destination)
+            ?? savedMonitor.map(OutputDestination.monitor) ?? .none
+    }
+    func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id); try c.encode(name, forKey: .name); try c.encode(profileID, forKey: .profileID)
+        try c.encode(enabled, forKey: .enabled); try c.encode(destination, forKey: .destination)
+        try c.encodeIfPresent(savedMonitor, forKey: .savedMonitor); try c.encodeIfPresent(savedReceiver, forKey: .savedReceiver)
+    }
 }
 
 nonisolated struct OutputProfileDocument: Codable, Equatable {
-    var version = 1
+    var version = 2
     var profiles: [OutputProfile]
     var destinations: [OutputDestinationConfiguration]
     var receiverEnabled = false
@@ -168,6 +230,11 @@ nonisolated enum OutputProfileMigration {
             UUID(uuidString: "00000000-0000-4000-8000-000000000004")!
         ]
         var result = saved
+        result.version = 2
+        if saved.version == 1 { result.receiverEnabled = false } // LAN pairing requires explicit enable.
+        if !result.profiles.contains(where: { $0.id == OutputProfile.altViewID }) {
+            result.profiles.append(OutputProfile.builtIns.first { $0.kind == .altView }!)
+        }
         result.profiles.removeAll { retiredIDs.contains($0.id) }
         for index in result.destinations.indices where retiredIDs.contains(result.destinations[index].profileID) {
             result.destinations[index].profileID = OutputProfile.audienceID
@@ -203,22 +270,36 @@ nonisolated struct OutputContentSnapshot {
     var revision: UInt64 = 0
     // Internal native media references never enter the external wire model.
     var localMedia: Slide?
+    // Complete incoming v2 content retains opaque templates and bilingual Confidence.
+    var remoteContent: AltViewDisplayContent?
 }
 
 nonisolated extension OutputProfileDocument {
     var isValid: Bool {
-        guard version == 1, (1...64).contains(profiles.count), destinations.count <= 16,
+        guard (1...2).contains(version), (1...128).contains(profiles.count), destinations.count <= 16,
               Set(profiles.map(\.id)).count == profiles.count,
               Set(destinations.map(\.id)).count == destinations.count,
               profiles.contains(where: { $0.id == OutputProfile.audienceID }),
               destinations.allSatisfy({ destination in destination.name.utf8.count <= 160 && profiles.contains { $0.id == destination.profileID } }) else { return false }
+        if version == 2 {
+            guard destinations.allSatisfy({ row in
+                guard let profile = profiles.first(where: { $0.id == row.profileID }) else { return false }
+                switch row.destination {
+                case .none: return true
+                case .monitor: return profile.isNative
+                case .altView(let receiver): return !profile.isNative && !receiver.name.isEmpty && receiver.name.utf8.count <= 160
+                }
+            }) else { return false }
+        }
         return profiles.allSatisfy { profile in
             guard profile.name.utf8.count <= 160, ["stacked", "columns"].contains(profile.layout),
                   ["left", "center", "right"].contains(profile.alignment), ["top", "middle", "bottom"].contains(profile.position),
                   profile.padding.isFinite, (0...2).contains(profile.padding), profile.background.dimming.isFinite,
                   (0...1).contains(profile.background.dimming), ["fit", "fill"].contains(profile.background.fit),
                   (profile.background.bookmark?.utf8.count ?? 0) <= 65_536,
-                  Set(profile.roles).count == profile.roles.count else { return false }
+                  Set(profile.roles).count == profile.roles.count,
+                  Set(profile.scriptureRoles).count == profile.scriptureRoles.count,
+                  profile.scriptureRoles.allSatisfy({ OutputComponentRole.scriptureRoles.contains($0) }) else { return false }
             guard profile.componentTypography.values.allSatisfy({ $0.relativeSize.map { $0.isFinite && (0.01...4).contains($0) } ?? true }) else { return false }
             return ([profile.typography] + profile.componentTypography.values.map { $0.resolve(inheriting: profile.typography) }).allSatisfy { type in
                 type.size.isFinite && (1...800).contains(type.size) && type.weight.isFinite && (-1...1).contains(type.weight)
@@ -227,4 +308,39 @@ nonisolated extension OutputProfileDocument {
             } && [profile.background.colour.red, profile.background.colour.green, profile.background.colour.blue, profile.background.colour.alpha].allSatisfy { $0.isFinite && (0...1).contains($0) }
         }
     }
+}
+
+nonisolated extension OutputProfile {
+    private enum CodingKeys: String, CodingKey {
+        case id, name, kind, roles, scriptureRoles, layout, alignment, position, padding, typography, componentTypography, background, usesLegacySizing
+    }
+    init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        kind = try c.decode(Kind.self, forKey: .kind)
+        roles = try c.decode([OutputComponentRole].self, forKey: .roles)
+        // Older profiles acquire independent verse defaults without changing
+        // any saved lyric selection, typography, background or assignment.
+        scriptureRoles = try c.decodeIfPresent([OutputComponentRole].self, forKey: .scriptureRoles) ?? OutputComponentRole.scriptureRoles
+        layout = try c.decode(String.self, forKey: .layout)
+        alignment = try c.decode(String.self, forKey: .alignment)
+        position = try c.decode(String.self, forKey: .position)
+        padding = try c.decode(Double.self, forKey: .padding)
+        typography = try c.decode(OutputTypography.self, forKey: .typography)
+        componentTypography = try c.decode([OutputComponentRole: OutputTypographyOverride].self, forKey: .componentTypography)
+        background = try c.decode(OutputBackground.self, forKey: .background)
+        usesLegacySizing = try c.decode(Bool.self, forKey: .usesLegacySizing)
+    }
+}
+
+nonisolated enum ExternalPresentationError: Error, Equatable {
+    case invalid(String)
+    var detail: String { switch self { case .invalid(let detail): return detail } }
+}
+nonisolated struct OutputDestinationStatus: Sendable {
+    var id: UUID
+    var name: String
+    var profileID: UUID
+    var readiness: OutputReadiness
 }

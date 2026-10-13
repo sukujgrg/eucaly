@@ -1,3 +1,40 @@
+# Implementation status — 13 October 2026
+
+The presentation-hub requirements supersede the foundation's loopback/no-relay
+restrictions. Current setup and wire contracts are documented in
+[AltView destinations](altview.md) and [ViewTheWord reception](external-presentation.md).
+The validation history below records the earlier native-output foundation;
+final hub validation is recorded below.
+
+## Hub coherence review
+
+Lyrics and scripture now have independent component selections. Received verses
+automatically include both committed Bible translations, reference and version
+labels in native profiles, with absent fields collapsed. The negotiated textSourceV1
+field separates source semantics from opaque template requests. Existing saved
+profiles inherit scripture defaults without changing lyric settings or appearance.
+
+The retired v1 wire model and session-to-AltView bridge are removed, together with
+per-channel discovery/template preferences and the synthetic presentation fallback.
+Only OutputCoordinator publishes through AltViewOutputRouter. Queued navigation
+uses real generation cancellation. Hide/Clear cancels pending take requests across
+reconnect and releases late grants without dropping an already-owned hidden lease.
+The toolbar edits typed output destinations. Disabling the last assigned output
+clears live ownership, retaining prepared Current. Receiver rows use connection
+UUIDs, so duplicate sender names cannot collide in the native UI.
+
+Final review validation: `make test` passed 391 XCTest cases plus one Swift Testing
+case, seven feed regressions and 97 release regressions. ViewTheWord's `swift test`
+passed 184 cases, including source metadata negotiation with legacy receivers.
+`make clean` followed by `make build` archived/exported eucaly with zero compiler
+or build warnings. ViewTheWord's `make build` also archived/exported; its existing
+signed-Sparkle stripping and unused-AppIntents metadata warnings remain unchanged.
+Both installed apps passed strict deep signature verification and contain arm64
+executables. Validation logs are `/tmp/eucaly-hub-review-final-tests.log`,
+`/tmp/eucaly-hub-review-build.log`, `/tmp/viewtheword-hub-review-tests-2.log`, and
+`/tmp/viewtheword-hub-review-build.log`. Separate-Mac LAN and physical display
+rehearsal remains outside this automated verification.
+
 # Output profiles implementation
 
 Implemented on `codex/output-profiles` in the isolated managed checkout
@@ -71,28 +108,20 @@ readability notices stay in operator settings/cards. Audience typography is used
 by thumbnails with their separate font-size controls. The settings panel has been
 rendered and visually reviewed; focus and VoiceOver rehearsal remain below.
 
-`ExternalPresentationReceiver` supplies authenticated loopback-only structured
-text. It starts only after explicit Settings setup, with a high-entropy credential
-stored in Keychain. The test host does not restore credentials or start a
-listener. Transport/framing/authentication/encoding and Keychain work are off the
-main thread; clients, frames, controls and state are bounded. Authentication and
-discovery are passive. Present is atomic, source identity includes connection
-identity, and updates/Hide/Clear/Release require the current lease. Transport
-records explicit Present order before queued main-actor delivery; local commands
-and queued navigation share that ordering clock. Superseded preparations and
-stale connections cannot regain or clear output. External opening leaves the
-sender's keyboard focus intact. See [protocol and reference sender](external-presentation.md).
+`ExternalPresentationReceiver` now uses paired TLS/Bonjour AltView v2 reception on
+this Mac or the LAN. The original loopback bearer endpoint is retired. Complete
+received scripture enters OutputCoordinator without modifying local preparation.
+The negotiated ViewTheWord intent contract distinguishes explicit verse actions
+from passive refresh and cancels superseded grants by exact intent identity.
+See [receiving and protocol](external-presentation.md).
 
-AltView uses event subscriptions alongside existing callbacks. Local events retain
-primary-lyrics filtering, templates, passive/explicit distinctions, same-slide
-requests and ownership recovery. Incoming external content is not relayed.
-Displacement cancels only the local source's outbound lease and exact Audience
-capture report, including queued events. Secondary windows never substitute for
-Audience identity or send a global Stopped event. Manual Send Current is disabled
-while an external source owns the group, and private local snapshots cannot report
-the external source’s Audience window identity. Local Show/activation resumes
-the existing takeover path. App commands and native window keys use the active
-workspace/group; inactive controls cannot accidentally reclaim output.
+AppDelegate's AltViewOutputRouter follows that same live snapshot, with independent
+per-receiver channels. Monitor and discovered AltView destinations are typed.
+Remote rows reserve no physical connection/window and work without local monitors.
+Received reference/footer, opaque templates and bilingual Confidence survive the
+relay. Only supported text is transmitted over LAN. Native profiles retain full
+media rendering; the same-Mac Audience identity extension remains scoped to
+eucaly's own process/window. See [AltView destinations](altview.md).
 
 ## Operator review corrections
 
@@ -293,3 +322,37 @@ from feature commits. Their diff remains nine files, 210 insertions and 15 delet
 Integrate them after they are committed; preserve both this branch's subscription
 boundary and main's readiness behavior, then rerun all AltView regressions. Neither
 ViewTheWord nor the AltView application was modified.
+
+## Hub validation — 13 October 2026
+
+- Final make test passed 386 XCTest cases, one Swift Testing case, seven feed
+  regressions and 97 release regressions. Log: /tmp/eucaly-hub-final-order-tests.log.
+- The actual ViewTheWord source passed all 184 Swift package tests, including
+  discovered hub publication without a native projector. Log:
+  /tmp/viewtheword-hub-final-verified-tests.log.
+- Real TLS tests cover ViewTheWord -> eucaly -> two independent AltView receivers,
+  metadata and bilingual Confidence, passive versus explicit takeover, same-slide
+  local reclaim, a receiver outage and recovery, remote-only output, pairing/pinning
+  failures, Stop between grant and first state, original intent order on retry,
+  background-only windows, private Current and coherent native close/display loss.
+- Final make clean preserved saved releases; make build archived/exported arm64
+  eucaly with no build warnings. Log: /tmp/eucaly-hub-final-clean-build.log.
+  The installed /Users/suku/Applications/eucaly.app passes strict deep signing.
+- The companion ViewTheWord make build exported the approved sender changes.
+  It is arm64 and passes strict deep signing. Its existing build-script warnings
+  about destination selection, pre-signed Sparkle stripping and empty App Intents
+  metadata remain outside this integration's build-tooling scope.
+- Main's nine-file AltView diff and ViewTheWord's pre-existing TODO.md diff are
+  preserved. No version change, tag, notarization, push, merge or publication ran.
+
+The implementation uses one live-program coordinator and native destinations;
+network routing is independent of prepared local Current. The original loopback
+listener and separate AltView settings/toolbar are removed. Paired LAN reception
+is disabled by default. The action clock retains a bounded sender/intent history,
+so retries cannot manufacture a newer takeover. Background window lifetime is
+independent of foreground ownership and remote takes.
+
+Production-LAN consent/discovery, signed-app pairing persistence after relaunch,
+physical monitor hot-plug/mirroring, VoiceOver, sustained media/capture cadence and
+actual HDMI/switcher delivery still require a separate-Mac hardware rehearsal.
+Automated encrypted loopback acceptance does not certify physical output.

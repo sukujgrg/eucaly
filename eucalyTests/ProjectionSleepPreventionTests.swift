@@ -87,13 +87,15 @@ final class ProjectionSleepPreventionTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: image) }
         session.setBackgroundVisual(image)
         session.toggleBackgroundVisualVisibility()
-        XCTAssertTrue(session.isPresenting)
-        XCTAssertFalse(session.areSlidesVisible)
+        XCTAssertTrue(session.outputCoordinator.isRunning)
+        XCTAssertFalse(session.isPresenting)
+        XCTAssertFalse(session.outputCoordinator.snapshot.visible)
+        XCTAssertNil(session.outputCoordinator.ownership.source)
         XCTAssertEqual(recorder.begun.count, 1)
         session.toggleBackgroundVisualVisibility()
         XCTAssertFalse(session.isBackgroundVisualVisible)
         XCTAssertTrue(recorder.ended.isEmpty)
-        let windowID = try XCTUnwrap(session.outputSnapshot.projectionWindowID)
+        let windowID = try XCTUnwrap(session.outputCoordinator.audienceIdentity.0)
         let window = try XCTUnwrap(NSApp.windows.first { $0.windowNumber == Int(windowID) })
         window.close()
         RunLoop.current.run(until: Date().addingTimeInterval(0.05))
@@ -115,11 +117,13 @@ final class ProjectionSleepPreventionTests: XCTestCase {
             inventory.displays = unavailable
             session.projectionDisplays.refresh()
             XCTAssertFalse(session.isPresenting)
+        XCTAssertNil(session.outputCoordinator.snapshot.source, "Display loss must publish the completed ownership transaction")
             XCTAssertEqual(recorder.ended, recorder.begun.map { ObjectIdentifier($0) })
             let started = recorder.begun.count
             inventory.displays = [actual]
             session.projectionDisplays.refresh()
             XCTAssertFalse(session.isPresenting)
+        XCTAssertNil(session.outputCoordinator.snapshot.source, "Display loss must publish the completed ownership transaction")
             XCTAssertEqual(recorder.begun.count, started, "Reconnect alone must not hold a sleep activity.")
         }
         XCTAssertEqual(recorder.begun.count, 3)

@@ -46,6 +46,20 @@ nonisolated struct OutputOwnership {
 nonisolated final class OutputActionClock: @unchecked Sendable {
     private let lock = NSLock()
     private var value: UInt64 = 0
+    private struct IntentIdentity: Hashable { let sender: UUID; let intent: UUID }
+    private var intentOrders: [IntentIdentity: UInt64] = [:]
+    private var intentOrder: [IntentIdentity] = []
+    /// A transport retry is still the original user action. Preserve its first
+    /// ingress order across cached-lease recovery and connection generations.
+    func record(sender: UUID, intent: UUID) -> UInt64 {
+        lock.lock(); defer { lock.unlock() }
+        let key = IntentIdentity(sender: sender, intent: intent)
+        if let order = intentOrders[key] { return order }
+        value &+= 1
+        intentOrders[key] = value; intentOrder.append(key)
+        if intentOrder.count > 256 { intentOrders.removeValue(forKey: intentOrder.removeFirst()) }
+        return value
+    }
     func next() -> UInt64 { lock.lock(); defer { lock.unlock() }; value &+= 1; return value }
     var current: UInt64 { lock.lock(); defer { lock.unlock() }; return value }
 }

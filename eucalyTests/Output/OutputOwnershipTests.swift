@@ -2,6 +2,18 @@ import XCTest
 @testable import eucaly
 
 final class OutputOwnershipTests: XCTestCase {
+    func testSameExplicitIntentRetainsIngressOrderThroughRetries() {
+        let clock = OutputActionClock(), sender = UUID(), intent = UUID()
+        let first = clock.record(sender: sender, intent: intent)
+        let newerLocal = clock.next()
+        XCTAssertLessThan(first, newerLocal)
+        XCTAssertEqual(clock.record(sender: sender, intent: intent), first)
+        XCTAssertEqual(clock.current, newerLocal, "An old grant/reconnect retry cannot supersede a newer operator action")
+        let fresh = clock.record(sender: sender, intent: UUID())
+        XCTAssertGreaterThan(fresh, newerLocal)
+        XCTAssertGreaterThan(clock.record(sender: UUID(), intent: intent), fresh)
+    }
+
     func testLatePreparationAndDisplacedConnectionCannotCommitOrClear() throws {
         var ownership = OutputOwnership()
         let a = UUID(), b = UUID()
@@ -81,8 +93,8 @@ final class OutputLifecycleTests: XCTestCase {
         XCTAssertNil(profiles.document.destinations[0].monitor)
         monitors.removeFirst(); displays.refresh()
         XCTAssertNil(displays.target); XCTAssertNil(profiles.document.destinations[0].monitor)
-        let message = ExternalPresentationMessage(kind: .present, sourceID: UUID(), actionID: UUID(), revision: 1, current: .init(components: [.init(role: .primary, text: "No monitor")]))
-        XCTAssertThrowsError(try outputs.presentExternal(connection: UUID(), name: "App", message: message))
+        XCTAssertThrowsError(try outputs.presentReceived(connection: UUID(), sourceID: UUID(), name: "App", revision: 1,
+            content: .init(body: "No monitor"), ingressOrder: outputs.actionClock.next()))
         XCTAssertFalse(outputs.isRunning)
     }
     func testUnusedStandaloneSessionAndCoordinatorAreReleased() {
@@ -122,16 +134,18 @@ final class OutputLifecycleTests: XCTestCase {
         XCTAssertNotNil(retainedSession)
         XCTAssertEqual(outputs.preferredLocalSession?.currentSlide?.lines.first?.text, "Retain Current")
     }
-    func testEventSubscriptionsDoNotReplaceExistingObservers() async {
-        let session = PresentationSession()
-        var legacy = 0, first = 0, second = 0
-        session.onOutputEvent = { _ in legacy += 1 }
-        let token = session.observeOutput { _ in first += 1 }
-        _ = session.observeOutput { _ in second += 1 }
-        session.emitOutputEvent(.stopped)
-        session.removeOutputObserver(token)
-        session.emitOutputEvent(.stopped)
-        XCTAssertEqual(legacy, 2); XCTAssertEqual(first, 1); XCTAssertEqual(second, 2)
+    func testDestinationCloseCancelsQueuedNavigationWithoutReopeningTheWindow() async throws {
+        let sender = RecordingAltViewSender(), service = AltViewService(pairingStore: RecordingAltViewPairingStore(), senderFactory: { _ in sender })
+        let hub = HubOutputHarness(service: service); defer { hub.stop() }
+        service.receive(sender.connectedStatus)
+        hub.load("Verse\nFirst\n\nChorus\nSecond"); hub.session.showSlides()
+        let current = hub.session.currentSlideID, takes = sender.takes
+        hub.session.moveSelection(1)
+        hub.outputs.destinationClosed(hub.nativeRow, generation: hub.driver.generation)
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertFalse(hub.outputs.isOpen(hub.nativeRow))
+        XCTAssertEqual(hub.session.currentSlideID, current); XCTAssertEqual(sender.takes, takes)
+        XCTAssertEqual(sender.submissions.last?.content.body, "First")
     }
 }
 

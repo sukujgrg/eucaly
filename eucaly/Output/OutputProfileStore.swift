@@ -66,16 +66,41 @@ final class OutputProfileStore: ObservableObject {
               let other = document.destinations.first(where: { $0.id != destinationID && $0.enabled && $0.monitor?.identity == target.identity }) else { return nil }
         return "This monitor is used by \(other.name). Disable that output or choose a different monitor."
     }
+    func selectProfile(_ profileID: UUID, for destinationID: UUID) {
+        guard let profile = profile(profileID) else { return }
+        edit { doc in
+            guard let i = doc.destinations.firstIndex(where: { $0.id == destinationID }) else { return }
+            doc.destinations[i].profileID = profileID
+            if profile.isNative {
+                doc.destinations[i].destination = doc.destinations[i].savedMonitor.map(OutputDestination.monitor) ?? .none
+            } else {
+                doc.destinations[i].destination = doc.destinations[i].savedReceiver.map(OutputDestination.altView) ?? .none
+            }
+        }
+    }
+    func assignReceiver(_ target: OutputReceiverTarget?, to id: UUID) {
+        edit { doc in
+            guard let i = doc.destinations.firstIndex(where: { $0.id == id }),
+                  doc.profiles.first(where: { $0.id == doc.destinations[i].profileID })?.kind == .altView else { return }
+            doc.destinations[i].destination = target.map(OutputDestination.altView) ?? .none
+            doc.destinations[i].savedReceiver = target
+        }
+    }
+    var conflictingReceiverIDs: Set<UUID> {
+        let assigned = document.destinations.filter { $0.enabled && $0.receiver != nil }
+        let grouped = Dictionary(grouping: assigned, by: { $0.receiver!.receiverID })
+        return Set(grouped.values.filter { $0.count > 1 }.flatMap { $0.map(\.id) })
+    }
     var conflictingDestinationIDs: Set<UUID> {
         let assigned = document.destinations.filter { $0.enabled && $0.monitor != nil }
         let grouped = Dictionary(grouping: assigned, by: { $0.monitor!.identity })
         return Set(grouped.values.filter { $0.count > 1 }.flatMap { $0.map(\.id) })
     }
     var monitorConflictNotice: String? {
-        let conflicts = conflictingDestinationIDs
+        let conflicts = conflictingDestinationIDs.union(conflictingReceiverIDs)
         guard !conflicts.isEmpty else { return nil }
         let names = document.destinations.filter { conflicts.contains($0.id) }.map(\.name).joined(separator: ", ")
-        return "\(names) share a monitor. Assign a different monitor to each output before presenting."
+        return "\(names) share a destination. Choose a different monitor or AltView receiver for each enabled output."
     }
     var audience: OutputProfile {
         if let destination = document.destinations.first, let profile = profile(destination.profileID), profile.kind == .audience { return profile }
@@ -127,7 +152,7 @@ final class OutputProfileStore: ObservableObject {
     func clearBackgrounds() {
         edit { doc in
             let ids = Set(doc.destinations.filter(\.enabled).map(\.profileID))
-            for index in doc.profiles.indices where ids.contains(doc.profiles[index].id) {
+            for index in doc.profiles.indices where ids.contains(doc.profiles[index].id) && doc.profiles[index].isNative {
                 doc.profiles[index].background.bookmark = nil
                 doc.profiles[index].background.colour = .black
             }

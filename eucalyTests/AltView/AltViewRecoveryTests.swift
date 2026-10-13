@@ -20,20 +20,18 @@ final class AltViewRecoveryTests: XCTestCase {
     }
 
     private func service(store: AltViewPairingStoring = RecordingAltViewPairingStore())
-        -> (AltViewService, RecoveryAltViewSender, RecoveryAltViewDiscovery) {
-        let sender = RecoveryAltViewSender(), discovery = RecoveryAltViewDiscovery()
+        -> (AltViewService, RecoveryAltViewSender) {
+        let sender = RecoveryAltViewSender()
         let suite = "AltViewRecoveryTests.\(UUID())"
         let defaults = UserDefaults(suiteName: suite)!
         addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
-        let service = AltViewService(defaults: defaults, restorePreferences: false, pairingStore: store,
-            senderFactory: { _ in sender }, discoveryFactory: { _ in discovery })
-        return (service, sender, discovery)
+        let service = AltViewService(defaults: defaults, pairingStore: store, senderFactory: { _ in sender })
+        return (service, sender)
     }
 
     func testConnectUsesDiscoveredLocalPortInsteadOfCachedSelection() {
-        let (service, sender, _) = service(), id = UUID()
-        defer { service.disconnect(); service.stopDiscovery() }
-        service.startDiscovery()
+        let (service, sender) = service(), id = UUID()
+        defer { service.disconnect() }
         let stale = local(id, port: 54321), fresh = local(id, port: 54322)
         service.receiveDiscovered([fresh], notice: nil)
         service.connect(to: stale, code: "ABCD2345")
@@ -43,15 +41,12 @@ final class AltViewRecoveryTests: XCTestCase {
         XCTAssertEqual(sender.takes, 0)
     }
 
-    func testLocalConnectionWaitsForMatchingReceiverAndSurvivesClosingSettings() {
-        let (service, sender, discovery) = service(), id = UUID()
+    func testLocalConnectionWaitsForMatchingReceiverAndReceivesCurrentEndpoints() {
+        let (service, sender) = service(), id = UUID()
         defer { service.disconnect() }
-        service.startDiscovery()
         service.connect(to: local(id, port: 54321), code: "ABCD2345")
         XCTAssertTrue(service.isConnecting)
         XCTAssertTrue(sender.connections.isEmpty)
-        service.stopDiscovery()
-        XCTAssertEqual(discovery.stops, 0, "A pending This Mac connection keeps discovery alive")
         service.receiveDiscovered([local(UUID(), port: 54322)], notice: nil)
         XCTAssertTrue(sender.connections.isEmpty, "Another local receiver cannot satisfy the saved identity")
         let fresh = local(id, port: 54323)
@@ -69,16 +64,19 @@ final class AltViewRecoveryTests: XCTestCase {
         let suite = "AltViewLocalRestore.\(UUID())", defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let id = UUID(), store = RecordingAltViewPairingStore()
-        let sender = RecoveryAltViewSender(), discovery = RecoveryAltViewDiscovery()
+        let sender = RecoveryAltViewSender()
         defaults.set(try JSONEncoder().encode(local(id, port: 54321)), forKey: "altViewDestination")
-        let service = AltViewService(defaults: defaults, pairingStore: store, senderFactory: { _ in sender },
-            discoveryFactory: { _ in discovery })
-        defer { service.disconnect() }
-        service.restoreConnection()
+        let service = AltViewService(defaults: defaults, pairingStore: store, senderFactory: { _ in sender })
+        let profiles = OutputProfileStore(), displays = ProjectionDisplayManager(displays: { [] })
+        let outputs = OutputCoordinator(profiles: profiles, displays: displays)
+        let router = AltViewOutputRouter(store: profiles, receiverID: UUID(), defaults: defaults, pairingStore: store, channelFactory: { service })
+        defer { outputs.stop(); router.shutdown() }
+        router.start(coordinator: outputs, discover: false)
+        store.readCompletion?(.init(key: Data("ABCD2345".utf8), receiverID: id), nil) // Migrate the former single selection.
+        XCTAssertEqual(profiles.document.destinations.last?.receiver?.receiverID, id)
         store.readCompletion?(.init(key: Data("ABCD2345".utf8), receiverID: id), nil)
-        XCTAssertEqual(discovery.starts, 1)
         XCTAssertTrue(sender.connections.isEmpty)
-        service.receiveDiscovered([local(id, port: 54322)], notice: nil)
+        router.receiveDiscovered([local(id, port: 54322)], notice: nil)
         XCTAssertEqual(sender.connections.last?.endpoint, local(id, port: 54322).endpoint)
         service.receive(sender.connectedStatus)
         XCTAssertTrue(sender.submissions.isEmpty)
@@ -87,7 +85,7 @@ final class AltViewRecoveryTests: XCTestCase {
 
     func testPortDiscoveredDuringPairingReadIsUsedAndCancelRejectsLateDiscovery() {
         let store = RecordingAltViewPairingStore()
-        let (service, sender, _) = service(store: store), id = UUID()
+        let (service, sender) = service(store: store), id = UUID()
         defer { service.disconnect() }
         service.connect(to: local(id, port: 54321), code: "")
         service.receiveDiscovered([local(id, port: 54322)], notice: nil)
@@ -104,33 +102,28 @@ final class AltViewRecoveryTests: XCTestCase {
         XCTAssertFalse(service.hasConnection)
     }
 
-    func testMissingPairingStopsBackgroundDiscoveryAndNextConnectDoesNotUseOldResults() {
+    func testMissingPairingCannotStartTransportAndLateReadCannotRestoreConnection() {
         let store = RecordingAltViewPairingStore()
-        let (service, sender, discovery) = service(store: store), id = UUID()
+        let (service, sender) = service(store: store), id = UUID()
         defer { service.disconnect() }
         service.connect(to: local(id, port: 54321), code: "")
         service.receiveDiscovered([local(id, port: 54322)], notice: nil)
         store.readCompletion?(nil, nil)
         XCTAssertFalse(service.hasConnection)
-        XCTAssertEqual(discovery.stops, 1)
-        XCTAssertTrue(service.receivers.isEmpty)
+        XCTAssertTrue(sender.connections.isEmpty)
         service.connect(to: local(id, port: 54321), code: "ABCD2345")
-        XCTAssertTrue(sender.connections.isEmpty, "An earlier browse cannot authenticate a current port")
+        XCTAssertEqual(sender.connections.last?.endpoint, local(id, port: 54322).endpoint)
         service.receiveDiscovered([local(id, port: 54323)], notice: nil)
-        XCTAssertEqual(sender.connections.last?.endpoint, local(id, port: 54323).endpoint)
+        XCTAssertEqual(sender.updatedEndpoints.last, local(id, port: 54323).endpoint)
     }
 
-    func testControlsDetachKeepsRuntimeHideClearAndStopEvents() async throws {
-        let (service, sender, _) = service()
-        defer { service.disconnect() }
-        service.connect(to: .manual(host: "receiver.local", port: "54321")!, code: "ABCD2345")
+    func testAppOwnedRouteKeepsRuntimeHideClearAndStop() async throws {
+        let (service, sender) = service(), hub = HubOutputHarness(service: service)
+        defer { hub.stop() }
         service.receive(sender.connectedStatus)
-        let session = PresentationSession()
-        service.attach(session)
+        let session = hub.session
         session.setSlides(LyricsParser.parseDocument("Verse 1\nPresented lyrics").slides)
-        session.isPresenting = true // Keep this lifecycle test independent of a physical display.
         session.showSlides()
-        service.detach(session)
         XCTAssertTrue(service.isSending)
         XCTAssertEqual(sender.releases, 0)
         session.hideSlides()
@@ -142,21 +135,15 @@ final class AltViewRecoveryTests: XCTestCase {
         XCTAssertEqual(sender.submissions.last?.content, .empty)
         session.stopPresentation()
         XCTAssertFalse(service.isSending)
-        XCTAssertEqual(sender.releases, 1)
-        service.detach(session)
-        XCTAssertNil(session.onOutputEvent)
+        XCTAssertGreaterThan(sender.releases, 0)
     }
 
     func testDetachedProjectionStopCancelsPublicationQueuedDuringReconnect() {
-        let (service, sender, _) = service()
-        defer { service.disconnect() }
-        service.connect(to: .manual(host: "receiver.local", port: "54321")!, code: "ABCD2345")
-        let session = PresentationSession()
-        service.attach(session)
+        let (service, sender) = service(), hub = HubOutputHarness(service: service)
+        defer { hub.stop() }
+        let session = hub.session
         session.setSlides(LyricsParser.parseDocument("Verse 1\nQueued lyrics").slides)
-        session.isPresenting = true
         session.showSlides()
-        service.detach(session)
         session.stopPresentation()
         service.receive(sender.connectedStatus)
         XCTAssertEqual(sender.takes, 0)
@@ -164,15 +151,15 @@ final class AltViewRecoveryTests: XCTestCase {
     }
 
     func testQueuedProjectionKeepsItsExplicitSnapshotThroughAPassiveRefresh() throws {
-        let (service, sender, _) = service()
+        let (service, sender) = service()
         defer { service.disconnect() }
         service.connect(to: .manual(host: "receiver.local", port: "54321")!, code: "ABCD2345")
         let source = UUID()
         let oversized = try XCTUnwrap(LyricsParser.parseDocument("Verse 1\n" + String(repeating: "界", count: 8_001)).slides.first)
-        service.handle(.project(.init(slide: oversized, isPresenting: true, slidesVisible: true)), from: source)
+        service.publishProgram(.init(body: oversized.lines[0].text), sourceID: source, explicit: true)
         let explicit = try XCTUnwrap(service.submitted)
         let passive = try XCTUnwrap(LyricsParser.parseDocument("Verse 1\nPassive model refresh").slides.first)
-        service.handle(.changed(.init(slide: passive, isPresenting: true, slidesVisible: true)), from: source)
+        service.publishProgram(.init(body: passive.lines[0].text), sourceID: source, explicit: false)
         service.receive(sender.connectedStatus)
         XCTAssertEqual(sender.takeSubmissions.count, 1)
         XCTAssertEqual(sender.takeSubmissions.first?.content, explicit, "The queued action must validate the original explicit content")
@@ -180,27 +167,19 @@ final class AltViewRecoveryTests: XCTestCase {
         XCTAssertNotEqual(sender.takeSubmissions.first?.id, sender.submissions.last?.id)
     }
 
-    func testNativeProjectionCloseAfterControlsDetachReleasesOutput() async throws {
-        let (service, sender, _) = service()
-        defer { service.disconnect() }
-        service.connect(to: .manual(host: "receiver.local", port: "54321")!, code: "ABCD2345")
+    func testNativeProjectionCloseRetainsIndependentRemoteOutputAndClearsIdentity() async throws {
+        let (service, sender) = service(), hub = HubOutputHarness(service: service)
+        defer { hub.stop() }
         service.receive(sender.connectedStatus)
-        let monitor = ProjectionMonitor(id: 1, identity: UUID().uuidString, name: "Audience", frame: CGRect(x: 0, y: 0, width: 1920, height: 1080))
-        let displays = ProjectionDisplayManager(displays: { [monitor] })
-        displays.select(monitor.target)
-        let profiles = OutputProfileStore(monitor: monitor.target)
-        let driver = FakeOutputDriver()
-        let outputs = OutputCoordinator(profiles: profiles, displays: displays, driverFactory: { driver })
-        let session = PresentationSession(projectionDisplays: displays, outputCoordinator: outputs)
-        service.attach(session)
+        let session = hub.session
         session.setSlides(LyricsParser.parseDocument("Verse 1\nPresented").slides)
         session.showSlides()
-        service.detach(session)
-        outputs.destinationClosed(profiles.document.destinations[0].id, generation: driver.generation)
+        let releases = sender.releases
+        hub.outputs.destinationClosed(hub.nativeRow, generation: hub.driver.generation)
         try await Task.sleep(for: .milliseconds(25))
-        XCTAssertFalse(session.isPresenting)
-        XCTAssertFalse(service.isSending)
-        XCTAssertEqual(sender.releases, 1)
+        XCTAssertTrue(session.isPresenting); XCTAssertTrue(service.isSending)
+        XCTAssertEqual(sender.releases, releases)
+        XCTAssertNil(sender.submissions.last?.content.projection?.windowID)
     }
 
     func testFailedBrowserRestartsAndReadyClearsNotice() throws {
@@ -287,12 +266,6 @@ nonisolated private final class RecoveryAltViewBrowser: AltViewReceiverBrowsing,
     func emit(_ state: NWBrowser.State) { queue.async { [self] in stateUpdateHandler?(state) } }
 }
 
-nonisolated private final class RecoveryAltViewDiscovery: AltViewReceiverDiscovering {
-    var starts = 0, stops = 0
-    func start() { starts += 1 }
-    func stop() { stops += 1 }
-}
-
 nonisolated private final class RecoveryAltViewSender: AltViewSending {
     struct Connection { let endpoint: NWEndpoint; let receiverID: UUID? }
     var connections: [Connection] = []
@@ -312,5 +285,6 @@ nonisolated private final class RecoveryAltViewSender: AltViewSending {
         if let submission { takeSubmissions.append(submission) }
     }
     func releaseOutput() { releases += 1 }
+    func cancelPendingPresentation() {}
     func disconnect() { connectionID = nil }
 }

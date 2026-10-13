@@ -1,95 +1,117 @@
-# AltView output
+# AltView destinations
 
-eucaly sends the primary lyrics from **Current** directly to an AltView protocol v2 receiver on this Mac or another Mac. No AltView process is needed on the sending Mac.
+eucaly is a presentation hub. One coherent live program feeds all enabled native
+outputs and AltView destinations. The program may be local Current lyrics/media
+or scripture received from ViewTheWord. Preview and prepared local Current remain
+separate from the received live source.
 
-## Connect and present
+## Setup
 
-1. Open AltView on the receiving Mac. Leave receiving enabled, open **Audience**, choose the intended monitor and click **Open Display**. Appearance, lower thirds, artwork, and display selection belong to AltView.
-2. In eucaly, open **AltView → Connection Settings…** from the toolbar, or **Settings → AltView**. **This Mac** is selected by default for new connections and waits for the local AltView receiver. Saved receiver choices are retained. To use another Mac, select its discovered receiver or choose **Manual address** and enter its host/IP address and current port.
-3. Enter AltView’s eight-character pairing code and choose **Connect Only**. This authenticates an encrypted TLS connection without taking output. After successful pairing, an empty code field reuses the saved pairing. Pairing secrets and pinned receiver identities prefer the data-protection Keychain. As in ViewTheWord, signed builds without its provisioning entitlements use the encrypted login Keychain with normal app-signature access controls; saving falls back only for missing entitlements. Locked, denied, or corrupt items remain visible errors. No pairing secrets go into preferences or files. Persistence failures retain credentials in memory for this session only. If an earlier release remembered pairing only for the session, pair once after installing the corrected app.
-4. Choose a **Template**, or leave the default **Lyrics** request. The list comes from the connected receiver; **Receiver’s layout** sends no template request. Changes apply when you next show a slide.
-5. The next **Show Slides** action also takes AltView output. If eucaly is already projecting, activate a visible Current slide or choose **Send Current to AltView** in the toolbar popover to start sending immediately.
+1. Open AltView on each receiving Mac, enable receiving, configure its appearance,
+   choose its monitor and open its display. These settings belong to AltView.
+2. Open eucaly Settings > Manage Outputs, or choose Manage Outputs from the screen
+   toolbar menu. Both open the same native Settings tab.
+3. Add an AltView output, give the row a useful name, and select its discovered
+   receiver under Destination. Enter that receiver's eight-character pairing code
+   and choose Connect Only. An empty code reuses its Keychain pairing.
+4. Show local Current or present a verse from ViewTheWord. Every enabled output
+   follows that explicit action. Pairing and closing Settings never publish.
 
-The last paired receiver connects automatically at launch, without taking output or publishing Current. Closing Settings leaves the connection or setup running. **Cancel**, **Disconnect**, or editing the destination/code cancels the current connection and invalidates late callbacks. Discovery runs while AltView settings are open and while a This Mac connection is pending or active. A saved This Mac selection waits for the matching receiver's current discovered port instead of dialing its saved port. Failed discovery restarts at 1, 2, 4, then 8-second intervals; Stop cancels retries and old callbacks, and recovery clears the notice even with no receivers found. The toolbar’s **Connection Settings…** opens the same Settings tab; connection controls follow ViewTheWord’s native layout.
+Audience, Confidence and Lower Third use connected monitors and eucaly's saved
+appearance. Lower Third defaults to #00FF00; customized colours remain saved.
+Switching Confidence to Lower Third retains the monitor and separate profile
+settings. Switching back restores Confidence, including its idle clock.
 
-## What follows Current
+Text Components appears near the top of **Appearance & Text Components**.
+Lyrics and Scripture have independent selections. Song Translation is a lyrics
+companion; **Second Bible translation** is ViewTheWord's committed secondary
+verse. Scripture defaults to both translations, the verse reference and Bible
+version labels in every native profile. Missing fields collapse automatically.
+Switching sources applies the appropriate selection without editing settings.
+AltView destinations receive the complete text snapshot and keep their own
+composition controls in AltView.
 
-| eucaly action | AltView behavior |
+AltView rows use stable discovered receiver UUIDs, never a cached address/port.
+One native Bonjour browser feeds the independent channels. Each receiver has its
+own pairing, pinned identity, connection generation, submissions, acknowledgement,
+lease and reconnect lifecycle. AltView rows open no eucaly projection window and
+reserve no physical monitor. They work without a local projection monitor.
+Enabled rows cannot share a receiver's single lease/program. Disabled rows retain
+assignments without reserving a receiver or monitor.
+
+## Live actions
+
+| Action | Output behavior |
 | --- | --- |
-| Browse/select in Preview | No change |
-| Load Current while projection is stopped | No publication |
-| Show Slides after connecting | Explicitly takes output and sends Current |
-| Activate/navigate a visible Current slide or switch Current while visible | Takes output and sends the complete latest primary text |
-| Navigate Current while slides are hidden | Updates the existing snapshot without taking output |
-| Hide Slides / Escape / Clear All Layers | Hides text; preserves its content and ownership |
-| Clear Current | Sends empty hidden content; preserves ownership |
-| Explicitly project PDF, image, video, webpage, or captured window | Clears Audience text; local AltView Confidence can capture the reported projection window |
-| Stop Projection | Releases output; connection stays available |
-| Stop Sending to AltView | Releases output without stopping local projection |
-| Change background visual, audio, or appearance | No remote text change |
+| Browse Preview or prepare Current while stopped | Private |
+| Connect Only / restore pairing / discover receivers | Private |
+| Show Slides / visible Current activation or navigation / live Load or Switch | Takes all enabled destinations for local Current |
+| Commit a ViewTheWord verse | Takes the hub and forwards the verse to all enabled destinations |
+| Passive model or translation refresh | Updates the owned program; never takes a displaced destination |
+| Hide / Escape | Hides foreground content; native Confidence shows its idle clock |
+| Clear Current | Clears the program and cancels upstream authority |
+| Stop Projection | Closes native output and releases downstream leases; connections remain available |
 
-The body contains all primary lyric components in order, with their line breaks preserved. Meaning, translation, and transliteration companion components are excluded using `LyricsSectionCatalog`; a companion never substitutes for absent primary lyrics. Title and footer are empty, with unused space collapsed. The parser remains the only source of component classification.
+Background-only native windows own no foreground program and never take a remote
+lease. Changing background/audio controls retains the live source.
 
-One eucaly window/session supplies remote sending at a time. Explicitly activating a visible Current slide, navigating to another visible slide, or loading/switching Current while visible takes output from another sender or eucaly window. Reactivating the same slide also reclaims it, without requiring the other app to release or eucaly to reconnect manually. Background model refreshes, hidden navigation, and changes or closure in an inactive eucaly window cannot replace or release it. Show Slides and Send Current also reclaim output.
+Local lyrics use LyricsSectionCatalog's primary components. Received scripture
+retains its title/reference, primary text, translation/footer, opaque template
+request and complete bilingual Confidence snapshot. Hidden local navigation
+retains the last explicit Confidence text/media mode. Private settings changes
+never take output. Future receiver templates remain opaque and are sent only when
+advertised. Receiver template overrides and display readiness are reported by
+AltView, independently of the sender's accepted revision.
 
-## Templates and receiver overrides
+## Recovery and limits
 
-The template picker uses the receiver’s ordered catalogue, retaining opaque IDs independently of their display names. The default request is **Lyrics**. Supported future templates appear without an eucaly update. The selection is saved privately; selecting a template or receiving discovery/policy updates never publishes text or takes output. The next explicit Show/Send Current or change of Current slide uses the new choice. Hiding the existing slide and reconnecting preserve its published request.
+One failed destination never gates the others. Saved paired receivers wait for
+fresh Bonjour resolution. Explicit requests and the latest program survive
+connection setup, interrupted grants, stale cached leases and transient drops.
+Without a pending explicit action, reconnect uses resume only for a former owner;
+it cannot displace another presenter. Stop/Disconnect cancels requests and safely
+releases late grants. Same-slide activation creates a fresh submission/revision.
+The transport retains bounded controls and latest-value snapshots. Network,
+encoding and Keychain work stay off the UI thread.
 
-Every publication resolves the request against the latest catalogue. Unsupported requests are omitted from the wire without losing the saved choice or pending snapshot. A missing choice appears as an unavailable menu item; older receivers without discovery receive generic text. Clearing Current and media slides send empty generic content.
+AltView v2 carries text, not image/video/PDF/webpage/capture pixels over the LAN.
+Media clears remote Audience text gracefully. Every enabled native profile still
+renders supported local media through the shared runtime. The optional
+localProjectionV1 extension reports the exact native Audience NSWindow identity
+for AltView Confidence on the same Mac; no pixels or audio cross the protocol.
+The hub never relays an incoming process's capture identity. eucaly remains the
+sole media playback/audio owner. Live webpages still require a native Audience
+monitor and support one interactive Audience output.
 
-AltView can follow sender requests, force a named template, or use its custom layout. Settings reports this applied policy separately from the selected request. The sender keeps a supported request even when the receiver overrides it. Discovery is read from `welcome` before any restoration, replaced completely on every `feedback`, and cleared on disconnect. Invalid catalogues or policies close the connection. No AltView-side changes are required for the documented optional v2 extension.
-
-## Connection and delivery behavior
-
-- Network work, encoding, retries, and Keychain operations stay off the main thread. Lock-protected latest-value mailboxes bound submissions and status delivery. Each connection has its own submission mailbox, so destination changes cannot send a new receiver’s text through the old connection. The socket outbox keeps one newest snapshot plus bounded controls; rapid navigation does not accumulate a queue of old lyrics. Show/navigation during a saved pairing read retain the latest snapshot until its connection starts; Stop discards it.
-- Initial transport setup has a 30-second budget, with fresh attempts after stalled or transient transports, including transport closes between TLS readiness and the application welcome. A This Mac selection first waits for live discovery; Cancel remains available during that wait. Incorrect codes, changed pinned receiver identities, and application-handshake rejection or timeout stop initial retry. Cancellation and destination changes invalidate late callbacks.
-- Established connections retry at 1, 2, 4, then 8 seconds. An explicit projection made during reconnection stays queued; a take interrupted before its grant arrives also survives transient drops. After reconnect, the request takes output and sends the latest snapshot. Without a pending explicit request, only a former owner requests `resume`, which cannot displace another sender. The latest Current snapshot, including hidden or cleared state, is used after restoration. Stop or Disconnect cancels queued projection and restoration. A grant arriving after Stop is immediately released without publishing text.
-- A cached lease may already be revoked before the ownership report arrives. Explicit projection stays pending until a fresh grant or acceptance of its snapshot revision (or a newer coalesced snapshot on that lease). Delayed revocation triggers takeover and sends the latest snapshot. Same-slide activation uses a fresh revision; earlier acknowledgements cannot settle the new request. Background updates preserve an existing request but never create one. The acknowledgement timeout changes status only.
-- UTF-8 limits and the encoded frame limit are checked on the sender queue, using the negotiated capabilities before any takeover. Each take retains the explicit snapshot that authorized it, separately from the latest transport snapshot, so a later passive mailbox update cannot validate a rejected action. Queued actions retain that snapshot through pairing and capability negotiation. Rejected content cancels a queued take and cannot clear another sender's output. If eucaly already owns output, its unsendable Audience text is cleared. Oversized hidden navigation retains valid Confidence text and the last explicitly presented media/window report, including across resume. Desired content remains available for later capability negotiation; a new valid submission requires a new explicit action to take output. Text is never truncated, and local projection continues independently.
-- The toolbar separates acknowledgement of the latest local submission from AltView’s output readiness. Missing acknowledgement progress produces a notice after five seconds while sending continues. Old acknowledgements cannot confirm a newer slide or blank.
-
-Acceptance confirms that AltView accepted a snapshot, not that a frame reached the projector or switcher. Protocol v2 has no remote command to open its output window and no scheduled frame/timecode synchronization. AltView must open its own output; transport latency means the two displays follow the same actions but are not frame-locked. These boundaries do not prevent this text-only integration.
+Protocol acceptance does not certify physical HDMI delivery, open AltView's
+window, or frame-lock multiple displays. AltView must open its own outputs.
 
 ## Implementation and verification
 
-`AppDelegate` owns one `AltViewService`. `PresentationSession` exposes generic coherent output snapshots and explicit project/show/stop events; `ContentView` connects the session to the service. Closing the controls leaves a presenting session's event bridge attached: runtime Hide, Clear, Stop, native window close and display-loss shutdown still reach AltView. Individual capture views release their streams when removed; session teardown and app termination own global capture cleanup. Projection renderers and Preview have no networking side effects. Model changes coalesce at a deferred main-queue boundary before the adapter reads Current. Explicit projection is marked by Current activation/navigation and Load/Switch actions, independently of refresh snapshots; Hide or Stop before the deferred snapshot cancels that projection.
+AppDelegate owns AltViewOutputRouter. OutputCoordinator owns the live snapshot and
+explicit source actions; renderers and Preview have no network side effects.
+Each row uses an AltViewService channel and the established v2 sender reducer.
+The coordinator is the only publication boundary. The retired v1 framing/model,
+session event bridge, per-channel discovery and template preferences are removed.
+Hide/Clear cancels an unaccepted downstream take, including during reconnect,
+while retaining an already-owned lease to publish its hidden state. Closing a
+native destination cancels queued navigation without closing other destinations.
+Disabling the last configured destination clears live ownership, retaining Current.
+The original codec/TLS/sender provenance is AltView commit
+9918ca19a5ab6480cb58f2d8ea90878e4f5c67cd. Template and bilingual Confidence fields
+match the current neighboring applications. No build-time neighbor dependency is
+required. The old single-destination toolbar/settings route is superseded by
+Manage Outputs.
 
-The namespaced wire codec, mailbox, discovery, TLS and sender code were adapted from AltView commit `9918ca19a5ab6480cb58f2d8ea90878e4f5c67cd`. eucaly intentionally has no build-time dependency on the neighboring checkout. Sender-specific changes include local submission correlation, oversized-content clearing, explicit actor/queue boundaries, and cancellation of late output grants. Keep future protocol changes coordinated with AltView; there is no v1 fallback. The optional v2 template catalogue and policy follow the current protocol and ViewTheWord’s adapter.
+make test includes real TLS fixtures from the actual ViewTheWord sender and
+AltView receiver reducer, exercising ViewTheWord -> eucaly -> multiple AltView
+receivers, explicit versus passive takeover, ownership retention, private Current,
+metadata, remote-only output, cancellation and settings migration. Existing
+sender regressions continue to cover frame limits, wrong pairing, pinning,
+coalescing, revoked cached leases, reconnect and late grants.
 
-`make test` includes parser/adapter and presentation-flow tests, framing and backpressure tests, and real TLS loopback tests against a test-only copy of AltView’s ownership reducer and receiver. They cover connect-only, primary-only Unicode content, media clearing, hidden state, release, takeover, reconnection, burst coalescing, limits, wrong pairing keys, identity pinning, and cancellation during an in-flight take. Transport regressions cover queued destination changes, idle-sender broadcasts before a resume grant, explicit takeover after a refused resume, stale leases with delayed ownership reports and cancellation before revocation, transient closes before welcome, and Show/Stop while reading saved pairing credentials. Template regressions cover wire validation, private selection, startup restoration, native menu identity, legacy fallback, catalogue/policy changes without publication, and reconnect resolution.
-
-Content-bound regressions also cover rejection before welcome, negotiated Confidence frame overflow, passive mailbox replacement of an explicit snapshot before validation/negotiation, queued service actions retaining their explicit snapshot, rejected content under a revoked cached lease, cancellation before a delayed grant, valid explicit recovery, legacy renegotiation, and hidden oversized lyrics retaining Confidence text/media through reconnect. Discovery regressions inject browser failures and verify fresh browsers, waiting-to-ready recovery, cancelled retries and stale-generation suppression. Local-port tests cover cached selections, startup restoration, pairing reads, matching receiver identity, closing Settings and cancellation. Session tests retain Hide/Clear/Stop and native-close events after controls detach.
-
-Pairing-store regressions cover missing-entitlement fallback, restoration in a fresh store, replacement, existing protected items, per-receiver isolation, and visible locked/denied/corrupt errors. A disposable Developer ID signed fixture using the production pairing-store source reproduced `errSecMissingEntitlement` on 11 October 2026, then verified login Keychain saving, fresh-process restoration, and replacement; its test item was removed afterward. This does not replace the two-Mac rehearsal below.
-
-For hardware validation, pair two Macs on the production LAN and alternate ViewTheWord verse projection with eucaly Current activation/navigation, including the same slide. Both apps must take output without manual release or reconnect. Repeat during reconnect, while ownership feedback is delayed, and with Stop before recovery. Exercise Hide, Clear, receiver output closure, display disconnect, and background refreshes while another sender owns output. Verify Local Network consent, Bonjour discovery, signed-app Keychain persistence after relaunch, and actual AltView/HDMI timing on that setup.
-
-
-## AltView Confidence and This Mac (7 October 2026)
-
-AltView now has an independent Confidence display for current time and presented primary text. Pair/select **This Mac · receiver name** for encrypted loopback when AltView runs on this Mac; discovery finds its actual current port and refreshes it during reconnect even after Settings closes. This choice does not restrict AltView’s LAN listener. Manual connections need the current port shown in AltView Settings. Remote Bonjour/LAN pairing remains available. Connect Only and browsing do not take text ownership.
-
-Audience Hide/Blank retains confidence text. Explicit Clear/media, Stop and owner disconnect clear text; reconnect cannot replace a different owner without an explicit projection. eucaly retains the last explicitly visible lyric through hidden navigation. ViewTheWord sends the committed reference, primary verse and actual translation; no search, browsing or tab/window activation feeds AltView. The existing secondary fallback when a primary verse is absent is retained.
-
-Legacy receivers receive ordinary v2 text because the confidence text field is negotiated.
-
-AltView labels its outputs **Audience** and **Confidence**, with matching **Open Display**, **Close Display**, **Identify** and **Name…** controls. Each saved monitor assignment reserves that screen even when closed, and the other output marks it unavailable. Assignments use macOS display UUIDs; disconnect waits for the same identity, and a changed identity requires explicit reassignment. Mirrored or indistinguishable monitors cannot be selected. Close an active/waiting output before changing its monitor; choose **Preview Window · no monitor** for a separate rehearsal window. Identify labels only the selected, unused monitor. Use Identify then Name… to save labels such as Front Left TV and Stage TV. AltView remembers its own numbers and names by macOS UUID across reordered detection and relaunch, independently of the output role. These numbers do not promise to match System Settings numbering. Verify again with Identify after swapping cables, ports or adapters.
-
-Automated coverage includes protocol compatibility, hidden-navigation/blanking, and loopback discovery/port identity. Physical validation still requires: connect a dedicated USB-C/HDMI extended display; choose distinct audience/confidence displays; alternate explicit lyric and Scripture projections while browsing both apps; hide/blank audience and independently hide/show confidence; unplug/replug the confidence display and confirm it never relocates; stop/disconnect/reconnect each sender and verify no stale takeover; check readability and clock over a service-length rehearsal. Automated acceptance does not prove physical HDMI delivery.
-
-## Local media on Confidence — 8 October 2026
-
-AltView Confidence has one shared main area: explicit lyrics show readable primary text; explicitly presented media (image, PDF, video, webpage, captured window) uses Eucaly’s live projection picture. Run both apps on this Mac, select **This Mac · receiver name**, then in AltView Confidence choose **Enable Local Media** and grant AltView Screen Recording access. Eucaly remains the only playback and audio owner. Its projection Hide/Blank, background and overlays appear in the captured picture; AltView keeps its independent local clock above it. Lyrics still retain their last explicit presentation during Hide and hidden navigation. Remote Macs and old receivers retain existing text behaviour.
-
-The backward-compatible negotiated `localProjectionV1` extension adds `hello.localProcess` (PID, process start microseconds and same-boot marker) and complete `content.projection` (Current session UUID, explicit lyrics/media mode, exact projection `NSWindow.windowNumber`, fresh window-generation UUID). The report uses the existing authenticated owner lease and increasing revision. No pixels or audio travel over the protocol. Unsupported receivers receive ordinary v2 text with projection metadata omitted. The actual shared report originates in `PresentationSession.outputSnapshot`, after window creation; Preview views never report a source.
-
-`AltViewService` retains the explicit mode through hidden Current navigation and background updates. These may refresh the projection-window identity without changing the mode or taking output. Clear removes the report; Stop/Disconnect cancel it. Reconnect preserves the submitted publication but receives a new owning connection/lease; an inactive reconnect cannot displace another presenter. Source reports from inactive Eucaly sessions are ignored.
-
-AltView verifies loopback, boot marker and PID start time, then matches the exact ScreenCaptureKit window ID and its owning PID / `com.suku.eucaly` bundle. Session/window identity plus accepted lease/revision governs capture cancellation. A paired local sender’s report is trusted; these public hints are not an attestation against malicious same-Mac apps. No title or display guessing is used. An unavailable source gives the operator a status and retries only the reported window. Source recreation requires a fresh accepted report; it never captures another Eucaly window.
-
-One AltView capture stream serves preview and physical Confidence output through retained BGRA IOSurface buffers and Core Animation. It requests aspect-preserving capture within 1920×1080 / 60 fps, has a six-frame ScreenCaptureKit queue and a newest-only pending mailbox, and captures no audio. Capture stops while Confidence is hidden or has no visible output/preview. Its delays or failures do not gate Eucaly’s Current/projection or protocol submission.
-
-Validation: the existing full Eucaly suite passed (266 tests), and the six focused Confidence tests passed after adding media-family, hidden-navigation, Connect Only, window recreation, Clear and legacy-filtering checks. The capture permission flow, hardware hot-plug, projected video/web/captured-window cadence, GPU buffer reuse and real 60 Hz HDMI output still require the paired-app rehearsal recorded in AltView’s `docs/manual-validation.md`. Requested fps is not measured delivered fps.
-
-Review follow-up, 8 October 2026: playback progress suppresses unchanged duration/position publications, avoiding redundant SwiftUI updates during video and paused/repeated samples. `make test` passed 270 app tests and 7 feed / 97 workflow checks. AltView's capture review adds startup still-frame retention, safe source cancellation, native stop/permission handling, in-place resize, sleep/visibility handling and fewer canvas/compositor updates. A short profile of the existing installed apps on an M1 showed native VideoToolbox decoding in Eucaly and ScreenCaptureKit / IOSurface handling in AltView; these baseline samples do not measure the review edits' CPU savings or prove sustained delivered fps. Detailed CPU readings and remaining rehearsal are in AltView's `docs/manual-validation.md`.
+Rehearse on the production LAN with separate Macs and real displays: Bonjour and
+Local Network consent, signed-app Keychain persistence after relaunch, monitor
+hot-plug/mirroring, native Confidence clock, VoiceOver and keyboard focus, media
+capture permissions, sustained GPU cadence and actual AltView/HDMI timing.
+Automated loopback tests establish protocol interoperability, not physical delivery.

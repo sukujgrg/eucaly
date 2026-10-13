@@ -10,13 +10,21 @@ nonisolated struct AltViewDestination: Codable, Equatable, Identifiable, Sendabl
     let serviceType: String?
     let domain: String?
     var localReceiverID: UUID?
+    var discoveredReceiverID: UUID?
+    var receiverIdentity: UUID? { discoveredReceiverID ?? localReceiverID }
 
     var id: String {
+        if let discoveredReceiverID { return "receiver:\(discoveredReceiverID)" }
         if let localReceiverID { return "local:\(localReceiverID)" }
         if let host, let port { return "host:\(host.lowercased()):\(port)" }
         return "service:\(name)|\(serviceType ?? "")|\(domain ?? "")"
     }
 
+    var legacyAccounts: [String] {
+        if let receiverIdentity { return ["local:\(receiverIdentity)", "service:\(name)|\(serviceType ?? "")|\(domain ?? "")"] }
+        if let host, let port { return ["host:\(host.lowercased()):\(port)"] }
+        return ["service:\(name)|\(serviceType ?? "")|\(domain ?? "")"]
+    }
     var isValid: Bool {
         if localReceiverID != nil, host != "127.0.0.1" { return false }
         if let host, let port {
@@ -42,10 +50,12 @@ nonisolated struct AltViewDestination: Codable, Equatable, Identifiable, Sendabl
         if receiver.isLocal, let id = receiver.receiverID, case .hostPort(_, let port) = receiver.endpoint {
             self.init(name: receiver.name, host: "127.0.0.1", port: port.rawValue, serviceType: nil, domain: nil)
             localReceiverID = id
+            discoveredReceiverID = id
             return
         }
         guard case .service(let name, let type, let domain, _) = receiver.endpoint else { return nil }
         self.init(name: name, host: nil, port: nil, serviceType: type, domain: domain)
+        discoveredReceiverID = receiver.receiverID
     }
 
     init(name: String, host: String?, port: UInt16?, serviceType: String?, domain: String?) {
@@ -85,7 +95,15 @@ nonisolated final class AltViewPairingStore: AltViewPairingStoring, @unchecked S
                 return
             }
             do {
-                let credentials = try readCredentials(account: destination.id)
+                var credentials = try readCredentials(account: destination.id)
+                if credentials == nil {
+                    for account in destination.legacyAccounts where account != destination.id {
+                        if let saved = try readCredentials(account: account) {
+                            guard destination.receiverIdentity == nil || saved.receiverID == destination.receiverIdentity else { continue }
+                            credentials = saved; break
+                        }
+                    }
+                }
                 if let credentials { memory[destination.id] = credentials }
                 DispatchQueue.main.async { completion(credentials, nil) }
             } catch {

@@ -1,3 +1,12 @@
+# Historical foundation plan
+
+The 13 October 2026 presentation-hub implementation supersedes this foundation
+plan's loopback-only/no-relay transport scope. The implemented architecture uses
+AltView v2 paired LAN reception and independent AltView output destinations;
+ViewTheWord includes the negotiated intent contract and discovered hub mode.
+Use [current receiving contract](external-presentation.md) and
+[current output setup](altview.md) for behavior and validation.
+
 # Eucaly output profiles implementation plan
 
 Eucaly will keep its text editor, library, Preview and Current workflow while gaining several outputs with independently configured layouts and visual backgrounds. External apps will be able to present directly through a generic interface. Eucaly's normal presentation and slide-clearing actions will reclaim or blank those outputs. The existing AltView sender remains supported.

@@ -176,6 +176,10 @@ final class PresentationFlowController: ObservableObject {
     }
 
     func toggleSlidesVisibility(in session: PresentationSession) {
+        if session.outputCoordinator.isPresenting && session.outputCoordinator.visible {
+            session.outputCoordinator.hide()
+            return
+        }
         if session.isPresenting {
             if session.areSlidesVisible {
                 session.hideSlides()

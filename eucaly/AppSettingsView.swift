@@ -19,9 +19,6 @@ struct AppSettingsView: View {
             generalSettings
                 .tabItem { Label("General", systemImage: "gearshape") }
                 .tag("general")
-            AltViewSettingsView()
-                .tabItem { Label("AltView", systemImage: "network") }
-                .tag("altView")
             OutputSettingsView(coordinator: outputs)
                 .tabItem { Label("Manage Outputs", systemImage: "display") }
                 .tag("projection")
@@ -30,6 +27,7 @@ struct AppSettingsView: View {
                 .tag("receiver")
         }
         .frame(width: 560, height: 500)
+        .onAppear { if settingsTab == "altView" { settingsTab = "projection" } }
     }
 
     private var generalSettings: some View {

@@ -14,7 +14,6 @@ public struct ContentView: View {
     @StateObject private var session: PresentationSession
     @ObservedObject private var outputProfiles: OutputProfileStore
     @ObservedObject private var projectionDisplays: ProjectionDisplayManager
-    @EnvironmentObject private var altView: AltViewService
     @StateObject private var flow = PresentationFlowController()
     @State private var folderURL: URL?
     @State private var markdownFiles: [URL] = []
@@ -195,7 +194,6 @@ public struct ContentView: View {
         }
         .applyToolbarBackgroundIfAvailable()
         .background(OutputWorkspaceScope(commands: workspaceCommands, session: session).frame(width: 0, height: 0))
-        .onAppear { altView.attach(session) }
         .onChange(of: presentationLyricsLayout) { _, _ in session.outputCoordinator.profiles.importLegacyAudience() }
         .onChange(of: presentationTextAlignment) { _, _ in session.outputCoordinator.profiles.importLegacyAudience() }
         .onChange(of: presentationVerticalPosition) { _, _ in session.outputCoordinator.profiles.importLegacyAudience() }
@@ -278,7 +276,6 @@ public struct ContentView: View {
     }
 
     private func handleRootOnDisappear() {
-        altView.detach(session)
         librarySearch.cancelDebounce()
         libraryLoadTask?.cancel()
         isLibraryLoading = false
@@ -289,7 +286,7 @@ public struct ContentView: View {
     }
 
     private func handleExitCommand() {
-        guard session.isPresenting, session.areSlidesVisible else { return }
+        guard (session.outputCoordinator.isPresenting && session.outputCoordinator.visible) || (session.isPresenting && session.areSlidesVisible) else { return }
         deferSessionChange {
             flow.hideSlides(in: session)
         }
@@ -376,19 +373,7 @@ public struct ContentView: View {
     private var projectionToolbar: some ToolbarContent {
         ToolbarItem(placement: .principal) {
             HStack(spacing: 10) {
-                let isShowingSlides = session.isPresenting && session.areSlidesVisible
-                Button {
-                    toggleSlidesFromUI()
-                } label: {
-                    Label(
-                        isShowingSlides ? "Hide Slides" : "Show Slides",
-                        systemImage: isShowingSlides ? "rectangle.slash" : "rectangle"
-                    )
-                }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.borderedProminent)
-                .disabled(!canToggleSlides)
-                .help(isShowingSlides ? "Hide Slides" : "Show Slides")
+                OutputSlidesToggleButton(session: session, onToggle: toggleSlidesFromUI)
 
                 Button {
                     presentLibrarySearch()
@@ -405,51 +390,12 @@ public struct ContentView: View {
 
         ToolbarItemGroup(placement: .primaryAction) {
             OutputSourceToolbarStatus(coordinator: session.outputCoordinator)
-            AltViewToolbarButton(service: altView, session: session)
             AppUpdateToolbarButton(viewModel: appUpdateViewModel)
         }
     }
 
     private var projectionScreenPicker: some View {
-        Menu {
-            Text("Projection: \(projectionDisplays.selectionLabel)")
-            if let problem = projectionDisplays.selectionProblem {
-                Text(problem)
-            }
-            Divider()
-            Button("None") { projectionDisplays.clearSelection() }
-                .disabled(projectionDisplays.isLocked)
-            ForEach(projectionDisplays.displays) { display in
-                Button {
-                    projectionDisplays.select(display.target)
-                } label: {
-                    Label(projectionDisplays.label(for: display.target),
-                          systemImage: projectionDisplays.target?.identity == display.identity ? "checkmark" : "display")
-                }
-                .disabled(projectionDisplays.isLocked || projectionDisplays.selectionProblem(for: display.target) != nil)
-            }
-            Divider()
-            if let target = projectionDisplays.target {
-                Button("Identify Selected Monitor") { projectionDisplays.identify(target) }
-                    .disabled(!projectionDisplays.canIdentify(target))
-            }
-            Button("Manage Outputs…", action: showOutputSettings)
-        } label: {
-            Label("Projection Screen", systemImage: "display")
-        }
-        .labelStyle(.iconOnly)
-        .buttonStyle(.bordered)
-        .help("Projection: \(projectionDisplays.selectionLabel). Manage outputs, appearance and monitors.")
-        .alert(projectionDisplays.target == nil ? "Choose a Projection Monitor" : "Projection Monitor Unavailable",
-               isPresented: Binding(
-            get: { session.projectionDisplayIssue != nil },
-            set: { if !$0 { session.projectionDisplayIssue = nil } }
-        )) {
-            Button("Manage Outputs…", action: showOutputSettings)
-            Button("OK", role: .cancel) { }
-        } message: {
-            Text(session.projectionDisplayIssue ?? "")
-        }
+        OutputDestinationMenu(session: session, manageOutputs: showOutputSettings)
     }
 
     private func showOutputSettings() {
@@ -916,9 +862,7 @@ public struct ContentView: View {
         return isLyricsFile(currentLyricsSourceURL)
     }
 
-    private var canToggleSlides: Bool {
-        session.isPresenting || session.hasProjectionContent
-    }
+
 
     private func buildPDFSlides(pageCount: Int, url: URL) -> [Slide] {
         PDFSlideCatalog.slides(url: url, pageCount: pageCount)

@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 
 struct OutputSettingsView: View {
     @ObservedObject var coordinator: OutputCoordinator
+    @EnvironmentObject private var remote: AltViewOutputRouter
     @ObservedObject private var store: OutputProfileStore
     @State private var editing: OutputProfile?
     @State private var monitorsPresented = false
@@ -24,7 +25,7 @@ struct OutputSettingsView: View {
                 }
             }
             Section("Outputs") {
-                Text("Enabled outputs need different monitors. Disabled outputs keep their assignments without reserving a monitor.").font(.callout).foregroundStyle(.secondary)
+                Text("Choose a monitor for a native profile or a discovered receiver for AltView. Each enabled output needs its own destination.").font(.callout).foregroundStyle(.secondary)
                 ForEach(store.document.destinations) { destination in
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
@@ -33,10 +34,13 @@ struct OutputSettingsView: View {
                             Text(coordinator.destinationStatuses().first { $0.id == destination.id }?.readiness.title ?? "Disabled").foregroundStyle(.secondary)
                             Toggle("Enabled", isOn: destinationBinding(destination, \.enabled)).labelsHidden().accessibilityLabel("\(destination.name) enabled")
                         }
-                        Picker("Profile", selection: destinationBinding(destination, \.profileID)) {
+                        Picker("Profile", selection: Binding(get: { destination.profileID }, set: { store.selectProfile($0, for: destination.id) })) {
                             ForEach(store.document.profiles) { profile in Text(profile.name).tag(profile.id) }
                         }
-                        Picker("Monitor", selection: Binding(get: { destination.monitor?.identity ?? "" }, set: { id in
+                        if store.profile(destination.profileID)?.kind == .altView {
+                            AltViewOutputDestinationSettings(router: remote, store: store, destination: destination)
+                        } else {
+                        Picker("Destination", selection: Binding(get: { destination.monitor?.identity ?? "" }, set: { id in
                             let target = coordinator.displays.displays.first { $0.identity == id }?.target
                             coordinator.assignMonitor(target, to: destination.id)
                         })) {
@@ -48,7 +52,8 @@ struct OutputSettingsView: View {
                             if let target = destination.monitor, coordinator.displays.resolve(target) == nil {
                                 Text("\(target.name) · Unavailable").tag(target.identity)
                             }
-                        }.disabled(coordinator.isRunning)
+                        }.disabled(coordinator.isOpen(destination.id))
+                        }
                         if let target = destination.monitor,
                            let problem = store.monitorAssignmentProblem(for: target, excluding: destination.id) {
                             Label(problem, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange)
@@ -60,9 +65,11 @@ struct OutputSettingsView: View {
                                     else { coordinator.openConfidence(destination.id) }
                                 }.disabled(!destination.enabled || destination.monitor.flatMap { coordinator.displays.resolve($0) } == nil)
                             }
-                            Button("Appearance…") { editing = store.profile(destination.profileID) }
+                            if store.profile(destination.profileID)?.isNative == true {
+                            Button("Appearance & Text Components…") { editing = store.profile(destination.profileID) }
                             Button("Clear Background") {
                                 if var profile = store.profile(destination.profileID) { profile.background.bookmark = nil; profile.background.colour = .black; store.update(profile) }
+                            }
                             }
                             if destination.id != store.document.destinations.first?.id {
                                 Button("Remove Output", role: .destructive) { store.edit { $0.destinations.removeAll { $0.id == destination.id } } }
@@ -91,16 +98,20 @@ struct OutputSettingsView: View {
                     HStack {
                         Text(profile.name)
                         Spacer()
+                        if profile.isNative {
                         Button("Edit…") { editing = profile }
                         Button("Duplicate") {
                             var copy = profile; copy.id = UUID(); copy.name += " Copy"
                             store.edit { $0.profiles.append(copy) }
-                        }.disabled(store.document.profiles.count >= 64)
+                        }.disabled(store.document.profiles.count >= 128)
+                        }
                     }
                 }
-                Text("Outputs using the same profile share its appearance. Duplicate a profile to give an output independent settings.").font(.callout).foregroundStyle(.secondary)
+                Text("Native outputs using the same profile share its appearance. AltView owns its own fonts, layout and backgrounds. Its LAN protocol carries text; media requires a native monitor.").font(.callout).foregroundStyle(.secondary)
             }
         }.formStyle(.grouped)
+        .onAppear { remote.startDiscovery() }
+        .onDisappear { remote.stopDiscovery() }
         .onPreferenceChange(LyricsReadabilityPreferenceKey.self) { value in DispatchQueue.main.async { report = value } }
         .sheet(item: $editing) { profile in OutputProfileEditor(profile: profile, store: store) }
         .sheet(isPresented: $monitorsPresented) {
@@ -131,6 +142,16 @@ private struct OutputProfileEditor: View {
             Form {
                 Section("Profile") {
                     TextField("Name", text: $profile.name)
+                }
+                Section("Text Components · Lyrics") {
+                    Text("Used automatically for eucaly lyrics.").font(.callout).foregroundStyle(.secondary)
+                    componentToggles(OutputComponentRole.lyricRoles, selection: $profile.roles, kind: .lyrics)
+                }
+                Section("Text Components · Scripture") {
+                    Text("Used automatically for verses from ViewTheWord. Both Bible translations are included when sent; single-language verses leave no empty space. Lyrics choices are independent.").font(.callout).foregroundStyle(.secondary)
+                    componentToggles(OutputComponentRole.scriptureRoles, selection: $profile.scriptureRoles, kind: .scripture)
+                }
+                Section("Layout") {
                     Picker("Layout", selection: $profile.layout) { Text("Stacked").tag("stacked"); Text("Columns").tag("columns") }
                     Picker("Alignment", selection: $profile.alignment) { Text("Left").tag("left"); Text("Centre").tag("center"); Text("Right").tag("right") }
                     Picker("Position", selection: $profile.position) { Text("Top").tag("top"); Text("Middle").tag("middle"); Text("Bottom").tag("bottom") }
@@ -138,20 +159,13 @@ private struct OutputProfileEditor: View {
                     if profile.kind == .confidence {
                         Text("When Confidence has no visible content, it always shows a large centered clock.").font(.callout).foregroundStyle(.secondary)
                     }
-                    DisclosureGroup("Text Components") {
-                        ForEach(OutputComponentRole.allCases, id: \.self) { role in
-                            Toggle(role.rawValue.capitalized, isOn: Binding(get: { profile.roles.contains(role) }, set: { selected in
-                                if selected { if !profile.roles.contains(role) { profile.roles.append(role) } } else { profile.roles.removeAll { $0 == role } }
-                            }))
-                        }
-                    }
                 }
                 Section("Typography") {
                     OutputTypographyControls(typography: $profile.typography)
                     Toggle("Use existing Audience font scaling", isOn: $profile.usesLegacySizing)
                         .help("Preserves the existing size adjustment for short displays.")
                     ForEach(OutputComponentRole.allCases, id: \.self) { role in
-                        DisclosureGroup(role.rawValue.capitalized + " Overrides") {
+                        DisclosureGroup(role.title(for: role == .secondary || role == .reference || role == .footer ? .scripture : .lyrics) + " Overrides") {
                             OutputComponentTypographyControls(base: profile.typography, override: Binding(
                                 get: { profile.componentTypography[role] ?? .init() }, set: { profile.componentTypography[role] = $0 }))
                         }
@@ -183,6 +197,16 @@ private struct OutputProfileEditor: View {
                     .disabled(!isValid)
             }.padding()
         }.frame(width: 540, height: 650)
+    }
+    private func componentToggles(_ roles: [OutputComponentRole], selection: Binding<[OutputComponentRole]>, kind: OutputTextContent.Kind) -> some View {
+        ForEach(roles, id: \.self) { role in
+            Toggle(role.title(for: kind), isOn: Binding(get: { selection.wrappedValue.contains(role) }, set: { selected in
+                var values = selection.wrappedValue
+                values.removeAll { $0 == role }
+                if selected { values.append(role) }
+                selection.wrappedValue = values
+            }))
+        }
     }
     private func chooseBackground() {
         let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false

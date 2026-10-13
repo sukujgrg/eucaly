@@ -50,7 +50,7 @@
 	<key>NSScreenCaptureUsageDescription</key>
 	<string>eucaly needs screen recording permission to capture application windows for presentation.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>eucaly connects to AltView on your local network to send the primary lyrics from Current.</string>
+	<string>eucaly receives presentations from paired apps and forwards live text to AltView receivers on your local network.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_altview._tcp</string>

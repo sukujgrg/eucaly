@@ -123,7 +123,10 @@ final class OutputSettingsRenderingTests: XCTestCase {
     func testNativeSettingsRenderForVisualReview() throws {
         let displays = ProjectionDisplayManager(displays: { [] })
         let outputs = OutputCoordinator(profiles: OutputProfileStore(), displays: displays)
-        let view = NSHostingView(rootView: OutputSettingsView(coordinator: outputs))
+        let router = AltViewOutputRouter(store: outputs.profiles, receiverID: UUID())
+        router.start(coordinator: outputs, discover: false)
+        defer { router.shutdown() }
+        let view = NSHostingView(rootView: OutputSettingsView(coordinator: outputs).environmentObject(router))
         view.frame = CGRect(x: 0, y: 0, width: 560, height: 500)
         view.layoutSubtreeIfNeeded()
         let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
