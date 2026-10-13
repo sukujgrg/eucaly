@@ -198,9 +198,16 @@ reference, removing its captured-initialization warning and handler retain cycle
 The project uses the system accent without referencing a missing AccentColor
 asset. Both local and release archives strip the app while preserving Sparkle's
 pre-signed copied binaries. The Swift compiler, missing-accent and signed-copy
-warnings are resolved. Xcode still emits its metadata-extraction notice because
-there is no AppIntents.framework dependency; no framework or warning suppression
-was added merely to silence it.
+warnings are resolved. The remaining App Intents notice is fixed at task
+construction: app and unit-test targets set `LM_SKIP_METADATA_EXTRACTION = YES`
+in Debug and Release because neither target defines App Intents. The
+[Swift build planner](https://github.com/swiftlang/swift-build/blob/main/Sources/SWBApplePlatform/AppIntentsMetadataTaskProducer.swift)
+returns without creating extraction tasks when this setting is enabled. This
+control also exists in the installed Xcode build system. Extraction is omitted;
+warning filtering, dummy intents, unused framework imports and log filtering are
+not used. Remove this opt-out from any target when introducing real App Intents.
+The unfiltered `make build` log confirms no extractor invocation and zero warnings;
+archive, export and strict code-signature verification pass.
 
 ## Validation record
 
@@ -228,6 +235,8 @@ Final validation on 2026-10-13:
 - `make test` passed: 381 XCTest cases, one Swift Testing case, seven offline
   update-feed tests and 97 offline release-workflow tests, all with zero failures.
 - `make build` archived and exported the final source to `~/Applications/eucaly.app`.
+  Both the archive/export and complete test build logs contain zero warnings and
+  no App Intents metadata extractor invocation.
 - The exported executable is arm64, its minimum macOS version is 14.0, and strict
   code-signature verification passed.
 - `git diff --check` passed. No publish-during-view-update warning appeared in the
