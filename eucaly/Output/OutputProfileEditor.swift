@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 @MainActor
 final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
     let store: OutputProfileStore
-    let profileID: UUID
+    private(set) var profileID: UUID
     let nameField = NSTextField()
     let validationLabel = outputSettingsLabel(secondary: true)
     let affectedOutputs = outputSettingsLabel(secondary: true)
@@ -17,6 +17,8 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
     private var colors: [NSColorWell: (NSColor) -> Void] = [:]
     private var buttons: [NSButton: () -> Void] = [:]
     private let fontChooser = OutputSettingsFontChooser()
+    private var renderedProfile: OutputProfile?
+    private var disclosures: [OutputSettingsDisclosure] = []
 
     init(store: OutputProfileStore, profileID: UUID) {
         self.store = store; self.profileID = profileID
@@ -51,18 +53,26 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
         form.add(choice("Alignment", titles: ["Left", "Centre", "Right"], values: ["left", "center", "right"], key: \.alignment))
         form.add(choice("Position", titles: ["Top", "Middle", "Bottom"], values: ["top", "middle", "bottom"], key: \.position))
         form.add(number("Padding", range: 0...200, scale: 100, unit: "%", get: { $0.padding }, set: { $0.padding = $1 }))
-        if store.profile(profileID)?.kind == .confidence {
-            form.add(outputSettingsLabel("Confidence always shows a large centered clock when content is empty or hidden.", secondary: true))
-        }
+        let confidenceNotice = outputSettingsLabel("Confidence always shows a large centered clock when content is empty or hidden.", secondary: true)
+        renders.append { confidenceNotice.isHidden = $0.kind != .confidence }
+        form.add(confidenceNotice)
 
         form.section("Typography")
         addTypography(role: nil, add: form.add)
         let legacy = toggle("Scale fonts for short displays", get: { $0.usesLegacySizing }, set: { $0.usesLegacySizing = $1 })
         legacy.toolTip = "Preserves the existing Audience size adjustment for short displays."
         form.add(legacy)
-        for role in store.profile(profileID)?.typographyOverrideRoles ?? [] {
-            let disclosure = OutputSettingsDisclosure(role.title + " Overrides")
-            addTypography(role: role, add: disclosure.add)
+        for role in OutputComponentRole.allCases {
+            let disclosure = OutputSettingsDisclosure(role.title + " Overrides") { [weak self] disclosure in
+                guard let self else { return }
+                let start = self.renders.count
+                self.addTypography(role: role, add: disclosure.add)
+                if let profile = self.store.profile(self.profileID) {
+                    for render in self.renders.dropFirst(start) { render(profile) }
+                }
+            }
+            disclosures.append(disclosure)
+            renders.append { disclosure.isHidden = !$0.typographyOverrideRoles.contains(role) }
             form.add(disclosure)
         }
 
@@ -86,13 +96,29 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
         render()
     }
 
-    func render() {
+    func render(force: Bool = false) {
         guard isViewLoaded, let profile = store.profile(profileID) else { return }
         validationLabel.isHidden = validationLabel.stringValue.isEmpty
         if nameField.currentEditor() == nil { nameField.stringValue = profile.name }
         let names = store.document.destinations.filter { $0.profileID == profileID }.map(\.name)
         affectedOutputs.stringValue = names.isEmpty ? "No outputs currently use this profile." : "Used by: " + names.joined(separator: ", ")
+        // Output status changes do not require font lookup or control updates.
+        guard force || profile != renderedProfile else { return }
+        renderedProfile = profile
         for render in renders { render(profile) }
+    }
+
+    /// One native form serves every profile. Commit against the old ID before
+    /// retargeting its controls, including any coalesced slider edits.
+    func selectProfile(_ id: UUID) {
+        guard profileID != id else { return }
+        finishEditing()
+        profileID = id
+        renderedProfile = nil
+        validationLabel.stringValue = ""
+        for disclosure in disclosures { disclosure.setExpanded(false) }
+        render()
+        if let form = view as? OutputSettingsForm { form.documentView?.scroll(.zero) }
     }
 
     func finishEditing() {
@@ -111,7 +137,7 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
         document.profiles[index] = profile
         guard document.isValid else {
             validationLabel.stringValue = "Use valid font sizes between 1 and 800 points. Relative component sizes must also fit this range."
-            render(); return
+            render(force: true); return
         }
         validationLabel.stringValue = ""
         store.update(profile)
@@ -152,8 +178,9 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
         renders.append { profile in
             let typography = get(profile)
             fontLabel.stringValue = typography.fontName == "system" ? "System font" : typography.fontName ?? "System font"
-            notice.stringValue = typography.unavailableFont ? "The saved font is unavailable. Using the system font until it is installed." : ""
-            notice.isHidden = !typography.unavailableFont
+            let unavailable = typography.unavailableFont
+            notice.stringValue = unavailable ? "The saved font is unavailable. Using the system font until it is installed." : ""
+            notice.isHidden = !unavailable
         }
         if let role {
             add(custom("Custom font", role: role, key: \.fontName, fallback: { get($0).fontName ?? "system" }))
@@ -294,14 +321,18 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
 
     private func chooseBackground() {
         guard let window = view.window, window.attachedSheet == nil else { return }
+        let selectedProfileID = profileID
+        let store = store
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [.image, .movie]
-        panel.beginSheetModal(for: window) { [weak self] result in
+        panel.beginSheetModal(for: window) { result in
             guard result == .OK, let url = panel.url else { return }
-            Task { @MainActor [weak self] in
+            Task { @MainActor in
                 let bookmark = await Task.detached { SecurityScopedBookmarks.createBookmark(for: url) }.value
-                if let bookmark { self?.edit { $0.background.bookmark = bookmark } }
+                guard let bookmark, var profile = store.profile(selectedProfileID), profile.isNative else { return }
+                profile.background.bookmark = bookmark
+                store.update(profile)
             }
         }
     }

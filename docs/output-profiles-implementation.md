@@ -82,6 +82,14 @@ The window is resizable. Profile controls apply immediately; name fields apply o
 Return or when editing ends. There is no Save button. Profile edits show which
 outputs share the appearance. Selection and status refresh never take ownership
 or change Current, and status refresh keeps native field editors and sliders intact.
+Switching Outputs / Profiles retains both native forms. Profile navigation retargets
+one form after committing the previous profile's drafts; collapsed typography
+overrides construct their controls on first expansion. Readability probes refresh
+only when assigned profiles, monitor geometry or presented content change.
+Output rows retain UUID-bound forms within the model's 16-destination limit;
+deleted rows and changed destination kinds discard their forms. Hidden AltView
+forms pause UI subscriptions' refresh work while router-owned connections continue.
+Native profile menus rebuild only when profile identities or names change.
 Monitor naming also applies when editing ends. Text Components
 controls eucaly lyrics only. Typography overrides cover primary lyrics, meaning,
 translation and transliteration. Confidence alone also offers Playback status
