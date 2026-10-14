@@ -116,9 +116,11 @@ final class OutputSettingsDisclosure: NSStackView {
     let header = NSButton()
     let content = NSStackView()
     private let heading: String
+    private var buildContent: ((OutputSettingsDisclosure) -> Void)?
 
-    init(_ title: String) {
+    init(_ title: String, buildContent: ((OutputSettingsDisclosure) -> Void)? = nil) {
         heading = title
+        self.buildContent = buildContent
         super.init(frame: .zero)
         orientation = .vertical
         alignment = .leading
@@ -145,7 +147,14 @@ final class OutputSettingsDisclosure: NSStackView {
         row.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
     }
     @objc func toggle(_ sender: Any?) {
-        content.isHidden.toggle()
+        setExpanded(content.isHidden)
+    }
+    func setExpanded(_ expanded: Bool) {
+        if expanded, let buildContent {
+            self.buildContent = nil
+            buildContent(self)
+        }
+        content.isHidden = !expanded
         renderHeader()
     }
     private func renderHeader() {

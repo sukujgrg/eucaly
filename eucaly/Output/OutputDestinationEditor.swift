@@ -19,8 +19,9 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
     var onEditProfile: (UUID) -> Void = { _ in }
     private(set) var remoteEditor: AltViewOutputDestinationSettings?
     private struct MonitorEntry: Equatable { let target: ProjectionMonitorTarget?; let title: String; let enabled: Bool }
+    private struct ProfileEntry: Equatable { let id: UUID; let title: String }
     private var monitors: [MonitorEntry] = []
-    private var profiles: [OutputProfile] = []
+    private var profiles: [ProfileEntry] = []
     private var confidenceActions: NSStackView?
 
     init(coordinator: OutputCoordinator, router: AltViewOutputRouter, destinationID: UUID) {
@@ -66,12 +67,12 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
         if nameField.currentEditor() == nil { nameField.stringValue = destination.name }
         enabledButton.state = destination.enabled ? .on : .off
         guard profile.isNative else { remoteEditor?.render(); return }
-        let nativeProfiles = store.document.profiles.filter(\.isNative)
+        let nativeProfiles = store.document.profiles.filter(\.isNative).map { ProfileEntry(id: $0.id, title: $0.name) }
         if profiles != nativeProfiles {
             profiles = nativeProfiles
             let menu = NSMenu(); menu.autoenablesItems = false
             for profile in profiles {
-                let item = NSMenuItem(title: profile.name, action: nil, keyEquivalent: "")
+                let item = NSMenuItem(title: profile.title, action: nil, keyEquivalent: "")
                 item.representedObject = profile.id; menu.addItem(item)
             }
             profilePicker.menu = menu

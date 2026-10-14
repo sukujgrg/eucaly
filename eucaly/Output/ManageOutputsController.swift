@@ -21,9 +21,16 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     private(set) var selectedID: UUID?
     private var outputSelection: UUID?
     private var profileSelection: UUID?
-    private enum DetailKey: Equatable { case output(UUID, native: Bool), profile(UUID), recovery, empty }
+    private enum DetailKey: Hashable { case output(UUID, native: Bool), profile(UUID), recovery, empty }
     private var detailKey: DetailKey?
     private var child: NSViewController?
+    // Keep the two navigation panes mounted. Profiles share one retargetable
+    // form rather than retaining a large control tree for every saved profile.
+    private var profileForm: OutputProfileEditor?
+    // The model bounds destinations to 16. Keep each editor tied to its UUID,
+    // including pairing drafts, rather than retargeting destination callbacks.
+    private var destinationForms: [DetailKey: OutputDestinationEditor] = [:]
+    private var detailNotice: NSView?
     private struct ListRow: Equatable { let id: UUID; let title: String; let detail: String }
     private var rows: [ListRow] = []
     private var reloadingTable = false
@@ -31,7 +38,9 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     private var subscriptions = Set<AnyCancellable>()
     private var report = LyricsReadabilityReport()
     private var readabilityHost: NSHostingView<OutputSettingsReadabilityView>?
+    private var readabilityInput: OutputSettingsReadabilityInput?
     private(set) var isPresented = false
+    private var isSuspended = false
     var profileEditor: OutputProfileEditor? { child as? OutputProfileEditor }
     var destinationEditor: OutputDestinationEditor? { child as? OutputDestinationEditor }
     var profilesMode: Bool { section.selectedSegment == 1 }
@@ -99,11 +108,15 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     // The native Settings window owns visibility, including close and reopen.
     func setPresented(_ value: Bool) {
         isPresented = value
+        isSuspended = !value
         if value {
             coordinator.displays.refresh(); router.startDiscovery(); reload()
+            profileEditor?.render(force: true)
+            destinationEditor?.remoteEditor?.setActive(true)
         }
         else {
             if isViewLoaded { finishEditing() }
+            destinationEditor?.remoteEditor?.setActive(false)
             router.stopDiscovery()
         }
     }
@@ -122,7 +135,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     }
     func reload() {
         guard isViewLoaded else { return }
-        let statuses = Dictionary(uniqueKeysWithValues: coordinator.destinationStatuses().map { ($0.id, $0.readiness.title) })
+        let statuses = profilesMode ? [:] : Dictionary(uniqueKeysWithValues: coordinator.destinationStatuses().map { ($0.id, $0.readiness.title) })
         let fresh = profilesMode ? store.document.profiles.filter(\.isNative).map { profile in
             ListRow(id: profile.id, title: profile.name, detail: "Reusable appearance")
         } : store.document.destinations.map { output in
@@ -153,6 +166,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
             key = profilesMode ? .profile(id) : .output(id, native: store.profile(store.document.destinations.first { $0.id == id }!.profileID)?.isNative == true)
         } else { key = .empty }
         if detailKey != key { finishEditing(); buildDetail(key) }
+        pruneDestinationForms()
         profileEditor?.render(); destinationEditor?.render()
         renderStatus()
         updateReadability()
@@ -166,25 +180,66 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     }
     private func buildDetail(_ key: DetailKey) {
         detailKey = key
-        child?.removeFromParent(); child = nil
-        for subview in detailHost.subviews { subview.removeFromSuperview() }
+        let previous = child
+        child = nil
+        detailNotice?.removeFromSuperview(); detailNotice = nil
         switch key {
         case .profile(let id):
-            let editor = OutputProfileEditor(store: store, profileID: id)
+            let editor: OutputProfileEditor
+            if let profileForm { editor = profileForm; editor.selectProfile(id) }
+            else {
+                editor = OutputProfileEditor(store: store, profileID: id)
+                profileForm = editor
+                addChild(editor); outputSettingsPin(editor.view, to: detailHost)
+            }
             child = editor
         case .output(let id, _):
-            let editor = OutputDestinationEditor(coordinator: coordinator, router: router, destinationID: id)
-            editor.onEditProfile = { [weak self] id in self?.selectProfile(id) }
+            let editor: OutputDestinationEditor
+            if let cached = destinationForms[key] { editor = cached }
+            else {
+                editor = OutputDestinationEditor(coordinator: coordinator, router: router, destinationID: id)
+                editor.onEditProfile = { [weak self] id in self?.selectProfile(id) }
+                destinationForms[key] = editor
+                addChild(editor); outputSettingsPin(editor.view, to: detailHost)
+            }
             child = editor
         case .recovery:
+            discardForms()
             let form = OutputSettingsForm(frame: .zero)
             form.add(outputSettingsLabel(store.recoveryNotice ?? "", secondary: true))
             form.add(outputSettingsActionRow([NSButton(title: "Recover Settings", target: self, action: #selector(recoverSettings(_:)))]))
+            detailNotice = form
             outputSettingsPin(form, to: detailHost)
         case .empty:
-            outputSettingsPin(outputSettingsLabel(profilesMode ? "No native appearance profiles." : "Add an output to get started.", secondary: true), to: detailHost, inset: 8)
+            discardForms()
+            let label = outputSettingsLabel(profilesMode ? "No native appearance profiles." : "Add an output to get started.", secondary: true)
+            detailNotice = label
+            outputSettingsPin(label, to: detailHost, inset: 8)
         }
-        if let child { addChild(child); outputSettingsPin(child.view, to: detailHost) }
+        if previous !== child {
+            previous?.view.isHidden = true
+            (previous as? OutputDestinationEditor)?.remoteEditor?.setActive(false)
+        }
+        child?.view.isHidden = false
+        destinationEditor?.remoteEditor?.setActive(!isSuspended)
+    }
+    private func pruneDestinationForms() {
+        let keys = Set(store.document.destinations.map { destination in
+            DetailKey.output(destination.id, native: store.profile(destination.profileID)?.isNative == true)
+        })
+        for key in Array(destinationForms.keys) where !keys.contains(key) {
+            let form = destinationForms.removeValue(forKey: key)
+            form?.remoteEditor?.setActive(false)
+            form?.view.removeFromSuperview(); form?.removeFromParent()
+        }
+    }
+    private func discardForms() {
+        profileForm?.view.removeFromSuperview(); profileForm?.removeFromParent()
+        for form in destinationForms.values {
+            form.remoteEditor?.setActive(false)
+            form.view.removeFromSuperview(); form.removeFromParent()
+        }
+        profileForm = nil; destinationForms.removeAll()
     }
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -243,9 +298,12 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     // Preserve the existing SwiftUI font-metric probes for all assigned profiles,
     // independently of which native editor is selected. They never render output.
     private func updateReadability() {
-        let root = OutputSettingsReadabilityView(document: store.document, snapshot: coordinator.snapshot,
-            displays: coordinator.displays) { [weak self] report in
-                guard let self, self.report != report else { return }
+        let snapshot = coordinator.snapshot
+        let input = OutputSettingsReadabilityInput(document: store.document, snapshot: snapshot, displays: coordinator.displays)
+        guard readabilityInput != input else { return }
+        readabilityInput = input
+        let root = OutputSettingsReadabilityView(input: input, snapshot: snapshot) { [weak self] report in
+                guard let self, self.readabilityInput == input, self.report != report else { return }
                 self.report = report; self.renderStatus()
             }
         if let readabilityHost { readabilityHost.rootView = root }
@@ -260,21 +318,43 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     }
 }
 
+/// Selection and receiver status are not measurement inputs. Resolve monitor
+/// geometry once, and only update the SwiftUI probes when their inputs change.
+private struct OutputSettingsReadabilityInput: Equatable {
+    struct Assignment: Equatable, Identifiable {
+        let id: UUID
+        let profile: OutputProfile
+        let size: CGSize
+    }
+    let assignments: [Assignment]
+    let current: OutputTextContent
+    let next: OutputTextContent?
+    let visible: Bool
+    let hasMedia: Bool
+
+    @MainActor
+    init(document: OutputProfileDocument, snapshot: OutputContentSnapshot, displays: ProjectionDisplayManager) {
+        assignments = document.destinations.compactMap { destination in
+            guard let profile = document.profiles.first(where: { $0.id == destination.profileID }),
+                  let target = destination.monitor, let monitor = displays.resolve(target) else { return nil }
+            return .init(id: destination.id, profile: profile, size: monitor.frame.size)
+        }
+        current = snapshot.current; next = snapshot.next; visible = snapshot.visible
+        hasMedia = snapshot.localMedia.map { AltViewPresentationAdapter.mode(for: $0) == .media } ?? false
+    }
+}
+
 private struct OutputSettingsReadabilityView: View {
-    let document: OutputProfileDocument
+    let input: OutputSettingsReadabilityInput
     let snapshot: OutputContentSnapshot
-    let displays: ProjectionDisplayManager
     let onReport: (LyricsReadabilityReport) -> Void
     var body: some View {
         ZStack {
-            ForEach(document.destinations) { destination in
-                if let profile = document.profiles.first(where: { $0.id == destination.profileID }),
-                   let target = destination.monitor, let monitor = displays.resolve(target) {
-                    if profile.kind == .confidence {
-                        OutputConfidenceReadabilityProbe(snapshot: snapshot, profile: profile, size: monitor.frame.size)
-                    } else {
-                        OutputReadabilityProbe(content: snapshot.current, profile: profile, size: monitor.frame.size)
-                    }
+            ForEach(input.assignments) { assignment in
+                if assignment.profile.kind == .confidence {
+                    OutputConfidenceReadabilityProbe(snapshot: snapshot, profile: assignment.profile, size: assignment.size)
+                } else {
+                    OutputReadabilityProbe(content: snapshot.current, profile: assignment.profile, size: assignment.size)
                 }
             }
         }.onPreferenceChange(LyricsReadabilityPreferenceKey.self) { report in

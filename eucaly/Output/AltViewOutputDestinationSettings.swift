@@ -32,6 +32,7 @@ final class AltViewOutputDestinationSettings: NSViewController, NSTextFieldDeleg
     private var channelSubscription: AnyCancellable?
     private var subscriptions = Set<AnyCancellable>()
     private var reloadTask: Task<Void, Never>?
+    private var isActive = true
 
     init(router: AltViewOutputRouter, store: OutputProfileStore, destinationID: UUID) {
         self.router = router; self.store = store; self.destinationID = destinationID
@@ -69,15 +70,23 @@ final class AltViewOutputDestinationSettings: NSViewController, NSTextFieldDeleg
         render()
     }
     private func scheduleRender() {
-        guard reloadTask == nil else { return }
+        guard isActive, reloadTask == nil else { return }
         reloadTask = Task { @MainActor [weak self] in
             await Task.yield()
             guard let self, !Task.isCancelled else { return }
             self.reloadTask = nil; self.render()
         }
     }
+    /// A cached hidden form retains its draft, while the router alone maintains
+    /// its connection. Resume from the latest model when the row is selected.
+    func setActive(_ value: Bool) {
+        guard isActive != value else { return }
+        isActive = value
+        if value { render() }
+        else { reloadTask?.cancel(); reloadTask = nil }
+    }
     func render() {
-        guard isViewLoaded, let destination = store.document.destinations.first(where: { $0.id == destinationID }) else { return }
+        guard isActive, isViewLoaded, let destination = store.document.destinations.first(where: { $0.id == destinationID }) else { return }
         if case .unavailable(let id) = assignmentIssue, router.receivers.contains(where: { $0.receiverIdentity == id }) {
             assignmentIssue = nil
         }
