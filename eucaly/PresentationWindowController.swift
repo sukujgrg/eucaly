@@ -313,7 +313,7 @@ final class PresentationSession: NSObject, ObservableObject {
     func toggleBackgroundVisualVisibility() {
         guard backgroundVisualURL != nil else { return }
         if !isPresenting && !outputCoordinator.isPresenting && !outputCoordinator.hasOpenAudienceOutput {
-            guard outputCoordinator.openBackgroundOutputs() else { return }
+            guard outputCoordinator.openBackgroundOutputs(for: self) else { return }
             isBackgroundVisualVisible = true
             return
         }

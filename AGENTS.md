@@ -31,7 +31,7 @@ eucaly does not receive or re-render its scripture.
 ### Main Entry
 - `eucaly/eucalyApp.swift`
   - Main `WindowGroup`
-  - Settings scene (`AppSettingsView`)
+  - Native Settings window (`SettingsWindowController`, `GeneralSettingsController`)
   - App command menu and shortcuts
 
 ### Releases and Self-Updates
@@ -64,8 +64,9 @@ eucaly does not receive or re-render its scripture.
 - Reservations and teardown are per destination. Losing one retains the others, resources, Current and saved assignments. Reconnection requires explicit Show; never silently move output to a different monitor. Enabled destinations cannot share a monitor or AltView receiver. Disabled rows retain assignments without reserving them. Pickers offer None.
 - Images, PDFs, video and picked windows use the same native media boundary in every enabled profile. Live webpages require one Audience monitor; companions show a webpage status without additional WebKit playback. Remote-only media, including deferred model refresh, must not replace a valid live lyrics program.
 - OutputMediaRuntime owns one program AVPlayer and pools matching muted background resources. ScreenCaptureManager owns one picker-approved stream with reference-counted consumers and GPU-backed sample-buffer fan-out. Closing one destination does not stop others. Independent background audio has one explicit session owner.
-- Manage Outputs in the toolbar or output alert opens the existing native Settings scene with SwiftUI openSettings. Appearance and backgrounds live there; thumbnail controls remain in General. Built-ins are Audience, Confidence, Lower Third and AltView. Lower Third defaults to chroma green. Retired Meaning/Translation presets migrate to Audience while custom copies retain their settings.
-- Use native Forms, Pickers, colour controls and NSFontPanel. Disclosure headers are clickable across the full row. Preserve requested fonts during fallback. Audience thumbnails use its typeface/layout with independent size controls. Readability notices remain operator-only.
+- AppDelegate owns one native AppKit Settings window shared by the app menu, Manage Outputs toolbar action and inline output notices. General and Manage Outputs use native toolbar tabs. Appearance and backgrounds live in Manage Outputs; thumbnail controls remain in General. Add Native and Add AltView create disabled, unassigned destinations. Audience, Confidence and Lower Third are native appearance profiles; AltView owns its appearance and has no profile picker. Lower Third defaults to chroma green. Retired Meaning/Translation presets migrate to Audience while custom copies retain their settings.
+- Validate a destination's assignment before enabling it. Conflicting monitor/receiver attempts leave its saved enabled state and assignment unchanged, with an inline settings error. Disabled destinations may retain shared assignments. Output failures use an inline workspace notice with Manage Outputs and Dismiss actions; never show a blocking output-unavailable dialog.
+- Manage Outputs uses AppKit list-and-detail navigation, with native controls, colour wells and NSFontPanel. Settings apply immediately; names commit on Return or editing end, with no Save button. The Settings window owns visibility, resizing and close/reopen lifecycle. Disclosure headers are clickable across the full row. Preserve requested fonts during fallback and relative size inheritance when choosing a component font. Pickers preserve duplicate names by UUID. Audience thumbnails use its typeface/layout with independent size controls. Readability notices remain operator-only.
 - Saved profile version 3 removes receiver enablement and Bible settings while retaining local typography, backgrounds, monitor/AltView assignments and pairings. Do not restore incoming reception, scripture components or hub protocol extensions. ViewTheWord's projection and appearance are independent.
 - See docs/output-profiles-implementation.md for architecture, verification and physical/profiling limits. Snapshot acceptance does not prove GPU cadence or physical delivery.
 

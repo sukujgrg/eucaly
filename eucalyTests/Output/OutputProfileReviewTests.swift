@@ -527,7 +527,7 @@ final class OutputProfileReviewTests: XCTestCase {
         for y in stride(from: 0, to: bitmap.pixelsHigh, by: 3) {
             for x in stride(from: 0, to: bitmap.pixelsWide, by: 3) {
                 guard let colour = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB),
-                      colour.redComponent > 0.6, colour.greenComponent > 0.6, colour.blueComponent > 0.6 else { continue }
+                      colour.redComponent > 0.8, colour.greenComponent > 0.65, colour.blueComponent < 0.4 else { continue }
                 minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
             }
         }

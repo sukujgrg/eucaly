@@ -1,12 +1,15 @@
 import Foundation
 
 nonisolated enum OutputComponentRole: String, Codable, CaseIterable, Sendable {
-    case primary, meaning, translation, transliteration, heading, reference, footer
+    case primary, meaning, translation, transliteration
+    // Preserve the saved key for Confidence's native video playback status.
+    case footer
 
     static let lyricRoles: [Self] = [.primary, .meaning, .translation, .transliteration]
     var title: String {
         switch self {
         case .primary: return "Primary lyrics"
+        case .footer: return "Playback status"
         default: return rawValue.capitalized
         }
     }
@@ -108,7 +111,7 @@ nonisolated struct OutputProfile: Codable, Equatable, Sendable, Identifiable {
     var id: UUID
     var name: String
     var kind: Kind
-    var roles: [OutputComponentRole] = OutputComponentRole.allCases
+    var roles: [OutputComponentRole] = OutputComponentRole.lyricRoles
     var layout = "stacked"
     var alignment = "center"
     var position = "middle"
@@ -121,6 +124,15 @@ nonisolated struct OutputProfile: Codable, Equatable, Sendable, Identifiable {
 
     func typography(for role: OutputComponentRole) -> OutputTypography {
         componentTypography[role]?.resolve(inheriting: typography) ?? typography
+    }
+    var typographyOverrideRoles: [OutputComponentRole] {
+        OutputComponentRole.lyricRoles + (kind == .confidence ? [.footer] : [])
+    }
+    mutating func clearBackground() {
+        background.bookmark = nil
+        // The key colour is part of Lower Third's output setup, even when
+        // clearing all program layers. Preserve custom keys as well as green.
+        if kind != .lowerThird { background.colour = .black }
     }
     func components(in content: OutputTextContent) -> [OutputTextComponent] {
         content.components.filter { roles.contains($0.role) && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -146,7 +158,7 @@ nonisolated struct OutputProfile: Codable, Equatable, Sendable, Identifiable {
             case .altView:
                 profile.roles = [] // Receiver owns composition and appearance.
             case .lowerThird:
-                profile.roles = [.primary, .heading, .reference, .footer]
+                profile.roles = [.primary]
                 profile.position = "bottom"
                 profile.typography.size = 48
                 profile.background.colour = .chromaGreen
@@ -306,24 +318,26 @@ nonisolated extension OutputProfile {
         name = try c.decode(String.self, forKey: .name)
         kind = try c.decode(Kind.self, forKey: .kind)
         roles = try c.decode([String].self, forKey: .roles).compactMap { try Self.persistedRole($0, decoder: decoder) }
+            .filter { OutputComponentRole.lyricRoles.contains($0) }
         layout = try c.decode(String.self, forKey: .layout)
         alignment = try c.decode(String.self, forKey: .alignment)
         position = try c.decode(String.self, forKey: .position)
         padding = try c.decode(Double.self, forKey: .padding)
         typography = try c.decode(OutputTypography.self, forKey: .typography)
         componentTypography = try c.decode(PersistedTypography.self, forKey: .componentTypography).values
+        if kind != .confidence { componentTypography.removeValue(forKey: .footer) }
         background = try c.decode(OutputBackground.self, forKey: .background)
         usesLegacySizing = try c.decode(Bool.self, forKey: .usesLegacySizing)
     }
     private static func persistedRole(_ value: String, decoder: any Decoder) throws -> OutputComponentRole? {
-        if value == "secondary" { return nil } // Retired Bible-only component.
+        if ["secondary", "heading", "reference"].contains(value) { return nil } // Retired scripture components.
         guard let role = OutputComponentRole(rawValue: value) else {
             throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Unknown output component"))
         }
         return role
     }
     /// Enum-key dictionaries encode as alternating keys/values. Read the retired
-    /// Bible override only to discard it, retaining all local profile settings.
+    /// Scripture overrides only to discard them, retaining local profile settings.
     nonisolated private struct PersistedTypography: Decodable {
         var values: [OutputComponentRole: OutputTypographyOverride] = [:]
         init(from decoder: any Decoder) throws {

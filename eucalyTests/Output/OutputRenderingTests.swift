@@ -6,6 +6,57 @@ import ScreenCaptureKit
 
 @MainActor
 final class OutputRenderingTests: XCTestCase {
+    func testClearCommandsKeepLowerThirdKeyOnRenderedCanvasAndRetainCurrent() throws {
+        let monitor = ProjectionMonitor(id: 1, identity: UUID().uuidString, name: "Lower Third", frame: CGRect(x: 0, y: 0, width: 640, height: 360))
+        let displays = ProjectionDisplayManager(displays: { [monitor] })
+        let store = OutputProfileStore(monitor: monitor.target)
+        let destinationID = try XCTUnwrap(store.document.destinations.first?.id)
+        store.selectProfile(OutputProfile.lowerThirdID, for: destinationID)
+        let outputs = OutputCoordinator(profiles: store, displays: displays, driverFactory: { FakeOutputDriver() })
+        let session = PresentationSession(projectionDisplays: displays, outputCoordinator: outputs)
+        session.setSlides(LyricsParser.parseDocument("Verse\nCurrent lyrics").slides)
+        let currentID = session.currentSlide?.id
+        defer { outputs.stop() }
+        for colour in [OutputColour.chromaGreen, OutputColour(red: 0, green: 0, blue: 1)] {
+            // Cached native rendering uses the display colour space. Compare
+            // against the same configured solid colour through that boundary.
+            let swatch = NSHostingView(rootView: colour.color.frame(width: monitor.frame.width, height: monitor.frame.height))
+            swatch.frame = monitor.frame; swatch.layoutSubtreeIfNeeded()
+            let expectedBitmap = try XCTUnwrap(swatch.bitmapImageRepForCachingDisplay(in: swatch.bounds))
+            swatch.cacheDisplay(in: swatch.bounds, to: expectedBitmap)
+            let expectedPixel = try XCTUnwrap(expectedBitmap.colorAt(x: 5, y: 5)?.usingColorSpace(.sRGB))
+            for clearAll in [false, true] {
+                var profile = try XCTUnwrap(store.profile(OutputProfile.lowerThirdID))
+                profile.background.colour = colour; profile.background.bookmark = "selected visual"
+                store.update(profile)
+                session.showSlides()
+                XCTAssertTrue(outputs.isOpen(destinationID))
+                session.setBackgroundAudio(url: URL(fileURLWithPath: "/tmp/lower-third-audio-test.wav"), autoplay: true)
+                if clearAll { outputs.clearAllLayers() } else { outputs.clearBackgrounds() }
+                XCTAssertEqual(outputs.visible, !clearAll)
+                XCTAssertEqual(session.currentSlide?.id, currentID)
+                XCTAssertTrue(outputs.isOpen(destinationID), "Clear keeps the output canvas open")
+                XCTAssertEqual(session.backgroundAudioURL == nil, clearAll)
+                XCTAssertNil(store.profile(OutputProfile.lowerThirdID)?.background.bookmark)
+                let view = NSHostingView(rootView: OutputCompositionView(coordinator: outputs, destinationID: destinationID))
+                view.frame = monitor.frame; view.layoutSubtreeIfNeeded()
+                let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+                view.cacheDisplay(in: view.bounds, to: bitmap)
+                for x in [5, bitmap.pixelsWide - 6] {
+                    for y in [5, bitmap.pixelsHigh - 6] {
+                        let pixel = try XCTUnwrap(bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB))
+                        XCTAssertEqual(pixel.redComponent, expectedPixel.redComponent, accuracy: 0.02)
+                        XCTAssertEqual(pixel.greenComponent, expectedPixel.greenComponent, accuracy: 0.02)
+                        XCTAssertEqual(pixel.blueComponent, expectedPixel.blueComponent, accuracy: 0.02)
+                    }
+                }
+                if colour == .chromaGreen {
+                    try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: "/tmp/eucaly-lower-third-\(clearAll ? "hidden" : "visible").png"))
+                }
+            }
+        }
+    }
+
     func testGeometryFollowsFontOverridesAndMissingComponentsCollapse() {
         let content = OutputTextContent(components: [.init(role: .primary, text: "Primary"), .init(role: .meaning, text: "Meaning"), .init(role: .translation, text: "Translation")])
         var profile = OutputProfile.builtIns[0]; profile.layout = "columns"; profile.padding = 0
@@ -126,8 +177,9 @@ final class OutputSettingsRenderingTests: XCTestCase {
         let router = AltViewOutputRouter(store: outputs.profiles, senderID: UUID())
         router.start(coordinator: outputs, discover: false)
         defer { router.shutdown() }
-        let view = NSHostingView(rootView: OutputSettingsView(coordinator: outputs).environmentObject(router))
-        view.frame = CGRect(x: 0, y: 0, width: 560, height: 500)
+        let controller = ManageOutputsController(coordinator: outputs, router: router)
+        let view = controller.view
+        view.frame = CGRect(x: 0, y: 0, width: 820, height: 650)
         view.layoutSubtreeIfNeeded()
         let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
         view.cacheDisplay(in: view.bounds, to: bitmap)

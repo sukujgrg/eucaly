@@ -48,7 +48,7 @@ final class OutputProfileTests: XCTestCase {
         let data = try XCTUnwrap(defaults.data(forKey: OutputProfileStore.key))
         XCTAssertEqual(try JSONDecoder().decode(OutputProfileDocument.self, from: data), expected)
         XCTAssertEqual(OutputProfileStore(defaults: defaults).document, expected)
-        XCTAssertEqual(defaults.integer(forKey: "outputProfileDefaultsRevision"), 1)
+        XCTAssertEqual(defaults.integer(forKey: "outputProfileDefaultsRevision"), 2)
     }
 
     func testRetiredPresetsRestoreAssignmentsAndCustomComponentsWithoutRecovery() throws {
@@ -127,6 +127,43 @@ final class OutputProfileTests: XCTestCase {
         let restored = OutputProfileStore(defaults: defaults); restored.flush()
         XCTAssertEqual(restored.document, legacy)
         XCTAssertNil(restored.recoveryNotice)
+    }
+
+    func testClearBackgroundPreservesLowerThirdKeyColoursAndPersistsVisualRemoval() throws {
+        let name = "LowerThirdClear.\(UUID())", defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        let store = OutputProfileStore(defaults: defaults)
+        var lowerThird = try XCTUnwrap(store.profile(OutputProfile.lowerThirdID))
+        lowerThird.background.bookmark = "selected visual"
+        store.update(lowerThird)
+        store.clearBackground(for: lowerThird.id)
+        XCTAssertNil(store.profile(lowerThird.id)?.background.bookmark)
+        XCTAssertEqual(store.profile(lowerThird.id)?.background.colour, .chromaGreen)
+
+        lowerThird.id = UUID(); lowerThird.name = "Blue key"
+        lowerThird.background.colour = .init(red: 0, green: 0, blue: 1)
+        store.edit { doc in
+            doc.profiles.append(lowerThird)
+            doc.destinations.append(.init(name: lowerThird.name, profileID: lowerThird.id, monitor: nil))
+            doc.destinations.append(.init(name: "Green key", profileID: OutputProfile.lowerThirdID, monitor: nil))
+            let confidence = doc.profiles.first { $0.kind == .confidence }!
+            doc.destinations.append(.init(name: "Disabled Confidence", profileID: confidence.id, monitor: nil, enabled: false))
+            for index in doc.profiles.indices where doc.profiles[index].isNative {
+                doc.profiles[index].background.bookmark = "selected visual"
+                if doc.profiles[index].kind != .lowerThird { doc.profiles[index].background.colour = .white }
+            }
+        }
+        let disabledBackground = store.profile(OutputProfile.confidenceID)?.background
+        store.clearBackgrounds()
+        XCTAssertEqual(store.profile(OutputProfile.lowerThirdID)?.background.colour, .chromaGreen)
+        XCTAssertEqual(store.profile(lowerThird.id)?.background.colour, lowerThird.background.colour)
+        XCTAssertNil(store.profile(OutputProfile.lowerThirdID)?.background.bookmark)
+        XCTAssertNil(store.profile(lowerThird.id)?.background.bookmark)
+        XCTAssertEqual(store.audience.background.colour, .black)
+        XCTAssertNil(store.audience.background.bookmark)
+        XCTAssertEqual(store.profile(OutputProfile.confidenceID)?.background, disabledBackground)
+        store.flush()
+        XCTAssertEqual(OutputProfileStore(defaults: defaults).document, store.document)
     }
 
     func testMeaningRelativeSizeAndExplicitOverridesSurviveLegacyControlEdits() {

@@ -102,9 +102,27 @@ struct OutputDestinationMenu: View {
         } label: { Label("Output Destinations", systemImage: "display") }
         .labelStyle(.iconOnly).buttonStyle(.bordered)
         .help("Manage output destinations, appearance and text components.")
-        .alert("Output Unavailable", isPresented: Binding(get: { session.projectionDisplayIssue != nil }, set: { if !$0 { session.projectionDisplayIssue = nil } })) {
-            Button("Manage Outputs…", action: manageOutputs)
-            Button("OK", role: .cancel) { }
-        } message: { Text(session.projectionDisplayIssue ?? "") }
+    }
+}
+
+/// Output problems stay visible to the operator without blocking workspace edits.
+struct OutputIssueBanner: View {
+    @ObservedObject var session: PresentationSession
+    @ObservedObject private var outputs: OutputCoordinator
+    let manageOutputs: () -> Void
+    init(session: PresentationSession, manageOutputs: @escaping () -> Void) {
+        self.session = session; outputs = session.outputCoordinator; self.manageOutputs = manageOutputs
+    }
+    var body: some View {
+        if let issue = session.projectionDisplayIssue ?? outputs.issue {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
+                Text(issue).frame(maxWidth: .infinity, alignment: .leading)
+                Button("Manage Outputs…", action: manageOutputs)
+                Button { outputs.dismissIssue() } label: { Image(systemName: "xmark") }
+                    .accessibilityLabel("Dismiss output notice")
+            }
+            .font(.callout).padding(12).background(.regularMaterial)
+        }
     }
 }

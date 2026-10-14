@@ -183,6 +183,18 @@ final class ProjectionDisplayManager: ObservableObject {
         return true
     }
 
+    /// Output settings may prepare an idle destination while another output is
+    /// open. Saved assignment constraints still prevent enabled monitor sharing.
+    @discardableResult
+    func setSelection(_ target: ProjectionMonitorTarget?, owner: UUID) -> Bool {
+        refresh()
+        guard activeOutputs[owner] == nil else { return false }
+        if let target, selectionProblem(for: target) != nil { return false }
+        self.target = target
+        saveTarget(); identifier.close(); changed()
+        return true
+    }
+
     nonisolated static func normalizedName(_ text: String) -> String? {
         let name = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let forbidden = CharacterSet.controlCharacters.union(.newlines)

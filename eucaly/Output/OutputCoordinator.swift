@@ -42,6 +42,12 @@ final class OutputCoordinator: ObservableObject {
     @Published private(set) var revision: UInt64 = 0
     @Published private(set) var readiness: [UUID: OutputReadiness] = [:]
     @Published private(set) var issue: String?
+    private enum IssueReason {
+        case destinations, presentation(UUID, show: Bool), background
+        case assignment(UUID, ProjectionMonitorTarget), disconnected
+    }
+    private var issueReason: IssueReason?
+    private var sessionIssueReasons: [UUID: IssueReason] = [:]
     @Published private(set) var visible = true
     @Published private(set) var text = OutputTextContent.empty
     @Published private(set) var nextText: OutputTextContent?
@@ -132,14 +138,15 @@ final class OutputCoordinator: ObservableObject {
         profiles.document.destinations.first(where: { $0.id == destination }).flatMap { profiles.profile($0.profileID) }
     }
     /// Background-only opening owns windows, never a foreground program/lease.
-    func openBackgroundOutputs() -> Bool {
+    func openBackgroundOutputs(for session: PresentationSession? = nil) -> Bool {
         guard !programStarted else { return true }
         guard openDestinations(), !windows.isEmpty else {
-            issue = "Background visuals need an available native output."
+            setIssue("Background visuals need an available native output.", reason: .background, session: session)
             return false
         }
         backgroundWindowsOpen = true
         visible = false
+        setIssue(nil, session: session)
         changed()
         return true
     }
@@ -150,12 +157,15 @@ final class OutputCoordinator: ObservableObject {
         _ = actionClock.next()
         let order = ownership.beginAction()
         if let problem = localPresentationProblem(for: session.currentSlide) {
-            issue = problem; session.projectionDisplayIssue = problem
+            setIssue(problem, reason: .presentation(session.outputSourceID, show: show), session: session)
             return false
         }
-        guard openDestinations() else { session.projectionDisplayIssue = issue; return false }
+        guard openDestinations() else {
+            setIssue(issue, reason: .presentation(session.outputSourceID, show: show), session: session)
+            return false
+        }
         if let problem = nativeContentProblem(for: session.currentSlide, show: show) {
-            issue = problem; session.projectionDisplayIssue = problem
+            setIssue(problem, reason: .presentation(session.outputSourceID, show: show), session: session)
             return false
         }
         let previous = localSession
@@ -166,7 +176,7 @@ final class OutputCoordinator: ObservableObject {
         liveSlide = session.currentSlide
         updateText(from: session)
         visible = show
-        session.projectionDisplayIssue = nil
+        setIssue(nil, session: session)
         changed(explicit: show)
         return true
     }
@@ -187,7 +197,7 @@ final class OutputCoordinator: ObservableObject {
         guard ownership.source == session.outputSourceID else { return }
         // A deferred model refresh must not bypass the same media preflight as Show.
         if let problem = localPresentationProblem(for: session.currentSlide) ?? nativeContentProblem(for: session.currentSlide) {
-            issue = problem; session.projectionDisplayIssue = problem
+            setIssue(problem, reason: .presentation(session.outputSourceID, show: true), session: session)
             return
         }
         liveSlide = session.currentSlide; updateText(from: session); changed()
@@ -199,22 +209,95 @@ final class OutputCoordinator: ObservableObject {
     func monitorAssignmentProblem(for target: ProjectionMonitorTarget, destinationID: UUID) -> String? {
         displays.problem(for: target) ?? profiles.monitorAssignmentProblem(for: target, excluding: destinationID)
     }
+    func dismissIssue() {
+        setIssue(nil)
+        sessionIssueReasons.removeAll()
+        for session in sessions.values.compactMap(\.value) { session.projectionDisplayIssue = nil }
+    }
+    private func setIssue(_ message: String?, reason: IssueReason? = nil, session: PresentationSession? = nil) {
+        let previousReason = issueReason
+        issue = message
+        issueReason = message == nil ? nil : reason
+        if case .disconnected = reason {
+            for session in sessions.values.compactMap(\.value) { setSessionIssue(message, reason: reason, session: session) }
+        } else if message == nil, case .disconnected = previousReason {
+            for (id, reason) in sessionIssueReasons {
+                if case .disconnected = reason, let session = sessions[id]?.value {
+                    setSessionIssue(nil, session: session)
+                }
+            }
+        }
+        if let session { setSessionIssue(message, reason: reason, session: session) }
+    }
+    private func setSessionIssue(_ message: String?, reason: IssueReason? = nil, session: PresentationSession) {
+        session.projectionDisplayIssue = message
+        sessionIssueReasons[session.outputSourceID] = message == nil ? nil : reason
+    }
+    private var availableDestinations: [OutputDestinationConfiguration] {
+        let conflicts = profiles.conflictingDestinationIDs.union(profiles.conflictingReceiverIDs)
+        return profiles.document.destinations.filter { destination in
+            guard destination.enabled, !conflicts.contains(destination.id) else { return false }
+            if profiles.profile(destination.profileID)?.kind == .altView {
+                return remoteOutputs?.canPresent(destination) == true
+            }
+            guard let target = destination.monitor, displays.resolve(target) != nil else { return false }
+            return windows[destination.id] != nil || !displays.isReserved(target)
+        }
+    }
+    private var unavailableDestinationsNotice: String? {
+        availableDestinations.isEmpty
+            ? profiles.monitorConflictNotice ?? "Choose an available monitor or connect an AltView destination in Manage Outputs before presenting."
+            : nil
+    }
+    private func refreshIssue() {
+        let reason = issueReason
+        let message = profiles.monitorConflictNotice ?? reason.flatMap { notice(for: $0) }
+        setIssue(message, reason: reason ?? (message == nil ? nil : .destinations))
+        // Each workspace's failed Show retains its own cause. Fixing an
+        // unrelated assignment must not dismiss a remaining webpage/media error.
+        for (id, reason) in sessionIssueReasons {
+            guard let session = sessions[id]?.value else { sessionIssueReasons[id] = nil; continue }
+            setSessionIssue(profiles.monitorConflictNotice ?? notice(for: reason), reason: reason, session: session)
+        }
+    }
+    private func notice(for reason: IssueReason) -> String? {
+        switch reason {
+        case .destinations: return unavailableDestinationsNotice
+        case .presentation(let source, let show):
+            guard let session = sessions[source]?.value else { return nil }
+            let needsNative = !show || session.currentSlide.map { AltViewPresentationAdapter.mode(for: $0) == .media } == true
+            return localPresentationProblem(for: session.currentSlide) ?? unavailableDestinationsNotice
+                ?? (needsNative && !availableDestinations.contains { profiles.profile($0.profileID)?.isNative == true }
+                    ? "Media and background visuals need an available native output. AltView LAN destinations support text." : nil)
+        case .background:
+            return availableDestinations.contains { profiles.profile($0.profileID)?.isNative == true }
+                ? nil : "Background visuals need an available native output."
+        case .assignment(let id, let target):
+            return profiles.document.destinations.contains { $0.id == id }
+                ? monitorAssignmentProblem(for: target, destinationID: id) : nil
+        case .disconnected:
+            // Reconnection still requires explicit Show. A cosmetic setting
+            // change must not dismiss this instruction or reopen the output.
+            return "An output monitor disconnected. Show Slides to reopen it after reconnecting."
+        }
+    }
     @discardableResult
     func assignMonitor(_ target: ProjectionMonitorTarget?, to destinationID: UUID) -> Bool {
         guard windows[destinationID] == nil,
               let destination = profiles.document.destinations.first(where: { $0.id == destinationID }),
               profiles.profile(destination.profileID)?.isNative == true else { return false }
         if let target, let problem = monitorAssignmentProblem(for: target, destinationID: destinationID) {
-            issue = problem
+            setIssue(problem, reason: .assignment(destinationID, target))
             return false
         }
         if destinationID == profiles.document.destinations.first?.id {
-            guard target.map({ displays.select($0) }) ?? displays.clearSelection() else { return false }
+            guard displays.setSelection(target, owner: destinationID) else { return false }
         }
         profiles.edit { doc in
             if let index = doc.destinations.firstIndex(where: { $0.id == destinationID }) { doc.destinations[index].monitor = target }
         }
-        issue = profiles.monitorConflictNotice
+        if case .assignment(let id, _) = issueReason, id == destinationID { setIssue(nil) }
+        refreshIssue()
         return true
     }
     func destinationStatuses() -> [OutputDestinationStatus] {
@@ -281,7 +364,6 @@ final class OutputCoordinator: ObservableObject {
     }
     private func openDestinations(activate: Bool = true) -> Bool {
         displays.refresh()
-        issue = nil
         let conflicts = profiles.conflictingDestinationIDs.union(profiles.conflictingReceiverIDs)
         var ready = false
         for destination in profiles.document.destinations where destination.enabled {
@@ -292,7 +374,7 @@ final class OutputCoordinator: ObservableObject {
             } else if openDestination(destination, activate: activate) { ready = true }
         }
         guard ready else {
-            issue = profiles.monitorConflictNotice ?? "Choose an available monitor or connect an AltView destination in Manage Outputs before presenting."
+            setIssue(profiles.monitorConflictNotice ?? "Choose an available monitor or connect an AltView destination in Manage Outputs before presenting.", reason: .destinations)
             return false
         }
         if !windows.isEmpty { sleepPrevention.start() }
@@ -348,7 +430,6 @@ final class OutputCoordinator: ObservableObject {
         if opened { sleepPrevention.start(); changed() }
     }
     private func profilesChanged() {
-        issue = profiles.monitorConflictNotice
         let previous = standbyConfigurations
         standbyConfigurations = profiles.document.destinations
         standbySuppressed.formIntersection(Set(standbyConfigurations.map(\.id)))
@@ -370,6 +451,7 @@ final class OutputCoordinator: ObservableObject {
             cancelPendingLocalRequests(recordAction: false)
             ownership.revoke(); programStarted = false; localSession = nil
         }
+        refreshIssue()
         changed()
         scheduleConfidenceStandby()
     }
@@ -385,13 +467,13 @@ final class OutputCoordinator: ObservableObject {
             if let monitor = displays.resolve(target), windows[id]?.reposition(monitor: monitor) == true { continue }
             else {
                 cancelPendingLocalRequests(recordAction: false)
-                issue = "An output monitor disconnected. Show Slides to reopen it after reconnecting."
-                for session in sessions.values.compactMap(\.value) { session.projectionDisplayIssue = issue }
+                setIssue("An output monitor disconnected. Show Slides to reopen it after reconnecting.", reason: .disconnected)
                 standbySuppressed.insert(id)
                 closeDestination(id); readiness[id] = .displayMissing
             }
         }
         if !isRunning { ownership.revoke(); localSession = nil }
+        refreshIssue()
         changed()
         scheduleConfidenceStandby()
     }
@@ -402,6 +484,7 @@ final class OutputCoordinator: ObservableObject {
                               media: liveSlide.map { AltViewPresentationAdapter.mode(for: $0) == .media } ?? false) { [weak self] in self?.changed() }
     }
     func remoteReadinessChanged() {
+        refreshIssue()
         for session in sessions.values.compactMap(\.value) {
             session.applyOutputState(running: isPresenting && localSession === session, visible: visible)
         }
@@ -420,7 +503,6 @@ final class OutputCoordinator: ObservableObject {
         if isPresenting || wasPresenting {
             for session in sessions.values.compactMap(\.value) {
                 session.applyOutputState(running: isPresenting && localSession === session, visible: visible)
-                if let issue { session.projectionDisplayIssue = issue }
             }
         }
         wasPresenting = isPresenting

@@ -5,6 +5,7 @@ import Combine
 final class OutputProfileStore: ObservableObject {
     static let key = "outputProfilesV1"
     private static let defaultsRevisionKey = "outputProfileDefaultsRevision"
+    private static let currentDefaultsRevision = 2
     @Published private(set) var document: OutputProfileDocument
     @Published private(set) var recoveryNotice: String?
     private let defaults: UserDefaults?
@@ -21,7 +22,8 @@ final class OutputProfileStore: ObservableObject {
                 let saved = try JSONDecoder().decode(OutputProfileDocument.self, from: data)
                 guard saved.isValid else { throw StoreError.invalid }
                 document = OutputProfileMigration.retireLegacyPresets(in: saved)
-                if (defaults?.integer(forKey: Self.defaultsRevisionKey) ?? 0) < 1 {
+                let defaultsRevision = defaults?.integer(forKey: Self.defaultsRevisionKey) ?? 0
+                if defaultsRevision < 1 {
                     // Upgrade the untouched built-in background once. Subsequent
                     // explicit black/colour/asset choices remain operator settings.
                     let lowerThird = OutputProfile.builtIns.first { $0.kind == .lowerThird }!
@@ -30,7 +32,9 @@ final class OutputProfileStore: ObservableObject {
                         document.profiles[index].background = lowerThird.background
                     }
                 }
-                if document != saved || (defaults?.integer(forKey: Self.defaultsRevisionKey) ?? 0) < 1 { persist() }
+                // Revision 2 also saves the removal of compatibility-decoded
+                // scripture roles and typography overrides in version 3 files.
+                if document != saved || defaultsRevision < Self.currentDefaultsRevision { persist() }
             } catch {
                 document = Self.salvageAssignments(data, fallback: fallback)
                 recoveryNotice = "Saved output settings could not be read. The original data is retained; choose Recover Settings to save a fresh configuration."
@@ -60,10 +64,33 @@ final class OutputProfileStore: ObservableObject {
     }
     private enum StoreError: Error { case invalid }
     func profile(_ id: UUID) -> OutputProfile? { document.profiles.first { $0.id == id } }
+    func assignmentProblem(for destination: OutputDestinationConfiguration) -> String? {
+        guard destination.enabled else { return nil }
+        if let target = destination.monitor,
+           let other = document.destinations.first(where: { $0.id != destination.id && $0.enabled && $0.monitor?.identity == target.identity }) {
+            return "This monitor is used by \(other.name). Disable that output or choose a different monitor."
+        }
+        if let target = destination.receiver,
+           let other = document.destinations.first(where: { $0.id != destination.id && $0.enabled && $0.receiver?.receiverID == target.receiverID }) {
+            return "This receiver is used by \(other.name). Disable that output or choose a different receiver."
+        }
+        return nil
+    }
     func monitorAssignmentProblem(for target: ProjectionMonitorTarget, excluding destinationID: UUID) -> String? {
-        guard document.destinations.first(where: { $0.id == destinationID })?.enabled == true,
-              let other = document.destinations.first(where: { $0.id != destinationID && $0.enabled && $0.monitor?.identity == target.identity }) else { return nil }
-        return "This monitor is used by \(other.name). Disable that output or choose a different monitor."
+        guard var destination = document.destinations.first(where: { $0.id == destinationID }) else { return nil }
+        destination.monitor = target
+        return assignmentProblem(for: destination)
+    }
+    @discardableResult
+    func setEnabled(_ enabled: Bool, for destinationID: UUID) -> String? {
+        guard recoveryNotice == nil else { return recoveryNotice }
+        guard var destination = document.destinations.first(where: { $0.id == destinationID }) else { return "This output no longer exists." }
+        destination.enabled = enabled
+        if let problem = assignmentProblem(for: destination) { return problem }
+        edit { doc in
+            if let index = doc.destinations.firstIndex(where: { $0.id == destinationID }) { doc.destinations[index].enabled = enabled }
+        }
+        return nil
     }
     func selectProfile(_ profileID: UUID, for destinationID: UUID) {
         guard let profile = profile(profileID) else { return }
@@ -77,13 +104,20 @@ final class OutputProfileStore: ObservableObject {
             }
         }
     }
-    func assignReceiver(_ target: OutputReceiverTarget?, to id: UUID) {
+    @discardableResult
+    func assignReceiver(_ target: OutputReceiverTarget?, to id: UUID) -> String? {
+        guard recoveryNotice == nil else { return recoveryNotice }
+        guard var destination = document.destinations.first(where: { $0.id == id }),
+              profile(destination.profileID)?.kind == .altView else { return "This AltView output no longer exists." }
+        destination.destination = target.map(OutputDestination.altView) ?? .none
+        if let problem = assignmentProblem(for: destination) { return problem }
         edit { doc in
             guard let i = doc.destinations.firstIndex(where: { $0.id == id }),
                   doc.profiles.first(where: { $0.id == doc.destinations[i].profileID })?.kind == .altView else { return }
             doc.destinations[i].destination = target.map(OutputDestination.altView) ?? .none
             doc.destinations[i].savedReceiver = target
         }
+        return nil
     }
     var conflictingReceiverIDs: Set<UUID> {
         let assigned = document.destinations.filter { $0.enabled && $0.receiver != nil }
@@ -148,18 +182,24 @@ final class OutputProfileStore: ObservableObject {
         if let original = defaults?.data(forKey: Self.key) { defaults?.set(original, forKey: "outputProfilesRecoveryBackup") }
         recoveryNotice = nil; persist()
     }
+    func clearBackground(for profileID: UUID) {
+        edit { doc in
+            guard let index = doc.profiles.firstIndex(where: { $0.id == profileID && $0.isNative }) else { return }
+            doc.profiles[index].clearBackground()
+        }
+    }
     func clearBackgrounds() {
         edit { doc in
             let ids = Set(doc.destinations.filter(\.enabled).map(\.profileID))
             for index in doc.profiles.indices where ids.contains(doc.profiles[index].id) && doc.profiles[index].isNative {
-                doc.profiles[index].background.bookmark = nil
-                doc.profiles[index].background.colour = .black
+                doc.profiles[index].clearBackground()
             }
         }
     }
     private func persist() {
         guard recoveryNotice == nil else { return }
-        persistence?.save(document, documentKey: Self.key, revisionKey: Self.defaultsRevisionKey)
+        persistence?.save(document, documentKey: Self.key, revisionKey: Self.defaultsRevisionKey,
+                          defaultsRevision: Self.currentDefaultsRevision)
     }
     // Deterministic persistence barrier for tests and orderly shutdown.
     func flush() { persistence?.flush() }
@@ -173,11 +213,11 @@ nonisolated private final class OutputProfilePersistence: @unchecked Sendable {
     private let defaults: UserDefaults
     private let queue = DispatchQueue(label: "com.suku.eucaly.output-profiles")
     init(defaults: UserDefaults) { self.defaults = defaults }
-    func save(_ document: OutputProfileDocument, documentKey: String, revisionKey: String) {
+    func save(_ document: OutputProfileDocument, documentKey: String, revisionKey: String, defaultsRevision: Int) {
         queue.async { [self] in
             guard let data = try? JSONEncoder().encode(document) else { return }
             defaults.set(data, forKey: documentKey)
-            defaults.set(1, forKey: revisionKey)
+            defaults.set(defaultsRevision, forKey: revisionKey)
         }
     }
     func flush() { queue.sync {} }

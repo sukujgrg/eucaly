@@ -7,6 +7,7 @@
 
 import SwiftUI
 import AppKit
+import Combine
 
 private enum AppLaunchContext {
     static let isRunningTests = NSClassFromString("XCTestCase") != nil
@@ -21,6 +22,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     lazy var outputProfiles = OutputProfileStore(defaults: AppLaunchContext.isRunningTests ? nil : .standard, monitor: projectionDisplays.target)
     lazy var outputs = OutputCoordinator(profiles: outputProfiles, displays: projectionDisplays, retainsPreparedSessions: true)
+    private var settings: SettingsWindowController?
+    private var settingsRequest: AnyCancellable?
+
+    func showSettings(pane: NativeSettingsController.Pane? = nil) {
+        if settings == nil { settings = SettingsWindowController(outputs: outputs, router: altView, updates: updates) }
+        settings?.show(pane: pane)
+    }
 
     private var isTerminatingAfterCaptureCleanup = false
 
@@ -28,6 +36,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Ensure the app runs as a regular GUI app when launched via `swift run`.
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
+        settingsRequest = NotificationCenter.default.publisher(for: .showManageOutputsSettings)
+            .sink { [weak self] _ in self?.showSettings(pane: .outputs) }
         // Hosted unit tests use an injected driver and never contact the feed.
         if !AppLaunchContext.isRunningTests {
             updates.start()
@@ -38,7 +48,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         let nonPresentationWindow = sender.windows.first { !($0 is PresentationWindow) }
         if let window = nonPresentationWindow {
-            window.makeKeyAndOrderFront(nil)
+            if window === settings?.window { settings?.showWindow(nil) }
+            else { window.makeKeyAndOrderFront(nil) }
         } else {
             sender.sendAction(#selector(NSApplication.newWindowForTab), to: nil, from: nil)
         }
@@ -54,6 +65,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard ApplicationTerminationCoordinator.shared.confirmApplicationTermination() else {
             return .terminateCancel
         }
+
+        settings?.finishPresentation()
 
         Task { @MainActor in
             outputs.stop()
@@ -101,16 +114,12 @@ struct EucalyApp: App {
             }
         }
         .windowToolbarStyle(.unified)
-        Settings {
-            AppSettingsView()
-                .environmentObject(appDelegate.updates)
-                .environmentObject(appDelegate.altView)
-                .environmentObject(appDelegate.projectionDisplays)
-                .environmentObject(appDelegate.outputs)
-        }
-        .windowResizability(.contentSize)
         .commands {
             AppUpdateCommands(viewModel: appDelegate.updates)
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") { appDelegate.showSettings() }
+                    .keyboardShortcut(",", modifiers: .command)
+            }
             CommandGroup(replacing: .newItem) {
                 Button("New Lyrics") {
                     NotificationCenter.default.post(name: .newLyrics, object: nil)
@@ -190,6 +199,7 @@ struct EucalyApp: App {
 }
 
 extension Notification.Name {
+    static let showManageOutputsSettings = Notification.Name("showManageOutputsSettings")
     static let newLyrics = Notification.Name("newLyrics")
     static let stopProjection = Notification.Name("stopProjection")
     static let toggleSlidesVisibility = Notification.Name("toggleSlidesVisibility")

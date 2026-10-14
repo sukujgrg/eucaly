@@ -6,8 +6,6 @@ import Combine
 
 public struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.openSettings) private var openSettings
-    @AppStorage("settingsTab") private var settingsTab = "general"
     @State private var workspaceCommands = OutputWorkspaceCommands()
     @State private var lyricsEditor = LyricsEditorSession()
     @State private var lyricsEditorFocusController = PlainTextEditorFocusController()
@@ -165,6 +163,9 @@ public struct ContentView: View {
 
     public var body: some View {
         rootSplitView
+            .safeAreaInset(edge: .top, spacing: 0) {
+                OutputIssueBanner(session: session, manageOutputs: showOutputSettings)
+            }
             .environment(\.lyricsProjectionSize, lyricsProjectionSize)
             .environment(\.audienceOutputProfile, outputProfiles.audience)
             .background(
@@ -398,8 +399,7 @@ public struct ContentView: View {
     }
 
     private func showOutputSettings() {
-        settingsTab = "projection"
-        openSettings()
+        NotificationCenter.default.post(name: .showManageOutputsSettings, object: nil)
     }
 
     private func handleRootOnAppear() {

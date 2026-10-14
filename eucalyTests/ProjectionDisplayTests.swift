@@ -429,7 +429,8 @@ final class ProjectionDisplayTests: XCTestCase {
         XCTAssertTrue(manager.rename(inventory[0].target, to: "Front Left TV"))
         XCTAssertTrue(manager.rename(inventory[1].target, to: "Front Right TV"))
         XCTAssertTrue(manager.rename(inventory[2].target, to: "Lobby TV"))
-        let root = NSHostingView(rootView: ProjectionMonitorSettingsView(displays: manager))
+        let editor = OutputMonitorSettingsController(displays: manager)
+        let root = editor.view
         let window = NSWindow(contentRect: CGRect(x: -8000, y: 0, width: 560, height: 450),
                               styleMask: .borderless, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false

@@ -104,8 +104,8 @@ struct OutputConfidenceIdleClock: View {
             let calendar = Calendar.autoupdatingCurrent
             let clock = String(format: "%02d:%02d", calendar.component(.hour, from: context.date), calendar.component(.minute, from: context.date))
             Text(clock)
-                .font(.system(size: max(1, min(size.width * 0.23, size.height * 0.45)), weight: .bold))
-                .monospacedDigit().foregroundStyle(.white)
+                .font(.system(size: max(1, min(size.width * 0.23, size.height * 0.45)), weight: .heavy, design: .rounded))
+                .monospacedDigit().foregroundStyle(Color(red: 1, green: 0.82, blue: 0.24))
                 .lineLimit(1).minimumScaleFactor(0.1)
                 .padding(min(32, max(0, size.height * 0.04)))
                 .background(.black.opacity(0.85), in: RoundedRectangle(cornerRadius: 16))
