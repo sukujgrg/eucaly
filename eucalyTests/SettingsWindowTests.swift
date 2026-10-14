@@ -18,7 +18,11 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertTrue(controller.settings.outputs.isPresented)
         XCTAssertEqual(fixture.defaults.string(forKey: "settingsTab"), "projection")
         window.setContentSize(.init(width: 1000, height: 720)); window.layoutIfNeeded()
-        XCTAssertEqual(controller.settings.outputs.view.bounds.size, NSSize(width: 1000, height: 720))
+        // AppKit can constrain the requested height to fit the runner's screen.
+        let resizedContentSize = try XCTUnwrap(window.contentView).bounds.size
+        XCTAssertEqual(resizedContentSize.width, 1000)
+        XCTAssertGreaterThan(resizedContentSize.height, 0)
+        XCTAssertEqual(controller.settings.outputs.view.bounds.size, resizedContentSize)
         let editor = try XCTUnwrap(controller.settings.outputs.destinationEditor)
         window.makeFirstResponder(editor.nameField)
         try XCTUnwrap(editor.nameField.currentEditor()).string = "Named before close"
@@ -26,9 +30,11 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertFalse(controller.settings.outputs.isPresented)
         XCTAssertEqual(fixture.store.document.destinations[0].name, "Named before close")
         controller.showWindow(nil)
+        window.layoutIfNeeded()
         XCTAssertTrue(controller.window === window)
         XCTAssertTrue(controller.settings.outputs.isPresented)
-        XCTAssertEqual(window.contentView?.bounds.size, NSSize(width: 1000, height: 720))
+        XCTAssertEqual(window.contentView?.bounds.size, resizedContentSize)
+        XCTAssertEqual(controller.settings.outputs.view.bounds.size, resizedContentSize)
         controller.settings.select(.general)
         XCTAssertFalse(controller.settings.outputs.isPresented)
         XCTAssertEqual(fixture.defaults.string(forKey: "settingsTab"), "general")
