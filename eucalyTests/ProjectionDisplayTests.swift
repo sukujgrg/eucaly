@@ -99,7 +99,7 @@ final class ProjectionDisplayTests: XCTestCase {
         let manager = ProjectionDisplayManager(displays: { inventory.displays })
         XCTAssertNil(manager.target)
         XCTAssertNil(manager.resolvedMonitor())
-        XCTAssertEqual(manager.selectionLabel, "Choose a monitor")
+        XCTAssertEqual(manager.selectionLabel, "None")
         XCTAssertTrue(manager.selectionProblem?.contains("Choose a projection monitor") == true)
         inventory.displays.reverse()
         manager.refresh()
@@ -250,17 +250,15 @@ final class ProjectionDisplayTests: XCTestCase {
             session.setSlides(slides)
             let background = URL(fileURLWithPath: "/tmp/eucaly-projection-display-test.jpg")
             session.setBackgroundVisual(background)
-            var showCount = 0
-            session.onOutputEvent = { if case .show = $0 { showCount += 1 } }
             session.showSlides()
             session.toggleBackgroundVisualVisibility()
             XCTAssertFalse(session.isPresenting)
             XCTAssertFalse(manager.isLocked)
-            XCTAssertNil(session.outputSnapshot.projectionWindowID)
+            XCTAssertNil(session.outputCoordinator.audienceIdentity.0)
             XCTAssertNotNil(session.projectionDisplayIssue)
             XCTAssertEqual(session.slides.map(\.id), slides.map(\.id))
             XCTAssertEqual(session.backgroundVisualURL, background)
-            XCTAssertEqual(showCount, 0)
+            XCTAssertNil(session.outputCoordinator.ownership.source)
         }
     }
 
@@ -277,7 +275,7 @@ final class ProjectionDisplayTests: XCTestCase {
         inventory.displays = [monitor(actual.id, leftID)]
         manager.refresh()
         XCTAssertFalse(session.isPresenting)
-        XCTAssertNil(session.outputSnapshot.projectionWindowID)
+        XCTAssertNil(session.outputCoordinator.audienceIdentity.0)
         XCTAssertNotNil(session.projectionDisplayIssue)
         XCTAssertEqual(manager.target, actual.target, "Keep the assignment; never switch to another available monitor.")
         inventory.displays = [actual]
@@ -351,11 +349,61 @@ final class ProjectionDisplayTests: XCTestCase {
         for monitor in monitors {
             XCTAssertTrue(manager.select(monitor.target))
             session.showSlides()
-            let windowID = try XCTUnwrap(session.outputSnapshot.projectionWindowID)
+            let windowID = try XCTUnwrap(session.outputCoordinator.audienceIdentity.0)
             let window = try XCTUnwrap(NSApplication.shared.windows.first { $0.windowNumber == Int(windowID) })
             XCTAssertEqual(window.frame, monitor.frame)
             XCTAssertEqual(window.screen?.displayIdentity, monitor.identity)
             session.stopPresentation()
+        }
+    }
+
+    func testConfidenceKeepsFullMonitorFrameAfterStandbyAndContentChanges() async throws {
+        let monitors = try usableConnectedMonitors()
+        for monitor in monitors {
+            let manager = ProjectionDisplayManager(displays: { monitors })
+            XCTAssertTrue(manager.select(monitor.target))
+            let profiles = OutputProfileStore(monitor: monitor.target)
+            profiles.edit { $0.destinations[0].profileID = OutputProfile.confidenceID }
+            let driver = OutputWindowDestination()
+            let outputs = OutputCoordinator(profiles: profiles, displays: manager, driverFactory: { driver })
+            defer { outputs.stop() }
+            let session = PresentationSession(projectionDisplays: manager, outputCoordinator: outputs)
+            let operatorWindow = NSWindow(contentRect: CGRect(x: 30, y: 30, width: 400, height: 300),
+                                          styleMask: .titled, backing: .buffered, defer: false)
+            operatorWindow.isReleasedWhenClosed = false
+            defer { operatorWindow.close() }
+            operatorWindow.makeKeyAndOrderFront(nil)
+            let keyWindowBeforeStandby = NSApplication.shared.keyWindow
+            outputs.workspaceWindowReady(session)
+            try await Task.sleep(for: .milliseconds(150))
+            let windowID = try XCTUnwrap(driver.windowNumber)
+            let window = try XCTUnwrap(NSApplication.shared.windows.first { $0.windowNumber == Int(windowID) })
+            let content = try XCTUnwrap(window.contentView)
+            func assertFullFrame(_ state: String) {
+                content.layoutSubtreeIfNeeded()
+                XCTAssertEqual(window.frame, monitor.frame, state)
+                XCTAssertEqual(window.screen?.displayIdentity, monitor.identity, state)
+                XCTAssertEqual(content.frame, CGRect(origin: .zero, size: monitor.frame.size), state)
+                XCTAssertEqual(content.bounds, CGRect(origin: .zero, size: monitor.frame.size), state)
+            }
+            assertFullFrame("Standby")
+            XCTAssertTrue(NSApplication.shared.keyWindow === keyWindowBeforeStandby,
+                          "Automatic standby must preserve operator focus, including when another app is active")
+            XCTAssertFalse(window.isMainWindow)
+            XCTAssertNil(outputs.ownership.source)
+            session.setSlides(LyricsParser.parseDocument("Verse 1\nCurrent words\n\nVerse 2\nUpcoming words").slides)
+            session.showSlides()
+            try await Task.sleep(for: .milliseconds(150))
+            assertFullFrame("Current and Next")
+            session.hideSlides()
+            try await Task.sleep(for: .milliseconds(150))
+            assertFullFrame("Hidden clock")
+            session.clearSlides()
+            try await Task.sleep(for: .milliseconds(150))
+            assertFullFrame("Cleared clock")
+            XCTAssertTrue(driver.reposition(monitor: monitor))
+            try await Task.sleep(for: .milliseconds(150))
+            assertFullFrame("Same monitor reposition")
         }
     }
 
@@ -381,7 +429,8 @@ final class ProjectionDisplayTests: XCTestCase {
         XCTAssertTrue(manager.rename(inventory[0].target, to: "Front Left TV"))
         XCTAssertTrue(manager.rename(inventory[1].target, to: "Front Right TV"))
         XCTAssertTrue(manager.rename(inventory[2].target, to: "Lobby TV"))
-        let root = NSHostingView(rootView: ProjectionMonitorSettingsView(displays: manager))
+        let editor = OutputMonitorSettingsController(displays: manager)
+        let root = editor.view
         let window = NSWindow(contentRect: CGRect(x: -8000, y: 0, width: 560, height: 450),
                               styleMask: .borderless, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false

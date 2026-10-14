@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct LyricsThumbnailView: View {
+    @Environment(\.audienceOutputProfile) private var audienceProfile
     let slide: Slide
     let size: CGSize
     @AppStorage("thumbnailFontScale") private var thumbnailFontScale: Double = 1.0
@@ -21,7 +22,8 @@ struct LyricsThumbnailView: View {
                 verticalPosition: presentationVerticalPosition,
                 fontScale: thumbnailFontScale,
                 paddingScale: presentationPaddingScale,
-                rendering: .thumbnail
+                rendering: .thumbnail,
+                profile: audienceProfile
             )
         }
         .frame(width: size.width, height: size.height)

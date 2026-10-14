@@ -6,11 +6,12 @@ import Combine
 
 public struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var workspaceCommands = OutputWorkspaceCommands()
     @State private var lyricsEditor = LyricsEditorSession()
     @State private var lyricsEditorFocusController = PlainTextEditorFocusController()
     @StateObject private var session: PresentationSession
+    @ObservedObject private var outputProfiles: OutputProfileStore
     @ObservedObject private var projectionDisplays: ProjectionDisplayManager
-    @EnvironmentObject private var altView: AltViewService
     @StateObject private var flow = PresentationFlowController()
     @State private var folderURL: URL?
     @State private var markdownFiles: [URL] = []
@@ -30,15 +31,10 @@ public struct ContentView: View {
     @AppStorage("presentationPaddingScale") private var presentationPaddingScale: Double = 1.0
     @AppStorage("presentationTextAlignment") private var presentationTextAlignment: PresentationTextAlignment = .center
     @AppStorage("presentationVerticalPosition") private var presentationVerticalPosition: PresentationVerticalPosition = .middle
-    @AppStorage("thumbnailFontScale") private var thumbnailFontScale: Double = 1.0
-    @AppStorage("countdownMinutes") private var countdownMinutes: Int = 5
-    @AppStorage("overlayScale") private var overlayScale: Double = 1.0
     @AppStorage("windowCaptureFrameRate") private var windowCaptureFrameRate: Int = 30
     @AppStorage("savedWebpageURLs") private var savedWebpageURLs: String = ""
     @AppStorage("savedSelectedWebpageURL") private var savedSelectedWebpageURL: String = ""
     @AppStorage("savedWebpageTitles") private var savedWebpageTitles: String = ""
-    @State private var overlayScaleDraft: Double = 1.0
-    @State private var overlayScaleDebounceToken = UUID()
     @State private var backgroundAudioVolumeDraft: Double = 1.0
     @State private var backgroundAudioVolumeDebounceToken = UUID()
     @State private var fileDisplayNames: [URL: String] = [:]
@@ -65,7 +61,6 @@ public struct ContentView: View {
     @State private var libraryLoadFailure: LibraryLoadFailure?
     @State private var libraryRevision: Int = 0
     @State private var displayedLibraryRootURL: URL? = nil
-    @State private var isProjectionSettingsPresented = false
     @State private var lyricsProjectionSize: CGSize?
     @FocusState private var focusedDetailTarget: DetailFocusTarget?
     @State private var securityScopedRoot: URL? = nil
@@ -78,9 +73,11 @@ public struct ContentView: View {
     private let windowCaptureFrameRateOptions = [24, 30, 60]
     private let libraryFileScanner = LibraryFileScannerService()
 
-    init(projectionDisplays: ProjectionDisplayManager) {
+    init(projectionDisplays: ProjectionDisplayManager, outputs: OutputCoordinator? = nil) {
         self.projectionDisplays = projectionDisplays
-        _session = StateObject(wrappedValue: PresentationSession(projectionDisplays: projectionDisplays))
+        let session = PresentationSession(projectionDisplays: projectionDisplays, outputCoordinator: outputs)
+        _session = StateObject(wrappedValue: session)
+        _outputProfiles = ObservedObject(wrappedValue: session.outputCoordinator.profiles)
     }
 
     private enum PreviewSource: Equatable {
@@ -132,10 +129,6 @@ public struct ContentView: View {
         }
     }
 
-    private var canControlProjectedOverlay: Bool {
-        session.isPresenting
-    }
-
     private var isWindowCaptureSupported: Bool {
         if #available(macOS 15.0, *) {
             return true
@@ -170,7 +163,11 @@ public struct ContentView: View {
 
     public var body: some View {
         rootSplitView
+            .safeAreaInset(edge: .top, spacing: 0) {
+                OutputIssueBanner(session: session, manageOutputs: showOutputSettings)
+            }
             .environment(\.lyricsProjectionSize, lyricsProjectionSize)
+            .environment(\.audienceOutputProfile, outputProfiles.audience)
             .background(
                 InitialWindowFocus()
                     .frame(width: 0, height: 0)
@@ -197,7 +194,13 @@ public struct ContentView: View {
             projectionToolbar
         }
         .applyToolbarBackgroundIfAvailable()
-        .onAppear { altView.attach(session) }
+        .background(OutputWorkspaceScope(commands: workspaceCommands, session: session).frame(width: 0, height: 0))
+        .onChange(of: presentationLyricsLayout) { _, _ in session.outputCoordinator.profiles.importLegacyAudience() }
+        .onChange(of: presentationTextAlignment) { _, _ in session.outputCoordinator.profiles.importLegacyAudience() }
+        .onChange(of: presentationVerticalPosition) { _, _ in session.outputCoordinator.profiles.importLegacyAudience() }
+        .onChange(of: presentationPaddingScale) { _, _ in session.outputCoordinator.profiles.importLegacyAudience() }
+        .onChange(of: presentationFontScale) { _, _ in session.outputCoordinator.profiles.importLegacyAudience() }
+
     }
 
     private var rootSplitWithLibrarySearchOverlay: some View {
@@ -238,6 +241,7 @@ public struct ContentView: View {
             refreshLibraryRootAccess()
         }
         .onChange(of: backgroundVisualBookmark) { _, _ in
+            session.outputCoordinator.profiles.importLegacyAudience()
             refreshBackgroundVisualAccess()
         }
         .onChange(of: backgroundAudioBookmark) { _, _ in
@@ -245,9 +249,6 @@ public struct ContentView: View {
         }
         .onChange(of: session.backgroundAudioURL) { _, newValue in
             selectedAudioURL = newValue?.standardizedFileURL
-        }
-        .onChange(of: overlayScale) { _, newValue in
-            handleOverlayScaleChange(newValue)
         }
         .onChange(of: backgroundAudioVolume) { _, newValue in
             handleBackgroundAudioVolumeChange(newValue)
@@ -276,7 +277,6 @@ public struct ContentView: View {
     }
 
     private func handleRootOnDisappear() {
-        altView.detach(session)
         librarySearch.cancelDebounce()
         libraryLoadTask?.cancel()
         isLibraryLoading = false
@@ -287,7 +287,7 @@ public struct ContentView: View {
     }
 
     private func handleExitCommand() {
-        guard session.isPresenting, session.areSlidesVisible else { return }
+        guard (session.outputCoordinator.isPresenting && session.outputCoordinator.visible) || (session.isPresenting && session.areSlidesVisible) else { return }
         deferSessionChange {
             flow.hideSlides(in: session)
         }
@@ -374,19 +374,7 @@ public struct ContentView: View {
     private var projectionToolbar: some ToolbarContent {
         ToolbarItem(placement: .principal) {
             HStack(spacing: 10) {
-                let isShowingSlides = session.isPresenting && session.areSlidesVisible
-                Button {
-                    toggleSlidesFromUI()
-                } label: {
-                    Label(
-                        isShowingSlides ? "Hide Slides" : "Show Slides",
-                        systemImage: isShowingSlides ? "rectangle.slash" : "rectangle"
-                    )
-                }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.borderedProminent)
-                .disabled(!canToggleSlides)
-                .help(isShowingSlides ? "Hide Slides" : "Show Slides")
+                OutputSlidesToggleButton(session: session, onToggle: toggleSlidesFromUI)
 
                 Button {
                     presentLibrarySearch()
@@ -402,99 +390,16 @@ public struct ContentView: View {
         }
 
         ToolbarItemGroup(placement: .primaryAction) {
-            AltViewToolbarButton(service: altView, session: session)
             AppUpdateToolbarButton(viewModel: appUpdateViewModel)
-            backgroundSettingsButton
-            timerSettingsButton
-            appearanceSettingsButton
         }
-    }
-
-    private var backgroundSettingsButton: some View {
-        BackgroundSettingsMenu(
-            session: session,
-            visualName: session.backgroundVisualURL.map { displayName(for: $0) },
-            isMediaCurrent: isCurrentSelectionMediaFile,
-            onChooseVisual: chooseBackgroundVisual,
-            onClearVisual: clearBackgroundVisual,
-            onToggleVisibility: toggleBackgroundVisualFromUI
-        )
-    }
-
-    private var timerSettingsButton: some View {
-        TimerSettingsMenu(
-            session: session,
-            overlayScaleDraft: $overlayScaleDraft,
-            countdownMinutes: $countdownMinutes,
-            onOverlayScaleDraftChange: handleOverlayScaleDraftChange,
-            onSetOverlayMode: setOverlayMode,
-            onStartCountdown: startCountdown,
-            onStopCountdown: stopCountdown
-        )
-    }
-
-    private var appearanceSettingsButton: some View {
-        AppearanceSettingsMenu(
-            presentationFontScale: $presentationFontScale,
-            presentationLyricsLayout: $presentationLyricsLayout,
-            presentationTextAlignment: $presentationTextAlignment,
-            presentationVerticalPosition: $presentationVerticalPosition,
-            presentationPaddingScale: $presentationPaddingScale,
-            thumbnailFontScale: $thumbnailFontScale,
-            thumbnailScale: $thumbnailScale
-        )
     }
 
     private var projectionScreenPicker: some View {
-        Menu {
-            Text("Projection: \(projectionDisplays.selectionLabel)")
-            if let problem = projectionDisplays.selectionProblem {
-                Text(problem)
-            }
-            Divider()
-            ForEach(projectionDisplays.displays) { display in
-                Button {
-                    projectionDisplays.select(display.target)
-                } label: {
-                    Label(projectionDisplays.label(for: display.target),
-                          systemImage: projectionDisplays.target?.identity == display.identity ? "checkmark" : "display")
-                }
-                .disabled(projectionDisplays.isLocked || projectionDisplays.problem(for: display.target) != nil)
-            }
-            Divider()
-            if let target = projectionDisplays.target {
-                Button("Identify Selected Monitor") { projectionDisplays.identify(target) }
-                    .disabled(!projectionDisplays.canIdentify(target))
-            }
-            Button("Manage Monitors…") { isProjectionSettingsPresented = true }
-        } label: {
-            Label("Projection Screen", systemImage: "display")
-        }
-        .labelStyle(.iconOnly)
-        .buttonStyle(.bordered)
-        .help("Projection: \(projectionDisplays.selectionLabel). Manage names and identify monitors.")
-        .sheet(isPresented: $isProjectionSettingsPresented) {
-            VStack(spacing: 0) {
-                ProjectionMonitorSettingsView(displays: projectionDisplays)
-                HStack {
-                    Spacer()
-                    Button("Done") { isProjectionSettingsPresented = false }
-                        .keyboardShortcut(.defaultAction)
-                }
-                .padding()
-            }
-            .frame(width: 560, height: 500)
-        }
-        .alert(projectionDisplays.target == nil ? "Choose a Projection Monitor" : "Projection Monitor Unavailable",
-               isPresented: Binding(
-            get: { session.projectionDisplayIssue != nil },
-            set: { if !$0 { session.projectionDisplayIssue = nil } }
-        )) {
-            Button("Manage Monitors…") { isProjectionSettingsPresented = true }
-            Button("OK", role: .cancel) { }
-        } message: {
-            Text(session.projectionDisplayIssue ?? "")
-        }
+        OutputDestinationMenu(session: session, manageOutputs: showOutputSettings)
+    }
+
+    private func showOutputSettings() {
+        NotificationCenter.default.post(name: .showManageOutputsSettings, object: nil)
     }
 
     private func handleRootOnAppear() {
@@ -507,17 +412,10 @@ public struct ContentView: View {
         refreshBackgroundAudioAccess()
         restoreWebpageState()
         loadPlaylists()
-        overlayScaleDraft = overlayScale
         backgroundAudioVolumeDraft = backgroundAudioVolume
         deferSessionChange {
             session.setBackgroundAudioLoop(backgroundAudioLoop)
             session.setBackgroundAudioVolume(backgroundAudioVolume)
-        }
-    }
-
-    private func handleOverlayScaleChange(_ newValue: Double) {
-        if abs(overlayScaleDraft - newValue) > 0.0001 {
-            overlayScaleDraft = newValue
         }
     }
 
@@ -563,18 +461,21 @@ public struct ContentView: View {
     }
 
     private func handleToggleSlidesVisibilityNotification(_ notification: Notification) {
+        guard workspaceCommands.isActive else { return }
         deferSessionChange {
             flow.toggleSlidesVisibility(in: session)
         }
     }
 
     private func handleToggleBackgroundVisibilityNotification(_ notification: Notification) {
+        guard workspaceCommands.isActive else { return }
         deferSessionChange {
             session.toggleBackgroundVisualVisibility()
         }
     }
 
     private func handleToggleBackgroundAudioNotification(_ notification: Notification) {
+        guard workspaceCommands.isActive else { return }
         deferSessionChange {
             if session.isBackgroundAudioPlaying {
                 session.pauseBackgroundAudio()
@@ -585,7 +486,9 @@ public struct ContentView: View {
     }
 
     private func handleClearAllLayersNotification(_ notification: Notification) {
+        guard workspaceCommands.isActive else { return }
         deferSessionChange {
+            session.outputCoordinator.profiles.clearBackgrounds()
             flow.hideSlides(in: session)
             clearBackgroundVisual()
             clearBackgroundAudio()
@@ -593,24 +496,29 @@ public struct ContentView: View {
     }
 
     private func handleClearBackgroundVisualNotification(_ notification: Notification) {
+        guard workspaceCommands.isActive else { return }
         deferSessionChange {
+            session.outputCoordinator.profiles.clearBackgrounds()
             clearBackgroundVisual()
         }
     }
 
     private func handleClearBackgroundAudioNotification(_ notification: Notification) {
+        guard workspaceCommands.isActive else { return }
         deferSessionChange {
             clearBackgroundAudio()
         }
     }
 
     private func handleNewLyricsNotification(_ notification: Notification) {
+        guard workspaceCommands.isActive else { return }
         DispatchQueue.main.async {
             requestEditorExit(.newLyrics)
         }
     }
 
     private func handleSaveLyricsNotification(_ notification: Notification) {
+        guard workspaceCommands.isActive else { return }
         guard lyricsEditor.isEditing, !isCurrentSelectionMediaFile else { return }
         deferSessionChange {
             _ = saveEditorDraft()
@@ -934,17 +842,7 @@ public struct ContentView: View {
         return "Load Preview into Current."
     }
 
-    private func toggleSlidesFromUI() {
-        DispatchQueue.main.async {
-            flow.toggleSlidesVisibility(in: session)
-        }
-    }
-
-    private func toggleBackgroundVisualFromUI() {
-        DispatchQueue.main.async {
-            session.toggleBackgroundVisualVisibility()
-        }
-    }
+    private func toggleSlidesFromUI() { flow.toggleSlidesVisibility(in: session) }
 
     private func updateLyricsProjectionSize() {
         let size = projectionDisplays.resolvedMonitor()?.frame.size
@@ -963,9 +861,7 @@ public struct ContentView: View {
         return isLyricsFile(currentLyricsSourceURL)
     }
 
-    private var canToggleSlides: Bool {
-        session.isPresenting || !session.isEmpty || session.hasAvailableBackgroundVisual
-    }
+
 
     private func buildPDFSlides(pageCount: Int, url: URL) -> [Slide] {
         PDFSlideCatalog.slides(url: url, pageCount: pageCount)
@@ -1219,31 +1115,6 @@ public struct ContentView: View {
             }
             index += 1
         }
-    }
-
-    private func chooseBackgroundVisual() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = backgroundVisualContentTypes()
-        if panel.runModal() == .OK, let url = panel.url {
-            if let bookmark = SecurityScopedBookmarks.createBookmark(for: url) {
-                backgroundVisualBookmark = bookmark
-            }
-            updateBackgroundVisualSelection(url)
-        }
-    }
-
-    private func backgroundVisualContentTypes() -> [UTType] {
-        var types: [UTType] = [.image, .movie, .video, .mpeg4Movie, .quickTimeMovie]
-        if let webp = UTType(filenameExtension: "webp") {
-            types.append(webp)
-        }
-        if let mkv = UTType(filenameExtension: "mkv") {
-            types.append(mkv)
-        }
-        return types
     }
 
     private func isUnderLibraryRoot(_ url: URL) -> Bool {
@@ -1881,33 +1752,6 @@ public struct ContentView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
             guard backgroundAudioVolumeDebounceToken == token else { return }
             applyBackgroundAudioVolume(newValue)
-        }
-    }
-
-    private func handleOverlayScaleDraftChange(_ newValue: Double) {
-        let token = UUID()
-        overlayScaleDebounceToken = token
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            guard overlayScaleDebounceToken == token else { return }
-            overlayScale = newValue
-        }
-    }
-
-    private func setOverlayMode(_ newMode: PresentationSession.OverlayMode) {
-        deferSessionChange {
-            session.setOverlayMode(newMode)
-        }
-    }
-
-    private func startCountdown(_ minutes: Int) {
-        deferSessionChange {
-            session.startCountdown(minutes: minutes)
-        }
-    }
-
-    private func stopCountdown() {
-        deferSessionChange {
-            session.stopCountdown()
         }
     }
 

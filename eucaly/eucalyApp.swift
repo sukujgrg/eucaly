@@ -7,6 +7,7 @@
 
 import SwiftUI
 import AppKit
+import Combine
 
 private enum AppLaunchContext {
     static let isRunningTests = NSClassFromString("XCTestCase") != nil
@@ -15,9 +16,19 @@ private enum AppLaunchContext {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let updates = AppUpdateViewModel(driver: SparkleUpdateDriver())
-    let altView = AltViewService(restorePreferences: !AppLaunchContext.isRunningTests)
+    lazy var altView = AltViewOutputRouter(store: outputProfiles)
     // Read monitor preferences after EucalyApp has migrated sandbox preferences.
     lazy var projectionDisplays = ProjectionDisplayManager(defaults: AppLaunchContext.isRunningTests ? nil : .standard)
+
+    lazy var outputProfiles = OutputProfileStore(defaults: AppLaunchContext.isRunningTests ? nil : .standard, monitor: projectionDisplays.target)
+    lazy var outputs = OutputCoordinator(profiles: outputProfiles, displays: projectionDisplays, retainsPreparedSessions: true)
+    private var settings: SettingsWindowController?
+    private var settingsRequest: AnyCancellable?
+
+    func showSettings(pane: NativeSettingsController.Pane? = nil) {
+        if settings == nil { settings = SettingsWindowController(outputs: outputs, router: altView, updates: updates) }
+        settings?.show(pane: pane)
+    }
 
     private var isTerminatingAfterCaptureCleanup = false
 
@@ -25,17 +36,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Ensure the app runs as a regular GUI app when launched via `swift run`.
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
+        settingsRequest = NotificationCenter.default.publisher(for: .showManageOutputsSettings)
+            .sink { [weak self] _ in self?.showSettings(pane: .outputs) }
         // Hosted unit tests use an injected driver and never contact the feed.
         if !AppLaunchContext.isRunningTests {
             updates.start()
-            altView.restoreConnection()
+            altView.start(coordinator: outputs)
         }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         let nonPresentationWindow = sender.windows.first { !($0 is PresentationWindow) }
         if let window = nonPresentationWindow {
-            window.makeKeyAndOrderFront(nil)
+            if window === settings?.window { settings?.showWindow(nil) }
+            else { window.makeKeyAndOrderFront(nil) }
         } else {
             sender.sendAction(#selector(NSApplication.newWindowForTab), to: nil, from: nil)
         }
@@ -52,10 +66,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return .terminateCancel
         }
 
+        settings?.finishPresentation()
+
         Task { @MainActor in
-            altView.disconnect()
+            outputs.stop()
+            altView.shutdown()
             await ScreenCaptureManager.shared.stopAllCaptures()
             closePresentationWindows(in: sender)
+            await outputProfiles.waitForPersistence()
             isTerminatingAfterCaptureCleanup = true
             sender.reply(toApplicationShouldTerminate: true)
         }
@@ -89,22 +107,19 @@ struct EucalyApp: App {
             // Unit tests construct their own views and sessions. Restoring the
             // user's library here would perform unrelated file/network access.
             if !AppLaunchContext.isRunningTests {
-                ContentView(projectionDisplays: appDelegate.projectionDisplays)
+                ContentView(projectionDisplays: appDelegate.projectionDisplays, outputs: appDelegate.outputs)
                     .environmentObject(appDelegate.updates)
                     .environmentObject(appDelegate.altView)
                     .frame(minWidth: 1060, minHeight: 600)
             }
         }
         .windowToolbarStyle(.unified)
-        Settings {
-            AppSettingsView()
-                .environmentObject(appDelegate.updates)
-                .environmentObject(appDelegate.altView)
-                .environmentObject(appDelegate.projectionDisplays)
-        }
-        .windowResizability(.contentSize)
         .commands {
             AppUpdateCommands(viewModel: appDelegate.updates)
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") { appDelegate.showSettings() }
+                    .keyboardShortcut(",", modifiers: .command)
+            }
             CommandGroup(replacing: .newItem) {
                 Button("New Lyrics") {
                     NotificationCenter.default.post(name: .newLyrics, object: nil)
@@ -141,39 +156,41 @@ struct EucalyApp: App {
             }
             CommandMenu("Slides") {
                 Button("Stop Projection") {
-                    NotificationCenter.default.post(name: .stopProjection, object: nil)
+                    appDelegate.outputs.stop()
                 }
                 .keyboardShortcut("1", modifiers: .command)
 
                 Divider()
 
                 Button("Show/Hide Slides") {
-                    NotificationCenter.default.post(name: .toggleSlidesVisibility, object: nil)
+                    appDelegate.outputs.toggleSlides()
                 }
                 .keyboardShortcut("2", modifiers: .command)
 
                 Button("Show/Hide Background") {
-                    NotificationCenter.default.post(name: .toggleBackgroundVisibility, object: nil)
+                    appDelegate.outputs.preferredLocalSession?.toggleBackgroundVisualVisibility()
                 }
 
                 Button("Pause/Play Background Audio") {
-                    NotificationCenter.default.post(name: .toggleBackgroundAudio, object: nil)
+                    if let session = appDelegate.outputs.audioSession ?? appDelegate.outputs.preferredLocalSession {
+                        if session.isBackgroundAudioPlaying { session.pauseBackgroundAudio() } else { session.playBackgroundAudio() }
+                    }
                 }
 
                 Divider()
 
                 Button("Clear Background Visual") {
-                    NotificationCenter.default.post(name: .clearBackgroundVisual, object: nil)
+                    appDelegate.outputs.clearBackgrounds()
                 }
                 .keyboardShortcut("3", modifiers: .command)
 
                 Button("Clear Background Audio") {
-                    NotificationCenter.default.post(name: .clearBackgroundAudio, object: nil)
+                    appDelegate.outputs.clearAudio()
                 }
                 .keyboardShortcut("4", modifiers: .command)
 
                 Button("Clear All Layers") {
-                    NotificationCenter.default.post(name: .clearAllLayers, object: nil)
+                    appDelegate.outputs.clearAllLayers()
                 }
                 .keyboardShortcut("5", modifiers: .command)
             }
@@ -182,6 +199,7 @@ struct EucalyApp: App {
 }
 
 extension Notification.Name {
+    static let showManageOutputsSettings = Notification.Name("showManageOutputsSettings")
     static let newLyrics = Notification.Name("newLyrics")
     static let stopProjection = Notification.Name("stopProjection")
     static let toggleSlidesVisibility = Notification.Name("toggleSlidesVisibility")

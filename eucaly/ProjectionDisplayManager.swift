@@ -37,6 +37,9 @@ final class ProjectionDisplayManager: ObservableObject {
     private var labels: [String: ProjectionMonitorLabel] = [:]
     private var observers: [UUID: () -> Void] = [:]
     private var activeOutputs: [UUID: ProjectionMonitorTarget] = [:]
+    // The app-owned output group supplies saved assignment constraints. Physical
+    // availability remains separate so an output can resolve its own monitor.
+    var selectionConstraint: ((ProjectionMonitorTarget) -> String?)?
     private var screenObserver: NSObjectProtocol?
     private let identifier = ProjectionMonitorIdentifier()
     @Published private(set) var revision = 0
@@ -95,6 +98,10 @@ final class ProjectionDisplayManager: ObservableObject {
 
     var isLocked: Bool { !activeOutputs.isEmpty }
 
+    func isReserved(_ target: ProjectionMonitorTarget) -> Bool {
+        activeOutputs.values.contains { $0.identity == target.identity }
+    }
+
     var knownTargets: [ProjectionMonitorTarget] {
         labels.map { ProjectionMonitorTarget(identity: $0.key, name: $0.value.modelName) }
             .sorted { (number(for: $0) ?? Int.max) < (number(for: $1) ?? Int.max) }
@@ -109,7 +116,7 @@ final class ProjectionDisplayManager: ObservableObject {
     }
 
     var selectionLabel: String {
-        guard let target else { return "Choose a monitor" }
+        guard let target else { return "None" }
         return label(for: target)
     }
 
@@ -127,8 +134,12 @@ final class ProjectionDisplayManager: ObservableObject {
         return nil
     }
 
+    func selectionProblem(for target: ProjectionMonitorTarget) -> String? {
+        problem(for: target) ?? selectionConstraint?(target)
+    }
+
     var selectionProblem: String? {
-        if let target { return problem(for: target) }
+        if let target { return selectionProblem(for: target) }
         return displays.isEmpty
             ? "Connect a monitor, then choose it for projection."
             : "Choose a projection monitor before showing slides or background visuals."
@@ -157,11 +168,30 @@ final class ProjectionDisplayManager: ObservableObject {
     @discardableResult
     func select(_ target: ProjectionMonitorTarget) -> Bool {
         refresh()
-        guard !isLocked, problem(for: target) == nil else { return false }
+        guard !isLocked, selectionProblem(for: target) == nil else { return false }
         self.target = target
         saveTarget()
         identifier.close()
         changed()
+        return true
+    }
+
+    @discardableResult
+    func clearSelection() -> Bool {
+        guard !isLocked else { return false }
+        target = nil; saveTarget(); identifier.close(); changed()
+        return true
+    }
+
+    /// Output settings may prepare an idle destination while another output is
+    /// open. Saved assignment constraints still prevent enabled monitor sharing.
+    @discardableResult
+    func setSelection(_ target: ProjectionMonitorTarget?, owner: UUID) -> Bool {
+        refresh()
+        guard activeOutputs[owner] == nil else { return false }
+        if let target, selectionProblem(for: target) != nil { return false }
+        self.target = target
+        saveTarget(); identifier.close(); changed()
         return true
     }
 

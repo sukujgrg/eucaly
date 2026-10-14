@@ -15,11 +15,12 @@ struct LyricsSlideContentView: View {
     let fontScale: Double
     let paddingScale: Double
     let rendering: Rendering
+    var profile: OutputProfile? = nil
 
     var body: some View {
         let metrics = LyricsSlideMetrics(
             lines: lines, size: size, layout: layout,
-            paddingScale: paddingScale, rendering: rendering
+            paddingScale: paddingScale, rendering: rendering, profile: profile
         )
 
         Group {
@@ -44,8 +45,10 @@ struct LyricsSlideContentView: View {
             let blockSize = metrics.size(for: block)
             LyricsTextFitLayout(maxHeight: blockSize.height) {
                 Text(block.text)
-                    .font(block.font(size: metrics.fontSize(for: block, scale: fontScale)))
-                    .foregroundStyle(.white)
+                    .font(profile.map { $0.typography(for: block.outputRole).font(at: metrics.fontSize(for: block, scale: fontScale)) }
+                          ?? block.font(size: metrics.fontSize(for: block, scale: fontScale)))
+                    .foregroundStyle(profile?.typography(for: block.outputRole).colour.color ?? .white)
+                    .lineSpacing((profile?.typography(for: block.outputRole).lineSpacing ?? 0) * (rendering == .thumbnail ? 16.0 / 84.0 : 1))
                     .multilineTextAlignment(textAlignment.textAlignment)
                     .lineLimit(nil)
                     // Preserve the complete text. Operator cards warn when it
@@ -67,13 +70,15 @@ struct LyricsSlideMetrics {
     private let layout: PresentationLyricsLayout
     private let rendering: LyricsSlideContentView.Rendering
     private let totalWeight: Double
+    private let profile: OutputProfile?
 
     init(lines: [SlideLine], size: CGSize, layout: PresentationLyricsLayout,
-         paddingScale: Double, rendering: LyricsSlideContentView.Rendering) {
+         paddingScale: Double, rendering: LyricsSlideContentView.Rendering, profile: OutputProfile? = nil) {
+        self.profile = profile
         self.layout = layout
         self.rendering = rendering
         blocks = layout.blocks(for: lines)
-        totalWeight = blocks.reduce(0) { $0 + $1.relativeFontSize }
+        totalWeight = blocks.reduce(0) { total, block in total + (profile.map { $0.typography(for: block.outputRole).size / $0.typography.size } ?? block.relativeFontSize) }
         let padding = CGFloat(min(2, max(0, paddingScale)))
         let horizontalInset = (rendering == .projection ? max(40, size.width * 0.1) : 6) * padding
         let verticalInset = (rendering == .projection ? max(32, size.height * 0.08) : 6) * padding
@@ -91,10 +96,13 @@ struct LyricsSlideMetrics {
         )
     }
 
+    private func relativeSize(_ block: LyricsTextBlock) -> Double {
+        profile.map { $0.typography(for: block.outputRole).size / $0.typography.size } ?? block.relativeFontSize
+    }
     func size(for block: LyricsTextBlock) -> CGSize {
         CGSize(
             width: layout == .columns
-                ? availableSize.width * CGFloat(block.relativeFontSize / totalWeight)
+                ? availableSize.width * CGFloat(relativeSize(block) / totalWeight)
                 : availableSize.width,
             height: availableSize.height
         )
@@ -109,11 +117,14 @@ struct LyricsSlideMetrics {
         case .thumbnail:
             preferredSize = min(16, max(8, blockSize.height * 0.6))
         }
-        return preferredSize * scale * block.relativeFontSize
+        return preferredSize * scale * relativeSize(block)
     }
 }
 
 extension LyricsTextBlock {
+    var outputRole: OutputComponentRole {
+        switch companion { case .meaning: return .meaning; case .translation: return .translation; case .transliteration: return .transliteration; case nil: return .primary }
+    }
     func font(size: CGFloat) -> Font {
         let font = Font.system(size: size, weight: isMeaning ? .regular : .bold)
         return isMeaning ? font.italic() : font
@@ -123,7 +134,7 @@ extension LyricsTextBlock {
 /// Gives Text a height limit without stretching short text to fill that height.
 /// SwiftUI measures and fits its own glyphs, including fallback fonts used by
 /// multilingual lyrics, so measurement and rendering cannot disagree.
-private struct LyricsTextFitLayout: Layout {
+struct LyricsTextFitLayout: Layout {
     let maxHeight: CGFloat
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {

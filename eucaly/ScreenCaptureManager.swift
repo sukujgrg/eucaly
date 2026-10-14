@@ -11,7 +11,9 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
     // MARK: - Properties
     private struct ActiveCapture {
         let stream: SCStream
-        let ownerID: UUID
+        let fanout: SharedCaptureOutput
+        let start: Task<Void, Error>
+        let generation: UUID
     }
 
     private let sampleQueue = DispatchQueue(label: "eucaly.window-capture.sample", qos: .userInitiated)
@@ -71,9 +73,14 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
         ownerID: UUID = UUID(),
         outputHandler: SCStreamOutput
     ) async throws -> SCStream {
-        if let existingCapture = activeStreams[windowID] {
-            try? await existingCapture.stream.stopCapture()
-            activeStreams.removeValue(forKey: windowID)
+        if let existing = activeStreams[windowID] {
+            existing.fanout.add(ownerID, output: outputHandler)
+            do { try await existing.start.value } catch {
+                if activeStreams[windowID]?.generation == existing.generation { activeStreams.removeValue(forKey: windowID) }
+                throw error
+            }
+            guard activeStreams[windowID]?.generation == existing.generation else { throw CancellationError() }
+            return existing.stream
         }
 
         guard let filter = captureFilters[windowID] else {
@@ -103,10 +110,17 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
         config.preservesAspectRatio = true
 
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
-        try stream.addStreamOutput(outputHandler, type: .screen, sampleHandlerQueue: sampleQueue)
-        try await stream.startCapture()
-
-        activeStreams[windowID] = ActiveCapture(stream: stream, ownerID: ownerID)
+        let fanout = SharedCaptureOutput()
+        fanout.add(ownerID, output: outputHandler)
+        try stream.addStreamOutput(fanout, type: .screen, sampleHandlerQueue: sampleQueue)
+        let generation = UUID()
+        let start = Task { try await stream.startCapture() }
+        activeStreams[windowID] = ActiveCapture(stream: stream, fanout: fanout, start: start, generation: generation)
+        do { try await start.value } catch {
+            if activeStreams[windowID]?.generation == generation { activeStreams.removeValue(forKey: windowID) }
+            throw error
+        }
+        guard activeStreams[windowID]?.generation == generation else { throw CancellationError() }
         ensureAvailabilityMonitorIfNeeded()
         return stream
     }
@@ -114,18 +128,27 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
     @MainActor
     func stopCapture(windowID: CGWindowID, ownerID: UUID? = nil) async throws {
         guard let activeCapture = activeStreams[windowID] else { return }
-        if let ownerID, activeCapture.ownerID != ownerID { return }
-        try await activeCapture.stream.stopCapture()
+        if let ownerID {
+            activeCapture.fanout.remove(ownerID)
+            guard activeCapture.fanout.isEmpty else { return }
+        }
+        // Remove before awaiting. Late stop callbacks cannot remove a new stream.
         activeStreams.removeValue(forKey: windowID)
+        activeCapture.fanout.removeAll()
+        _ = try? await activeCapture.start.value
+        try await activeCapture.stream.stopCapture()
         stopAvailabilityMonitorIfIdle()
     }
 
     @MainActor
     func stopAllCaptures() async {
-        for (_, activeCapture) in activeStreams {
-            try? await activeCapture.stream.stopCapture()
-        }
+        let captures = Array(activeStreams.values)
         activeStreams.removeAll()
+        for capture in captures {
+            capture.fanout.removeAll()
+            _ = try? await capture.start.value
+            try? await capture.stream.stopCapture()
+        }
         stopAvailabilityMonitorIfIdle()
     }
 
@@ -339,5 +362,21 @@ extension ScreenCaptureManager: SCStreamDelegate {
             stopAvailabilityMonitorIfIdle()
         }
         NSLog("ScreenCapture stream stopped: %@", error.localizedDescription)
+    }
+}
+
+/// One picker-approved source stream fans out the same GPU-backed sample buffer.
+/// Each consumer keeps its own bounded latest-frame mailbox. No bitmap copies.
+nonisolated final class SharedCaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
+    private let lock = NSLock()
+    private var outputs: [UUID: SCStreamOutput] = [:]
+    func add(_ id: UUID, output: SCStreamOutput) { lock.lock(); outputs[id] = output; lock.unlock() }
+    func remove(_ id: UUID) { lock.lock(); outputs.removeValue(forKey: id); lock.unlock() }
+    func removeAll() { lock.lock(); outputs.removeAll(); lock.unlock() }
+    var isEmpty: Bool { lock.lock(); defer { lock.unlock() }; return outputs.isEmpty }
+    var consumerCount: Int { lock.lock(); defer { lock.unlock() }; return outputs.count }
+    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+        lock.lock(); let consumers = Array(outputs.values); lock.unlock()
+        for consumer in consumers { consumer.stream?(stream, didOutputSampleBuffer: sampleBuffer, of: type) }
     }
 }

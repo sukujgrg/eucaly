@@ -32,6 +32,7 @@ struct LyricsReadabilityWarning: View {
 
 struct LyricsReadabilityCheck: View {
     let lines: [SlideLine]
+    @Environment(\.audienceOutputProfile) private var audienceProfile
     @Environment(\.lyricsProjectionSize) private var projectionSize
     @AppStorage("presentationLyricsLayout") private var layout: PresentationLyricsLayout = .stacked
     @AppStorage("presentationPaddingScale") private var paddingScale: Double = 1
@@ -39,12 +40,13 @@ struct LyricsReadabilityCheck: View {
 
     var body: some View {
         if let projectionSize {
-            LyricsReadabilityProbe(
-                lines: lines, size: projectionSize, layout: layout,
-                paddingScale: paddingScale, fontScale: fontScale
-            )
-            .hidden()
-            .accessibilityHidden(true)
+            if let audienceProfile {
+                OutputReadabilityProbe(content: .init(kind: .lyrics, components: lines.map { .init(id: $0.id, role: OutputContentAdapter.role(for: $0), text: $0.text) }),
+                                       profile: audienceProfile, size: projectionSize)
+            } else {
+                LyricsReadabilityProbe(lines: lines, size: projectionSize, layout: layout, paddingScale: paddingScale, fontScale: fontScale)
+                    .hidden().accessibilityHidden(true)
+            }
         }
     }
 }

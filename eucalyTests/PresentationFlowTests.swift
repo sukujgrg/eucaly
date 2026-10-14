@@ -3,6 +3,14 @@ import XCTest
 import AppKit
 
 final class PresentationFlowTests: XCTestCase {
+    @MainActor private func projectedSession() -> (OutputCoordinator, PresentationSession) {
+        let monitor = ProjectionMonitor(id: 1, identity: UUID().uuidString, name: "Audience", frame: CGRect(x: 0, y: 0, width: 1920, height: 1080))
+        let displays = ProjectionDisplayManager(displays: { [monitor] }); displays.select(monitor.target)
+        let outputs = OutputCoordinator(profiles: OutputProfileStore(monitor: monitor.target), displays: displays, driverFactory: { FakeOutputDriver() })
+        let session = PresentationSession(projectionDisplays: displays, outputCoordinator: outputs)
+        session.setSlides(LyricsParser.parseDocument("Verse\nFlow test").slides); session.showSlides()
+        return (outputs, session)
+    }
     func testThumbnailGridNavigationUsesVisibleColumnCount() {
         let layout = ThumbnailGridLayout.make(for: 700, thumbnailScale: 1.0)
 
@@ -329,8 +337,8 @@ final class PresentationFlowTests: XCTestCase {
 
     func testShowSlidesRestoresVisibilityWhenPresenting() async {
         let result = await MainActor.run { () -> Bool in
-            let session = PresentationSession()
-            session.isPresenting = true
+            let (outputs, session) = projectedSession()
+            defer { outputs.stop() }
             session.areSlidesVisible = false
 
             session.showSlides()
@@ -344,7 +352,8 @@ final class PresentationFlowTests: XCTestCase {
     func testToggleSlidesVisibilityWhilePresentingDoesNotClearBackground() async {
         let result = await MainActor.run { () -> (firstToggleVisible: Bool, secondToggleVisible: Bool, backgroundURL: URL?) in
             let flow = PresentationFlowController()
-            let session = PresentationSession()
+            let (outputs, session) = projectedSession()
+            defer { outputs.stop() }
             let tempURL = URL(fileURLWithPath: NSTemporaryDirectory())
                 .appendingPathComponent("eucaly-test-bg2.jpg")
             FileManager.default.createFile(atPath: tempURL.path, contents: Data([0x00]), attributes: nil)

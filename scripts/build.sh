@@ -37,15 +37,17 @@ EXPORT_PATH="$HOME/Applications"
 
 mkdir -p "$EXPORT_PATH"
 
+# Strip the app at archive time; preserve Sparkle's pre-signed copied binaries.
 xcodebuild \
   -project eucaly.xcodeproj \
   -scheme eucaly \
+  -destination 'generic/platform=macOS' \
   -configuration Release \
   -derivedDataPath build/DerivedData \
   -archivePath "$ARCHIVE_PATH" \
   archive \
   STRIP_INSTALLED_PRODUCT=YES \
-  COPY_PHASE_STRIP=YES \
+  COPY_PHASE_STRIP=NO \
   ARCHS=arm64 \
   ONLY_ACTIVE_ARCH=NO
 

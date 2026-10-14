@@ -14,7 +14,9 @@ Primary UX model:
 - explicitly load it into **Current**
 - project **Current** to display
 
-Browsing must never silently replace Current.
+Browsing must never silently replace Current. All presentation content follows
+Sidebar -> Preview -> Current. ViewTheWord owns its own projection and styling;
+eucaly does not receive or re-render its scripture.
 
 ## Tech Stack
 - SwiftUI (main UI)
@@ -29,7 +31,7 @@ Browsing must never silently replace Current.
 ### Main Entry
 - `eucaly/eucalyApp.swift`
   - Main `WindowGroup`
-  - Settings scene (`AppSettingsView`)
+  - Native Settings window (`SettingsWindowController`, `GeneralSettingsController`)
   - App command menu and shortcuts
 
 ### Releases and Self-Updates
@@ -52,13 +54,29 @@ Browsing must never silently replace Current.
     - `@StateObject var flow = PresentationFlowController()`
   - Hosts split view, toolbar controls, selection handling, and sidebar callbacks
 
+### Output Profiles
+- AppDelegate owns OutputProfileStore, OutputCoordinator and AltViewOutputRouter independently of controls windows. OutputCoordinator owns native destinations, local workspace ownership, snapshots and shared media. There is no incoming presentation receiver or forwarding path.
+- One output group follows one explicitly activated local Current. Profiles own typography and visual backgrounds; destinations independently reference physical monitor UUIDs or discovered AltView receiver UUIDs. Migration enables only the existing Audience output and never chooses a fallback monitor.
+- Show, live Load/Switch, visible Current navigation and same-slide activation select the active workspace. Hidden navigation and passive preparation in another workspace remain private. Hide retains the last snapshot privately; Clear removes it. Background and audio controls remain independent.
+- SwiftUI WindowGroup owns the workspace lifecycle. Coordinator construction never opens windows. The native workspace didBecomeKey notification permits Confidence standby after the workspace exists; no timer, polling or replacement main window is used. Projection windows can become key, never main, and are excluded from automatic restoration.
+- Open Confidence shows a large centered clock when empty, cleared or hidden. Current is on the left and Next on the right, with no source-name header or media filename. Enabled, assigned Confidence opens automatically after the real workspace becomes key or after assignment/enable. Standby never shows a slide, steals focus, takes ownership, starts program media or publishes to AltView. Stop, native close and display loss suppress reopening until Open Confidence/Show or a new assignment/enable. The old Timer/Clock overlay remains removed.
+- Local OutputActionClock order and session cancellation generations invalidate old queued navigation after newer commands or destination closure. Native close and outgoing connection callbacks are generation guarded.
+- Reservations and teardown are per destination. Losing one retains the others, resources, Current and saved assignments. Reconnection requires explicit Show; never silently move output to a different monitor. Enabled destinations cannot share a monitor or AltView receiver. Disabled rows retain assignments without reserving them. Pickers offer None.
+- Images, PDFs, video and picked windows use the same native media boundary in every enabled profile. Live webpages require one Audience monitor; companions show a webpage status without additional WebKit playback. Remote-only media, including deferred model refresh, must not replace a valid live lyrics program.
+- OutputMediaRuntime owns one program AVPlayer and pools matching muted background resources. ScreenCaptureManager owns one picker-approved stream with reference-counted consumers and GPU-backed sample-buffer fan-out. Closing one destination does not stop others. Independent background audio has one explicit session owner.
+- AppDelegate owns one native AppKit Settings window shared by the app menu, Manage Outputs toolbar action and inline output notices. General and Manage Outputs use native toolbar tabs. Appearance and backgrounds live in Manage Outputs; thumbnail controls remain in General. Add Native and Add AltView create disabled, unassigned destinations. Audience, Confidence and Lower Third are native appearance profiles; AltView owns its appearance and has no profile picker. Lower Third defaults to chroma green. Retired Meaning/Translation presets migrate to Audience while custom copies retain their settings.
+- Validate a destination's assignment before enabling it. Conflicting monitor/receiver attempts leave its saved enabled state and assignment unchanged, with an inline settings error. Disabled destinations may retain shared assignments. Output failures use an inline workspace notice with Manage Outputs and Dismiss actions; never show a blocking output-unavailable dialog.
+- Manage Outputs uses AppKit list-and-detail navigation, with native controls, colour wells and NSFontPanel. Settings apply immediately; names commit on Return or editing end, with no Save button. The Settings window owns visibility, resizing and close/reopen lifecycle. Disclosure headers are clickable across the full row. Preserve requested fonts during fallback and relative size inheritance when choosing a component font. Pickers preserve duplicate names by UUID. Audience thumbnails use its typeface/layout with independent size controls. Readability notices remain operator-only.
+- Saved profile version 3 removes receiver enablement and Bible settings while retaining local typography, backgrounds, monitor/AltView assignments and pairings. Do not restore incoming reception, scripture components or hub protocol extensions. ViewTheWord's projection and appearance are independent.
+- See docs/output-profiles-implementation.md for architecture, verification and physical/profiling limits. Snapshot acceptance does not prove GPU cadence or physical delivery.
+
 ### AltView Text Output
-- `AppDelegate` owns one `AltViewService`; it is independent of projection views and local window lifetime.
-- `PresentationSession` emits coherent Current snapshots plus explicit project/show/stop events. Preview never publishes. Visible Current activation (including the same slide), keyboard navigation, and explicit Load/Switch Current request projection; background model refreshes and hidden navigation do not.
-- The adapter sends primary lyrics only, using `LyricsSectionCatalog` to exclude meaning/translation/transliteration companions. Media slides clear remote text. The negotiated localProjectionV1 extension explicitly reports the last presented lyrics/media mode plus the exact projection-window identity for same-Mac AltView Confidence capture. Hidden navigation retains mode; Preview, pairing and background changes never publish a new mode. Eucaly remains the sole playback/audio owner. See docs/altview.md.
-- Connect Only and restoring the last paired receiver at startup never take output. Explicit visible projection/Show Slides takes output from another sender without manual release or reconnect; hide/clear/background updates never create a takeover. A cached lease may already be revoked: keep explicit requests until a fresh grant or acceptance at/after their snapshot revision, and request takeover when delayed ownership feedback revokes the lease. Same-slide activation sends a fresh revision so earlier acceptance cannot settle the new action. Preserve requests through reconnect and interrupted grants; Stop/Disconnect cancels them. Reconnect without a pending explicit request uses resume only for the former owner and must not displace another sender.
-- AltView settings share ViewTheWord’s compact native connection layout. Template discovery uses opaque IDs; default to Lyrics when advertised. Selection and discovery are private until the next slide/show. Hide and reconnect retain the published request, filtered against the latest catalogue; show receiver overrides separately.
-- Keep network/encoding/Keychain work off the UI thread, bounded latest-value mailboxes, submission-correlated acknowledgements, and late-grant cancellation. See `docs/altview.md` for protocol provenance, operator setup, and validation boundaries.
+- AppDelegate owns one AltViewOutputRouter, one native Bonjour browser and one independent AltViewService channel per enabled receiver row. OutputCoordinator alone publishes the local live program. Preview and renderers never publish.
+- Native profiles use physical monitor UUIDs. AltView rows use stable discovered receiver UUIDs, fresh service resolution, separate Keychain pairings, leases, reconnect and submission-correlated acknowledgement. They allocate no native window and support lyrics without a local monitor. AltView owns its own appearance.
+- Send primary lyrics using LyricsSectionCatalog. Meaning, translation and transliteration remain local companions and never substitute primary lyrics. Media clears remote Audience text; LAN does not carry pixels or audio. Negotiated localProjectionV1 reports only eucaly's exact native Audience window for same-Mac AltView Confidence. Eucaly owns playback/audio for its media.
+- Connect Only, pairing restoration, discovery, passive refresh and reconnect never take a displaced output. Explicit visible presentation, including same-slide activation, independently takes enabled destinations. Retain requests through reconnect, interrupted grants and revoked cached leases. Stop/Disconnect cancels them and releases late grants. Resume applies only to a former owner.
+- Hide/Clear cancels unaccepted take requests while retaining an owned lease for hidden state. Readiness must preserve revision-correlated acceptance. Keep network/encoding/Keychain off the UI thread and use bounded latest-value mailboxes.
+- Outgoing discovery ignores retired presentation-hub advertisements. The outgoing sender identity migrates independently of the removed receiver. Do not restore a session event bridge or per-channel discovery/preferences. See docs/altview.md for setup, provenance and validation boundaries.
 
 ### Pane Containers
 - `eucaly/EditorPaneContainerView.swift`
@@ -78,8 +96,8 @@ These isolate rendering concerns from orchestration.
 ### Presentation Runtime
 - `eucaly/PresentationWindowController.swift`
   - `PresentationSession`
-  - Projection window lifecycle
-  - Layer visibility state (`areSlidesVisible`, background visibility, overlay)
+  - Local Current document, navigation, playback controls, and presentation actions
+  - Layer visibility state (`areSlidesVisible`, background visibility)
   - Media playback controls
   - Window-capture slide support
 
@@ -129,10 +147,10 @@ If a new type cannot follow this contract, treat it as a design bug and refactor
 - Toolbar and menu control slide visibility separately from background layer visibility.
 - ESC hides slides.
 - Projection can remain active while slides are hidden.
-- `PresentationSession` holds one `ProjectionSleepPrevention` activity while its projection window is open, preventing idle system and display sleep. Hide Slides, Clear Current, and background/layer changes retain it. Stop Projection, native window close, display-loss shutdown, and teardown release it; browsing, naming, Identify, audio alone, and failed projection starts do not acquire it.
+- `OutputCoordinator` holds one `ProjectionSleepPrevention` activity while any physical projection window (including a standby clock) is open, preventing idle system and display sleep. Hide Slides, Clear Current, and background/layer changes retain it. Stop Projection, native window close, display-loss shutdown, and teardown release it; browsing, naming, Identify, audio alone, and failed projection starts do not acquire it.
 - Background and audio are independent from slides visibility.
 - Projection target display is user-selectable from the toolbar (`display` menu).
-- `ProjectionDisplayManager` is shared by the toolbar, Projection settings, and sessions. Assignments, monitor numbers, and custom names are persisted by macOS display UUID; the old `projectionScreenDisplayID` preference is migrated once.
+- `ProjectionDisplayManager` is shared by the toolbar, Manage Outputs, and sessions. Assignments, monitor numbers, and custom names are persisted by macOS display UUID; the old `projectionScreenDisplayID` preference is migrated once.
 - Identify briefly labels an idle monitor without changing Current or opening projection. Stop projection before selecting another monitor.
 - Projection requires an explicitly selected monitor; there is no Auto selection or fallback. A previous Auto preference becomes unassigned and requires a choice. Each active projection pins the selected physical identity. Disconnect, mirroring, or ambiguous identity closes projection immediately, retaining Current, audio, names, and the saved assignment; reconnect requires an explicit Show Slides. Never silently move output to another monitor.
 
@@ -148,7 +166,6 @@ If a new type cannot follow this contract, treat it as a design bug and refactor
 Order in projection:
 1. Background visual layer
 2. Slides layer (lyrics/PDF/image/video/window)
-3. Timer/clock overlay layer
 
 Projection layout rule:
 - Pin each projection layer to the same explicit full-screen geometry frame.
@@ -159,11 +176,12 @@ Projection screen rule:
 - All projection entry points must resolve target display through the same selection source.
 - Do not hardcode screen selection (`NSScreen.screens[1]`) in call sites.
 
-### Timer / Clock Overlay
-- Sidebar controls are always available.
-- Overlay renders on projection and in Current thumbnails.
-- Overlay is fixed top-right with consistent padding.
-- Overlay writes are debounced and deferred to avoid publish-during-update issues.
+### Confidence Standby Clock
+- An open Confidence output with no visible text or media always shows a large centered clock.
+- Enabled, assigned Confidence opens its clock before the first slide at startup or after explicit assignment/enable.
+- This clock is local to Confidence and does not change ownership, Current, AltView output or session presentation state.
+- Stop, Close Confidence and monitor loss retain an explicit closed state; Open Confidence or Show Slides resumes output on the saved physical identity.
+- The old optional Timer/Clock overlay and countdown controls have been removed.
 
 ## Window Capture Support (Authoritative)
 
@@ -223,8 +241,8 @@ Window capture supports live streaming of a user-picked app window into a slide.
 - `isLyricsSlide` must continue excluding window slides.
 
 ### Lifecycle and Cleanup
-- Capture starts when window slide appears and stops when it disappears.
-- Session teardown must stop all active captures.
+- Capture consumers attach when a window slide appears and detach when it disappears. The shared source stream stops after its last consumer releases it.
+- Destination/session teardown releases its own consumers; app shutdown stops all active captures.
 - Missing window or permission failure must degrade gracefully (error state, no crash).
 
 ### Known Design Constraint
@@ -250,12 +268,12 @@ Window capture supports live streaming of a user-picked app window into a slide.
 - Grid layout: `eucaly/ThumbnailGridLayout.swift`
 - Grid cell: `eucaly/SlideGridCellView.swift`
 - Lyrics layout: `eucaly/PresentationLyricsLayout.swift`, `eucaly/LyricsSlideContentView.swift`
-  - Appearance offers Stacked / Columns plus Top / Middle / Bottom positioning.
+  - Manage Outputs offers Stacked / Columns plus Top / Middle / Bottom positioning.
   - Lyrics Padding scales outer margins and component gaps in both layouts, from 0% (full slide) to 200%; 100% preserves the default spacing. The saved setting also applies to Preview and Current thumbnails.
   - Columns group existing lyric components (lyrics, meaning, translation, transliteration); missing components do not reserve space.
   - Column widths follow relative font sizes: Meaning gets half the width of each full-size component (40% / 20% / 40% for lyrics / meaning / transliteration, after margins and gaps). A single component always uses the full available width.
   - Preview and Current thumbnails share the projection text layout. SwiftUI measures and fits its own text, including multilingual fallback fonts.
-  - Appearance separates shared slide layout, Projection Font Size, and thumbnail controls. Projection and thumbnail font sizes remain independent.
+  - Manage Outputs owns per-profile layout and projection fonts; General settings owns thumbnail controls. Projection and thumbnail font sizes remain independent.
   - Preview and Current lyrics cards show an advisory when a component cannot fit at 32 projection points, or its requested font is smaller. The check uses the selected display's full frame, shared layout geometry, and SwiftUI font metrics. It does not guarantee readability at every viewing distance. Keep the full text fitting behavior; never silently truncate, change layout, or project operator warnings.
   - The advisory is a visible status row and is included in the card button's accessibility value. Suggest increasing Projection Font Size only for components that fit at the threshold; overflow needs more space or shorter content. Apply measured status outside the layout update and reserve no warning space on unaffected cards.
 - Media slide views:
@@ -330,7 +348,7 @@ Window capture supports live streaming of a user-picked app window into a slide.
 ### 3) SwiftUI state safety
 - Never publish observable changes while the view tree is being evaluated.
 - Defer lifecycle-edge writes to a safe boundary on main queue when required.
-- Debounce rapid user-driven state writes (overlay/audio sliders and similar).
+- Debounce rapid user-driven state writes (audio sliders and similar).
 
 ### 4) Keep boundaries clean
 - `ContentView` orchestrates.
@@ -375,14 +393,14 @@ When changing behavior, verify:
 - Lyrics/PDF/Image/Video/Webpage/Window all load into Preview.
 - Preview does not implicitly overwrite Current.
 - Load to Current works identically across media types.
-- Projection only renders Current.
+- Projection only renders Current; browsing and passive preparation in another workspace remain private.
 - Webpage navigation in Current updates Current/runtime state and projection without forcing Preview to reload.
 - Webpage navigation in Preview updates Preview only and does not rewrite sidebar saved entries.
 - Webpage mute affects Preview, Current, and projection consistently.
 - Background visual/audio remain independent from slides visibility.
 - Projection display picker selects the correct monitor across start/toggle/background actions.
 - Display unplug/hot-plug closes invalid output and keeps the chosen identity; reconnect and a new Show Slides use that identity even with a new runtime ID.
-- Timer/clock controls and rendering still work.
+- Confidence shows its centered standby clock when empty, cleared or hidden, and other profiles have no Timer/Clock overlay.
 - No new SwiftUI publish-during-update warnings.
 - No stale capture streams after slide/session teardown.
 

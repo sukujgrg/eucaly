@@ -2,7 +2,7 @@ import AppKit
 import Combine
 import Foundation
 
-/// One app-owned sender. Local projection never waits for this service, its
+/// One receiver channel. Local projection never waits for this service, its
 /// transport, discovery, Keychain, or receiver acknowledgements.
 @MainActor
 final class AltViewService: ObservableObject {
@@ -14,25 +14,12 @@ final class AltViewService: ObservableObject {
     @Published private(set) var isConnecting = false
     @Published private(set) var destination: AltViewDestination?
     @Published private(set) var submitted: AltViewDisplayContent?
-    @Published private(set) var selectedTemplate: AltViewContentTemplate? = .lyrics
 
-    private var projectionPresentation: AltViewProjectionPresentation?
-    private var confidenceText: AltViewConfidenceText?
-    private var discoveryVisible = false
-    private var discoveryRunning = false
-    private let defaults: UserDefaults
+    var onStatusChange: (() -> Void)?
     private let pairingStore: AltViewPairingStoring
-    private let restorePreferences: Bool
-    private var didRestoreConnection = false
     private let senderFactory: (@escaping (AltViewSenderStatus) -> Void) -> AltViewSending
-    private let discoveryFactory: (@escaping ([AltViewDiscoveredReceiver], String?) -> Void) -> AltViewReceiverDiscovering
     private var sender: AltViewSending?
     private var startedSender = false
-    private lazy var discovery = discoveryFactory { [weak self] receivers, notice in
-        MainActor.assumeIsolated {
-            self?.receiveDiscovered(receivers.compactMap(AltViewDestination.init), notice: notice)
-        }
-    }
     private var connectionID: UUID?
     private var pairingKey: Data?
     private var pairedReceiverID: UUID?
@@ -40,27 +27,14 @@ final class AltViewService: ObservableObject {
     private var activeSourceID: UUID?
     private var pendingTake: AltViewSubmission?
     private var submissionID: UUID?
-    private var submittedSlideID: UUID?
 
-    init(defaults: UserDefaults = .standard, restorePreferences: Bool = true,
+    init(defaults: UserDefaults = .standard, senderIdentity: UUID? = nil,
          pairingStore: AltViewPairingStoring = AltViewPairingStore(),
-         senderFactory: ((@escaping (AltViewSenderStatus) -> Void) -> AltViewSending)? = nil,
-         discoveryFactory: ((@escaping ([AltViewDiscoveredReceiver], String?) -> Void) -> AltViewReceiverDiscovering)? = nil) {
-        self.defaults = defaults
+         senderFactory: ((@escaping (AltViewSenderStatus) -> Void) -> AltViewSending)? = nil) {
         self.pairingStore = pairingStore
-        self.restorePreferences = restorePreferences
-        self.discoveryFactory = discoveryFactory ?? { AltViewReceiverDiscovery(onChange: $0) }
-        if restorePreferences, let raw = defaults.string(forKey: "altViewTemplate") {
-            if raw.isEmpty { selectedTemplate = nil }
-            else if AltViewContentTemplate(rawValue: raw).isValid { selectedTemplate = .init(rawValue: raw) }
-        }
-        if restorePreferences, let data = defaults.data(forKey: "altViewDestination") {
-            let saved = try? JSONDecoder().decode(AltViewDestination.self, from: data)
-            destination = saved?.isValid == true ? saved : nil
-        }
         self.senderFactory = senderFactory ?? { callback in
-            let senderID = defaults.string(forKey: "altViewSenderID").flatMap(UUID.init(uuidString:)) ?? UUID()
-            defaults.set(senderID.uuidString, forKey: "altViewSenderID")
+            let senderID = senderIdentity ?? defaults.string(forKey: "altViewSenderID").flatMap(UUID.init(uuidString:)) ?? UUID()
+            if senderIdentity == nil { defaults.set(senderID.uuidString, forKey: "altViewSenderID") }
             var name = "eucaly · \(Host.current().localizedName ?? "Presentation Mac")"
             while name.utf8.count > 128 { name.removeLast() }
             return AltViewSenderClient(name: name, senderID: senderID, onStatus: callback)
@@ -95,36 +69,10 @@ final class AltViewService: ObservableObject {
         return parts.joined(separator: "\n")
     }
 
-    /// Restoring a paired connection never takes output or publishes Current.
-    func restoreConnection() {
-        guard restorePreferences, !didRestoreConnection else { return }
-        didRestoreConnection = true
-        if let destination { connect(to: destination, code: "") }
-    }
-
-    func selectTemplate(_ template: AltViewContentTemplate?) {
-        guard template?.isValid ?? true else { return }
-        selectedTemplate = template
-        defaults.set(template?.rawValue ?? "", forKey: "altViewTemplate")
-    }
-
-    func startDiscovery() { discoveryVisible = true; refreshDiscovery() }
-    func stopDiscovery() { discoveryVisible = false; refreshDiscovery() }
-    private func refreshDiscovery() {
-        let needed = discoveryVisible || (hasConnection && destination?.localReceiverID != nil)
-        guard needed != discoveryRunning else { return }
-        discoveryRunning = needed
-        if needed { discovery.start() }
-        else {
-            discovery.stop()
-            // Saved selections keep their identity/label, not a trusted live port.
-            receivers = []; discoveryNotice = nil
-        }
-    }
     func receiveDiscovered(_ receivers: [AltViewDestination], notice: String?) {
         self.receivers = receivers.filter(\.isValid); discoveryNotice = notice
-        guard let id = destination?.localReceiverID,
-              let fresh = self.receivers.first(where: { $0.localReceiverID == id }) else { return }
+        guard let id = destination?.receiverIdentity,
+              let fresh = self.receivers.first(where: { $0.receiverIdentity == id }) else { return }
         destination = fresh
         guard let connectionID else { return }
         if startedSender { sender?.updateEndpoint(fresh.endpoint, connectionID: connectionID) }
@@ -148,7 +96,6 @@ final class AltViewService: ObservableObject {
         let id = UUID()
         connectionID = id
         isConnecting = true
-        refreshDiscovery()
         connectionNotice = nil; persistenceNotice = nil
         if sender == nil {
             sender = senderFactory { [weak self] status in
@@ -161,11 +108,11 @@ final class AltViewService: ObservableObject {
             pairingStore.read(destination) { [weak self] credentials, notice in
                 MainActor.assumeIsolated {
                     guard let self, self.connectionID == id else { return }
+                    defer { self.onStatusChange?() }
                     guard let credentials else {
                         self.isConnecting = false
                         self.connectionID = nil
                         self.connectionNotice = notice ?? "Enter the pairing code shown in AltView."
-                        self.refreshDiscovery()
                         return
                     }
                     self.beginConnection(destination, key: credentials.key, receiverID: credentials.receiverID, id: id)
@@ -176,16 +123,16 @@ final class AltViewService: ObservableObject {
 
     private func beginConnection(_ destination: AltViewDestination, key: Data, receiverID: UUID?, id: UUID) {
         pairingKey = key
-        pairedReceiverID = receiverID ?? destination.localReceiverID
+        pairedReceiverID = receiverID ?? destination.receiverIdentity
         startSenderIfReady(id: id)
     }
 
     private func startSenderIfReady(id: UUID) {
         guard connectionID == id, !startedSender, let pairingKey, let destination else { return }
         let resolved: AltViewDestination
-        if let localID = destination.localReceiverID {
-            guard let fresh = receivers.first(where: { $0.localReceiverID == localID }) else {
-                connectionNotice = "Waiting for AltView on This Mac. Its current port will be discovered automatically."
+        if let localID = destination.receiverIdentity {
+            guard let fresh = receivers.first(where: { $0.receiverIdentity == localID }) else {
+                connectionNotice = "Waiting for the selected AltView receiver. Its current service will be discovered automatically."
                 return
             }
             resolved = fresh
@@ -200,109 +147,53 @@ final class AltViewService: ObservableObject {
     }
 
     func disconnect() {
-        didRestoreConnection = true
         connectionID = nil; pairingKey = nil; pairedReceiverID = nil; savedThisConnection = false
         isConnecting = false; activeSourceID = nil; pendingTake = nil
         connectionNotice = nil
-        submitted = nil; submissionID = nil; submittedSlideID = nil; confidenceText = nil; projectionPresentation = nil
+        submitted = nil; submissionID = nil
         startedSender = false
         sender?.disconnect()
         status = AltViewSenderStatus()
-        refreshDiscovery()
-    }
-
-    func attach(_ session: PresentationSession) {
-        let id = session.outputSourceID
-        session.onOutputEvent = { [weak self] event in self?.handle(event, from: id) }
-    }
-
-    func detach(_ session: PresentationSession) {
-        // The projection window retains its session after controls close. Keep
-        // its event bridge until runtime Stop/native close/display loss emits stopped.
-        guard !session.isPresenting else { return }
-        session.onOutputEvent = nil
-        if activeSourceID == session.outputSourceID { stopSending() }
-    }
-
-    func sendCurrent(from session: PresentationSession) {
-        guard session.isPresenting, session.areSlidesVisible else { return }
-        publish(session.outputSnapshot, from: session.outputSourceID)
     }
 
     func stopSending() {
         activeSourceID = nil; pendingTake = nil
-        submitted = nil; submissionID = nil; submittedSlideID = nil; confidenceText = nil; projectionPresentation = nil
+        submitted = nil; submissionID = nil
         guard hasConnection else { return }
         sender?.releaseOutput()
         status.ownsOutput = false; status.followingOutput = false
         status.submissionID = nil; status.feedback.resetSnapshot()
     }
-
-    func handle(_ event: PresentationOutputEvent, from sourceID: UUID) {
-        switch event {
-        case .show(let snapshot), .project(let snapshot):
-            publish(snapshot, from: sourceID)
-        case .changed(let snapshot):
-            guard activeSourceID == sourceID else { return }
-            if !snapshot.isPresenting { stopSending(); return }
-            // Hiding during initial pairing cancels the queued takeover.
-            if isConnecting && !snapshot.slidesVisible { pendingTake = nil }
-            submit(snapshot)
-        case .stopped:
-            if activeSourceID == sourceID { stopSending() }
-        }
+    func cancelPendingPresentation() {
+        pendingTake = nil
+        if startedSender { sender?.cancelPendingPresentation() }
     }
 
-    private func publish(_ snapshot: PresentationOutputSnapshot, from sourceID: UUID) {
-        guard hasConnection, snapshot.isPresenting, snapshot.slidesVisible else { return }
-        activeSourceID = sourceID
-        submit(snapshot, explicit: true)
-        guard let submitted, let submissionID else { return }
-        let request = AltViewSubmission(id: submissionID, content: submitted)
-        if status.connected { sender?.takeOutput(submission: request) }
-        else { pendingTake = request }
-        // A user projection made during reconnect still authorizes takeover.
-    }
-
-    private func submit(_ snapshot: PresentationOutputSnapshot, explicit: Bool = false) {
-        var content = AltViewPresentationAdapter.content(for: snapshot)
-        if explicit || (content.body.isEmpty && snapshot.slide == nil) {
-            confidenceText = AltViewConfidenceText(title: content.title, body: content.body, footer: content.footer)
-        }
-        // Mode changes require an explicit presentation. Hidden navigation and
-        // background updates can refresh window identity but cannot publish a new mode.
-        if let slide = snapshot.slide, let sourceID = activeSourceID {
-            if explicit {
-                projectionPresentation = AltViewProjectionPresentation(sessionID: sourceID,
-                    mode: AltViewPresentationAdapter.mode(for: slide))
-            }
-            projectionPresentation?.windowID = snapshot.projectionWindowID
-            projectionPresentation?.windowGeneration = snapshot.projectionWindowGeneration
-        } else { projectionPresentation = nil }
-        content.projection = projectionPresentation
-        content.confidence = confidenceText?.hasText == true ? confidenceText : nil
-        let changedSlide = submittedSlideID != snapshot.slide?.id || submitted?.body != content.body
-        // A settings edit is a private choice. Hiding/reconnecting the existing
-        // slide retains its request; the next slide or explicit Show adopts it.
-        if !content.body.isEmpty {
-            content.template = explicit || changedSlide ? selectedTemplate : submitted?.template
-        }
-        submittedSlideID = snapshot.slide?.id
+    /// The coordinator provides eucaly's coherent live program. A native window
+    /// is not needed to authorize its direct AltView text destination.
+    func publishProgram(_ content: AltViewDisplayContent, sourceID: UUID, explicit: Bool) {
+        guard hasConnection else { return }
+        if explicit { activeSourceID = sourceID }
+        guard activeSourceID != nil else { return }
         guard explicit || content != submitted else { return }
         submitted = content
-        let id = UUID()
-        submissionID = id
+        let id = UUID(); submissionID = id
         if startedSender { sender?.submit(content, submissionID: id) }
+        if explicit {
+            let request = AltViewSubmission(id: id, content: content)
+            if status.connected { sender?.takeOutput(submission: request) }
+            else { pendingTake = request }
+        }
     }
 
     func receive(_ status: AltViewSenderStatus) {
         guard let connectionID, status.connectionID == connectionID else { return }
         self.status = status
+        defer { onStatusChange?() }
         if status.connected {
             isConnecting = false
             if !savedThisConnection, let receiverID = status.receiverID, let pairingKey, let destination {
                 savedThisConnection = true
-                if let data = try? JSONEncoder().encode(destination) { defaults.set(data, forKey: "altViewDestination") }
                 pairingStore.save(AltViewCredentials(key: pairingKey, receiverID: receiverID), for: destination) { [weak self] notice in
                     MainActor.assumeIsolated {
                         guard self?.connectionID == connectionID else { return }

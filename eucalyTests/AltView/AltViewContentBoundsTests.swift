@@ -222,7 +222,7 @@ final class AltViewContentBoundsTests: XCTestCase {
             var output = ReferenceAltViewReceiverStatus()
             let server = ReferenceAltViewReceiverServer(receiverID: UUID(), capabilities: AltViewProtocol.capabilities) { output = $0 }
             let suite = "AltViewHiddenBounds.\(UUID())", defaults = UserDefaults(suiteName: suite)!
-            let service = AltViewService(defaults: defaults, restorePreferences: false,
+            let service = AltViewService(defaults: defaults,
                 pairingStore: RecordingAltViewPairingStore(), senderFactory: {
                     AltViewSenderClient(name: "eucaly hidden bounds", onStatus: $0)
                 })
@@ -232,18 +232,15 @@ final class AltViewContentBoundsTests: XCTestCase {
             service.connect(to: .manual(host: "127.0.0.1", port: String(try XCTUnwrap(output.port)))!, code: "ABCD2345")
             eventually("connected") { service.status.connected }
             let source = UUID(), generation = UUID()
-            let presented = media
-                ? Slide(index: 1, lines: [], label: nil, videoURL: URL(fileURLWithPath: "/tmp/video"), pdfURL: nil, pdfPageIndex: nil, imageURL: nil)
-                : try XCTUnwrap(LyricsParser.parseDocument("Verse 1\nPresented lyrics").slides.first)
-            service.handle(.project(.init(slide: presented, isPresenting: true, slidesVisible: true,
-                projectionWindowID: 77, projectionWindowGeneration: generation)), from: source)
+            service.publishProgram(.init(body: media ? "" : "Presented lyrics", visible: !media,
+                confidence: media ? nil : .init(body: "Presented lyrics"),
+                projection: .init(sessionID: source, mode: media ? .media : .lyrics, windowID: 77, windowGeneration: generation)),
+                sourceID: source, explicit: true)
             eventually("explicit presentation accepted") { service.latestAccepted }
             let report = try XCTUnwrap(output.content.projection), confidence = output.content.confidence
             for body in [String(repeating: "界", count: 8_001), String(repeating: "\u{1}", count: 24_000)] {
                 let priorSubmission = service.status.submissionID
-                let hidden = try XCTUnwrap(LyricsParser.parseDocument("Verse 1\n" + body).slides.first)
-                service.handle(.changed(.init(slide: hidden, isPresenting: true, slidesVisible: false,
-                    projectionWindowID: 77, projectionWindowGeneration: generation)), from: source)
+                service.publishProgram(.init(body: body, visible: false, confidence: confidence, projection: report), sourceID: source, explicit: false)
                 eventually("safe hidden fallback acknowledged") {
                     service.status.contentError != nil && service.status.feedback.accepted && service.status.submissionID != priorSubmission
                 }
@@ -259,7 +256,7 @@ final class AltViewContentBoundsTests: XCTestCase {
                 service.status.ownsOutput && service.status.feedback.accepted && output.content.projection == report
             }
             XCTAssertEqual(output.content.confidence, confidence)
-            service.handle(.changed(.init(slide: nil, isPresenting: true, slidesVisible: false)), from: source)
+            service.publishProgram(.empty, sourceID: source, explicit: false)
             eventually("explicit Clear removes retained presentation") { output.content == .empty && service.latestAccepted }
         }
     }

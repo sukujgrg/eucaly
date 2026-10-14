@@ -22,20 +22,20 @@ Browsing never silently replaces **Current**.
 ## Features
 
 - Lyrics presentation from `.txt`
-- Stacked or side-by-side lyric components, with Top / Middle / Bottom positioning and adjustable padding in Appearance
-- Appearance groups shared slide layout separately from Projection Font Size and thumbnail controls. A “Small projected text” label flags affected lyrics cards; hover for adjustments tailored to the cause. The card's accessibility value includes the full explanation.
+- Stacked or side-by-side lyric components, with Top / Middle / Bottom positioning and adjustable padding in Manage Outputs
+- Manage Outputs holds per-profile layout, fonts and backgrounds; App Settings includes the same editor and separate thumbnail controls in General. A “Small projected text” label flags affected lyrics cards; hover for adjustments tailored to the cause. The card's accessibility value includes the full explanation.
 - PDF slides
 - Images
 - Videos
 - Background visual layer for lyrics
 - Background audio layer
-- Timer / clock overlay
+- Confidence output with Current/Next columns and a large centered standby clock
 - Live app-window capture with ScreenCaptureKit
 - Webpage preview / projection
 - Recursive text search under library root
 - [Named projection monitors](docs/projection-monitors.md) with remembered numbers, physical display identity, and an Identify action
 - Keeps the Mac and displays awake while projection is open, including hidden slides and background-only output
-- [AltView text output](docs/altview.md) with encrypted pairing, primary lyrics only, receiver template discovery, and independent nonblocking delivery
+- [AltView text output](docs/altview.md) with encrypted pairing, stable discovered receiver destinations, and independent nonblocking delivery of eucaly's own lyrics
 - Sparkle self-updates with quiet toolbar reminders during presentations
 
 Webpage behavior:
