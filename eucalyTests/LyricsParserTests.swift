@@ -286,7 +286,7 @@ final class LyricsParserTests: XCTestCase {
         XCTAssertFalse(LyricsSectionCatalog.isHeading("Amazing grace"))
     }
 
-    func testCCLITrailerAndAuthorAreStripped() {
+    func testCCLITrailerIsStrippedButUnlabelledTextIsPreserved() {
         let raw = """
         Verse
         line a
@@ -299,8 +299,8 @@ final class LyricsParserTests: XCTestCase {
         """
         let doc = LyricsParser.parseDocument(raw, fileName: "test.txt")
         XCTAssertEqual(doc.slides.count, 1)
-        XCTAssertEqual(doc.slides[0].lines.first?.text, "line a")
-        XCTAssertNil(doc.slides.first { $0.lines.contains(where: { $0.text.contains("Reuben") }) })
+        XCTAssertEqual(doc.slides[0].lines.first?.text, "line a\n\nReuben Morgan")
+        XCTAssertNil(doc.metadata["authors"])
     }
 
     func testCCLIMatchingPreservesOriginalMetadataValues() {
@@ -312,7 +312,7 @@ final class LyricsParserTests: XCTestCase {
         Verse
         line a
 
-        \(author)
+        Authors: \(author)
         C\u{034F}CLI Song #12345
         \(copyright)
         \(claim)
@@ -356,7 +356,7 @@ final class LyricsParserTests: XCTestCase {
         XCTAssertEqual(doc.slides[0].lines.first?.text, "We sing songselect together")
     }
 
-    func testCCLITrailerRequiresMetadataBlockDensity() {
+    func testUnconfirmedCCLIFooterRemainsLyricContent() {
         let raw = """
         Verse
         line a
@@ -365,6 +365,107 @@ final class LyricsParserTests: XCTestCase {
         Not really metadata
         """
         let doc = LyricsParser.parseDocument(raw, fileName: "test.txt")
-        XCTAssertEqual(doc.slides.count, 2)
+        XCTAssertEqual(doc.slides.count, 1)
+        XCTAssertEqual(doc.slides.first?.lines.first?.text, "line a\n\nCCLI Song #2397964\nNot really metadata")
+    }
+
+    func testHeadingMatchesMustConsumeTheEntireLine() {
+        for lyric in ["Verse 1 of your goodness", "Pre Chorus 2 sing with us", "Meaning is everywhere", "Chorus 1 2", "Verse -1"] {
+            XCTAssertNil(LyricsSectionCatalog.parseHeader(lyric))
+            XCTAssertEqual(LyricsParser.parseDocument("Verse\n" + lyric).slides.first?.lines.first?.text, lyric)
+        }
+    }
+
+    func testStandaloneFirstStanzaIsNotGuessedToBeATitle() {
+        let document = LyricsParser.parseDocument("First lyric\n\nSecond lyric")
+        XCTAssertNil(document.metadata["title"])
+        XCTAssertEqual(document.slides.map { $0.lines.first?.text }, ["First lyric", "Second lyric"])
+    }
+
+    func testExplicitAndFilenameSupportedTitlesPreserveLegacyDocuments() {
+        let document = LyricsParser.parseDocument("#title: می\u{200C}خوانم\n\nFirst lyric\n\nSecond lyric")
+        XCTAssertEqual(document.metadata["title"], "می\u{200C}خوانم")
+        XCTAssertEqual(document.slides.count, 2)
+        let legacy = LyricsParser.parseDocument("My Song\n\nFirst lyric", fileName: "My Song.txt")
+        XCTAssertEqual(legacy.metadata["title"], "My Song")
+        XCTAssertEqual(legacy.slides.first?.lines.first?.text, "First lyric")
+    }
+
+    func testAllLineEndingsAndDecoratedBoundariesUseTheSameRules() {
+        for newline in ["\r", "\r\n", "\u{0085}", "\u{2028}", "\u{2029}"] {
+            let document = LyricsParser.parseDocument("Verse" + newline + "One" + newline + "Chorus" + newline + "Two")
+            XCTAssertEqual(document.slides.map { $0.lines.first?.text }, ["One", "Two"])
+        }
+        XCTAssertEqual(LyricsParser.parseDocument("One\n---\u{FEFF}\nTwo").slides.count, 2)
+        XCTAssertEqual(LyricsParser.parseDocument("One\n----\nTwo").slides.count, 2)
+        XCTAssertEqual(LyricsParser.parseDocument("One\n\u{FEFF}\nTwo").slides.count, 2)
+    }
+
+    func testCCLIFooterWithoutAuthorNeverRemovesFinalLyric() {
+        for gap in ["\n", "\n\n"] {
+            let document = LyricsParser.parseDocument("Verse\nKeep this final lyric" + gap + "CCLI Song #123\nCCLI License #456")
+            XCTAssertEqual(document.slides.first?.lines.first?.text, "Keep this final lyric")
+            XCTAssertNil(document.metadata["authors"])
+        }
+    }
+
+    func testCompleteFooterDoesNotTurnAnAdjacentLyricIntoAnAuthor() {
+        for prefix in ["Verse\n", "Verse\nOne\n\n"] {
+            let document = LyricsParser.parseDocument(prefix + "Final lyric\nCCLI Song #123\n© 2026 Publisher\nFor use solely with SongSelect Terms of Use. ccli.com\nCCLI License #456")
+            XCTAssertEqual(document.slides.first?.lines.first?.text, prefix == "Verse\n" ? "Final lyric" : "One\n\nFinal lyric")
+            XCTAssertNil(document.metadata["authors"])
+        }
+    }
+
+    func testMetadataLookingWordsAndUnknownFooterTextRemainLyrics() {
+        let input = "Verse\nCCLI is part of this lyric\n© We sing together\nCCLI Song #123\nCCLI License #456\nKeep singing"
+        let document = LyricsParser.parseDocument(input)
+        XCTAssertTrue(document.metadata.isEmpty)
+        XCTAssertEqual(document.slides.first?.lines.first?.text, String(input.dropFirst(6)))
+    }
+
+    func testEmptyHeadingsAndRepeatedSeparatorsDoNotProduceEmptySlides() {
+        let document = LyricsParser.parseDocument("---\nVerse 1\n---\n---\nChorus\nOne\n---\nMeaning\n---")
+        XCTAssertEqual(document.slides.count, 1)
+        XCTAssertEqual(document.slides.first?.index, 1)
+        XCTAssertEqual(document.slides.first?.lines.first?.text, "One")
+    }
+
+    func testTitleImmediatelyBeforeASectionHeadingIsRecognized() {
+        let document = LyricsParser.parseDocument("My Song\nVerse 1\nFirst lyric")
+        XCTAssertEqual(document.metadata["title"], "My Song")
+        XCTAssertEqual(document.slides.first?.label, "Verse 1")
+        XCTAssertEqual(document.slides.first?.lines.first?.text, "First lyric")
+    }
+
+    func testBlankLinesBeforeCompanionsStayInTheSameUnheadedSlide() {
+        let document = LyricsParser.parseDocument("First lyric\n\nMeaning\nFirst meaning\n\nTranslation\nFirst translation\n\nSecond lyric")
+        XCTAssertEqual(document.slides.count, 2)
+        XCTAssertEqual(document.slides.first?.lines.map(\.text), ["First lyric", "First meaning", "First translation"])
+        XCTAssertEqual(document.slides.last?.lines.first?.text, "Second lyric")
+    }
+
+    func testFilenameMatchingLyricsWithCompanionsAreNotRemovedAsATitle() {
+        for gap in ["\n", "\n\n"] {
+            let document = LyricsParser.parseDocument("First lyric" + gap + "Translation\nTranslated lyric", fileName: "First lyric.txt")
+            XCTAssertNil(document.metadata["title"])
+            XCTAssertEqual(document.slides.count, 1)
+            XCTAssertEqual(document.slides.first?.lines.map(\.text), ["First lyric", "Translated lyric"])
+        }
+    }
+
+    func testFilenameMatchingTitleBeforeAnExplicitSeparatorIsRecognized() {
+        let document = LyricsParser.parseDocument("My Song\n---\nFirst lyric", fileName: "My Song.txt")
+        XCTAssertEqual(document.metadata["title"], "My Song")
+        XCTAssertEqual(document.slides.count, 1)
+        XCTAssertEqual(document.slides.first?.lines.first?.text, "First lyric")
+    }
+
+    func testCopyrightClaimAtTheEndOfAConfirmedFooterIsNotProjected() {
+        for suffix in ["", "\n", "\n\n"] {
+            let document = LyricsParser.parseDocument("Verse\nKeep this lyric\nCCLI Song #123\n© 2026 Publisher\n(Admin. by Publisher)" + suffix)
+            XCTAssertEqual(document.slides.first?.lines.first?.text, "Keep this lyric")
+            XCTAssertEqual(document.metadata["copyright-claim"], "(Admin. by Publisher)")
+        }
     }
 }

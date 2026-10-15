@@ -562,6 +562,7 @@ public struct ContentView: View {
             editorPane: EditorPaneContainerView(
                 newFileWarning: newFileWarning,
                 rawLyrics: $lyricsEditor.draft,
+                editorID: lyricsEditor.documentID,
                 saveButtonTitle: saveButtonTitle,
                 canSave: canSaveEditorContent,
                 focusController: lyricsEditorFocusController,
@@ -625,7 +626,7 @@ public struct ContentView: View {
         case .format:
             formatEditorDraft()
         case .clear:
-            lyricsEditor.clearDraft()
+            if !lyricsEditorFocusController.clearLyrics() { lyricsEditor.clearDraft() }
             clearPreviewDocument()
         }
     }
@@ -752,6 +753,7 @@ public struct ContentView: View {
         previewSource = .none
         previewLoadError = nil
         flow.clearPreviewDocument()
+        lyricsEditor.invalidatePreview()
         if clearedWindowFromPreview {
             releaseWindowCaptureSelectionIfUnused()
         }
@@ -1908,22 +1910,11 @@ public struct ContentView: View {
     }
 
     private func suggestedFileName(from text: String) -> String {
-        let lines = text
-            .replacingOccurrences(of: "\r\n", with: "\n")
+        let lines = LyricsTextSanitizer.normalizeLineEndings(text)
             .split(separator: "\n", omittingEmptySubsequences: true)
-            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-
-        if let titleLine = lines.first(where: { $0.lowercased().hasPrefix("#title:") }) {
-            let title = titleLine.replacingOccurrences(of: "#title:", with: "", options: .caseInsensitive)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            return sanitizedFileName(title.isEmpty ? "Untitled" : title)
-        }
-
-        if let first = lines.first, !first.isEmpty {
-            return sanitizedFileName(first)
-        }
-
-        return "Untitled"
+            .map { String($0).trimmingCharacters(in: .whitespaces) }
+        guard let first = lines.first(where: { !LyricsTextSyntax.isBlank($0) }) else { return "Untitled" }
+        return sanitizedFileName(LyricsTextSyntax.explicitTitle(first) ?? first)
     }
 
     private func sanitizedFileName(_ raw: String) -> String {
@@ -1934,110 +1925,8 @@ public struct ContentView: View {
     }
 
     private func formatEditorDraft() {
-        guard !isCurrentSelectionMediaFile else { return }
-        lyricsEditor.draft = formatLyricsMarkdown(lyricsEditor.draft)
+        guard !isCurrentSelectionMediaFile, lyricsEditorFocusController.formatLyrics() else { return }
         _ = syncEditorDraftToPreview()
-    }
-
-    private func formatLyricsMarkdown(_ text: String) -> String {
-        let normalized = text.replacingOccurrences(of: "\r\n", with: "\n")
-        let lines = normalized.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-
-        let formattedLines = lines.map { formatLine($0) }
-        var output: [String] = []
-        var previousBlank = false
-        var previousSeparator = false
-
-        for line in formattedLines {
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed == "---" {
-                if let last = output.last, !last.isEmpty && last != "---" {
-                    output.append("")
-                }
-                output.append("---")
-                previousSeparator = true
-                previousBlank = false
-                continue
-            }
-
-            if trimmed.isEmpty {
-                if previousSeparator {
-                    if output.last != "" {
-                        output.append("")
-                    }
-                } else if !previousBlank {
-                    output.append("")
-                    previousBlank = true
-                }
-                continue
-            }
-
-            if previousSeparator {
-                if output.last != "" {
-                    output.append("")
-                }
-                previousSeparator = false
-            }
-
-            if isLyricsHeader(trimmed) {
-                if let last = output.last, !last.isEmpty && last != "---" {
-                    output.append("")
-                }
-            }
-
-            previousBlank = false
-            output.append(trimmed)
-        }
-
-        while output.first == "" { output.removeFirst() }
-        while output.last == "" { output.removeLast() }
-        return output.joined(separator: "\n")
-    }
-
-    private func formatLine(_ line: String) -> String {
-        let trimmedTrailing = trimTrailingSpaces(line)
-        let trimmed = trimmedTrailing.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { return "" }
-
-        if isSeparatorLine(trimmed) {
-            return "---"
-        }
-
-        return normalizeHeader(line: trimmed)
-    }
-
-    private func trimTrailingSpaces(_ line: String) -> String {
-        var end = line.endIndex
-        while end > line.startIndex {
-            let prev = line.index(before: end)
-            if line[prev].isWhitespace {
-                end = prev
-            } else {
-                break
-            }
-        }
-        return String(line[..<end])
-    }
-
-    private func isSeparatorLine(_ line: String) -> Bool {
-        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed == "---" { return true }
-        if trimmed.allSatisfy({ $0 == "-" }) && trimmed.count >= 3 { return true }
-        return false
-    }
-
-    private func isLyricsHeader(_ line: String) -> Bool {
-        LyricsSectionCatalog.isHeading(line)
-    }
-
-    private func normalizeHeader(line: String) -> String {
-        if let canonical = LyricsSectionCatalog.canonicalHeaderLine(line) {
-            return canonical
-        }
-        if let companion = LyricsSectionCatalog.canonicalCompanionHeaderLine(line) {
-            return companion
-        }
-        return line
     }
 
     private func saveCurrentFile() -> Bool {
@@ -2070,7 +1959,7 @@ public struct ContentView: View {
         }
 
         let preferredSelectionIndex = currentPreviewSelectionIndex()
-        let fileName = lyricsEditor.sourceURL?.lastPathComponent ?? "draft.txt"
+        let fileName = lyricsEditor.sourceURL?.lastPathComponent
         let document = LyricsParser.parseDocument(lyricsEditor.draft, fileName: fileName)
         guard !document.slides.isEmpty else {
             newFileWarning = "These lyrics do not contain a slide to load."
