@@ -7,6 +7,7 @@ import Combine
 public struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var workspaceCommands = OutputWorkspaceCommands()
+    @State private var importPanel = LibraryImportPanelController()
     @State private var lyricsEditor = LyricsEditorSession()
     @State private var lyricsEditorFocusController = PlainTextEditorFocusController()
     @StateObject private var session: PresentationSession
@@ -277,6 +278,7 @@ public struct ContentView: View {
     }
 
     private func handleRootOnDisappear() {
+        importPanel.cancel()
         librarySearch.cancelDebounce()
         libraryLoadTask?.cancel()
         isLibraryLoading = false
@@ -527,9 +529,11 @@ public struct ContentView: View {
 
     private func handleMainWindowWillCloseNotification(_ notification: Notification) {
         guard let closingWindow = notification.object as? NSWindow else { return }
-        if closingWindow is PresentationWindow { return }
+        if closingWindow === workspaceCommands.window { importPanel.cancel() }
+        if closingWindow is PresentationWindow || closingWindow is NSPanel { return }
+        // Reusable file panels can remain in NSApp.windows while hidden.
         let remainingNonPresentation = NSApp.windows.filter { window in
-            !(window is PresentationWindow) && window != closingWindow
+            !(window is PresentationWindow) && !(window is NSPanel) && window != closingWindow
         }
         guard remainingNonPresentation.isEmpty else { return }
         deferSessionChange {
@@ -926,16 +930,13 @@ public struct ContentView: View {
             return
         }
 
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = true
-        panel.allowedContentTypes = previewLibraryContentTypes()
-        panel.directoryURL = defaultImportDirectory()
-        panel.prompt = "Import"
+        guard let window = workspaceCommands.window else { return }
+        importPanel.present(source: .library, for: window) { urls in
+            importFilesToLibrary(urls, root: root)
+        }
+    }
 
-        guard panel.runModal() == .OK else { return }
-
+    private func importFilesToLibrary(_ urls: [URL], root: URL) {
         let didAccessRoot = root.startAccessingSecurityScopedResource()
         defer {
             if didAccessRoot {
@@ -944,7 +945,7 @@ public struct ContentView: View {
         }
 
         do {
-            let importedURLs = try panel.urls.map { try importFile($0, into: root) }
+            let importedURLs = try urls.map { try importFile($0, into: root) }
             guard !importedURLs.isEmpty else { return }
 
             newFileWarning = nil
@@ -969,17 +970,13 @@ public struct ContentView: View {
             return
         }
 
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = true
-        panel.allowedContentTypes = backgroundAudioSourceContentTypes()
-        panel.directoryURL = defaultImportDirectory()
-        panel.prompt = "Import"
-        panel.message = "Choose audio or video files to use as background audio."
+        guard let window = workspaceCommands.window else { return }
+        importPanel.present(source: .audio, for: window) { urls in
+            importAudioToLibrary(urls, root: root)
+        }
+    }
 
-        guard panel.runModal() == .OK else { return }
-
+    private func importAudioToLibrary(_ urls: [URL], root: URL) {
         let didAccessRoot = root.startAccessingSecurityScopedResource()
         defer {
             if didAccessRoot {
@@ -988,7 +985,7 @@ public struct ContentView: View {
         }
 
         do {
-            let importedURLs = try panel.urls.map { try importFile($0, into: root) }
+            let importedURLs = try urls.map { try importFile($0, into: root) }
             guard let firstAudioURL = importedURLs.first(where: { LibraryFileKind(url: $0).isBackgroundAudioSource }) else {
                 return
             }
@@ -1007,53 +1004,13 @@ public struct ContentView: View {
         }
     }
 
-    private func previewLibraryContentTypes() -> [UTType] {
-        [
-            "txt",
-            "pdf",
-            "jpg",
-            "jpeg",
-            "png",
-            "gif",
-            "webp",
-            "bmp",
-            "tiff",
-            "mp4",
-            "mov",
-            "m4v",
-            "avi",
-            "mkv"
-        ].compactMap { UTType(filenameExtension: $0) }
-    }
-
-    private func backgroundAudioSourceContentTypes() -> [UTType] {
-        [
-            "mp4",
-            "mov",
-            "m4v",
-            "avi",
-            "mkv",
-            "mp3",
-            "m4a",
-            "wav",
-            "aiff",
-            "aif",
-            "flac",
-            "aac"
-        ].compactMap { UTType(filenameExtension: $0) }
-    }
-
-    private func defaultImportDirectory() -> URL? {
-        FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
-    }
-
     private func importFile(_ sourceURL: URL, into root: URL) throws -> URL {
         let kind = LibraryFileKind(url: sourceURL)
         guard kind.isSupportedLibraryItem else {
             throw ImportError.unsupportedFile(sourceURL)
         }
 
-        if isUnderLibraryRoot(sourceURL) {
+        if LibraryRootPath.isUnderRoot(sourceURL, root: root) {
             return sourceURL
         }
 
@@ -1398,6 +1355,7 @@ public struct ContentView: View {
     }
 
     private func refreshLibraryRootAccess() {
+        importPanel.cancel()
         if libraryRootPath.isEmpty {
             let defaultRoot = URL(fileURLWithPath: NSString(string: "~/Documents/eucaly").expandingTildeInPath)
             libraryRootPath = defaultRoot.path

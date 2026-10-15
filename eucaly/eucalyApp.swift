@@ -46,7 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        let nonPresentationWindow = sender.windows.first { !($0 is PresentationWindow) }
+        let nonPresentationWindow = sender.windows.first { !($0 is PresentationWindow) && !($0 is NSPanel) }
         if let window = nonPresentationWindow {
             if window === settings?.window { settings?.showWindow(nil) }
             else { window.makeKeyAndOrderFront(nil) }
