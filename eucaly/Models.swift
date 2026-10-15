@@ -64,7 +64,7 @@ nonisolated enum LyricsSectionCatalog {
 
         let first = normalizedHeaderToken(firstToken)
 
-        if first == "meaning" {
+        if first == "meaning", tokens.count == 1 {
             return HeaderMatch(kind: .tag, label: "Meaning", isMeaning: true)
         }
 
@@ -80,11 +80,11 @@ nonisolated enum LyricsSectionCatalog {
 
         var label = kind.rawValue
         let numberTokenIndex = twoWordKey == nil ? 1 : 2
+        guard tokens.count == numberTokenIndex || tokens.count == numberTokenIndex + 1 else { return nil }
         if tokens.indices.contains(numberTokenIndex) {
             let numberToken = normalizedHeaderToken(tokens[numberTokenIndex])
-            if Int(numberToken) != nil {
-                label += " \(numberToken)"
-            }
+            guard !numberToken.isEmpty, numberToken.utf8.allSatisfy({ (0x30...0x39).contains($0) }) else { return nil }
+            label += " \(numberToken)"
         }
 
         return HeaderMatch(kind: kind, label: label, isMeaning: false)
@@ -120,38 +120,6 @@ nonisolated enum LyricsSectionCatalog {
         parseCompanionHeader(line)?.rawValue
     }
 
-    /// Normalizes text used to recognize parser markers without modifying lyric content.
-    /// Default-ignorable and control characters (for example BOM, zero-width marks,
-    /// and variation selectors) are invisible in the editor but can otherwise prevent
-    /// an exact keyword match.
-    static func normalizedMarkerText(_ text: String) -> String {
-        var scalars: [Unicode.Scalar] = []
-        scalars.reserveCapacity(text.unicodeScalars.count)
-
-        for scalar in text.unicodeScalars {
-            if scalar.properties.isDefaultIgnorableCodePoint {
-                continue
-            }
-
-            switch scalar.properties.generalCategory {
-            case .format:
-                continue
-            case .control:
-                if scalar.properties.isWhitespace {
-                    scalars.append("\u{20}")
-                }
-            default:
-                if scalar.properties.isWhitespace {
-                    scalars.append("\u{20}")
-                } else {
-                    scalars.append(scalar)
-                }
-            }
-        }
-
-        return String(String.UnicodeScalarView(scalars))
-    }
-
     private static func normalizedHeaderToken(_ token: String) -> String {
         token
             .trimmingCharacters(in: CharacterSet(charactersIn: ":"))
@@ -159,7 +127,7 @@ nonisolated enum LyricsSectionCatalog {
     }
 
     private static func normalizedHeaderLine(_ line: String) -> String {
-        var trimmed = normalizedMarkerText(line)
+        var trimmed = LyricsTextSyntax.markerText(line)
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: ":"))
             .trimmingCharacters(in: .whitespacesAndNewlines)

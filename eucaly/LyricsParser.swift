@@ -1,18 +1,14 @@
 import Foundation
 
 nonisolated enum LyricsParser {
-    static func parseDocument(_ raw: String, fileName _: String? = nil) -> LyricsDocument {
-        let normalized = raw.replacingOccurrences(of: "\r\n", with: "\n")
+    static func parseDocument(_ raw: String, fileName: String? = nil) -> LyricsDocument {
+        let normalized = LyricsTextSanitizer.normalizeLineEndings(raw)
         let lines = normalized.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
 
-        var workingLines = lines
-        let metadata = extractCCLIMetadata(lines: lines)
-        if !metadata.isEmpty {
-            workingLines = stripCCLITrailer(from: lines, metadata: metadata)
-        }
-
-        var documentMetadata = metadata
-        if let (title, remaining) = extractTopTitle(from: workingLines) {
+        let footer = extractCCLIFooter(from: lines)
+        var workingLines = footer.map { Array(lines[..<$0.startIndex]) } ?? lines
+        var documentMetadata = footer?.metadata ?? [:]
+        if let (title, remaining) = extractTopTitle(from: workingLines, fileName: fileName) {
             documentMetadata["title"] = title
             workingLines = remaining
         }
@@ -22,7 +18,7 @@ nonisolated enum LyricsParser {
     }
 
     private static func buildSlides(from lines: [String]) -> [Slide] {
-        let usesExplicitSeparators = lines.contains { $0.trimmingCharacters(in: .whitespacesAndNewlines) == "---" }
+        let usesExplicitSeparators = lines.contains(where: LyricsTextSyntax.isSeparator)
         let blocks: [[String]]
         if usesExplicitSeparators {
             blocks = splitOnSeparator(lines)
@@ -45,7 +41,7 @@ nonisolated enum LyricsParser {
         var current: [String] = []
 
         for line in lines {
-            if line.trimmingCharacters(in: .whitespacesAndNewlines) == "---" {
+            if LyricsTextSyntax.isSeparator(line) {
                 if !current.isEmpty { blocks.append(current) }
                 current.removeAll()
                 continue
@@ -59,14 +55,21 @@ nonisolated enum LyricsParser {
     private static func splitOnBlankLine(_ lines: [String]) -> [[String]] {
         var blocks: [[String]] = []
         var current: [String] = []
+        var pendingBoundary = false
 
         for line in lines {
-            if line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                if !current.isEmpty { blocks.append(current) }
-                current.removeAll()
+            if LyricsTextSyntax.isBlank(line) {
+                pendingBoundary = true
                 continue
             }
+            // Spacing before a companion marker belongs to the same slide,
+            // including the spacing inserted by Format in unheaded lyrics.
+            if pendingBoundary, !current.isEmpty, LyricsSectionCatalog.parseCompanionHeader(line) == nil {
+                blocks.append(current)
+                current.removeAll()
+            }
             current.append(line)
+            pendingBoundary = false
         }
         if !current.isEmpty { blocks.append(current) }
         return blocks
@@ -79,7 +82,7 @@ nonisolated enum LyricsParser {
 
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty {
+            if LyricsTextSyntax.isBlank(line) {
                 if !current.isEmpty { current.append(line) }
                 continue
             }
@@ -93,12 +96,6 @@ nonisolated enum LyricsParser {
 
             if isPrimarySectionHeader(trimmed) {
                 hasPrimaryHeader = true
-            }
-
-            if isCCLIMetadataLine(trimmed), hasPrimaryHeader, !trimEmptyEdges(current).isEmpty {
-                blocks.append(current)
-                current = [line]
-                continue
             }
 
             current.append(line)
@@ -151,7 +148,7 @@ nonisolated enum LyricsParser {
                 }
                 continue
             }
-            currentLines.append(line)
+            currentLines.append(LyricsTextSyntax.isBlank(line) ? "" : line)
         }
 
         flushCurrent()
@@ -225,149 +222,119 @@ nonisolated enum LyricsParser {
         var start = 0
         var end = lines.count
 
-        while start < end && lines[start].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        while start < end && LyricsTextSyntax.isBlank(lines[start]) {
             start += 1
         }
-        while end > start && lines[end - 1].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        while end > start && LyricsTextSyntax.isBlank(lines[end - 1]) {
             end -= 1
         }
         return Array(lines[start..<end])
     }
 
-    private static func extractTopTitle(from lines: [String]) -> (title: String, remaining: [String])? {
-        guard let firstIndex = lines.firstIndex(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else {
+    private static func extractTopTitle(from lines: [String], fileName: String?) -> (title: String, remaining: [String])? {
+        guard let first = lines.firstIndex(where: { !LyricsTextSyntax.isBlank($0) }) else { return nil }
+        let firstLine = lines[first].trimmingCharacters(in: .whitespaces)
+        if let title = LyricsTextSyntax.explicitTitle(firstLine) {
+            var remaining = lines
+            remaining.remove(at: first)
+            return (title, remaining)
+        }
+        guard !LyricsTextSyntax.isSeparator(firstLine), !LyricsSectionCatalog.isHeading(firstLine),
+              metadataLine(LyricsTextSyntax.markerText(firstLine).trimmingCharacters(in: .whitespaces)) == nil,
+              let next = lines.indices.dropFirst(first + 1).first(where: { !LyricsTextSyntax.isBlank(lines[$0]) }) else {
             return nil
         }
 
-        let firstLine = lines[firstIndex].trimmingCharacters(in: .whitespacesAndNewlines)
-        if firstLine == "---" || LyricsSectionCatalog.isHeader(firstLine) || isCCLIMetadataLine(firstLine) {
-            return nil
-        }
-
-        let nextIndex = lines[(firstIndex + 1)...].firstIndex(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
-        guard let nextIndex else { return nil }
-
-        let between = lines[(firstIndex + 1)..<nextIndex]
-        let isStandalone =
-            !between.isEmpty &&
-            between.allSatisfy { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        let followedByHeader = LyricsSectionCatalog.isHeader(lines[nextIndex].trimmingCharacters(in: .whitespacesAndNewlines))
-        guard isStandalone || followedByHeader else { return nil }
-
+        // A blank line alone cannot distinguish a title from a one-line stanza.
+        // Retain legacy title lines when a section heading or the filename supplies evidence.
+        let followedByHeader = isPrimarySectionHeader(lines[next])
+        let fileTitle = fileName.map { ($0 as NSString).deletingPathExtension }
+        let standalone = next > first + 1 || LyricsTextSyntax.isSeparator(lines[next])
+        let matchesFileName = standalone && LyricsSectionCatalog.parseCompanionHeader(lines[next]) == nil
+            && fileTitle?.caseInsensitiveCompare(firstLine) == .orderedSame
+        guard followedByHeader || matchesFileName else { return nil }
         var remaining = lines
-        remaining.remove(at: firstIndex)
+        remaining.remove(at: first)
         return (firstLine, remaining)
     }
 
-    private static func extractCCLIMetadata(lines: [String]) -> [String: String] {
+    private struct CCLIFooter {
+        let startIndex: Int
+        let metadata: [String: String]
+    }
+
+    private enum MetadataLine {
+        case song(String), license(String), authors, copyright, rights
+    }
+
+    private static func metadataLine(_ line: String) -> MetadataLine? {
+        let lower = line.lowercased()
+        for (prefix, song) in [("ccli song #", true), ("ccli license #", false)] {
+            if lower.hasPrefix(prefix) {
+                let number = line.dropFirst(prefix.count).trimmingCharacters(in: .whitespaces)
+                guard !number.isEmpty, number.utf8.allSatisfy({ (0x30...0x39).contains($0) }) else { return nil }
+                return song ? .song(number) : .license(number)
+            }
+        }
+        if lower.hasPrefix("authors:") || lower.hasPrefix("author:") { return .authors }
+        if lower.hasPrefix("©"), lower.dropFirst().trimmingCharacters(in: .whitespaces).first?.isNumber == true {
+            return .copyright
+        }
+        if lower == "all rights reserved." || lower == "all rights reserved" { return .rights }
+        if lower.hasPrefix("for use solely with"), lower.contains("songselect"),
+           lower.contains("terms of use") || lower.contains("ccli.com") {
+            return .rights
+        }
+        return nil
+    }
+
+    private static func isCopyrightClaim(_ line: String) -> Bool {
+        let lower = line.lowercased()
+        return lower.hasPrefix("copyright ") || lower.hasPrefix("(admin. by ") || lower.hasPrefix("admin. by ")
+    }
+
+    /// A single validated trailing block owns both metadata and the exact removal range.
+    /// Unknown lines stop the scan; no density threshold or backward author guessing.
+    private static func extractCCLIFooter(from lines: [String]) -> CCLIFooter? {
+        let matching = lines.map { LyricsTextSyntax.markerText($0).trimmingCharacters(in: .whitespaces) }
+        let kinds = matching.map(metadataLine)
+        var start = lines.count
+        while start > 0 {
+            let candidate = start - 1
+            if matching[candidate].isEmpty || kinds[candidate] != nil {
+                start = candidate
+            } else if candidate > 0, case .copyright? = kinds[candidate - 1],
+                      isCopyrightClaim(matching[candidate]) {
+                start = candidate
+            } else {
+                break
+            }
+        }
+        while start < lines.count, matching[start].isEmpty { start += 1 }
+        guard start < lines.count else { return nil }
+
         var metadata: [String: String] = [:]
-        let trimmedLines = lines.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-        let matchingLines = trimmedLines.map {
-            LyricsSectionCatalog.normalizedMarkerText($0)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-
-        if let songNumberIndex = matchingLines.firstIndex(where: { $0.lowercased().hasPrefix("ccli song #") }) {
-            if songNumberIndex > 0 {
-                let authors = trimmedLines[songNumberIndex - 1]
-                if !authors.isEmpty { metadata["authors"] = authors }
-            }
-            let songNumber = matchingLines[songNumberIndex]
-                .replacingOccurrences(of: "CCLI Song #", with: "", options: .caseInsensitive)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !songNumber.isEmpty { metadata["ccli-songnumber"] = songNumber }
-        }
-
-        if let licenseIndex = matchingLines.firstIndex(where: { $0.lowercased().hasPrefix("ccli license #") }) {
-            let license = matchingLines[licenseIndex]
-                .replacingOccurrences(of: "CCLI License #", with: "", options: .caseInsensitive)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !license.isEmpty { metadata["ccli-licensenumber"] = license }
-        }
-
-        if let copyrightIndex = matchingLines.firstIndex(where: { $0.hasPrefix("©") }) {
-            metadata["copyright"] = trimmedLines[copyrightIndex]
-            if copyrightIndex + 1 < trimmedLines.count {
-                let claim = trimmedLines[copyrightIndex + 1]
-                if !claim.isEmpty { metadata["copyright-claim"] = claim }
+        for index in start..<lines.count {
+            let original = lines[index].trimmingCharacters(in: .whitespaces)
+            switch kinds[index] {
+            case .song(let number): metadata["ccli-songnumber"] = number
+            case .license(let number): metadata["ccli-licensenumber"] = number
+            case .authors:
+                if let colon = original.firstIndex(of: ":") {
+                    metadata["authors"] = original[original.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+                }
+            case .copyright: metadata["copyright"] = original
+            case .rights: metadata["rights"] = original
+            case nil:
+                if !matching[index].isEmpty { metadata["copyright-claim"] = original }
             }
         }
+        guard metadata.count >= 2,
+              metadata["ccli-songnumber"] != nil || metadata["ccli-licensenumber"] != nil else { return nil }
 
-        if let rightsIndex = matchingLines.firstIndex(where: { isCCLIRightsLine($0.lowercased()) }) {
-            let rights = trimmedLines[rightsIndex]
-            if !rights.isEmpty { metadata["rights"] = rights }
-        }
-
-        return metadata
-    }
-
-    private static func stripCCLITrailer(from lines: [String], metadata: [String: String]) -> [String] {
-        let trimmed = lines.map {
-            LyricsSectionCatalog.normalizedMarkerText($0)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        guard let firstMetadataIndex = trimmed.firstIndex(where: { isCCLIMetadataLine($0) }) else {
-            return lines
-        }
-
-        let hasPriorContent = trimmed[..<firstMetadataIndex].contains { !$0.isEmpty }
-        let metadataBlock = trimmed[firstMetadataIndex...]
-        let metadataDensity = metadataBlock.isEmpty ? 0.0 :
-            Double(metadataBlock.filter { isCCLIMetadataLine($0) || $0.isEmpty }.count) / Double(metadataBlock.count)
-
-        guard hasPriorContent, metadataDensity >= 0.6 else {
-            return lines
-        }
-
-        var pruneStart = firstMetadataIndex
-        var authorIndex = firstMetadataIndex - 1
-        while authorIndex >= 0 && trimmed[authorIndex].isEmpty {
-            authorIndex -= 1
-        }
-
-        if authorIndex >= 0 {
-            let candidate = trimmed[authorIndex]
-            let shouldTreatAsAuthor =
-                !candidate.isEmpty &&
-                candidate != "---" &&
-                !LyricsSectionCatalog.isHeader(candidate)
-            if shouldTreatAsAuthor {
-                pruneStart = authorIndex
-            }
-        }
-
-        var remaining = Array(lines[..<pruneStart])
-        while let last = remaining.last, last.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            remaining.removeLast()
-        }
-        return remaining
-    }
-
-    private static func isCCLIMetadataLine(_ line: String) -> Bool {
-        let trimmed = LyricsSectionCatalog.normalizedMarkerText(line)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return false }
-        let lower = trimmed.lowercased()
-
-        if lower.hasPrefix("ccli song #") || lower.hasPrefix("ccli license #") {
-            return true
-        }
-        if lower.hasPrefix("©") {
-            return true
-        }
-        if isCCLIRightsLine(lower) { return true }
-        if lower.hasPrefix("ccli") {
-            return true
-        }
-        return false
-    }
-
-    private static func isCCLIRightsLine(_ lower: String) -> Bool {
-        guard lower.contains("songselect") else { return false }
-        if lower.contains("terms of use") { return true }
-        if lower.contains("for use solely") { return true }
-        if lower.contains("www.ccli.com") { return true }
-        if lower.contains("ccli.com") { return true }
-        return false
+        // Unlabelled text before a footer might be either an author or the last
+        // lyric. Keep it. Only an explicit Author(s): line belongs to metadata.
+        guard lines[..<start].contains(where: { !LyricsTextSyntax.isBlank($0) }) else { return nil }
+        return CCLIFooter(startIndex: start, metadata: metadata)
     }
 }

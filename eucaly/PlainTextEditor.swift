@@ -24,19 +24,35 @@ final class PlainTextEditorFocusController {
         guard ownsFirstResponder, let window = textView?.window else { return false }
         return window.makeFirstResponder(nil)
     }
+
+    @discardableResult
+    func formatLyrics() -> Bool {
+        (textView as? LyricsTextView)?.formatLyrics() ?? false
+    }
+
+    @discardableResult
+    func clearLyrics() -> Bool {
+        (textView as? LyricsTextView)?.clearLyrics() ?? false
+    }
 }
 
+@MainActor
 struct PlainTextEditor: NSViewRepresentable {
     @Binding var text: String
     let focusController: PlainTextEditorFocusController
 
     func makeNSView(context: Context) -> NSScrollView {
+        Self.makeScrollView(text: text, coordinator: context.coordinator)
+    }
+
+    static func makeScrollView(text: String, coordinator: Coordinator) -> NSScrollView {
         let scrollView = NSScrollView()
         scrollView.hasVerticalScroller = true
         scrollView.drawsBackground = false
 
-        let textView = NSTextView(frame: NSRect(origin: .zero, size: scrollView.contentSize))
+        let textView = LyricsTextView(frame: NSRect(origin: .zero, size: scrollView.contentSize))
         textView.isRichText = false
+        textView.importsGraphics = false
         textView.isEditable = true
         textView.isSelectable = true
         textView.allowsUndo = true
@@ -52,9 +68,10 @@ struct PlainTextEditor: NSViewRepresentable {
         textView.backgroundColor = NSColor.clear
         textView.textContainerInset = NSSize(width: 12, height: 12)
         textView.font = NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)
-        textView.delegate = context.coordinator
+        textView.delegate = coordinator
+        textView.textStorage?.delegate = coordinator
         textView.string = text
-        context.coordinator.focusController.attach(textView)
+        coordinator.attach(textView)
 
         let paragraphStyle = NSMutableParagraphStyle()
         paragraphStyle.lineSpacing = 6
@@ -73,7 +90,7 @@ struct PlainTextEditor: NSViewRepresentable {
         textView.textContainer?.widthTracksTextView = true
         textView.textContainer?.heightTracksTextView = false
         textView.textContainer?.containerSize = NSSize(width: scrollView.contentSize.width, height: .greatestFiniteMagnitude)
-        context.coordinator.applySectionStyling(to: textView)
+        coordinator.applySectionStyling(to: textView)
 
         scrollView.documentView = textView
         return scrollView
@@ -97,17 +114,54 @@ struct PlainTextEditor: NSViewRepresentable {
 
     static func dismantleNSView(_ nsView: NSScrollView, coordinator: Coordinator) {
         guard let textView = nsView.documentView as? NSTextView else { return }
-        coordinator.focusController.detach(textView)
+        coordinator.detach(textView)
+        textView.delegate = nil
+        textView.textStorage?.delegate = nil
     }
 
-    final class Coordinator: NSObject, NSTextViewDelegate {
+    @MainActor
+    final class Coordinator: NSObject, NSTextViewDelegate, NSTextStorageDelegate {
         var text: Binding<String>
         let focusController: PlainTextEditorFocusController
+        // Keep the manager used for this document's edits accessible after
+        // SwiftUI removes the editor from its window, until teardown completes.
+        private weak var editingUndoManager: UndoManager?
         private var isApplyingAttributes = false
+        private var pendingEditedRange: NSRange?
+        private weak var textView: NSTextView?
 
         init(text: Binding<String>, focusController: PlainTextEditorFocusController) {
             self.text = text
             self.focusController = focusController
+            super.init()
+            NotificationCenter.default.addObserver(self, selector: #selector(undoOrRedoDidComplete(_:)), name: .NSUndoManagerDidUndoChange, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(undoOrRedoDidComplete(_:)), name: .NSUndoManagerDidRedoChange, object: nil)
+        }
+
+        deinit {
+            NotificationCenter.default.removeObserver(self)
+        }
+
+        func attach(_ textView: NSTextView) {
+            self.textView = textView
+            focusController.attach(textView)
+        }
+
+        func detach(_ textView: NSTextView) {
+            guard self.textView === textView else { return }
+            editingUndoManager?.removeAllActions()
+            editingUndoManager = nil
+            self.textView = nil
+            focusController.detach(textView)
+        }
+
+        @objc private func undoOrRedoDidComplete(_ notification: Notification) {
+            guard let textView, let manager = notification.object as? UndoManager, manager === textView.undoManager else { return }
+            // Native undo can edit text storage without sending textDidChange.
+            // Observe completion, when the entire edit has settled, for this view's manager only.
+            guard textView.string != text.wrappedValue || pendingEditedRange != nil else { return }
+            applySectionStylingToEditedParagraphs(in: textView)
+            text.wrappedValue = textView.string
         }
 
         func replaceTextPreservingEditorState(
@@ -119,6 +173,7 @@ struct PlainTextEditor: NSViewRepresentable {
             let visibleOrigin = scrollView.contentView.bounds.origin
 
             textView.string = newText
+            textView.undoManager?.removeAllActions()
             applySectionStyling(to: textView)
             restoreEditorState(
                 selectedRange: selectedRange,
@@ -130,29 +185,40 @@ struct PlainTextEditor: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
+            editingUndoManager = textView.undoManager
             applySectionStylingToEditedParagraphs(in: textView)
             text.wrappedValue = textView.string
+        }
+
+        func textStorage(
+            _ textStorage: NSTextStorage,
+            didProcessEditing editedMask: NSTextStorageEditActions,
+            range editedRange: NSRange,
+            changeInLength delta: Int
+        ) {
+            guard editedMask.contains(.editedCharacters), !isApplyingAttributes else { return }
+            pendingEditedRange = pendingEditedRange.map { NSUnionRange($0, editedRange) } ?? editedRange
         }
 
         func applySectionStyling(to textView: NSTextView) {
             guard !isApplyingAttributes else { return }
             let fullRange = NSRange(location: 0, length: (textView.string as NSString).length)
             applySectionStyling(to: textView, range: fullRange)
+            pendingEditedRange = nil
         }
 
         private func applySectionStylingToEditedParagraphs(in textView: NSTextView) {
             guard
-                let textStorage = textView.textStorage,
-                !isApplyingAttributes
+                textView.textStorage != nil,
+                !isApplyingAttributes,
+                !textView.hasMarkedText()
             else {
                 return
             }
 
             let string = textView.string as NSString
-            let editedRange = textStorage.editedRange
-            let candidateRange = editedRange.location != NSNotFound
-                ? editedRange
-                : textView.selectedRange()
+            let candidateRange = pendingEditedRange ?? textView.selectedRange()
+            pendingEditedRange = nil
             let boundedLocation = min(candidateRange.location, string.length)
             let boundedLength = min(candidateRange.length, max(0, string.length - boundedLocation))
             let boundedRange = NSRange(location: boundedLocation, length: boundedLength)
@@ -170,7 +236,7 @@ struct PlainTextEditor: NSViewRepresentable {
             let range = NSIntersectionRange(requestedRange, fullRange)
             guard range.length > 0 || fullRange.length == 0 else { return }
             let paragraphStyle = textView.defaultParagraphStyle ?? NSParagraphStyle.default
-            let baseFont = textView.font ?? NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)
+            let baseFont = NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)
             let markerFont = NSFont.monospacedSystemFont(ofSize: baseFont.pointSize, weight: .semibold)
             let markerParagraphStyle = paragraphStyle.mutableCopy() as? NSMutableParagraphStyle
             markerParagraphStyle?.paragraphSpacingBefore = max(paragraphStyle.paragraphSpacingBefore, 8)

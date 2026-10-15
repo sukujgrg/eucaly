@@ -1,6 +1,7 @@
 import Foundation
 
-struct LyricsEditorSession: Equatable {
+nonisolated struct LyricsEditorSession: Equatable {
+    private(set) var documentID = UUID()
     private(set) var sourceURL: URL?
     private(set) var savedText = ""
     private(set) var previewedText: String?
@@ -24,6 +25,7 @@ struct LyricsEditorSession: Equatable {
     }
 
     mutating func beginNew() {
+        documentID = UUID()
         sourceURL = nil
         savedText = ""
         previewedText = nil
@@ -32,10 +34,11 @@ struct LyricsEditorSession: Equatable {
     }
 
     mutating func beginEditing(text: String, sourceURL: URL) {
+        documentID = UUID()
         self.sourceURL = sourceURL
         savedText = text
         previewedText = text
-        draft = text
+        draft = LyricsTextSanitizer.clean(text)
         isEditing = true
     }
 
@@ -46,6 +49,10 @@ struct LyricsEditorSession: Equatable {
 
     mutating func markPreviewed() {
         previewedText = draft
+    }
+
+    mutating func invalidatePreview() {
+        previewedText = nil
     }
 
     mutating func clearDraft() {

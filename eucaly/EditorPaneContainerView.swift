@@ -10,6 +10,7 @@ enum EditorPaneAction {
 struct EditorPaneContainerView: View {
     let newFileWarning: String?
     @Binding var rawLyrics: String
+    let editorID: UUID
     let saveButtonTitle: String
     let canSave: Bool
     let focusController: PlainTextEditorFocusController
@@ -32,6 +33,7 @@ struct EditorPaneContainerView: View {
                 text: $rawLyrics,
                 focusController: focusController
             )
+                .id(editorID)
                 .frame(minHeight: 220)
                 .background(
                     VisualEffectView(material: .contentBackground, blendingMode: .withinWindow)
