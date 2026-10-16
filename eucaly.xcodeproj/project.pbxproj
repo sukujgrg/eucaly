@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		E5CA20000000000000000003 = {isa = PBXBuildFile; productRef = E5CA20000000000000000002; };
 		C0DE09120000000000000001 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = C0DE09120000000000000002 /* Sparkle */; };
 /* End PBXBuildFile section */
 
@@ -57,6 +58,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				C0DE09120000000000000001 /* Sparkle in Frameworks */,
+				E5CA20000000000000000003,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -110,6 +112,7 @@
 			name = eucaly;
 			packageProductDependencies = (
 				C0DE09120000000000000002 /* Sparkle */,
+				E5CA20000000000000000002,
 			);
 			productName = eucaly;
 			productReference = B20C40852F31E99F0006903E /* eucaly.app */;
@@ -168,6 +171,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				C0DE09120000000000000003 /* XCRemoteSwiftPackageReference "Sparkle" */,
+				E5CA20000000000000000001,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = B20C40862F31E99F0006903E /* Products */;
@@ -522,6 +526,7 @@
 		};
 /* End XCConfigurationList section */
 /* Begin XCRemoteSwiftPackageReference section */
+		E5CA20000000000000000001 = {isa = XCLocalSwiftPackageReference; relativePath = "Vendor/MediaStreaming"; };
 		C0DE09120000000000000003 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/sparkle-project/Sparkle";
@@ -530,6 +535,7 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		E5CA20000000000000000002 = {isa = XCSwiftPackageProductDependency; package = E5CA20000000000000000001; productName = SRTHaishinKit; };
 		C0DE09120000000000000002 /* Sparkle */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = C0DE09120000000000000003 /* XCRemoteSwiftPackageReference "Sparkle" */;

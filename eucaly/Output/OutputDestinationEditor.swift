@@ -19,6 +19,7 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
     let customizeButton = NSButton(title: "Customize Appearance…", target: nil, action: nil)
     let clearBackgroundButton = NSButton(title: "Clear Background", target: nil, action: nil)
     var onEditProfile: (UUID) -> Void = { _ in }
+    private var mediaEditor: OutputSRTDestinationSettings?
     private(set) var remoteEditor: AltViewOutputDestinationSettings?
     private struct MonitorEntry: Equatable { let target: ProjectionMonitorTarget?; let title: String; let enabled: Bool }
     private struct ProfileEntry: Equatable { let id: UUID; let title: String }
@@ -35,7 +36,7 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
         let form = OutputSettingsForm(frame: .zero); view = form
         guard let destination else { return }
         let native = store.profile(destination.profileID)?.isNative == true
-        form.section(native ? "Native Output" : "AltView Output")
+        form.section(native ? "Native Output" : store.profile(destination.profileID)?.kind == .altViewMedia ? "AltView Media Output" : "AltView Output")
         nameField.delegate = self; nameField.setAccessibilityLabel("Output name")
         enabledButton.target = self; enabledButton.action = #selector(enabledChanged(_:))
         profilePicker.autoenablesItems = false
@@ -59,6 +60,9 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
             let confidenceActions = outputSettingsActionRow([confidenceButton])
             self.confidenceActions = confidenceActions; form.add(confidenceActions)
             form.add(outputSettingsLabel("All outputs follow the active eucaly Current. Close this output before changing its monitor. Disconnected monitors keep their assignment and require an explicit Show Slides to reopen.", secondary: true))
+        } else if store.profile(destination.profileID)?.kind == .altViewMedia {
+            let editor = OutputSRTDestinationSettings(coordinator: coordinator, destinationID: destinationID)
+            mediaEditor = editor; addChild(editor); form.add(editor.view)
         } else {
             let editor = AltViewOutputDestinationSettings(router: router, store: store, destinationID: destinationID)
             remoteEditor = editor; addChild(editor); form.add(editor.view)
@@ -70,7 +74,7 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
         validationLabel.isHidden = validationLabel.stringValue.isEmpty
         if nameField.currentEditor() == nil { nameField.stringValue = destination.name }
         enabledButton.state = destination.enabled ? .on : .off
-        guard profile.isNative else { remoteEditor?.render(); return }
+        guard profile.isNative else { mediaEditor?.render(); remoteEditor?.render(); return }
         customizeButton.isEnabled = store.canCustomizeProfile(for: destinationID)
         clearBackgroundButton.isEnabled = customizeButton.isEnabled
         let help = customizeButton.isEnabled ? nil : "The profile limit has been reached. Edit reusable profiles in Profiles."

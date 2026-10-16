@@ -211,3 +211,15 @@ Tests include local media flow, workspace ownership, native rendering/clock,
 settings migration, display identity/loss, sleep prevention and real TLS sender
 interoperability. Physical LAN/HDMI, permission UI, VoiceOver and sustained GPU
 cadence require rehearsal on production equipment.
+
+## SRT media output
+
+Version 4 adds the AltView Media built-in output kind without enabling network
+publication during migration. Each destination stores sourceAudienceID and the
+optional includeBackgroundAudio flag (default false). Its secret is separate in
+Keychain. OutputSRTDestinationSettings edits endpoint/source/audio configuration.
+SRTMediaOutputRouter follows only an explicitly opened Audience window identity
+and generation. It uses ScreenCaptureKit for the scaled network copy and taps
+only live video/background players, with shared taps and bounded mixers.
+SRTMediaSession owns H.264/AAC MPEG-TS and encrypted SRT; closed attempts retire
+queues before cleanup. Preview remains private. See altview.md for setup/limits.

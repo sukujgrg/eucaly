@@ -85,6 +85,7 @@ final class PresentationSession: NSObject, ObservableObject {
 
     private var backgroundAudioGeneration = UUID()
     private var backgroundAudioPlayer: AVPlayer?
+    var programBackgroundAudioPlayer: AVPlayer? { backgroundAudioPlayer }
     private var backgroundAudioEndObserver: NSObjectProtocol?
     private var backgroundAudioTimeObserver: Any?
 

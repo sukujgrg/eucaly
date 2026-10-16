@@ -98,7 +98,7 @@ nonisolated struct OutputBackground: Codable, Equatable, Sendable {
 
 nonisolated struct OutputProfile: Codable, Equatable, Sendable, Identifiable {
     enum Kind: String, Codable, CaseIterable, Sendable {
-        case audience, confidence, lowerThird, altView
+        case audience, confidence, lowerThird, altView, altViewMedia
 
         init(from decoder: any Decoder) throws {
             let value = try decoder.singleValueContainer().decode(String.self)
@@ -143,12 +143,13 @@ nonisolated struct OutputProfile: Codable, Equatable, Sendable, Identifiable {
     static let confidenceID = UUID(uuidString: "00000000-0000-4000-8000-000000000002")!
     static let lowerThirdID = UUID(uuidString: "00000000-0000-4000-8000-000000000005")!
     static let altViewID = UUID(uuidString: "00000000-0000-4000-8000-000000000006")!
-    var isNative: Bool { kind != .altView }
+    static let altViewMediaID = UUID(uuidString: "00000000-0000-4000-8000-000000000007")!
+    var isNative: Bool { kind != .altView && kind != .altViewMedia }
     static var builtIns: [Self] {
-        let identities: [(Kind, UUID)] = [(.audience, audienceID), (.confidence, confidenceID), (.lowerThird, lowerThirdID), (.altView, altViewID)]
+        let identities: [(Kind, UUID)] = [(.audience, audienceID), (.confidence, confidenceID), (.lowerThird, lowerThirdID), (.altView, altViewID), (.altViewMedia, altViewMediaID)]
         return identities.map { kind, identity in
             var profile = Self(id: identity,
-                               name: kind == .lowerThird ? "Lower Third" : kind == .altView ? "AltView" : kind.rawValue.capitalized, kind: kind)
+                               name: kind == .altViewMedia ? "AltView Media" : kind == .lowerThird ? "Lower Third" : kind == .altView ? "AltView" : kind.rawValue.capitalized, kind: kind)
             switch kind {
             case .audience:
                 profile.usesLegacySizing = true
@@ -157,7 +158,7 @@ nonisolated struct OutputProfile: Codable, Equatable, Sendable, Identifiable {
                 profile.typography.size = 48
                 profile.alignment = "left"
                 profile.background.dimming = 0
-            case .altView:
+            case .altView, .altViewMedia:
                 profile.roles = [] // Receiver owns composition and appearance.
             case .lowerThird:
                 profile.roles = [.primary]
@@ -180,6 +181,7 @@ nonisolated enum OutputDestination: Codable, Equatable, Sendable {
     case none
     case monitor(ProjectionMonitorTarget)
     case altView(OutputReceiverTarget)
+    case srt(SRTMediaSettings)
 }
 
 nonisolated struct OutputDestinationConfiguration: Codable, Equatable, Identifiable {
@@ -190,6 +192,9 @@ nonisolated struct OutputDestinationConfiguration: Codable, Equatable, Identifia
     var enabled = true
     // Keep the native assignment while temporarily selecting the forwarding profile.
     var savedMonitor: ProjectionMonitorTarget?
+    var sourceAudienceID: UUID?
+    var includeBackgroundAudio = false
+    var srt: SRTMediaSettings? { if case .srt(let settings) = destination { return settings }; return nil }
     var savedReceiver: OutputReceiverTarget?
     var monitor: ProjectionMonitorTarget? {
         get { if case .monitor(let target) = destination { return target }; return nil }
@@ -202,13 +207,15 @@ nonisolated struct OutputDestinationConfiguration: Codable, Equatable, Identifia
         self.id = id; self.name = name; self.profileID = profileID; self.enabled = enabled
         self.monitor = monitor
     }
-    private enum CodingKeys: String, CodingKey { case id, name, profileID, destination, monitor, enabled, savedMonitor, savedReceiver }
+    private enum CodingKeys: String, CodingKey { case id, name, profileID, destination, monitor, enabled, savedMonitor, savedReceiver, sourceAudienceID, includeBackgroundAudio }
     init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(UUID.self, forKey: .id); name = try c.decode(String.self, forKey: .name)
         profileID = try c.decode(UUID.self, forKey: .profileID); enabled = try c.decode(Bool.self, forKey: .enabled)
         savedMonitor = try c.decodeIfPresent(ProjectionMonitorTarget.self, forKey: .savedMonitor)
             ?? c.decodeIfPresent(ProjectionMonitorTarget.self, forKey: .monitor)
+        sourceAudienceID = try c.decodeIfPresent(UUID.self, forKey: .sourceAudienceID)
+        includeBackgroundAudio = try c.decodeIfPresent(Bool.self, forKey: .includeBackgroundAudio) ?? false
         savedReceiver = try c.decodeIfPresent(OutputReceiverTarget.self, forKey: .savedReceiver)
         destination = try c.decodeIfPresent(OutputDestination.self, forKey: .destination)
             ?? savedMonitor.map(OutputDestination.monitor) ?? .none
@@ -217,17 +224,19 @@ nonisolated struct OutputDestinationConfiguration: Codable, Equatable, Identifia
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(id, forKey: .id); try c.encode(name, forKey: .name); try c.encode(profileID, forKey: .profileID)
         try c.encode(enabled, forKey: .enabled); try c.encode(destination, forKey: .destination)
+        try c.encodeIfPresent(sourceAudienceID, forKey: .sourceAudienceID)
+        try c.encode(includeBackgroundAudio, forKey: .includeBackgroundAudio)
         try c.encodeIfPresent(savedMonitor, forKey: .savedMonitor); try c.encodeIfPresent(savedReceiver, forKey: .savedReceiver)
     }
 }
 
 nonisolated struct OutputProfileDocument: Codable, Equatable {
-    var version = 3
+    var version = 4
     var profiles: [OutputProfile]
     var destinations: [OutputDestinationConfiguration]
     var defaultDestinationID: UUID? = nil
 
-    init(version: Int = 3, profiles: [OutputProfile], destinations: [OutputDestinationConfiguration], defaultDestinationID: UUID? = nil) {
+    init(version: Int = 4, profiles: [OutputProfile], destinations: [OutputDestinationConfiguration], defaultDestinationID: UUID? = nil) {
         self.version = version; self.profiles = profiles; self.destinations = destinations
         self.defaultDestinationID = defaultDestinationID
     }
@@ -259,9 +268,12 @@ nonisolated enum OutputProfileMigration {
             UUID(uuidString: "00000000-0000-4000-8000-000000000004")!
         ]
         var result = saved
-        result.version = 3
+        result.version = 4
         if !result.profiles.contains(where: { $0.id == OutputProfile.altViewID }) {
             result.profiles.append(OutputProfile.builtIns.first { $0.kind == .altView }!)
+        }
+        if !result.profiles.contains(where: { $0.id == OutputProfile.altViewMediaID }) {
+            result.profiles.append(OutputProfile.builtIns.first { $0.kind == .altViewMedia }!)
         }
         result.profiles.removeAll { retiredIDs.contains($0.id) }
         for index in result.destinations.indices where retiredIDs.contains(result.destinations[index].profileID) {
@@ -303,7 +315,7 @@ nonisolated struct OutputContentSnapshot {
 
 nonisolated extension OutputProfileDocument {
     var isValid: Bool {
-        guard (1...3).contains(version), (1...128).contains(profiles.count), destinations.count <= 16,
+        guard (1...4).contains(version), (1...128).contains(profiles.count), destinations.count <= 16,
               Set(profiles.map(\.id)).count == profiles.count,
               Set(destinations.map(\.id)).count == destinations.count,
               profiles.contains(where: { $0.id == OutputProfile.audienceID }),
@@ -314,7 +326,8 @@ nonisolated extension OutputProfileDocument {
                 switch row.destination {
                 case .none: return true
                 case .monitor: return profile.isNative
-                case .altView(let receiver): return !profile.isNative && !receiver.name.isEmpty && receiver.name.utf8.count <= 160
+                case .srt(let settings): return profile.kind == .altViewMedia && settings.isValid
+                case .altView(let receiver): return profile.kind == .altView && !receiver.name.isEmpty && receiver.name.utf8.count <= 160
                 }
             }) else { return false }
         }

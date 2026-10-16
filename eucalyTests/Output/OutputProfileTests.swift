@@ -16,7 +16,7 @@ final class OutputProfileTests: XCTestCase {
         store.flush()
         XCTAssertEqual(store.document.destinations.count, 1)
         XCTAssertEqual(store.document.destinations.first?.monitor, target)
-        XCTAssertEqual(store.document.version, 3)
+        XCTAssertEqual(store.document.version, 4)
         XCTAssertEqual(store.audience.typography.size, 126)
         XCTAssertEqual(store.audience.typography(for: .meaning).size, 63)
         XCTAssertEqual(store.audience.background.bookmark, "bookmark")
@@ -96,7 +96,7 @@ final class OutputProfileTests: XCTestCase {
         XCTAssertEqual(store.profile(customID), custom)
         XCTAssertEqual(store.profile(OutputProfile.lowerThirdID)?.kind, .lowerThird)
         XCTAssertEqual(store.document, OutputProfileStore(defaults: defaults).document, "Migration is idempotent")
-        XCTAssertEqual(OutputProfile.builtIns.map(\.kind), [.audience, .confidence, .lowerThird, .altView])
+        XCTAssertEqual(OutputProfile.builtIns.map(\.kind), [.audience, .confidence, .lowerThird, .altView, .altViewMedia])
     }
 
     func testLowerThirdGreenDefaultUpgradesOnceAndPreservesLaterExplicitBlack() throws {
@@ -232,7 +232,7 @@ final class OutputProfileRecoveryTests: XCTestCase {
         XCTAssertEqual(store.document.destinations.map(\.monitor), doc.destinations.map(\.monitor))
         XCTAssertEqual(store.document.destinations.map(\.id), doc.destinations.map(\.id))
         XCTAssertTrue(store.document.destinations.allSatisfy { !$0.enabled })
-        XCTAssertEqual(store.document.version, 3)
+        XCTAssertEqual(store.document.version, 4)
         store.flush(); XCTAssertEqual(defaults.data(forKey: OutputProfileStore.key), original)
     }
 }
