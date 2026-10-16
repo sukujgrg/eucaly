@@ -104,6 +104,9 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         sidebar.translatesAutoresizingMaskIntoConstraints = false
         let status = NSStackView(views: [statusLabel, issueLabel])
         status.orientation = .vertical; status.alignment = .leading; status.spacing = 5
+        // Extra window height belongs to the list and detail panes, even when
+        // there is no editor contributing a minimum content height.
+        status.setHuggingPriority(.required, for: .vertical)
         for item in status.arrangedSubviews { item.widthAnchor.constraint(equalTo: status.widthAnchor).isActive = true }
         status.translatesAutoresizingMaskIntoConstraints = false
         issueLabel.textColor = .systemOrange
@@ -238,7 +241,14 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
             discardForms()
             let label = outputSettingsLabel(profilesMode ? "No native appearance profiles." : "Add an output to get started.", secondary: true)
             detailNotice = label
-            outputSettingsPin(label, to: detailHost, inset: 8)
+            label.translatesAutoresizingMaskIntoConstraints = false
+            detailHost.addSubview(label)
+            NSLayoutConstraint.activate([
+                label.leadingAnchor.constraint(equalTo: detailHost.leadingAnchor, constant: 8),
+                label.trailingAnchor.constraint(equalTo: detailHost.trailingAnchor, constant: -8),
+                label.topAnchor.constraint(equalTo: detailHost.topAnchor, constant: 8),
+                label.bottomAnchor.constraint(lessThanOrEqualTo: detailHost.bottomAnchor, constant: -8)
+            ])
         }
         if previous !== child {
             previous?.view.isHidden = true

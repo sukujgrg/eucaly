@@ -4,6 +4,40 @@ import XCTest
 
 @MainActor
 final class SettingsWindowTests: XCTestCase {
+    func testEmptyOutputsKeepNavigationBelowStatusAcrossResizeAndTabChanges() throws {
+        let fixture = NativeSettingsFixture()
+        defer { fixture.close() }
+        fixture.controller.show(pane: .outputs)
+        fixture.store.edit { $0.destinations.removeAll() }
+        let outputs = fixture.controller.settings.outputs
+        outputs.reload()
+        let window = try XCTUnwrap(fixture.controller.window)
+        for size in [NSSize(width: 780, height: 580), .init(width: 1020, height: 760)] {
+            window.setContentSize(size)
+            for pane in [NativeSettingsController.Pane.general, .outputs] {
+                fixture.controller.settings.select(pane)
+            }
+            window.layoutIfNeeded()
+            outputs.view.layoutSubtreeIfNeeded()
+            let status = try XCTUnwrap(outputs.statusLabel.superview)
+            let statusFrame = status.convert(status.bounds, to: outputs.view)
+            let tabs = outputs.section.convert(outputs.section.bounds, to: outputs.view)
+            let list = try XCTUnwrap(outputs.table.enclosingScrollView)
+            let listFrame = list.convert(list.bounds, to: outputs.view)
+            let notice = try XCTUnwrap(descendants(NSTextField.self, in: outputs.view).first {
+                $0.stringValue == "Add an output to get started."
+            })
+            let noticeFrame = notice.convert(notice.bounds, to: outputs.view)
+            XCTAssertLessThan(statusFrame.height, 40, "The live status must not absorb spare window height")
+            XCTAssertEqual(statusFrame.minY - tabs.maxY, 14, accuracy: 1)
+            XCTAssertGreaterThan(listFrame.height, outputs.view.bounds.height / 2)
+            XCTAssertEqual(tabs.maxY - noticeFrame.maxY, 8, accuracy: 1)
+            XCTAssertLessThan(noticeFrame.height, 40, "The empty message must keep its natural height")
+            XCTAssertTrue(outputs.addOutputMenu.isEnabled)
+            XCTAssertFalse(outputs.removeOutput.isEnabled)
+        }
+    }
+
     func testNativeWindowSharesPanesAndRetainsItsSizeAcrossCloseAndReopen() throws {
         let fixture = NativeSettingsFixture()
         defer { fixture.close() }
