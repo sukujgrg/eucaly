@@ -16,6 +16,8 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
     let confidenceButton = NSButton(title: "Open Confidence", target: nil, action: nil)
     let identifyButton = NSButton(title: "Identify", target: nil, action: nil)
     let nameMonitorButton = NSButton(title: "Name Monitor…", target: nil, action: nil)
+    let customizeButton = NSButton(title: "Customize Appearance…", target: nil, action: nil)
+    let clearBackgroundButton = NSButton(title: "Clear Background", target: nil, action: nil)
     var onEditProfile: (UUID) -> Void = { _ in }
     private(set) var remoteEditor: AltViewOutputDestinationSettings?
     private struct MonitorEntry: Equatable { let target: ProjectionMonitorTarget?; let title: String; let enabled: Bool }
@@ -41,9 +43,11 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
         form.add(outputSettingsRow("Name", nameField)); form.add(enabledButton)
         validationLabel.textColor = .systemOrange; validationLabel.isHidden = true; form.add(validationLabel)
         if native {
+            customizeButton.target = self; customizeButton.action = #selector(editProfile(_:))
+            clearBackgroundButton.target = self; clearBackgroundButton.action = #selector(clearBackground(_:))
             form.add(outputSettingsFieldGroup("Profile", profilePicker, actions: [
-                NSButton(title: "Edit Profile…", target: self, action: #selector(editProfile(_:))),
-                NSButton(title: "Clear Background", target: self, action: #selector(clearBackground(_:)))
+                customizeButton,
+                clearBackgroundButton
             ]))
             monitorPicker.autoenablesItems = false
             monitorPicker.target = self; monitorPicker.action = #selector(monitorChanged(_:)); monitorPicker.setAccessibilityLabel("Monitor assignment")
@@ -67,6 +71,11 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
         if nameField.currentEditor() == nil { nameField.stringValue = destination.name }
         enabledButton.state = destination.enabled ? .on : .off
         guard profile.isNative else { remoteEditor?.render(); return }
+        customizeButton.isEnabled = store.canCustomizeProfile(for: destinationID)
+        clearBackgroundButton.isEnabled = customizeButton.isEnabled
+        let help = customizeButton.isEnabled ? nil : "The profile limit has been reached. Edit reusable profiles in Profiles."
+        customizeButton.toolTip = help ?? "Edit an independent appearance for this output. Reusable profiles remain available in Profiles."
+        clearBackgroundButton.toolTip = help ?? "Clear the background for this output only."
         let nativeProfiles = store.document.profiles.filter(\.isNative).map { ProfileEntry(id: $0.id, title: $0.name) }
         if profiles != nativeProfiles {
             profiles = nativeProfiles
@@ -146,8 +155,14 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
     @objc private func nameMonitor(_ sender: Any?) {
         if let target = destination?.monitor { OutputMonitorSettingsController.present(displays: coordinator.displays, target: target, from: view.window) }
     }
-    @objc private func editProfile(_ sender: Any?) { if let id = destination?.profileID { onEditProfile(id) } }
-    @objc private func clearBackground(_ sender: Any?) { if let id = destination?.profileID { store.clearBackground(for: id) } }
+    @objc private func editProfile(_ sender: Any?) {
+        finishOutputSettingsFieldEditing(in: view)
+        if let id = store.customizeProfile(for: destinationID) { onEditProfile(id) }
+    }
+    @objc private func clearBackground(_ sender: Any?) {
+        finishOutputSettingsFieldEditing(in: view)
+        store.editDestinationProfile(destinationID) { $0.clearBackground() }
+    }
     @objc private func toggleConfidence(_ sender: Any?) {
         if coordinator.isOpen(destinationID) { coordinator.closeOutput(destinationID) }
         else { coordinator.openConfidence(destinationID) }

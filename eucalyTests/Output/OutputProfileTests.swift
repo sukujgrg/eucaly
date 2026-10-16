@@ -136,7 +136,8 @@ final class OutputProfileTests: XCTestCase {
         var lowerThird = try XCTUnwrap(store.profile(OutputProfile.lowerThirdID))
         lowerThird.background.bookmark = "selected visual"
         store.update(lowerThird)
-        store.clearBackground(for: lowerThird.id)
+        lowerThird.clearBackground()
+        store.update(lowerThird)
         XCTAssertNil(store.profile(lowerThird.id)?.background.bookmark)
         XCTAssertEqual(store.profile(lowerThird.id)?.background.colour, .chromaGreen)
 
@@ -166,20 +167,27 @@ final class OutputProfileTests: XCTestCase {
         XCTAssertEqual(OutputProfileStore(defaults: defaults).document, store.document)
     }
 
-    func testMeaningRelativeSizeAndExplicitOverridesSurviveLegacyControlEdits() {
+    func testLegacyBackgroundImportPreservesProfileAppearanceAndComponentOverrides() {
         let name = "ProfileRelative.\(UUID())", defaults = UserDefaults(suiteName: name)!
         defer { defaults.removePersistentDomain(forName: name) }
         let store = OutputProfileStore(defaults: defaults)
         var audience = store.audience
-        audience.typography.size = 100
+        audience.typography.size = 500
+        audience.layout = "columns"
+        audience.typography.fontName = "Helvetica"
         store.update(audience)
-        XCTAssertEqual(store.audience.typography(for: .meaning).size, 50)
+        XCTAssertEqual(store.audience.typography(for: .meaning).size, 250)
         audience.componentTypography[.meaning]?.size = 72
         store.update(audience)
         defaults.set(1.5, forKey: "presentationFontScale")
-        store.importLegacyAudience()
-        XCTAssertEqual(store.audience.typography.size, 126)
+        defaults.set("stacked", forKey: "presentationLyricsLayout")
+        defaults.set("sidebar visual", forKey: "backgroundVisualBookmark")
+        store.importLegacyAudienceBackground()
+        XCTAssertEqual(store.audience.typography.size, 500)
+        XCTAssertEqual(store.audience.typography.fontName, "Helvetica")
+        XCTAssertEqual(store.audience.layout, "columns")
         XCTAssertEqual(store.audience.typography(for: .meaning).size, 72)
+        XCTAssertEqual(store.audience.background.bookmark, "sidebar visual")
         store.flush()
     }
     func testCorruptOrFutureDataIsRetainedUntilExplicitRecovery() throws {

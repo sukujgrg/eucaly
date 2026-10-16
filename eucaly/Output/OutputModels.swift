@@ -121,6 +121,8 @@ nonisolated struct OutputProfile: Codable, Equatable, Sendable, Identifiable {
     var background = OutputBackground()
     // Migrated Audience matches the old geometry-dependent requested font size.
     var usesLegacySizing = false
+    // Quick controls customize a destination without editing its reusable source.
+    var customizedForDestinationID: UUID? = nil
 
     func typography(for role: OutputComponentRole) -> OutputTypography {
         componentTypography[role]?.resolve(inheriting: typography) ?? typography
@@ -223,6 +225,30 @@ nonisolated struct OutputProfileDocument: Codable, Equatable {
     var version = 3
     var profiles: [OutputProfile]
     var destinations: [OutputDestinationConfiguration]
+    var defaultDestinationID: UUID? = nil
+
+    init(version: Int = 3, profiles: [OutputProfile], destinations: [OutputDestinationConfiguration], defaultDestinationID: UUID? = nil) {
+        self.version = version; self.profiles = profiles; self.destinations = destinations
+        self.defaultDestinationID = defaultDestinationID
+    }
+
+    private enum CodingKeys: String, CodingKey { case version, profiles, destinations, defaultDestinationID }
+    init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decode(Int.self, forKey: .version)
+        profiles = try c.decode([OutputProfile].self, forKey: .profiles)
+        destinations = try c.decode([OutputDestinationConfiguration].self, forKey: .destinations)
+        // Missing means the old primary output. Explicit null means None and
+        // must survive launches, migration and removal of the former default.
+        defaultDestinationID = c.contains(.defaultDestinationID)
+            ? try c.decodeIfPresent(UUID.self, forKey: .defaultDestinationID) : destinations.first?.id
+    }
+    func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(version, forKey: .version); try c.encode(profiles, forKey: .profiles)
+        try c.encode(destinations, forKey: .destinations)
+        try c.encode(defaultDestinationID, forKey: .defaultDestinationID)
+    }
 }
 
 nonisolated enum OutputProfileMigration {
@@ -258,7 +284,8 @@ nonisolated enum OutputProfileMigration {
         let scale = defaults?.object(forKey: "presentationFontScale") == nil ? 1 : (defaults?.double(forKey: "presentationFontScale") ?? 1)
         profiles[0].typography.size = 84 * (scale.isFinite ? min(4, max(0.1, scale)) : 1)
         profiles[0].background.bookmark = defaults?.string(forKey: "backgroundVisualBookmark").flatMap { $0.isEmpty ? nil : $0 }
-        return .init(profiles: profiles, destinations: [.init(name: "Audience", profileID: OutputProfile.audienceID, monitor: monitor)])
+        let audience = OutputDestinationConfiguration(name: "Audience", profileID: OutputProfile.audienceID, monitor: monitor)
+        return .init(profiles: profiles, destinations: [audience], defaultDestinationID: audience.id)
     }
 }
 
@@ -311,6 +338,7 @@ nonisolated extension OutputProfileDocument {
 nonisolated extension OutputProfile {
     private enum CodingKeys: String, CodingKey {
         case id, name, kind, roles, layout, alignment, position, padding, typography, componentTypography, background, usesLegacySizing
+        case customizedForDestinationID
     }
     init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -328,6 +356,7 @@ nonisolated extension OutputProfile {
         if kind != .confidence { componentTypography.removeValue(forKey: .footer) }
         background = try c.decode(OutputBackground.self, forKey: .background)
         usesLegacySizing = try c.decode(Bool.self, forKey: .usesLegacySizing)
+        customizedForDestinationID = try c.decodeIfPresent(UUID.self, forKey: .customizedForDestinationID)
     }
     private static func persistedRole(_ value: String, decoder: any Decoder) throws -> OutputComponentRole? {
         if ["secondary", "heading", "reference"].contains(value) { return nil } // Retired scripture components.

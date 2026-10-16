@@ -10,14 +10,17 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     var store: OutputProfileStore { coordinator.profiles }
     let section = NSSegmentedControl(labels: ["Outputs", "Profiles"], trackingMode: .selectOne, target: nil, action: nil)
     let table = NSTableView()
-    let addNative = NSButton(title: "Add Native", target: nil, action: nil)
-    let addAltView = NSButton(title: "Add AltView", target: nil, action: nil)
-    let removeOutput = NSButton(title: "Remove Output", target: nil, action: nil)
+    let addOutputMenu = NSPopUpButton(frame: .zero, pullsDown: true)
+    let addNative = NSMenuItem(title: "Native Monitor Output", action: nil, keyEquivalent: "")
+    let addAltView = NSMenuItem(title: "AltView Text Output", action: nil, keyEquivalent: "")
+    let removeOutput = NSButton(title: "−", target: nil, action: nil)
+    let makeDefault = NSButton(title: "Make Default", target: nil, action: nil)
     let addProfile = NSButton()
     let statusLabel = outputSettingsLabel(secondary: true)
     let issueLabel = outputSettingsLabel(secondary: true)
     private let detailHost = NSView()
     private let profileActions = NSStackView()
+    private let outputActions = NSStackView()
     private(set) var selectedID: UUID?
     private var outputSelection: UUID?
     private var profileSelection: UUID?
@@ -61,25 +64,41 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         section.selectedSegment = 0; section.target = self; section.action = #selector(changeSection(_:))
         table.addTableColumn(NSTableColumn(identifier: .init("outputs")))
         table.headerView = nil; table.style = .sourceList; table.rowHeight = 52
+        table.focusRingType = .none
         table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         table.delegate = self; table.dataSource = self; table.allowsEmptySelection = false
         table.setAccessibilityLabel("Outputs and profiles")
         let list = NSScrollView(); list.hasVerticalScroller = true; list.autohidesScrollers = true
+        list.focusRingType = .none
         list.borderType = .bezelBorder; list.documentView = table
         list.heightAnchor.constraint(greaterThanOrEqualToConstant: 190).isActive = true
         addNative.target = self; addNative.action = #selector(addNativeOutput(_:))
         addAltView.target = self; addAltView.action = #selector(addAltViewOutput(_:))
+        let menu = NSMenu(); menu.autoenablesItems = false
+        let glyph = NSMenuItem(title: "+", action: nil, keyEquivalent: "")
+        glyph.image = NSImage(named: NSImage.addTemplateName)
+        menu.addItem(glyph); menu.addItem(addNative); menu.addItem(addAltView)
+        addOutputMenu.menu = menu; addOutputMenu.imagePosition = .imageOnly
+        addOutputMenu.setAccessibilityLabel("Add Output")
+        addOutputMenu.toolTip = "Add a disabled, unassigned output."
         removeOutput.target = self; removeOutput.action = #selector(removeSelectedOutput(_:))
+        removeOutput.setAccessibilityLabel("Remove Output")
+        makeDefault.target = self; makeDefault.action = #selector(makeSelectedDefault(_:))
         addProfile.image = NSImage(named: NSImage.addTemplateName)
-        addProfile.imagePosition = .imageOnly; addProfile.bezelStyle = .smallSquare
+        addProfile.imagePosition = .imageOnly
         addProfile.target = self; addProfile.action = #selector(addSelectedProfile(_:))
         addProfile.setAccessibilityLabel("Add Profile")
         addProfile.toolTip = "Add a profile by copying the selected profile."
-        NSLayoutConstraint.activate([addProfile.widthAnchor.constraint(equalToConstant: 28),
-                                     addProfile.heightAnchor.constraint(equalToConstant: 24)])
+        for button in [addOutputMenu, removeOutput, makeDefault, addProfile] {
+            button.bezelStyle = .rounded; button.controlSize = .small
+            button.setContentHuggingPriority(.required, for: .horizontal)
+            button.setContentCompressionResistancePriority(.required, for: .horizontal)
+        }
+        outputActions.orientation = .horizontal; outputActions.alignment = .centerY; outputActions.spacing = 8
+        for action in [addOutputMenu, removeOutput, NSView(), makeDefault] { outputActions.addArrangedSubview(action) }
         profileActions.orientation = .horizontal; profileActions.alignment = .centerY
         profileActions.addArrangedSubview(addProfile); profileActions.addArrangedSubview(NSView())
-        let sidebar = NSStackView(views: [section, list, profileActions, addNative, addAltView, removeOutput])
+        let sidebar = NSStackView(views: [section, list, outputActions, profileActions])
         sidebar.orientation = .vertical; sidebar.alignment = .leading; sidebar.spacing = 8
         for item in sidebar.arrangedSubviews { item.widthAnchor.constraint(equalTo: sidebar.widthAnchor).isActive = true }
         sidebar.translatesAutoresizingMaskIntoConstraints = false
@@ -97,7 +116,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
             sidebar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             sidebar.topAnchor.constraint(equalTo: status.bottomAnchor, constant: 14),
             sidebar.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -16),
-            sidebar.widthAnchor.constraint(equalToConstant: 180),
+            sidebar.widthAnchor.constraint(equalToConstant: 220),
             detailHost.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: 16),
             detailHost.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             detailHost.topAnchor.constraint(equalTo: sidebar.topAnchor),
@@ -140,7 +159,8 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
             ListRow(id: profile.id, title: profile.name, detail: "Reusable appearance")
         } : store.document.destinations.map { output in
             ListRow(id: output.id, title: output.name,
-                detail: (store.profile(output.profileID)?.isNative == true ? "Native" : "AltView") + " · " + (statuses[output.id] ?? "Disabled"))
+                detail: (output.id == store.document.defaultDestinationID ? "Default · " : "")
+                    + (store.profile(output.profileID)?.isNative == true ? "Native" : "AltView") + " · " + (statuses[output.id] ?? "Disabled"))
         }
         if selectedID == nil || !fresh.contains(where: { $0.id == selectedID }) {
             finishEditing(); selectedID = fresh.first?.id
@@ -152,14 +172,18 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
             table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
         } else if selectedID == nil { table.deselectAll(nil) }
         reloadingTable = false
-        addNative.isHidden = profilesMode; addAltView.isHidden = profilesMode; removeOutput.isHidden = profilesMode
+        outputActions.isHidden = profilesMode
         profileActions.isHidden = !profilesMode
         addProfile.isEnabled = profilesMode && selectedID.flatMap(store.profile)?.isNative == true
             && store.document.profiles.count < 128 && store.recoveryNotice == nil
-        let canAdd = store.document.destinations.count < 16 && store.recoveryNotice == nil
+        let canAdd = !profilesMode && store.document.destinations.count < 16 && store.recoveryNotice == nil
         addNative.isEnabled = canAdd && store.profile(OutputProfile.audienceID)?.isNative == true
         addAltView.isEnabled = canAdd && store.profile(OutputProfile.altViewID)?.kind == .altView
-        removeOutput.isEnabled = selectedID != nil && selectedID != store.document.destinations.first?.id && store.recoveryNotice == nil
+        addOutputMenu.isEnabled = canAdd
+        removeOutput.isEnabled = !profilesMode && selectedID != nil && store.recoveryNotice == nil
+        let isDefault = !profilesMode && selectedID != nil && selectedID == store.document.defaultDestinationID
+        makeDefault.title = isDefault ? "Default" : "Make Default"
+        makeDefault.isEnabled = !profilesMode && selectedID != nil && !isDefault && store.recoveryNotice == nil
         let key: DetailKey
         if store.recoveryNotice != nil { key = .recovery }
         else if let id = selectedID {
@@ -275,7 +299,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         guard profilesMode, store.recoveryNotice == nil, let id = selectedID else { return }
         finishEditing()
         guard var profile = store.profile(id), profile.isNative, store.document.profiles.count < 128 else { return }
-        profile.id = UUID()
+        profile.id = UUID(); profile.customizedForDestinationID = nil
         // Leave room for the suffix even when the source name fills the limit.
         while (profile.name + " Copy").utf8.count > 160 { profile.name.removeLast() }
         profile.name += " Copy"
@@ -284,14 +308,18 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         table.scrollRowToVisible(table.selectedRow)
     }
     private func addOutput(name: String, profileID: UUID) {
-        guard store.recoveryNotice == nil, store.profile(profileID) != nil, store.document.destinations.count < 16 else { return }
+        guard !profilesMode, store.recoveryNotice == nil, store.profile(profileID) != nil, store.document.destinations.count < 16 else { return }
         finishEditing()
         let output = OutputDestinationConfiguration(name: name, profileID: profileID, monitor: nil, enabled: false)
         store.edit { $0.destinations.append(output) }; selectDestination(output.id)
     }
     @objc private func removeSelectedOutput(_ sender: Any?) {
-        guard !profilesMode, let id = selectedID, id != store.document.destinations.first?.id else { return }
+        guard !profilesMode, store.recoveryNotice == nil, let id = selectedID else { return }
         finishEditing(); store.edit { $0.destinations.removeAll { $0.id == id } }; reload()
+    }
+    @objc private func makeSelectedDefault(_ sender: Any?) {
+        guard !profilesMode, let id = selectedID else { return }
+        finishEditing(); store.setDefaultDestination(id); reload()
     }
     @objc private func recoverSettings(_ sender: Any?) { store.recover(); reload() }
 

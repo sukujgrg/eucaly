@@ -30,6 +30,7 @@ final class OutputCoordinator: ObservableObject {
     private var workspaceReady = false
     private var standbySuppressed: Set<UUID> = []
     private var standbyConfigurations: [OutputDestinationConfiguration]
+    private var legacyMonitorTarget: ProjectionMonitorTarget?
     private var windows: [UUID: any OutputDestinationDriving] = [:]
     private var targets: [UUID: ProjectionMonitorTarget] = [:]
     private var displayObservation: UUID?
@@ -88,6 +89,7 @@ final class OutputCoordinator: ObservableObject {
         self.retainsPreparedSessions = retainsPreparedSessions
         self.profiles = profiles; self.displays = displays
         standbyConfigurations = profiles.document.destinations
+        legacyMonitorTarget = displays.target
         self.sleepPrevention = sleepPrevention; self.driverFactory = driverFactory
         displays.selectionConstraint = { [weak profiles] target in
             guard let profiles, let primary = profiles.document.destinations.first else { return nil }
@@ -435,7 +437,8 @@ final class OutputCoordinator: ObservableObject {
         standbySuppressed.formIntersection(Set(standbyConfigurations.map(\.id)))
         for config in standbyConfigurations where config.enabled {
             let old = previous.first { $0.id == config.id }
-            if old?.enabled != true || old?.profileID != config.profileID || old?.monitor != config.monitor {
+            let oldKind = old.flatMap { profiles.profile($0.profileID)?.kind }
+            if old?.enabled != true || oldKind != profiles.profile(config.profileID)?.kind || old?.monitor != config.monitor {
                 standbySuppressed.remove(config.id)
             }
         }
@@ -456,8 +459,12 @@ final class OutputCoordinator: ObservableObject {
         scheduleConfidenceStandby()
     }
     private func displaysChanged() {
-        // The simple toolbar controls Audience's saved assignment only while idle.
-        if let primary = profiles.document.destinations.first, profiles.profile(primary.profileID)?.isNative == true, windows[primary.id] == nil, primary.monitor != displays.target {
+        // Only an explicit legacy picker change writes the compatibility row.
+        // Inventory/lock notifications must not copy a removed row's assignment
+        // onto whichever output now happens to be first in the list.
+        let selectionChanged = legacyMonitorTarget != displays.target
+        legacyMonitorTarget = displays.target
+        if selectionChanged, let primary = profiles.document.destinations.first, profiles.profile(primary.profileID)?.isNative == true, windows[primary.id] == nil, primary.monitor != displays.target {
             profiles.edit { doc in
                 if !doc.destinations.isEmpty { doc.destinations[0].monitor = displays.target }
             }
