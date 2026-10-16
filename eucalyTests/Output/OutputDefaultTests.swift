@@ -379,29 +379,41 @@ final class OutputDefaultTests: XCTestCase {
         window.contentViewController = NSHostingController(rootView: OutputToolbarFixture(outputs: outputs, updates: updates, search: search, thumbnailDefaults: thumbnailDefaults))
         window.orderBack(nil)
         defer { window.close(); outputs.stop() }
-        for _ in 0..<20 { await Task.yield() }
         let chrome = try XCTUnwrap(window.contentView?.superview)
-        let buttons = descendants(NSPopUpButton.self, in: chrome)
-        let outputButton = try XCTUnwrap(buttons.first { $0.accessibilityLabel()?.hasPrefix("Output, default:") == true })
-        let appearanceButton = try XCTUnwrap(buttons.first { $0.accessibilityLabel()?.hasPrefix("Appearance for default output:") == true })
-        let backgroundButton = try XCTUnwrap(buttons.first { $0.accessibilityLabel()?.hasPrefix("Background for default output:") == true })
-        let thumbnailButton = try XCTUnwrap(buttons.first { $0.accessibilityLabel() == "Thumbnails" })
+        func button(_ labelPrefix: String) -> NSPopUpButton? {
+            descendants(NSPopUpButton.self, in: chrome).first { $0.accessibilityLabel()?.hasPrefix(labelPrefix) == true }
+        }
+        try await waitForUIState("native toolbar controls to mount") {
+            ["Output, default:", "Appearance for default output:", "Background for default output:", "Thumbnails"].allSatisfy { button($0) != nil }
+        }
         let longName = String(repeating: "Long output name ", count: 9)
         store.edit { $0.destinations[0].name = longName }
+        try await waitForUIState("the renamed default to reach the toolbar") {
+            button("Output, default:")?.toolTip?.contains(longName) == true
+        }
+        func hasUpdateReminder() -> Bool {
+            window.toolbar?.items.contains { $0.label == "Update" } == true
+        }
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             window.appearance = NSAppearance(named: appearance)
             for size in [NSSize(width: 1060, height: 600), .init(width: 1400, height: 800)] {
                 window.setContentSize(size)
                 driver.state.availableVersion = nil
-                for _ in 0..<10 { await Task.yield() }
+                try await waitForUIState("the Update reminder to disappear") { !hasUpdateReminder() }
                 window.layoutIfNeeded(); chrome.layoutSubtreeIfNeeded()
                 XCTAssertTrue(window.makeFirstResponder(search))
                 let editor = try XCTUnwrap(search.currentEditor())
                 editor.string = "active search draft"
                 editor.selectedRange = NSRange(location: 7, length: 6)
                 driver.state.availableVersion = "99.0"
-                for _ in 0..<10 { await Task.yield() }
+                try await waitForUIState("the Update reminder to appear while search is focused") { hasUpdateReminder() }
                 window.layoutIfNeeded(); chrome.layoutSubtreeIfNeeded()
+                // SwiftUI can remount toolbar items when the item set changes.
+                // Inspect the controls actually mounted in the window.
+                let outputButton = try XCTUnwrap(button("Output, default:"))
+                let appearanceButton = try XCTUnwrap(button("Appearance for default output:"))
+                let backgroundButton = try XCTUnwrap(button("Background for default output:"))
+                let thumbnailButton = try XCTUnwrap(button("Thumbnails"))
                 XCTAssertTrue(window.firstResponder === editor)
                 XCTAssertTrue(search.currentEditor() === editor)
                 XCTAssertEqual(editor.string, "active search draft")
@@ -421,20 +433,39 @@ final class OutputDefaultTests: XCTestCase {
         }
         let defaultID = try XCTUnwrap(store.defaultDestination?.id)
         XCTAssertNil(store.setEnabled(false, for: defaultID))
-        await drainMainQueue()
-        XCTAssertFalse(appearanceButton.isEnabled); XCTAssertFalse(backgroundButton.isEnabled)
-        XCTAssertTrue(outputButton.isEnabled)
-        XCTAssertTrue(thumbnailButton.isEnabled)
+        try await waitForUIState("disabled-default controls to refresh") {
+            button("Appearance for default output:")?.isEnabled == false && button("Background for default output:")?.isEnabled == false
+        }
+        XCTAssertFalse(try XCTUnwrap(button("Appearance for default output:")).isEnabled)
+        XCTAssertFalse(try XCTUnwrap(button("Background for default output:")).isEnabled)
+        XCTAssertTrue(try XCTUnwrap(button("Output, default:")).isEnabled)
+        XCTAssertTrue(try XCTUnwrap(button("Thumbnails")).isEnabled)
         store.setDefaultDestination(nil)
-        await drainMainQueue()
-        XCTAssertNotNil(try? item("Choose a default output to use quick controls.", in: outputButton.menu))
-        XCTAssertTrue(thumbnailButton.isEnabled)
+        try await waitForUIState("the None default to reach the toolbar") {
+            button("Output, default:")?.accessibilityLabel() == "Output, default: None"
+        }
+        XCTAssertNotNil(try? item("Choose a default output to use quick controls.", in: button("Output, default:")?.menu))
+        XCTAssertTrue(try XCTUnwrap(button("Thumbnails")).isEnabled)
         store.setDefaultDestination(defaultID)
         XCTAssertNil(store.setEnabled(true, for: defaultID))
-        await drainMainQueue()
-        XCTAssertTrue(appearanceButton.isEnabled); XCTAssertTrue(backgroundButton.isEnabled)
+        try await waitForUIState("enabled-default controls to refresh") {
+            button("Appearance for default output:")?.isEnabled == true && button("Background for default output:")?.isEnabled == true
+        }
+        XCTAssertTrue(try XCTUnwrap(button("Appearance for default output:")).isEnabled)
+        XCTAssertTrue(try XCTUnwrap(button("Background for default output:")).isEnabled)
         XCTAssertEqual(thumbnailDefaults.double(forKey: "thumbnailScale"), 1.2345, accuracy: 0.000001)
         XCTAssertEqual(thumbnailDefaults.double(forKey: "thumbnailFontScale"), 1.4, accuracy: 0.000001)
+    }
+
+    // SwiftUI may commit toolbar changes after several main-queue turns. Wait
+    // for the observable native state instead of assuming a scheduling count.
+    private func waitForUIState(_ description: String, file: StaticString = #filePath, line: UInt = #line,
+                                until condition: () -> Bool) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !condition(), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(condition(), "Timed out waiting for \(description).", file: file, line: line)
     }
 
     private func descendants<T: NSView>(_ type: T.Type, in view: NSView) -> [T] {
