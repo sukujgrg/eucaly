@@ -27,11 +27,6 @@ public struct ContentView: View {
     @AppStorage("backgroundAudioVolume") private var backgroundAudioVolume: Double = 1.0
     @AppStorage("backgroundAudioLoop") private var backgroundAudioLoop: Bool = true
     @AppStorage("thumbnailScale") private var thumbnailScale: Double = 1.0
-    @AppStorage("presentationFontScale") private var presentationFontScale: Double = 1.0
-    @AppStorage("presentationLyricsLayout") private var presentationLyricsLayout: PresentationLyricsLayout = .stacked
-    @AppStorage("presentationPaddingScale") private var presentationPaddingScale: Double = 1.0
-    @AppStorage("presentationTextAlignment") private var presentationTextAlignment: PresentationTextAlignment = .center
-    @AppStorage("presentationVerticalPosition") private var presentationVerticalPosition: PresentationVerticalPosition = .middle
     @AppStorage("windowCaptureFrameRate") private var windowCaptureFrameRate: Int = 30
     @AppStorage("savedWebpageURLs") private var savedWebpageURLs: String = ""
     @AppStorage("savedSelectedWebpageURL") private var savedSelectedWebpageURL: String = ""
@@ -196,12 +191,6 @@ public struct ContentView: View {
         }
         .applyToolbarBackgroundIfAvailable()
         .background(OutputWorkspaceScope(commands: workspaceCommands, session: session).frame(width: 0, height: 0))
-        .onChange(of: presentationLyricsLayout) { _, _ in session.outputCoordinator.profiles.importLegacyAudience() }
-        .onChange(of: presentationTextAlignment) { _, _ in session.outputCoordinator.profiles.importLegacyAudience() }
-        .onChange(of: presentationVerticalPosition) { _, _ in session.outputCoordinator.profiles.importLegacyAudience() }
-        .onChange(of: presentationPaddingScale) { _, _ in session.outputCoordinator.profiles.importLegacyAudience() }
-        .onChange(of: presentationFontScale) { _, _ in session.outputCoordinator.profiles.importLegacyAudience() }
-
     }
 
     private var rootSplitWithLibrarySearchOverlay: some View {
@@ -242,7 +231,7 @@ public struct ContentView: View {
             refreshLibraryRootAccess()
         }
         .onChange(of: backgroundVisualBookmark) { _, _ in
-            session.outputCoordinator.profiles.importLegacyAudience()
+            session.outputCoordinator.profiles.importLegacyAudienceBackground()
             refreshBackgroundVisualAccess()
         }
         .onChange(of: backgroundAudioBookmark) { _, _ in
@@ -386,18 +375,16 @@ public struct ContentView: View {
                 .labelStyle(.iconOnly)
                 .buttonStyle(.bordered)
                 .help("Open the command palette")
-
-                projectionScreenPicker
             }
         }
 
         ToolbarItemGroup(placement: .primaryAction) {
             AppUpdateToolbarButton(viewModel: appUpdateViewModel)
+            OutputQuickControls(outputs: session.outputCoordinator, manageOutputs: showOutputSettings)
         }
-    }
-
-    private var projectionScreenPicker: some View {
-        OutputDestinationMenu(session: session, manageOutputs: showOutputSettings)
+        ToolbarItem(placement: .primaryAction) {
+            ThumbnailSettingsMenu()
+        }
     }
 
     private func showOutputSettings() {

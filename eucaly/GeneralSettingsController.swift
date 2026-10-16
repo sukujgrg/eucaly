@@ -13,8 +13,6 @@ final class GeneralSettingsController: NSViewController {
     let automaticUpdates = NSButton(checkboxWithTitle: "Automatically Check for Updates", target: nil, action: nil)
     let checkUpdatesButton = NSButton(title: "Check for Updates…", target: nil, action: nil)
     let cacheLabel = outputSettingsLabel(secondary: true)
-    private(set) var thumbnailFontRow: OutputSettingsNumberRow!
-    private(set) var thumbnailSizeRow: OutputSettingsNumberRow!
     private let readCacheStats: @MainActor () -> CacheManager.CacheStats
     private let clearCache: @MainActor () -> Void
     private var subscriptions = Set<AnyCancellable>()
@@ -50,10 +48,6 @@ final class GeneralSettingsController: NSViewController {
         form.add(outputSettingsFieldGroup("Folder", libraryDetails, actions: [chooseLibraryButton]))
         libraryNotice.textColor = .systemOrange; libraryNotice.isHidden = true
         form.add(libraryNotice)
-        form.section("Thumbnails")
-        thumbnailFontRow = thumbnailRow("Font Size", key: "thumbnailFontScale", range: 30...200)
-        thumbnailSizeRow = thumbnailRow("Size", key: "thumbnailScale", range: 60...160)
-        form.add(thumbnailFontRow); form.add(thumbnailSizeRow)
         form.section("Updates")
         automaticUpdates.target = self; automaticUpdates.action = #selector(automaticUpdatesChanged(_:))
         checkUpdatesButton.target = self; checkUpdatesButton.action = #selector(checkUpdates(_:))
@@ -80,7 +74,6 @@ final class GeneralSettingsController: NSViewController {
     func finishEditing() {
         guard isViewLoaded else { return }
         finishOutputSettingsFieldEditing(in: view)
-        thumbnailFontRow.flush(); thumbnailSizeRow.flush()
     }
     private func scheduleRender() {
         guard isPresented, renderTask == nil else { return }
@@ -90,19 +83,8 @@ final class GeneralSettingsController: NSViewController {
             self.renderTask = nil; self.renderPreferences()
         }
     }
-    private func thumbnailRow(_ title: String, key: String, range: ClosedRange<Double>) -> OutputSettingsNumberRow {
-        OutputSettingsNumberRow(title, range: range, step: 10, scale: 100, unit: "%",
-            changed: { [weak self] value in self?.defaults.set(value, forKey: key); return value },
-            invalid: { [weak self] in self?.renderPreferences() })
-    }
     func renderPreferences() {
         guard isViewLoaded else { return }
-        func scale(_ key: String) -> Double {
-            let value = defaults.object(forKey: key) == nil ? 1 : defaults.double(forKey: key)
-            return value.isFinite ? value : 1
-        }
-        thumbnailFontRow.render(scale("thumbnailFontScale"))
-        thumbnailSizeRow.render(scale("thumbnailScale"))
         let bookmark = defaults.string(forKey: "libraryRootBookmark") ?? ""
         if isPresented, bookmark != loadedBookmark {
             let result = SecurityScopedBookmarks.resolve(bookmark)

@@ -46,12 +46,6 @@ final class SettingsWindowTests: XCTestCase {
         defer { fixture.close() }
         fixture.controller.show(pane: .general)
         let general = fixture.controller.settings.general
-        general.thumbnailFontRow.slider.doubleValue = 140
-        general.thumbnailFontRow.sliderChanged(general.thumbnailFontRow.slider)
-        general.thumbnailSizeRow.field.stringValue = "80"
-        general.thumbnailSizeRow.controlTextDidEndEditing(.init(name: NSControl.textDidEndEditingNotification, object: general.thumbnailSizeRow.field))
-        XCTAssertEqual(fixture.defaults.double(forKey: "thumbnailFontScale"), 1.4, accuracy: 0.001)
-        XCTAssertEqual(fixture.defaults.double(forKey: "thumbnailScale"), 0.8, accuracy: 0.001)
         general.automaticUpdates.performClick(nil)
         XCTAssertFalse(fixture.driver.state.automaticallyChecksForUpdates)
         general.checkUpdatesButton.performClick(nil)
@@ -63,8 +57,8 @@ final class SettingsWindowTests: XCTestCase {
         for size in [NSSize(width: 780, height: 580), .init(width: 1020, height: 760)] {
             fixture.controller.window?.setContentSize(size)
             fixture.controller.window?.layoutIfNeeded(); general.view.layoutSubtreeIfNeeded()
-            let slider = general.thumbnailSizeRow.slider
-            let controlX = slider.superview!.convert(slider.alignmentRect(forFrame: slider.frame), to: general.view).minX
+            let choose = general.chooseLibraryButton
+            let controlX = choose.superview!.convert(choose.alignmentRect(forFrame: choose.frame), to: general.view).minX
             for action in [general.chooseLibraryButton, general.checkUpdatesButton, clear] {
                 let frame = action.superview!.convert(action.alignmentRect(forFrame: action.frame), to: general.view)
                 XCTAssertEqual(frame.minX, controlX, accuracy: 1)
@@ -100,22 +94,18 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertEqual(fixture.defaults.string(forKey: "libraryRootBookmark"), bookmark)
     }
 
-    func testBackgroundPreferenceChangesRefreshNativeGeneralControls() async throws {
+    func testGeneralNoLongerContainsThumbnailControlsAndKeepsSavedPreferences() throws {
         let fixture = NativeSettingsFixture()
         defer { fixture.close() }
+        fixture.defaults.set(1.2345, forKey: "thumbnailScale")
+        fixture.defaults.set(1.4, forKey: "thumbnailFontScale")
         fixture.controller.show(pane: .general)
-        let defaults = fixture.defaults
-        await Task.detached {
-            defaults.set(1.6, forKey: "thumbnailScale")
-            NotificationCenter.default.post(name: UserDefaults.didChangeNotification, object: defaults)
-        }.value
-        let row = fixture.controller.settings.general.thumbnailSizeRow!
-        for _ in 0..<50 {
-            if row.slider.doubleValue == 160 { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        XCTAssertEqual(row.slider.doubleValue, 160)
-        XCTAssertEqual(row.field.stringValue, "160")
+        let view = fixture.controller.settings.general.view
+        XCTAssertTrue(descendants(OutputSettingsNumberRow.self, in: view).isEmpty)
+        XCTAssertFalse(descendants(NSTextField.self, in: view).contains { $0.stringValue == "Thumbnails" })
+        fixture.controller.close()
+        XCTAssertEqual(fixture.defaults.double(forKey: "thumbnailScale"), 1.2345, accuracy: 0.000001)
+        XCTAssertEqual(fixture.defaults.double(forKey: "thumbnailFontScale"), 1.4, accuracy: 0.000001)
     }
 
     func testSavedOutputPaneIsRestoredWithoutStartingDiscoveryUntilShown() throws {
@@ -161,20 +151,49 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertEqual(monitorDisplays.nickname(for: target), "New monitor name", "Closing Settings ends editing, so a no-Save name edit must commit")
     }
 
-    func testUntouchedFractionalGeneralPreferenceIsPreservedAndTypedEditApplies() throws {
+    func testThumbnailMenuPreservesFractionalPreferencesAndAppliesEachSettingIndependently() throws {
         let fixture = NativeSettingsFixture()
         defer { fixture.close() }
         fixture.defaults.set(1.2345, forKey: "thumbnailScale")
-        fixture.controller.show(pane: .general)
-        let row = fixture.controller.settings.general.thumbnailSizeRow!
-        let window = try XCTUnwrap(fixture.controller.window)
-        XCTAssertTrue(window.makeFirstResponder(row.field))
-        XCTAssertTrue(window.makeFirstResponder(nil))
+        fixture.defaults.set(1.4, forKey: "thumbnailFontScale")
+        let controller = ThumbnailSettingsMenuController(defaults: fixture.defaults)
+        let menu = try XCTUnwrap(controller.button.menu)
+        controller.refresh()
+        XCTAssertTrue(controller.button.menu === menu, "Unchanged preferences retain the native menu")
         XCTAssertEqual(fixture.defaults.double(forKey: "thumbnailScale"), 1.2345, accuracy: 0.000001)
-        XCTAssertTrue(window.makeFirstResponder(row.field))
-        try XCTUnwrap(row.field.currentEditor()).string = "123.45"
-        XCTAssertTrue(window.makeFirstResponder(nil))
-        XCTAssertEqual(fixture.defaults.double(forKey: "thumbnailScale"), 1.2345, accuracy: 0.000001)
+        let sizeMenu = try XCTUnwrap(menu.items[1].submenu)
+        XCTAssertEqual(sizeMenu.items.first?.state, .on)
+        XCTAssertTrue(try XCTUnwrap(sizeMenu.items.first?.title).contains("Current"))
+        let size = try XCTUnwrap(sizeMenu.items.first { $0.title == 0.8.formatted(.percent) })
+        NSApp.sendAction(try XCTUnwrap(size.action), to: size.target, from: size)
+        XCTAssertEqual(fixture.defaults.double(forKey: "thumbnailScale"), 0.8, accuracy: 0.001)
+        XCTAssertEqual(fixture.defaults.double(forKey: "thumbnailFontScale"), 1.4, accuracy: 0.001)
+        let fontMenu = try XCTUnwrap(controller.button.menu?.items[2].submenu)
+        let font = try XCTUnwrap(fontMenu.items.first { $0.title == 1.5.formatted(.percent) })
+        NSApp.sendAction(try XCTUnwrap(font.action), to: font.target, from: font)
+        XCTAssertEqual(fixture.defaults.double(forKey: "thumbnailFontScale"), 1.5, accuracy: 0.001)
+        XCTAssertEqual(fixture.defaults.double(forKey: "thumbnailScale"), 0.8, accuracy: 0.001)
+        XCTAssertEqual(fixture.store.document.destinations.count, 1)
+        XCTAssertFalse(fixture.outputs.isRunning)
+    }
+
+    func testThumbnailMenuRetainsAllFormerSliderStepsAndStableFallbacks() throws {
+        let fixture = NativeSettingsFixture()
+        defer { fixture.close() }
+        let controller = ThumbnailSettingsMenuController(defaults: fixture.defaults)
+        let menu = try XCTUnwrap(controller.button.menu)
+        let sizeMenu = try XCTUnwrap(menu.items[1].submenu)
+        let fontMenu = try XCTUnwrap(menu.items[2].submenu)
+        XCTAssertEqual(sizeMenu.items.map(\.title), stride(from: 60, through: 160, by: 10).map { (Double($0) / 100).formatted(.percent) })
+        XCTAssertEqual(fontMenu.items.map(\.title), stride(from: 30, through: 200, by: 10).map { (Double($0) / 100).formatted(.percent) })
+        let font = try XCTUnwrap(fontMenu.items.first { $0.title == 0.4.formatted(.percent) })
+        NSApp.sendAction(try XCTUnwrap(font.action), to: font.target, from: font)
+        XCTAssertEqual(fixture.defaults.double(forKey: "thumbnailFontScale"), 0.4, accuracy: 0.001)
+        controller.render(size: .nan, fontSize: .infinity)
+        let fallback = controller.button.menu
+        controller.render(size: .nan, fontSize: .infinity)
+        XCTAssertTrue(controller.button.menu === fallback, "Non-finite preferences must use the same stable fallback in every rendering path")
+        XCTAssertEqual(fixture.defaults.double(forKey: "thumbnailFontScale"), 0.4, "Rendering never rewrites saved preferences")
     }
 
     private func descendants<T: NSView>(_ type: T.Type, in view: NSView) -> [T] {

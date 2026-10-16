@@ -11,6 +11,77 @@ final class OutputProfileStore: ObservableObject {
     private let defaults: UserDefaults?
     private var observers: [UUID: () -> Void] = [:]
     private let persistence: OutputProfilePersistence?
+    private var quickControlsGeneration: UInt64 = 0
+
+    struct QuickEditTarget: Equatable {
+        let destinationID: UUID
+        fileprivate let generation: UInt64
+    }
+    var defaultDestination: OutputDestinationConfiguration? {
+        document.destinations.first { $0.id == document.defaultDestinationID }
+    }
+    var quickEditTarget: QuickEditTarget? {
+        guard recoveryNotice == nil, let destination = defaultDestination, destination.enabled else { return nil }
+        return .init(destinationID: destination.id, generation: quickControlsGeneration)
+    }
+    func enabledDefault(for target: QuickEditTarget) -> OutputDestinationConfiguration? {
+        guard target == quickEditTarget else { return nil }
+        return defaultDestination
+    }
+    func setDefaultDestination(_ id: UUID?) {
+        guard recoveryNotice == nil, id == nil || document.destinations.contains(where: { $0.id == id }) else { return }
+        edit { $0.defaultDestinationID = id }
+    }
+    func editDefaultProfile(_ target: QuickEditTarget, _ change: (inout OutputProfile) -> Void) {
+        guard let destination = enabledDefault(for: target) else { return }
+        editDestinationProfile(destination.id, change)
+    }
+    func canCustomizeProfile(for destinationID: UUID) -> Bool {
+        guard recoveryNotice == nil, let destination = document.destinations.first(where: { $0.id == destinationID }),
+              let profile = profile(destination.profileID), profile.isNative else { return false }
+        return isExclusiveCustomization(profile, for: destinationID) || document.profiles.count < 128
+    }
+    /// Output-level editing is independent even when its reusable profile is
+    /// shared with disabled outputs. Direct Profiles-list edits remain shared.
+    func customizeProfile(for destinationID: UUID) -> UUID? {
+        guard let destination = document.destinations.first(where: { $0.id == destinationID }),
+              let profile = profile(destination.profileID) else { return nil }
+        return saveCustomizedProfile(profile, for: destination)
+    }
+    func editDestinationProfile(_ destinationID: UUID, _ change: (inout OutputProfile) -> Void) {
+        guard let destination = document.destinations.first(where: { $0.id == destinationID }),
+              var profile = profile(destination.profileID), profile.isNative else { return }
+        let original = profile
+        change(&profile)
+        guard profile != original else { return }
+        _ = saveCustomizedProfile(profile, for: destination)
+    }
+    private func isExclusiveCustomization(_ profile: OutputProfile, for destinationID: UUID) -> Bool {
+        profile.customizedForDestinationID == destinationID
+            && !document.destinations.contains { $0.id != destinationID && $0.profileID == profile.id }
+    }
+    private func saveCustomizedProfile(_ changed: OutputProfile, for destination: OutputDestinationConfiguration) -> UUID? {
+        guard canCustomizeProfile(for: destination.id) else { return nil }
+        var profile = changed
+        let originalID = destination.profileID
+        let exclusive = isExclusiveCustomization(profile, for: destination.id)
+        if !exclusive {
+            profile.id = UUID(); profile.customizedForDestinationID = destination.id
+            let name = destination.name + " Customized"
+            profile.name = name.utf8.count <= 160 ? name : "Customized Output"
+        }
+        edit { doc in
+            guard let destinationIndex = doc.destinations.firstIndex(where: { $0.id == destination.id && $0.profileID == originalID }),
+                  let profileIndex = doc.profiles.firstIndex(where: { $0.id == originalID }) else { return }
+            if exclusive {
+                doc.profiles[profileIndex] = profile
+            } else {
+                doc.profiles.append(profile)
+                doc.destinations[destinationIndex].profileID = profile.id
+            }
+        }
+        return self.profile(profile.id) == profile ? profile.id : nil
+    }
 
     init(defaults: UserDefaults? = nil, monitor: ProjectionMonitorTarget? = nil) {
         self.defaults = defaults
@@ -59,7 +130,12 @@ final class OutputProfileStore: ObservableObject {
             destination.enabled = false // Recovery never starts a partially understood output.
             recovered.append(destination)
         }
-        if !recovered.isEmpty { result.destinations = recovered }
+        if !recovered.isEmpty {
+            result.destinations = recovered
+            result.defaultDestinationID = object.keys.contains("defaultDestinationID")
+                ? (object["defaultDestinationID"] as? String).flatMap(UUID.init(uuidString:)) : recovered.first?.id
+            if !recovered.contains(where: { $0.id == result.defaultDestinationID }) { result.defaultDestinationID = nil }
+        }
         return result.isValid ? result : fallback
     }
     private enum StoreError: Error { case invalid }
@@ -145,22 +221,25 @@ final class OutputProfileStore: ObservableObject {
     func removeObserver(_ id: UUID) { observers.removeValue(forKey: id) }
     func edit(_ action: (inout OutputProfileDocument) -> Void) {
         var next = document; action(&next)
+        if !next.destinations.contains(where: { $0.id == next.defaultDestinationID }) { next.defaultDestinationID = nil }
         guard next.isValid, next != document else { return }
-        document = next
-        mirrorAudiencePreferences()
-        persist()
-        for action in Array(observers.values) { action() }
-    }
-    func importLegacyAudience() {
-        guard let defaults else { return }
-        let legacy = OutputProfileMigration.migrate(defaults: defaults, monitor: nil).profiles[0]
-        var audience = self.audience
-        audience.layout = legacy.layout; audience.alignment = legacy.alignment
-        audience.position = legacy.position; audience.padding = legacy.padding
-        if audience.usesLegacySizing {
-            audience.typography.size = legacy.typography.size
+        let previousDefault = defaultDestination
+        let nextDefault = next.destinations.first { $0.id == next.defaultDestinationID }
+        if document.defaultDestinationID != next.defaultDestinationID || previousDefault?.enabled != nextDefault?.enabled
+            || previousDefault?.profileID != nextDefault?.profileID {
+            quickControlsGeneration &+= 1
         }
-        audience.background.bookmark = legacy.background.bookmark
+        let outputChanged = next.destinations != document.destinations || next.profiles != document.profiles
+        document = next
+        if outputChanged { mirrorAudiencePreferences() }
+        persist()
+        // Default selection is an editing preference, never a lifecycle event.
+        if outputChanged { for action in Array(observers.values) { action() } }
+    }
+    func importLegacyAudienceBackground() {
+        guard let defaults else { return }
+        var audience = self.audience
+        audience.background.bookmark = defaults.string(forKey: "backgroundVisualBookmark").flatMap { $0.isEmpty ? nil : $0 }
         update(audience)
     }
     private func mirrorAudiencePreferences() {
@@ -181,12 +260,6 @@ final class OutputProfileStore: ObservableObject {
     func recover() {
         if let original = defaults?.data(forKey: Self.key) { defaults?.set(original, forKey: "outputProfilesRecoveryBackup") }
         recoveryNotice = nil; persist()
-    }
-    func clearBackground(for profileID: UUID) {
-        edit { doc in
-            guard let index = doc.profiles.firstIndex(where: { $0.id == profileID && $0.isNative }) else { return }
-            doc.profiles[index].clearBackground()
-        }
     }
     func clearBackgrounds() {
         edit { doc in

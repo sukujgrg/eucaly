@@ -65,10 +65,43 @@ ownership, show prepared Current, start media or publish to AltView. Stop, nativ
 close and monitor loss suppress reopening until explicit action or a new assignment.
 
 Manage Outputs is the single native settings editor, also opened from the toolbar.
+The toolbar's Output menu selects a saved default destination, including None,
+through one submenu row displaying the selected output's full name.
+Choosing a default only changes the editing preference: it never enables, opens,
+connects, publishes or takes output. Show, Hide and Stop still address every
+enabled output. A disabled default retains its selection and disables quick edits;
+None requires an explicit choice. Removing the default saves None. Documents
+without the default field migrate the former first output; saved choices survive.
+Native quick appearance/background edits copy the reusable profile on first edit
+and reuse that destination's exclusive customized profile on later edits. Sharing
+the customized copy requires another copy before a subsequent quick edit, including
+when the other destination is disabled. The output-level Customize Appearance
+action uses the same independent copy, including for disabled outputs; direct
+Profiles-list edits intentionally apply to every output using that profile.
+AltView keeps receiver-owned appearance. Disabled quick controls explain the
+reason and the next action in native tooltips and accessibility help.
+Captured menu actions and asynchronous visual choices validate the current enabled
+default and its selection generation before applying. Native toolbar controls use
+intrinsic sizing, a short Output caption and full names in menus/accessibility.
+Quick projection font sizes use the same points as Manage Outputs, including a
+selected current value for custom sizes. Choices that would invalidate relative
+component sizes are disabled using the document's existing validation.
+Legacy appearance preferences are imported only during migration and mirrored
+for compatibility readers. Sidebar visual selection imports only the background
+bookmark, so it cannot round-trip or clamp a profile's typography or layout.
+A separate native Thumbnails dropdown adjusts thumbnail size and font size,
+including when the default is None or disabled. It retains the existing saved
+preferences and the former sliders' 10% steps; thumbnail controls no longer appear
+in General Settings.
+
 AppDelegate owns a single AppKit Settings window with native General / Manage Outputs
 toolbar tabs. Manage Outputs has Outputs / Profiles navigation, native tables,
-controls, colour wells and NSFontPanel. Add Native and Add AltView create disabled,
-unassigned destinations. Native outputs choose Audience, Confidence, Lower Third or
+controls, colour wells and NSFontPanel. The Outputs footer has a native + menu,
+− and trailing Make Default action. Its Native Monitor Output and AltView Text
+Output commands create disabled, unassigned destinations without choosing a new
+default. The current default has a disabled Default button and a subtle row label
+independent of selection. Footer/navigation actions commit drafts to their original
+output or profile first. Native outputs choose Audience, Confidence, Lower Third or
 a custom native appearance profile; AltView has no appearance-profile picker.
 The + button beneath the Profiles list copies the selected appearance and selects
 the new profile for editing. Identify and Name Monitor sit beneath the native

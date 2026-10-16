@@ -66,45 +66,6 @@ struct OutputSlidesToggleButton: View {
     }
 }
 
-/// The quick monitor choice belongs to the primary native row. An AltView row
-/// must never expose a second monitor setting that cannot affect its destination.
-struct OutputDestinationMenu: View {
-    @ObservedObject var session: PresentationSession
-    @ObservedObject private var outputs: OutputCoordinator
-    @ObservedObject private var profiles: OutputProfileStore
-    @ObservedObject private var displays: ProjectionDisplayManager
-    let manageOutputs: () -> Void
-    init(session: PresentationSession, manageOutputs: @escaping () -> Void) {
-        self.session = session; outputs = session.outputCoordinator
-        profiles = session.outputCoordinator.profiles; displays = session.projectionDisplays
-        self.manageOutputs = manageOutputs
-    }
-    var body: some View {
-        Menu {
-            ForEach(profiles.document.destinations.filter(\.enabled)) { row in
-                let destination = row.monitor.map { displays.label(for: $0) } ?? row.receiver?.name ?? "None"
-                Text("\(row.name): \(destination)")
-            }
-            if let primary = profiles.document.destinations.first, profiles.profile(primary.profileID)?.isNative == true {
-                Divider()
-                Button("None") { outputs.assignMonitor(nil, to: primary.id) }.disabled(outputs.isOpen(primary.id))
-                ForEach(displays.displays) { display in
-                    Button { outputs.assignMonitor(display.target, to: primary.id) } label: {
-                        Label(displays.label(for: display.target), systemImage: primary.monitor?.identity == display.identity ? "checkmark" : "display")
-                    }.disabled(outputs.isOpen(primary.id) || outputs.monitorAssignmentProblem(for: display.target, destinationID: primary.id) != nil)
-                }
-                if let target = primary.monitor {
-                    Button("Identify \(primary.name) Monitor") { displays.identify(target) }.disabled(!displays.canIdentify(target))
-                }
-            }
-            Divider()
-            Button("Manage Outputs…", action: manageOutputs)
-        } label: { Label("Output Destinations", systemImage: "display") }
-        .labelStyle(.iconOnly).buttonStyle(.bordered)
-        .help("Manage output destinations, appearance and text components.")
-    }
-}
-
 /// Output problems stay visible to the operator without blocking workspace edits.
 struct OutputIssueBanner: View {
     @ObservedObject var session: PresentationSession
