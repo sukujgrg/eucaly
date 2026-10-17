@@ -9,6 +9,8 @@ nonisolated struct AltViewSenderStatus: Equatable, Sendable {
     var ownsOutput = false
     var followingOutput = false
     var receiverID: UUID?
+    var media: AltViewMediaOffer?
+    var mediaHost: String?
     var ownerName: String?
     var message = "Not connected"
     var failureReason: String?
@@ -214,6 +216,7 @@ nonisolated final class AltViewSenderClient: AltViewSending, @unchecked Sendable
         status.waitingToRetry = false; status.submissionID = nil
         status.feedback = AltViewDeliveryFeedback()
         status.templateCapabilities = AltViewTemplateCapabilities()
+        status.media = nil; status.mediaHost = nil
         status.capabilities = []
     }
     private func disconnectOnQueue() {
@@ -237,7 +240,7 @@ nonisolated final class AltViewSenderClient: AltViewSending, @unchecked Sendable
             setupTimeout = min(AltViewProtocol.connectionAttemptTimeout, remaining)
             status.message = attempts == 0 ? "Connecting…" : "Connecting… Retrying the network connection."
         } else {
-            setupTimeout = AltViewProtocol.connectionTimeout
+            setupTimeout = AltViewProtocol.connectionAttemptTimeout
             status.message = "Reconnecting…"
         }
         status.failureReason = nil
@@ -252,7 +255,7 @@ nonisolated final class AltViewSenderClient: AltViewSending, @unchecked Sendable
             // The application handshake starts after the transport is ready.
             self.queue.asyncAfter(deadline: .now() + AltViewProtocol.timeout) { [weak self, weak peer] in
                 guard let self, let peer, self.peer === peer, !self.status.connected else { return }
-                peer.close("Receiver did not complete the handshake.")
+                peer.close("Receiver did not complete the handshake.", retryable: true)
             }
         }
         peer.onMessage = { [weak self, weak peer] message in
@@ -269,8 +272,13 @@ nonisolated final class AltViewSenderClient: AltViewSending, @unchecked Sendable
             self.status.submissionID = nil
             self.status.feedback = AltViewDeliveryFeedback()
             self.status.templateCapabilities = AltViewTemplateCapabilities()
+            self.status.media = nil; self.status.mediaHost = nil
             self.status.capabilities = []
             self.timer?.cancel(); self.timer = nil
+            guard peer.retryableSetupFailure else {
+                self.failInitialConnection(reason ?? "The receiving Mac rejected the connection.")
+                return
+            }
             if let deadline = self.initialConnectionDeadline {
                 if self.wantsConnection, peer.retryableSetupFailure, ProcessInfo.processInfo.systemUptime < deadline {
                     // A Bonjour connection can remain stuck in preparing after Local Network
@@ -284,6 +292,7 @@ nonisolated final class AltViewSenderClient: AltViewSending, @unchecked Sendable
                 return
             }
             self.status.failureReason = reason
+            self.status.waitingToRetry = self.wantsConnection
             self.status.message = self.wantsConnection ? "Disconnected. \(reason ?? "") Retrying…" : (reason ?? "Disconnected")
             self.publish()
             self.scheduleReconnect()
@@ -325,6 +334,7 @@ nonisolated final class AltViewSenderClient: AltViewSending, @unchecked Sendable
             // Discovery must be ready before resume can grant a fresh lease.
             status.templateCapabilities = AltViewTemplateCapabilities(templates: message.templates, policy: message.templatePolicy)
             status.capabilities = Set(message.capabilities ?? []).intersection(AltViewProtocol.capabilities)
+            guard acceptMedia(message.media, receiverID: receiverID) else { return }
             expectedReceiverID = receiverID
             initialConnectionDeadline = nil
             attempts = 0; status.connected = true; status.receiverID = receiverID
@@ -377,6 +387,7 @@ nonisolated final class AltViewSenderClient: AltViewSending, @unchecked Sendable
             }
             publish()
         case .feedback:
+            guard acceptMedia(message.media, receiverID: status.receiverID) else { return }
             guard status.connected, message.outputReadiness != nil,
                   (message.lease == nil && message.revision == nil) || (message.lease != nil && message.revision.map { $0 > 0 } == true) else {
                 peer?.close("Unexpected output feedback."); return
@@ -400,6 +411,21 @@ nonisolated final class AltViewSenderClient: AltViewSending, @unchecked Sendable
             peer?.close(message.detail ?? "Receiver rejected the message")
         default: peer?.close("Unexpected receiver message.")
         }
+    }
+    private func acceptMedia(_ offer: AltViewMediaOffer?, receiverID: UUID?) -> Bool {
+        guard offer == nil || (status.capabilities.contains(AltViewProtocol.mediaProvisioning)
+            && offer?.receiverID == receiverID && offer?.isValid == true) else {
+            wantsConnection = false; peer?.close("Invalid receiver media configuration."); return false
+        }
+        status.media = offer
+        if case .hostPort(let host, _) = peer?.connection.currentPath?.remoteEndpoint ?? peer?.connection.endpoint {
+            switch host {
+            case .ipv4(let address): status.mediaHost = address.debugDescription
+            case .name(let name, _): status.mediaHost = name
+            default: status.mediaHost = offer?.host // Fresh authenticated IPv4 hostname on dual-stack paths.
+            }
+        } else { status.mediaHost = offer?.host }
+        return true
     }
     private func sendLatest(force: Bool = false) {
         guard let lease, status.connected, status.followingOutput else { return }

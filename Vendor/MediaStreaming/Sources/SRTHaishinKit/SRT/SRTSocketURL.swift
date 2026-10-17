@@ -49,7 +49,15 @@ struct SRTSocketURL {
         }
         let queryItems = Self.getQueryItems(url)
         var options: [SRTSocketOption] = []
-        for item in queryItems {
+        // SRTO_TRANSTYPE resets live-mode defaults (including latency). Apply it
+        // before explicit overrides, regardless of URL/dictionary iteration order.
+        let names = queryItems.keys.sorted {
+            if $0 == "transtype" { return $1 != "transtype" }
+            if $1 == "transtype" { return false }
+            return $0 < $1
+        }
+        for key in names {
+            let item = (key: key, value: queryItems[key]!)
             guard let name = SRTSocketOption.Name(rawValue: item.key) else {
                 continue
             }

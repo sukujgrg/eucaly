@@ -220,21 +220,24 @@ cadence require rehearsal on production equipment.
 
 Version 4 adds the AltView Media built-in output kind without enabling network
 publication during migration. Each destination stores sourceAudienceID and the
-optional includeBackgroundAudio flag (default false). Its secret is separate in
-Keychain. OutputSRTDestinationSettings edits endpoint/source/audio configuration.
+optional includeBackgroundAudio flag (default false). Its SRT secret lives in
+the receiver's Keychain pairing record. OutputSRTDestinationSettings edits
+receiver/source/audio configuration and embeds the shared receiver pairing form.
 SRTMediaOutputRouter follows only an explicitly opened Audience window identity
 and generation. It uses ScreenCaptureKit for the scaled network copy and taps
 only live video/background players, with shared taps and bounded mixers.
 SRTMediaSession owns H.264/AAC MPEG-TS and encrypted SRT; closed attempts retire
 queues before cleanup. Preview remains private. See altview.md for setup/limits.
 
-AltView Media discovery uses `_altviewmedia._udp` independently of text discovery.
-The shared DNS-SD boundary runs on serial queues, bounds resolved services and
-advertises public UUID/version metadata only. Settings retain a stable receiver
-UUID and name; each SRT connection resolves against current discovery. Offline
-receivers wait without falling back to stale saved endpoints. Manual settings
-remain compatible. The media settings editor owns visible discovery demand;
-active Bonjour transmissions keep it running while Settings is closed.
+Lyrics and Media share one `_altview._tcp` discovery browser, control connection
+and Keychain pairing per stable receiver UUID. Protocol 3 provisions the current
+Media endpoint, readiness and generated SRT secret inside the authenticated
+control channel; discovery and output JSON carry no secret. Every SRT attempt
+requires current authenticated readiness and uses the fresh endpoint. Offline
+receivers wait without falling back to stale saved addresses. Separate Media
+discovery, manual endpoints and per-output passwords are retired. Pairing and
+control restoration remain independent of Lyrics/Media enablement and never
+start publication; Media starts with an explicit Show Slides or Retry Media.
 
 Live program audio conversion keeps a continuous 48 kHz sample cursor across
 converter callbacks, including buffered partial output. Assigning each chunk

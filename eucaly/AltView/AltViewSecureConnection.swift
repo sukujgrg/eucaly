@@ -36,7 +36,7 @@ nonisolated enum AltViewSecureConnection {
     /// transmitting that key. Uses Apple's TLS stack, not a custom cipher.
     static func parameters(key: Data) -> NWParameters {
         let tls = NWProtocolTLS.Options()
-        let identity = Data("AltView-v1".utf8)
+        let identity = Data("AltView-v3".utf8)
         key.withUnsafeBytes { keyBytes in
             identity.withUnsafeBytes { identityBytes in
                 sec_protocol_options_add_pre_shared_key(tls.securityProtocolOptions,

@@ -58,7 +58,7 @@ final class OutputSettingsTests: XCTestCase {
         XCTAssertTrue(fixture.window.firstResponder === fixture.controller.table)
     }
 
-    func testHiddenAltViewFormPreservesPairingDraftAndRefreshesOnReturn() async throws {
+    func testHiddenAltViewAssignmentFormRefreshesOnReturnWithoutPublishing() async throws {
         let fixture = OutputSettingsFixture()
         defer { fixture.close() }
         let nativeID = fixture.store.document.destinations[0].id
@@ -67,7 +67,6 @@ final class OutputSettingsTests: XCTestCase {
         fixture.controller.selectDestination(output.id)
         let editor = try XCTUnwrap(fixture.controller.destinationEditor)
         let remote = try XCTUnwrap(editor.remoteEditor)
-        remote.codeField.stringValue = "DRAFT234"
         let menu = remote.receiverPicker.menu
         let status = remote.statusLabel.stringValue
         fixture.controller.selectDestination(nativeID)
@@ -77,11 +76,9 @@ final class OutputSettingsTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertTrue(remote.receiverPicker.menu === menu, "Hidden forms must not rebuild discovery menus")
         XCTAssertEqual(remote.statusLabel.stringValue, status)
-        XCTAssertEqual(remote.codeField.stringValue, "DRAFT234")
         fixture.controller.selectDestination(output.id)
         XCTAssertTrue(fixture.controller.destinationEditor === editor)
         XCTAssertEqual(remote.receiverPicker.numberOfItems, 2)
-        XCTAssertEqual(remote.codeField.stringValue, "DRAFT234")
         XCTAssertNil(fixture.outputs.ownership.source)
         XCTAssertFalse(fixture.outputs.isRunning)
         XCTAssertNil(fixture.router.channel(for: output.id))
@@ -762,7 +759,7 @@ final class OutputSettingsTests: XCTestCase {
         XCTAssertEqual(try button("Custom size", in: meaning).state, .off)
     }
 
-    func testConflictingEnableStaysOffInlineWithoutInterruptingAudience() throws {
+    func testConflictingEnableStaysOffInlineWithoutInterruptingAudience() async throws {
         let fixture = OutputSettingsFixture(monitors: true)
         defer { fixture.close() }
         let audience = fixture.store.document.destinations[0]
@@ -770,6 +767,11 @@ final class OutputSettingsTests: XCTestCase {
         fixture.store.edit { $0.destinations.append(confidence) }
         let session = PresentationSession(projectionDisplays: fixture.displays, outputCoordinator: fixture.outputs)
         session.setSlides(LyricsParser.parseDocument("Verse\nLive lyrics").slides); session.showSlides()
+        // Drain the initial model transaction before measuring the enable action.
+        // NSButton.performClick can otherwise run that already-queued refresh.
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.main.async { continuation.resume() }
+        }
         let owner = fixture.outputs.ownership.source, slide = session.currentSlideID, revision = fixture.outputs.revision
         fixture.controller.selectDestination(confidence.id)
         let editor = try XCTUnwrap(fixture.controller.destinationEditor)
@@ -1159,7 +1161,6 @@ final class OutputSettingsTests: XCTestCase {
         oldChannel.receive(sender.connectedStatus)
         XCTAssertTrue(oldChannel.status.connected)
         remote.render()
-        remote.codeField.stringValue = "DRAFT234"
         let session = PresentationSession(projectionDisplays: fixture.displays, outputCoordinator: fixture.outputs)
         session.setSlides(LyricsParser.parseDocument("Verse\nLive Current").slides); session.showSlides()
         let current = session.currentSlideID, owner = fixture.outputs.ownership.source, revision = fixture.outputs.revision
@@ -1177,7 +1178,6 @@ final class OutputSettingsTests: XCTestCase {
         XCTAssertTrue(oldChannel.status.connected)
         XCTAssertTrue(remote.statusLabel.stringValue.contains("no longer available"))
         XCTAssertEqual(remote.receiverPicker.selectedItem?.representedObject as? UUID, a.receiverID)
-        XCTAssertEqual(remote.codeField.stringValue, "DRAFT234")
         XCTAssertEqual(fixture.outputs.ownership.source, owner)
         XCTAssertEqual(session.currentSlideID, current)
         XCTAssertEqual(fixture.outputs.snapshot.current, snapshot)
@@ -1203,7 +1203,7 @@ final class OutputSettingsTests: XCTestCase {
         NSApp.sendAction(try XCTUnwrap(remote.receiverPicker.action), to: remote.receiverPicker.target, from: remote.receiverPicker)
         XCTAssertNil(fixture.store.document.destinations[0].receiver)
         XCTAssertNil(fixture.router.channel(for: id))
-        XCTAssertFalse(oldChannel.hasConnection)
+        XCTAssertTrue(oldChannel.hasConnection, "Receiver pairing remains connected independently of this assignment")
         XCTAssertTrue(fixture.outputs.isOpen(companion.id))
         XCTAssertTrue(fixture.outputs.isRunning)
         XCTAssertEqual(fixture.outputs.ownership.source, owner)

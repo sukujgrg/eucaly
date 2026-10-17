@@ -24,8 +24,8 @@ public actor SRTConnection: NetworkConnection {
             case .socketFailure(let message): return "SRT socket: \(message)"
             case .failedToConnect(let reason):
                 switch reason {
-                case .badsecret: return "AltView rejected the passphrase. Copy its media passphrase and Retry Media."
-                case .unsecure: return "The sender and receiver have different encryption settings. Check the media passphrase."
+                case .badsecret: return "AltView rejected the media credential. Reconnect the paired receiver and Retry Media."
+                case .unsecure: return "The sender and receiver have different encryption settings. Reconnect the receiver in Receiver Setup."
                 case .timeout: return "No SRT reply. Check the receiving address, UDP port and local-network access."
                 default: return "SRT connection rejected (\(reason)). Check that AltView is receiving on the selected port."
                 }
@@ -94,7 +94,7 @@ public actor SRTConnection: NetworkConnection {
     ///   - Connect to the specified server.
     /// - srt://:9000?mode=listener
     ///   - Wait for connections as a server.
-    public func connect(_ uri: URL?) async throws {
+    public func connect(_ uri: URL?, onListening: (@Sendable () -> Void)? = nil) async throws {
         guard let url = SRTSocketURL(uri) else {
             throw Error.unsupportedUri(uri)
         }
@@ -108,6 +108,7 @@ public actor SRTConnection: NetworkConnection {
                         case .caller:
                             break
                         case .listener:
+                            onListening?()
                             listener = socket
                             socket = try await listener?.accept(url.options)
                             await listener?.stopRunning()

@@ -20,11 +20,6 @@ nonisolated struct AltViewDestination: Codable, Equatable, Identifiable, Sendabl
         return "service:\(name)|\(serviceType ?? "")|\(domain ?? "")"
     }
 
-    var legacyAccounts: [String] {
-        if let receiverIdentity { return ["local:\(receiverIdentity)", "service:\(name)|\(serviceType ?? "")|\(domain ?? "")"] }
-        if let host, let port { return ["host:\(host.lowercased()):\(port)"] }
-        return ["service:\(name)|\(serviceType ?? "")|\(domain ?? "")"]
-    }
     var isValid: Bool {
         if localReceiverID != nil, host != "127.0.0.1" { return false }
         if let host, let port {
@@ -67,6 +62,7 @@ nonisolated struct AltViewDestination: Codable, Equatable, Identifiable, Sendabl
 nonisolated struct AltViewCredentials: Codable, Sendable {
     let key: Data
     let receiverID: UUID
+    var media: AltViewMediaOffer?
 }
 
 nonisolated protocol AltViewPairingStoring {
@@ -90,19 +86,14 @@ nonisolated final class AltViewPairingStore: AltViewPairingStoring, @unchecked S
 
     func read(_ destination: AltViewDestination, completion: @escaping (AltViewCredentials?, String?) -> Void) {
         queue.async { [self] in
-            if let credentials = memory[destination.id] {
+            if let credentials = memory[destination.id], destination.receiverIdentity == nil || destination.receiverIdentity == credentials.receiverID {
                 DispatchQueue.main.async { completion(credentials, nil) }
                 return
             }
             do {
                 var credentials = try readCredentials(account: destination.id)
-                if credentials == nil {
-                    for account in destination.legacyAccounts where account != destination.id {
-                        if let saved = try readCredentials(account: account) {
-                            guard destination.receiverIdentity == nil || saved.receiverID == destination.receiverIdentity else { continue }
-                            credentials = saved; break
-                        }
-                    }
+                if let saved = credentials, let expected = destination.receiverIdentity, saved.receiverID != expected {
+                    credentials = nil
                 }
                 if let credentials { memory[destination.id] = credentials }
                 DispatchQueue.main.async { completion(credentials, nil) }
@@ -116,6 +107,11 @@ nonisolated final class AltViewPairingStore: AltViewPairingStoring, @unchecked S
 
     func save(_ credentials: AltViewCredentials, for destination: AltViewDestination, completion: @escaping (String?) -> Void) {
         queue.async { [self] in
+            guard AltViewPairingKey.isValid(credentials.key),
+                  destination.receiverIdentity == nil || destination.receiverIdentity == credentials.receiverID,
+                  credentials.media == nil || (credentials.media?.receiverID == credentials.receiverID && credentials.media?.isValid == true) else {
+                DispatchQueue.main.async { completion("Receiver pairing identity or media credential is invalid. Pair again.") }; return
+            }
             memory[destination.id] = credentials
             do {
                 let data = try JSONEncoder().encode(credentials)
@@ -142,7 +138,8 @@ nonisolated final class AltViewPairingStore: AltViewPairingStoring, @unchecked S
         if data == nil { data = try keychain.read(service: service, account: account, dataProtection: false) }
         guard let data else { return nil }
         let credentials = try JSONDecoder().decode(AltViewCredentials.self, from: data)
-        guard AltViewPairingKey.isValid(credentials.key) else {
+        guard AltViewPairingKey.isValid(credentials.key),
+              credentials.media == nil || (credentials.media?.receiverID == credentials.receiverID && credentials.media?.isValid == true) else {
             throw NSError(domain: NSOSStatusErrorDomain, code: Int(errSecDecode))
         }
         return credentials

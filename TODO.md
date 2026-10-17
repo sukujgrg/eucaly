@@ -10,3 +10,14 @@
 - [ ] Update `docs/altview.md` and `docs/releasing.md` with provisioning, migration, and validation requirements. Retire the login Keychain write fallback only after the supported builds and migration path have been verified.
 
 References: [Apple's Mac Keychain guidance](https://developer.apple.com/documentation/technotes/tn3137-on-mac-keychains) and [distribution signing and provisioning](https://developer.apple.com/documentation/xcode/creating-distribution-signed-code-for-the-mac).
+
+## AltView Media: remaining 60 fps drops at 20 ms
+
+- [ ] Eliminate the remaining drops in the 1080p60 localhost pipeline at the receiver's saved **20 ms recovery** setting. The 18 October 2026 Release fixture measured **59.87 decoded fps / 59.73 displayed fps**, **four native drops in 30 seconds**, and a **33.333 ms maximum PTS gap**. Sender/receiver mailbox drops, renderer overload flushes and audio rebuffers were all zero. This remains open; it is not a zero-drop 60 fps pass.
+- [ ] Correlate capture events and presentation ticks with hardware encoder output, transport/decode delivery and native display deadlines. Identify where the missing motion frames originate; the current measurements do not establish SRT recovery latency as the cause.
+- [ ] Profile desktop-load sensitivity and source/preview visibility separately. A run with additional desktop activity measured **52.52 displayed fps, 100 native drops and one audio underrun**. Record focus/occlusion and competing capture/render work alongside each sample.
+- [ ] Validate the real paired eucaly → AltView workflow with the preview visible, then assigned HDMI and audible program audio. The existing fixture uses production classes, private windows and a silent program-audio bus.
+- [ ] Acceptance: sustain changing 1080p60 content at **20 ms** through repeated longer localhost runs, with stable 16.667 ms presentation spacing, no unexplained doubled-frame gaps, zero native/mailbox drops, zero overload flushes and zero audio rebuffers. Include idle-to-motion transitions and representative desktop load; retain the selected recovery setting and adaptive Audience update behavior.
+- [ ] Preserve the verified baselines: **60.00 displayed fps with zero drops at 80 ms**, and the supplied **4K30 countdown at 30.03 displayed fps with zero drops at 20 ms**. Keep source frame rate, decoded rate and native presentation rate distinct in results.
+
+Evidence: [measurement details](../AltView/docs/media.md#countdown-cadence-verification-2026-10-18), [60 fps / 20 ms report](../AltView/build/media-cadence/60fps-isolated-20ms.json), [60 fps / 80 ms report](../AltView/build/media-cadence/60fps-final-release.json), and [original countdown / 20 ms report](../AltView/build/media-cadence/original-isolated-20ms.json). The fixture is run with AltView's `scripts/verify-media-cadence.py --recovery-ms 20`; see its help for the video, duration and report arguments.

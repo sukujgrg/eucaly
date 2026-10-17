@@ -65,15 +65,14 @@ final class AltViewRecoveryTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite) }
         let id = UUID(), store = RecordingAltViewPairingStore()
         let sender = RecoveryAltViewSender()
-        defaults.set(try JSONEncoder().encode(local(id, port: 54321)), forKey: "altViewDestination")
+        defaults.set(try JSONEncoder().encode([OutputReceiverTarget(receiverID: id, name: "Saved receiver")]), forKey: "altViewPairedReceiversV3")
         let service = AltViewService(defaults: defaults, pairingStore: store, senderFactory: { _ in sender })
         let profiles = OutputProfileStore(), displays = ProjectionDisplayManager(displays: { [] })
         let outputs = OutputCoordinator(profiles: profiles, displays: displays)
         let router = AltViewOutputRouter(store: profiles, senderID: UUID(), defaults: defaults, pairingStore: store, channelFactory: { service })
         defer { outputs.stop(); router.shutdown() }
         router.start(coordinator: outputs, discover: false)
-        store.readCompletion?(.init(key: Data("ABCD2345".utf8), receiverID: id), nil) // Migrate the former single selection.
-        XCTAssertEqual(profiles.document.destinations.last?.receiver?.receiverID, id)
+        XCTAssertTrue(profiles.document.destinations.allSatisfy { $0.receiver == nil }, "Receiver restoration does not create or enable Lyrics")
         store.readCompletion?(.init(key: Data("ABCD2345".utf8), receiverID: id), nil)
         XCTAssertTrue(sender.connections.isEmpty)
         router.receiveDiscovered([local(id, port: 54322)], notice: nil)

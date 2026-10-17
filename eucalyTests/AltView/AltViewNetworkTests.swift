@@ -459,6 +459,26 @@ final class AltViewNetworkTests: XCTestCase {
         XCTAssertNil(aStatus.failureReason)
     }
 
+    func testHandshakeTimeoutRetriesWithoutTakingOutput() throws {
+        let key = Data("ABCD2345".utf8)
+        var output = ReferenceAltViewReceiverStatus(), status = AltViewSenderStatus()
+        var retried = false
+        let server = ReferenceAltViewReceiverServer(receiverID: UUID(), handshakeStalls: 1) { output = $0 }
+        let sender = AltViewSenderClient(name: "Handshake timeout recovery") {
+            status = $0
+            retried = retried || $0.waitingToRetry
+        }
+        server.start(name: "Handshake timeout", key: key, advertise: false)
+        defer { sender.disconnect(); server.stop() }
+        eventually("listener") { output.port != nil }
+        sender.connect(to: .hostPort(host: "127.0.0.1", port: .init(rawValue: try XCTUnwrap(output.port))!), key: key)
+        eventually("handshake timeout retries", timeout: 15) { status.connected }
+        XCTAssertTrue(retried)
+        XCTAssertNil(status.failureReason)
+        XCTAssertNil(output.ownerID)
+        XCTAssertEqual(output.content, .empty)
+    }
+
     func testTransientDisconnectBeforeWelcomeRetriesWithoutTakingOutput() throws {
         let key = Data("ABCD2345".utf8)
         var output = ReferenceAltViewReceiverStatus(), status = AltViewSenderStatus()

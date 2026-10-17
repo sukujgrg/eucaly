@@ -54,7 +54,6 @@
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_altview._tcp</string>
-		<string>_altviewmedia._udp</string>
 	</array>
 </dict>
 </plist>
