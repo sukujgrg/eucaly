@@ -384,7 +384,7 @@ final class SRTMediaOutputTests: XCTestCase {
         }
         for index in 0..<96 {
             let midpoint = firstSample + Int64(index * 960 + 480)
-            let actual: Float? = samples.compactMap { sample in
+            let actual: Float? = samples.compactMap { sample -> Float? in
                 guard case .audio(let pcm, let when) = sample else { return nil }
                 let offset = midpoint - when.sampleTime
                 guard offset >= 0, offset < Int64(pcm.frameLength) else { return nil }
