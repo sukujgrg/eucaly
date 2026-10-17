@@ -16,7 +16,7 @@ final class AltViewProtocolTests: XCTestCase {
 
     func testGoldenV2SnapshotFragmentedAndCombinedFrames() throws {
         let lease = UUID()
-        let json = "{\"version\":2,\"kind\":\"state\",\"lease\":\"\(lease)\",\"revision\":42,\"content\":{\"body\":\"Main lyrics\\nSecond line\",\"visible\":true}}"
+        let json = "{\"version\":3,\"kind\":\"state\",\"lease\":\"\(lease)\",\"revision\":42,\"content\":{\"body\":\"Main lyrics\\nSecond line\",\"visible\":true}}"
         let bytes = Data(json.utf8)
         var count = UInt32(bytes.count).bigEndian
         var frame = withUnsafeBytes(of: &count) { Data($0) }

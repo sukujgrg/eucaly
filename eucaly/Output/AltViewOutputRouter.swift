@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import Combine
 
 @MainActor
@@ -26,7 +27,22 @@ final class AltViewOutputRouter: ObservableObject, OutputRemoteRouting {
     private var discoveryEnabled = true
     private var discoveryRunning = false
     private var observation: UUID?
+    // One control channel per receiver, shared by independently enabled outputs.
     private var channels: [UUID: AltViewService] = [:]
+    private var paired: [OutputReceiverTarget] = []
+    private var setupTargets: [UUID: OutputReceiverTarget] = [:]
+    private var publishingReceivers: Set<UUID> = []
+    var knownReceivers: [OutputReceiverTarget] {
+        var targets = Dictionary(paired.map { ($0.receiverID, $0) }, uniquingKeysWith: { first, _ in first })
+        for target in store.document.destinations.compactMap({ row in
+            row.receiver ?? row.srt.flatMap { settings in settings.receiverID.map { OutputReceiverTarget(receiverID: $0, name: settings.receiverName ?? "AltView") } }
+        }) { targets[target.receiverID] = target }
+        for receiver in receivers {
+            if let id = receiver.receiverIdentity { targets[id] = .init(receiverID: id, name: receiver.name) }
+        }
+        return targets.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+    func receiverChannel(_ id: UUID) -> AltViewService? { channels[id] }
     private weak var coordinator: OutputCoordinator?
     private var sourceID: UUID?
     private var confidence: AltViewConfidenceText?
@@ -48,6 +64,10 @@ final class AltViewOutputRouter: ObservableObject, OutputRemoteRouting {
             defaults.removeObject(forKey: "hubReceiverID")
         }
         self.pairingStore = pairingStore; self.channelFactory = channelFactory
+        if let data = defaults.data(forKey: "altViewPairedReceiversV3"),
+           let targets = try? JSONDecoder().decode([OutputReceiverTarget].self, from: data) {
+            paired = Array(targets.prefix(16))
+        }
     }
     func start(coordinator: OutputCoordinator, discover: Bool = true) {
         guard observation == nil else { return }
@@ -56,26 +76,7 @@ final class AltViewOutputRouter: ObservableObject, OutputRemoteRouting {
         observation = store.observe { [weak self] in self?.synchronize() }
         discoveryEnabled = discover
         refreshDiscovery()
-        migrateLegacyConnection()
         synchronize()
-    }
-    private func migrateLegacyConnection() {
-        guard store.document.destinations.count < 16, !store.document.destinations.contains(where: { store.profile($0.profileID)?.kind == .altView }),
-              let data = defaults.data(forKey: "altViewDestination"),
-              let saved = try? JSONDecoder().decode(AltViewDestination.self, from: data), saved.isValid else { return }
-        pairingStore.read(saved) { [weak self] credentials, _ in
-            MainActor.assumeIsolated {
-                guard let self, let credentials, !self.store.document.destinations.contains(where: { self.store.profile($0.profileID)?.kind == .altView }) else { return }
-                var stable = saved; stable.discoveredReceiverID = credentials.receiverID
-                self.pairingStore.save(credentials, for: stable) { _ in }
-                self.store.edit { doc in
-                    var row = OutputDestinationConfiguration(name: "AltView", profileID: OutputProfile.altViewID, monitor: nil)
-                    row.savedReceiver = .init(receiverID: credentials.receiverID, name: saved.name)
-                    row.destination = .altView(row.savedReceiver!)
-                    doc.destinations.append(row)
-                }
-            }
-        }
     }
     func receiveDiscovered(_ receivers: [AltViewDestination], notice: String?) {
         var identities: [UUID: AltViewDestination] = [:]
@@ -97,55 +98,67 @@ final class AltViewOutputRouter: ObservableObject, OutputRemoteRouting {
     func startDiscovery() { discoveryVisible = true; refreshDiscovery() }
     func stopDiscovery() { discoveryVisible = false; refreshDiscovery() }
     private func refreshDiscovery() {
-        let needed = discoveryEnabled && (discoveryVisible || store.document.destinations.contains { $0.enabled && $0.receiver != nil })
+        let needed = discoveryEnabled && (discoveryVisible || !channels.isEmpty || !paired.isEmpty || store.document.destinations.contains { $0.receiver != nil || $0.srt?.receiverID != nil })
         guard needed != discoveryRunning else { return }
         discoveryRunning = needed
         if needed { discovery.start() } else { discovery.stop() }
     }
     private func synchronize() {
-        refreshDiscovery()
-        let rows = configurations
-        let valid = Set(rows.map(\.id))
-        for id in Array(channels.keys) where !valid.contains(id) {
+        var targets = Dictionary(paired.map { ($0.receiverID, $0) }, uniquingKeysWith: { first, _ in first })
+        for (id, target) in setupTargets { targets[id] = target }
+        for row in store.document.destinations {
+            if let target = row.receiver { targets[target.receiverID] = target }
+            if let settings = row.srt, let id = settings.receiverID {
+                targets[id] = .init(receiverID: id, name: settings.receiverName ?? "AltView")
+            }
+        }
+        let active = Set(configurations.compactMap { $0.receiver?.receiverID })
+        for id in publishingReceivers.subtracting(active) { channels[id]?.stopSending() }
+        publishingReceivers = active
+        for id in Array(channels.keys) where targets[id] == nil {
             channels.removeValue(forKey: id)?.disconnect()
         }
-        for row in rows {
-            guard let target = row.receiver else { continue }
-            if let old = channels[row.id], old.destination?.receiverIdentity != target.receiverID {
-                old.disconnect(); channels.removeValue(forKey: row.id)
-            }
-            guard channels[row.id] == nil else { continue }
-            // A stable identity can wait for discovery without dialing a stale
-            // service name/port. Saved Keychain pairing and explicit actions are
-            // retained independently of live Bonjour availability.
+        for (id, target) in targets where id != senderID && channels[id] == nil {
             var waiting = AltViewDestination(name: target.name, host: nil, port: nil,
                 serviceType: AltViewProtocol.serviceType, domain: "local.")
-            waiting.discoveredReceiverID = target.receiverID
-            let endpoint = receivers.first(where: { $0.receiverIdentity == target.receiverID }) ?? waiting
-            let channel = channelFactory?() ?? AltViewService(defaults: defaults,
-                senderIdentity: senderID, pairingStore: pairingStore)
+            waiting.discoveredReceiverID = id
+            let endpoint = receivers.first(where: { $0.receiverIdentity == id }) ?? waiting
+            let channel = channelFactory?() ?? AltViewService(defaults: defaults, senderIdentity: senderID, pairingStore: pairingStore)
             channel.onStatusChange = { [weak self] in self?.statusChanged() }
-            channels[row.id] = channel
+            channels[id] = channel
             channel.receiveDiscovered(receivers, notice: discoveryNotice)
-            channel.connect(to: endpoint, code: "") // Connect-only restoration.
+            channel.connect(to: endpoint, code: "")
         }
-        statusChanged()
+        refreshDiscovery(); statusChanged()
     }
-    func channel(for id: UUID) -> AltViewService? { channels[id] }
-    func connect(_ id: UUID, code: String) {
-        guard let row = configurations.first(where: { $0.id == id }), let target = row.receiver,
-              let endpoint = receivers.first(where: { $0.receiverIdentity == target.receiverID }) else { return }
-        if channels[id] == nil { synchronize() }
+    func channel(for rowID: UUID) -> AltViewService? {
+        guard let row = store.document.destinations.first(where: { $0.id == rowID }),
+              let id = row.receiver?.receiverID ?? row.srt?.receiverID else { return nil }
+        return channels[id]
+    }
+    func connectReceiver(_ id: UUID, code: String) {
+        guard let endpoint = receivers.first(where: { $0.receiverIdentity == id }) else { return }
+        setupTargets[id] = .init(receiverID: id, name: endpoint.name)
+        synchronize()
+        coordinator?.mediaOutputs.stopReceiver(id)
         channels[id]?.connect(to: endpoint, code: code)
         statusChanged()
     }
-    func disconnect(_ id: UUID) { channels[id]?.disconnect(); statusChanged() }
+    func connect(_ rowID: UUID, code: String) {
+        guard let id = store.document.destinations.first(where: { $0.id == rowID })?.receiver?.receiverID else { return }
+        connectReceiver(id, code: code)
+    }
+    func disconnectReceiver(_ id: UUID) { channels[id]?.disconnect(); statusChanged() }
+    func disconnect(_ rowID: UUID) {
+        guard let id = store.document.destinations.first(where: { $0.id == rowID })?.receiver?.receiverID else { return }
+        disconnectReceiver(id)
+    }
     var isRunning: Bool { channels.values.contains { $0.isSending && $0.hasConnection } }
     func canPresent(_ destination: OutputDestinationConfiguration) -> Bool {
-        configurations.contains { $0.id == destination.id } && channels[destination.id]?.hasConnection == true
+        configurations.contains { $0.id == destination.id } && channel(for: destination.id)?.hasConnection == true
     }
     func readiness(for id: UUID) -> OutputReadiness {
-        guard let channel = channels[id] else { return .closed }
+        guard let channel = channel(for: id) else { return .closed }
         guard channel.status.connected else { return channel.hasConnection ? .unavailable : .closed }
         switch channel.status.feedback.output {
         case .ready: return .ready
@@ -155,6 +168,11 @@ final class AltViewOutputRouter: ObservableObject, OutputRemoteRouting {
         }
     }
     private func statusChanged() {
+        for (id, channel) in channels { coordinator?.mediaOutputs.controlConnectionChanged(id, channel: channel) }
+        for (id, channel) in channels where channel.status.connected && !paired.contains(where: { $0.receiverID == id }) {
+            paired.append(.init(receiverID: id, name: channel.destination?.name ?? "AltView"))
+            defaults.set(try? JSONEncoder().encode(paired), forKey: "altViewPairedReceiversV3")
+        }
         statusRevision &+= 1
         coordinator?.remoteReadinessChanged()
     }
@@ -179,8 +197,8 @@ final class AltViewOutputRouter: ObservableObject, OutputRemoteRouting {
         if !explicit, !content.body.isEmpty { content.template = lastContent?.template }
         lastContent = content
         for row in configurations {
-            if !explicit && (!snapshot.visible || snapshot.kind == .empty) { channels[row.id]?.cancelPendingPresentation() }
-            channels[row.id]?.publishProgram(content, sourceID: sourceID, explicit: explicit)
+            if !explicit && (!snapshot.visible || snapshot.kind == .empty) { channel(for: row.id)?.cancelPendingPresentation() }
+            channel(for: row.id)?.publishProgram(content, sourceID: sourceID, explicit: explicit)
         }
     }
     func stop() {

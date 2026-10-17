@@ -52,7 +52,6 @@ struct PESOptionalHeader {
     }
 
     mutating func setTimestamp(_ timestamp: CMTime, presentationTimeStamp: CMTime, decodeTimeStamp: CMTime) {
-        let base = Double(timestamp.seconds)
         if presentationTimeStamp != CMTime.invalid {
             ptsDtsIndicator |= 0x02
         }
@@ -60,11 +59,16 @@ struct PESOptionalHeader {
             ptsDtsIndicator |= 0x01
         }
         if (ptsDtsIndicator & 0x02) == 0x02 {
-            let pts = Int64((presentationTimeStamp.seconds + Self.offset.seconds - base) * Double(TSTimestamp.resolution))
+            // Subtract clocks before converting to 90 kHz. Absolute host times
+            // converted through Double can alternate between adjacent ticks
+            // even for an exact 60 fps cadence.
+            let relative = CMTimeSubtract(CMTimeAdd(presentationTimeStamp, Self.offset), timestamp)
+            let pts = CMTimeConvertScale(relative, timescale: CMTimeScale(TSTimestamp.resolution), method: .roundHalfAwayFromZero).value
             optionalFields += TSTimestamp.encode(pts, ptsDtsIndicator << 4)
         }
         if (ptsDtsIndicator & 0x01) == 0x01 {
-            let dts = Int64((decodeTimeStamp.seconds - base) * Double(TSTimestamp.resolution))
+            let relative = CMTimeSubtract(decodeTimeStamp, timestamp)
+            let dts = CMTimeConvertScale(relative, timescale: CMTimeScale(TSTimestamp.resolution), method: .roundHalfAwayFromZero).value
             optionalFields += TSTimestamp.encode(dts, 0x01 << 4)
         }
         pesHeaderLength = UInt8(optionalFields.count)

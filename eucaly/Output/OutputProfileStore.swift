@@ -143,10 +143,14 @@ final class OutputProfileStore: ObservableObject {
     func assignmentProblem(for destination: OutputDestinationConfiguration) -> String? {
         guard destination.enabled else { return nil }
         if profile(destination.profileID)?.kind == .altViewMedia {
-            guard destination.srt?.isValid == true, let source = destination.sourceAudienceID,
+            guard destination.srt?.isValid == true, destination.srt?.receiverID != nil, let source = destination.sourceAudienceID,
                   document.destinations.contains(where: { $0.id == source && profile($0.profileID)?.kind == .audience }) else {
-                return "Choose an Audience output and configure the AltView Media address before enabling it."
+                return "Choose an Audience output and choose a paired AltView receiver before enabling it."
             }
+        }
+        if let id = destination.srt?.receiverID,
+           let other = document.destinations.first(where: { $0.id != destination.id && $0.enabled && $0.srt?.receiverID == id }) {
+            return "This receiver’s Media input is used by \(other.name). Disable that Media output or choose another receiver."
         }
         if let target = destination.monitor,
            let other = document.destinations.first(where: { $0.id != destination.id && $0.enabled && $0.monitor?.identity == target.identity }) {
@@ -206,13 +210,18 @@ final class OutputProfileStore: ObservableObject {
         let grouped = Dictionary(grouping: assigned, by: { $0.receiver!.receiverID })
         return Set(grouped.values.filter { $0.count > 1 }.flatMap { $0.map(\.id) })
     }
+    var conflictingMediaDestinationIDs: Set<UUID> {
+        let assigned = document.destinations.filter { $0.enabled && $0.srt?.receiverID != nil }
+        let grouped = Dictionary(grouping: assigned, by: { $0.srt!.receiverID! })
+        return Set(grouped.values.filter { $0.count > 1 }.flatMap { $0.map(\.id) })
+    }
     var conflictingDestinationIDs: Set<UUID> {
         let assigned = document.destinations.filter { $0.enabled && $0.monitor != nil }
         let grouped = Dictionary(grouping: assigned, by: { $0.monitor!.identity })
         return Set(grouped.values.filter { $0.count > 1 }.flatMap { $0.map(\.id) })
     }
     var monitorConflictNotice: String? {
-        let conflicts = conflictingDestinationIDs.union(conflictingReceiverIDs)
+        let conflicts = conflictingDestinationIDs.union(conflictingReceiverIDs).union(conflictingMediaDestinationIDs)
         guard !conflicts.isEmpty else { return nil }
         let names = document.destinations.filter { conflicts.contains($0.id) }.map(\.name).joined(separator: ", ")
         return "\(names) share a destination. Choose a different monitor or AltView receiver for each enabled output."

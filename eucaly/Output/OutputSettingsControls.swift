@@ -33,6 +33,7 @@ func outputSettingsRow(_ title: String, _ control: NSView) -> NSStackView {
 @MainActor
 func outputSettingsActionRow(_ buttons: [NSButton]) -> NSStackView {
     for button in buttons {
+        button.bezelStyle = .rounded
         button.controlSize = .small
         button.font = .systemFont(ofSize: NSFont.systemFontSize(for: .small))
         button.setContentHuggingPriority(.required, for: .horizontal)

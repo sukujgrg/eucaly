@@ -1,42 +1,24 @@
 import AppKit
 import Combine
 
-/// Connection setup belongs to a destination, not to the Settings selection.
-/// Leaving this editor never disconnects its router-owned channel.
+/// Assignment and pairing share one Settings form. Credentials remain receiver-level.
 @MainActor
-final class AltViewOutputDestinationSettings: NSViewController, NSTextFieldDelegate {
+final class AltViewOutputDestinationSettings: NSViewController {
     let router: AltViewOutputRouter
     let store: OutputProfileStore
     let destinationID: UUID
     let receiverPicker = NSPopUpButton()
-    let codeField = NSSecureTextField()
-    let connectButton = NSButton(title: "Connect Only", target: nil, action: nil)
-    let disconnectButton = NSButton(title: "Disconnect", target: nil, action: nil)
     let statusLabel = outputSettingsLabel(secondary: true)
-    private let discoveryLabel = outputSettingsLabel(secondary: true)
-    private struct ReceiverEntry: Equatable { let id: UUID?; let title: String; let enabled: Bool }
-    private var entries: [ReceiverEntry] = []
-    private var receiverID: UUID?
-    private var wasConnected = false
-    private enum AssignmentIssue {
-        case unavailable(UUID), rejected(String)
-        var message: String {
-            switch self {
-            case .unavailable: return "This receiver is no longer available. Choose it again when it reconnects, or choose another receiver."
-            case .rejected(let message): return message
-            }
-        }
-    }
-    private var assignmentIssue: AssignmentIssue?
-    private weak var observedChannel: AltViewService?
-    private var channelSubscription: AnyCancellable?
+    let pairing: AltViewReceiverPairingView
+    private var targets: [OutputReceiverTarget] = []
     private var subscriptions = Set<AnyCancellable>()
     private var reloadTask: Task<Void, Never>?
     private var isActive = true
-
+    private var notice: String?
+    private var unavailableID: UUID?
     init(router: AltViewOutputRouter, store: OutputProfileStore, destinationID: UUID) {
         self.router = router; self.store = store; self.destinationID = destinationID
-        receiverID = store.document.destinations.first { $0.id == destinationID }?.receiver?.receiverID
+        pairing = AltViewReceiverPairingView(router: router)
         super.init(nibName: nil, bundle: nil)
         for publisher in [router.objectWillChange, store.objectWillChange] {
             publisher.sink { [weak self] _ in self?.scheduleRender() }.store(in: &subscriptions)
@@ -44,136 +26,141 @@ final class AltViewOutputDestinationSettings: NSViewController, NSTextFieldDeleg
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     deinit { reloadTask?.cancel() }
-
     override func loadView() {
-        receiverPicker.target = self; receiverPicker.action = #selector(receiverChanged(_:))
-        receiverPicker.autoenablesItems = false
-        receiverPicker.setAccessibilityLabel("AltView receiver")
-        codeField.delegate = self
-        codeField.placeholderString = "8-character code, or saved pairing"
-        codeField.setAccessibilityLabel("Pairing code")
-        codeField.target = self; codeField.action = #selector(connect(_:))
-        connectButton.target = self; connectButton.action = #selector(connect(_:))
-        disconnectButton.target = self; disconnectButton.action = #selector(disconnect(_:))
-        statusLabel.isSelectable = true
-        statusLabel.setAccessibilityLabel("AltView status")
-        discoveryLabel.textColor = .systemOrange
-        let stack = NSStackView(views: [
-            outputSettingsRow("Receiver", receiverPicker),
-            outputSettingsRow("Pairing code", codeField),
-            outputSettingsActionRow([connectButton, disconnectButton]), statusLabel, discoveryLabel,
-            outputSettingsLabel("The next explicit presentation sends the live program. AltView controls fonts, layout and backgrounds. LAN output carries text; same-Mac Confidence can use the native Audience window when supported.", secondary: true)
-        ])
+        receiverPicker.target = self; receiverPicker.action = #selector(receiverChanged)
+        receiverPicker.setAccessibilityLabel("AltView Lyrics receiver")
+        let stack = NSStackView(views: [outputSettingsRow("Receiver", receiverPicker), pairing, statusLabel,
+            outputSettingsLabel("Show Slides sends Lyrics when this output is enabled. Appearance and displays are set in AltView.", secondary: true)])
         stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 12
         for row in stack.arrangedSubviews { row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
-        view = stack
-        render()
+        view = stack; render()
     }
     private func scheduleRender() {
         guard isActive, reloadTask == nil else { return }
         reloadTask = Task { @MainActor [weak self] in
-            await Task.yield()
-            guard let self, !Task.isCancelled else { return }
+            await Task.yield(); guard let self, !Task.isCancelled else { return }
             self.reloadTask = nil; self.render()
         }
     }
-    /// A cached hidden form retains its draft, while the router alone maintains
-    /// its connection. Resume from the latest model when the row is selected.
     func setActive(_ value: Bool) {
-        guard isActive != value else { return }
         isActive = value
-        if value { render() }
-        else { reloadTask?.cancel(); reloadTask = nil }
+        if value { render() } else { pairing.clearCode() }
     }
     func render() {
-        guard isActive, isViewLoaded, let destination = store.document.destinations.first(where: { $0.id == destinationID }) else { return }
-        if case .unavailable(let id) = assignmentIssue, router.receivers.contains(where: { $0.receiverIdentity == id }) {
-            assignmentIssue = nil
+        guard isActive, isViewLoaded, let row = store.document.destinations.first(where: { $0.id == destinationID }) else { return }
+        if let unavailableID, router.receivers.contains(where: { $0.receiverIdentity == unavailableID }) {
+            notice = nil; self.unavailableID = nil
         }
-        if receiverID != destination.receiver?.receiverID {
-            if receiverID != nil { codeField.stringValue = "" }
-            receiverID = destination.receiver?.receiverID
-            wasConnected = false
+        targets = router.knownReceivers
+        let titles = ["None"] + altViewReceiverTitles(targets)
+        if receiverPicker.itemTitles != titles {
+            receiverPicker.removeAllItems(); receiverPicker.addItems(withTitles: titles)
         }
-        var fresh = [ReceiverEntry(id: nil, title: "None", enabled: true)]
-        fresh += router.receivers.compactMap { receiver in
-            guard let id = receiver.receiverIdentity else { return nil }
-            let conflict = destination.enabled && store.document.destinations.contains { $0.id != destinationID && $0.enabled && $0.receiver?.receiverID == id }
-            return ReceiverEntry(id: id, title: receiver.name, enabled: !conflict)
+        for (index, target) in targets.enumerated() {
+            receiverPicker.item(at: index + 1)?.representedObject = target.receiverID
+            receiverPicker.item(at: index + 1)?.toolTip = target.receiverID.uuidString
         }
-        if let target = destination.receiver, !fresh.contains(where: { $0.id == target.receiverID }) {
-            fresh.append(.init(id: target.receiverID, title: target.name + " · Unavailable", enabled: false))
-        }
-        if fresh != entries {
-            entries = fresh
-            let menu = NSMenu(); menu.autoenablesItems = false
-            for entry in entries {
-                let item = NSMenuItem(title: entry.title, action: nil, keyEquivalent: "")
-                item.isEnabled = entry.enabled; item.representedObject = entry.id; menu.addItem(item)
-            }
-            receiverPicker.menu = menu
-        }
-        receiverPicker.selectItem(at: entries.firstIndex { $0.id == destination.receiver?.receiverID } ?? 0)
+        receiverPicker.selectItem(at: targets.firstIndex { $0.receiverID == row.receiver?.receiverID }.map { $0 + 1 } ?? 0)
+        pairing.render(receiverID: row.receiver?.receiverID)
         let channel = router.channel(for: destinationID)
-        if observedChannel !== channel {
-            observedChannel = channel
-            channelSubscription = channel?.objectWillChange.sink { [weak self] _ in self?.scheduleRender() }
+        statusLabel.stringValue = notice ?? (row.receiver == nil ? "Choose an AltView receiver for this output." : channel?.status.connected == true ? channel?.deliveryDetail ?? "" : "")
+        statusLabel.isHidden = statusLabel.stringValue.isEmpty
+    }
+    @objc private func receiverChanged() {
+        let id = receiverPicker.selectedItem?.representedObject as? UUID
+        guard id == nil || router.knownReceivers.contains(where: { $0.receiverID == id }) else {
+            unavailableID = id
+            notice = "This receiver is no longer available. Choose it again after it reconnects."; render(); return
         }
+        let target = router.knownReceivers.first { $0.receiverID == id }
+        notice = store.assignReceiver(target, to: destinationID); render()
+    }
+}
+
+@MainActor
+func altViewReceiverTitles(_ targets: [OutputReceiverTarget]) -> [String] {
+    let names = Dictionary(grouping: targets, by: \.name)
+    return targets.map { target in
+        target.name + ((names[target.name]?.count ?? 0) > 1 || target.name == "None" ? " · \(target.receiverID.uuidString.prefix(8))" : "")
+    }
+}
+
+/// The same compact form is embedded below each output's receiver picker.
+/// Lyrics and Media use the router's single control connection and Keychain record.
+@MainActor
+final class AltViewReceiverPairingView: NSStackView {
+    private weak var router: AltViewOutputRouter?
+    private var selected: UUID?
+    let codeField = NSSecureTextField()
+    let connectButton = NSButton(title: "Connect", target: nil, action: nil)
+    let disconnectButton = NSButton(title: "Disconnect", target: nil, action: nil)
+    let statusLabel = outputSettingsLabel(secondary: true)
+    private var codeRow: NSView!
+    private var hintRow: NSView!
+    private var connectionRow: NSView!
+    init(router: AltViewOutputRouter?) {
+        self.router = router
+        super.init(frame: .zero)
+        orientation = .vertical; alignment = .leading; spacing = 8
+        codeField.placeholderString = "8-character code"
+        codeField.setAccessibilityLabel("Receiver pairing code")
+        codeField.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        codeField.widthAnchor.constraint(equalToConstant: 140).isActive = true
+        codeField.toolTip = "Leave empty to use the saved receiver pairing. AltView automatically generates and shares the separate 32-character SRT secret."
+        codeField.target = self; codeField.action = #selector(connect)
+        connectButton.target = self; connectButton.action = #selector(connect)
+        disconnectButton.target = self; disconnectButton.action = #selector(disconnect)
+        for button in [connectButton, disconnectButton] {
+            button.bezelStyle = .rounded; button.controlSize = .small
+            button.font = .systemFont(ofSize: NSFont.systemFontSize(for: .small))
+            button.setContentHuggingPriority(.required, for: .horizontal)
+            button.setContentCompressionResistancePriority(.required, for: .horizontal)
+        }
+        codeRow = outputSettingsRow("Pairing code", outputSettingsHorizontal([codeField, connectButton, NSView()]))
+        hintRow = outputSettingsRow("", outputSettingsLabel("Code from AltView → Connections. Media encryption is automatic.", secondary: true))
+        statusLabel.maximumNumberOfLines = 3
+        connectionRow = outputSettingsRow("Connection", outputSettingsHorizontal([statusLabel, NSView(), disconnectButton]))
+        for row in [codeRow!, hintRow!, connectionRow!] {
+            addArrangedSubview(row); row.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+        }
+        render(receiverID: nil)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    func clearCode() { codeField.stringValue = "" }
+    func render(receiverID: UUID?) {
+        if selected != receiverID { clearCode(); selected = receiverID }
+        isHidden = receiverID == nil
+        guard let receiverID else { return }
+        let channel = router?.receiverChannel(receiverID)
         let connected = channel?.status.connected == true
-        if connected && !wasConnected { codeField.stringValue = "" }
-        wasConnected = connected
-        let conflict = destination.receiver.flatMap { target in
-            store.document.destinations.first { $0.id != destinationID && $0.enabled && $0.receiver?.receiverID == target.receiverID }
-        }
-        if let assignmentIssue { statusLabel.stringValue = assignmentIssue.message }
-        else if !destination.enabled { statusLabel.stringValue = "Enable this output to connect." }
-        else if destination.receiver == nil {
-            statusLabel.stringValue = "Choose a receiver, enter its pairing code, then choose Connect Only. Open AltView and enable receiving if no receivers appear."
-        } else if let conflict {
-            statusLabel.stringValue = "This receiver is used by \(conflict.name). Disable that output or choose a different receiver."
-        } else if let channel { statusLabel.stringValue = channel.detail }
-        else { statusLabel.stringValue = "Waiting to discover this receiver. Open AltView and enable receiving." }
-        if assignmentIssue != nil || (destination.enabled && conflict != nil) {
-            statusLabel.textColor = .systemOrange
-        } else if destination.enabled && connected {
-            statusLabel.textColor = .systemGreen
-        } else {
-            statusLabel.textColor = .secondaryLabelColor
-        }
-        discoveryLabel.stringValue = router.discoveryNotice ?? ""
-        discoveryLabel.isHidden = router.discoveryNotice == nil
-        let discovered = router.receivers.contains { $0.receiverIdentity == destination.receiver?.receiverID }
-        connectButton.isEnabled = destination.enabled && destination.receiver != nil && conflict == nil && discovered
-            && channel?.isConnecting != true && (!connected || !codeField.stringValue.isEmpty)
+        let connecting = channel?.isConnecting == true || channel?.status.waitingToRetry == true
+            || (channel?.hasConnection == true && !connected && channel?.status.failureReason == nil)
+        let available = router?.receivers.contains { $0.receiverIdentity == receiverID } == true
+        if connected { clearCode() }
+        codeRow.isHidden = connected; hintRow.isHidden = connected
+        codeField.isEnabled = available && !connecting
+        connectButton.isEnabled = available && !connecting
+        disconnectButton.title = connecting ? "Cancel" : "Disconnect"
+        disconnectButton.isHidden = channel?.hasConnection != true
         disconnectButton.isEnabled = channel?.hasConnection == true
-        disconnectButton.title = channel?.isConnecting == true ? "Cancel" : "Disconnect"
+        let issue = channel?.persistenceNotice ?? (channel?.requiresPairingCode == true ? nil : channel?.connectionNotice)
+        connectionRow.isHidden = available && !connected && !connecting && issue == nil && channel?.status.failureReason == nil
+        if let issue { statusLabel.stringValue = issue }
+        else if connected { statusLabel.stringValue = "Connected · shared by Lyrics and Media" }
+        else if connecting { statusLabel.stringValue = "Connecting…" }
+        else if channel?.status.failureReason != nil { statusLabel.stringValue = channel?.status.message ?? "Connection failed" }
+        else { statusLabel.stringValue = available ? "Not connected" : "Receiver unavailable" }
+        statusLabel.textColor = issue != nil || channel?.status.failureReason != nil ? .systemOrange : .secondaryLabelColor
+        statusLabel.toolTip = channel?.detail ?? router?.discoveryNotice
     }
-    func controlTextDidChange(_ notification: Notification) {
-        if let channel = router.channel(for: destinationID), channel.hasConnection && !channel.status.connected {
-            router.disconnect(destinationID)
-        }
-        render()
+    @objc private func connect() {
+        guard let selected, connectButton.isEnabled else { return }
+        router?.connectReceiver(selected, code: codeField.stringValue)
+        if let channel = router?.receiverChannel(selected), channel.isConnecting || channel.status.connected { clearCode() }
+        render(receiverID: selected)
     }
-    @objc private func receiverChanged(_ sender: Any?) {
-        guard let item = receiverPicker.selectedItem else { return }
-        let target: OutputReceiverTarget?
-        if item.representedObject == nil {
-            target = nil // Only the explicit None item clears an assignment.
-        } else {
-            guard let id = item.representedObject as? UUID else { return }
-            guard let receiver = router.receivers.first(where: { $0.receiverIdentity == id }) else {
-                assignmentIssue = .unavailable(id)
-                render()
-                return
-            }
-            target = OutputReceiverTarget(receiverID: id, name: receiver.name)
-        }
-        assignmentIssue = store.assignReceiver(target, to: destinationID).map(AssignmentIssue.rejected)
-        render()
+    @objc private func disconnect() {
+        guard let selected else { return }
+        router?.disconnectReceiver(selected); render(receiverID: selected)
     }
-    @objc private func connect(_ sender: Any?) {
-        render()
-        if connectButton.isEnabled { router.connect(destinationID, code: codeField.stringValue); render() }
-    }
-    @objc private func disconnect(_ sender: Any?) { router.disconnect(destinationID); render() }
 }

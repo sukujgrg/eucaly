@@ -29,6 +29,7 @@ nonisolated final class ReferenceAltViewReceiverServer: @unchecked Sendable {
     private var pendingResumes: [UUID: AltViewPeerChannel] = [:]
     private var suspendedOwnershipNames = Set<String>()
     private var handshakeDisconnects: Int
+    private var handshakeStalls: Int
     private let grantDelay: TimeInterval
     private var templateCapabilities: AltViewTemplateCapabilities
     private var outputReadiness = AltViewOutputReadiness.closed
@@ -37,12 +38,13 @@ nonisolated final class ReferenceAltViewReceiverServer: @unchecked Sendable {
     private var timer: DispatchSourceTimer?
     private let delivery: AltViewSnapshotMailbox<ReferenceAltViewReceiverStatus>
 
-    init(receiverID: UUID, templateCapabilities: AltViewTemplateCapabilities = .init(), handshakeDisconnects: Int = 0,
+    init(receiverID: UUID, templateCapabilities: AltViewTemplateCapabilities = .init(), handshakeDisconnects: Int = 0, handshakeStalls: Int = 0,
          grantDelay: TimeInterval = 0, capabilities: [String] = [],
          callbackQueue: DispatchQueue = .main, onStatus: @escaping (ReferenceAltViewReceiverStatus) -> Void) {
         self.receiverID = receiverID
         self.templateCapabilities = templateCapabilities
         self.handshakeDisconnects = handshakeDisconnects
+        self.handshakeStalls = handshakeStalls
         self.grantDelay = grantDelay; self.capabilities = capabilities
         delivery = AltViewSnapshotMailbox(queue: callbackQueue, consume: onStatus)
     }
@@ -198,6 +200,11 @@ nonisolated final class ReferenceAltViewReceiverServer: @unchecked Sendable {
             }
             guard let id = message.senderID, let name = message.name, state.register(connection: peer.id, senderID: id, name: name) else {
                 peer.close("Invalid sender identity."); return
+            }
+            if handshakeStalls > 0 {
+                handshakeStalls -= 1
+                publish()
+                return
             }
             peerCapabilities[peer.id] = Set(message.capabilities ?? []).intersection(capabilities)
             peer.send(AltViewWireMessage(kind: .welcome, receiverID: receiverID, ownerID: state.owner?.id, ownerName: state.owner?.name, templates: templateCapabilities.templates, templatePolicy: templateCapabilities.policy, capabilities: peerCapabilities[peer.id]?.sorted()))

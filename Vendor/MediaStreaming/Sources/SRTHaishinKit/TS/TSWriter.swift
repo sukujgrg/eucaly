@@ -68,8 +68,7 @@ final class TSWriter {
         }
         return false
     }
-    private var videoTimeStamp: CMTime = .invalid
-    private var audioTimeStamp: CMTime = .invalid
+    private var timestampOrigin: CMTime = .invalid
     private var clockTimeStamp: CMTime = .zero
     private var segmentDuration: Double = TSWriter.defaultSegmentDuration
     private var rotatedTimeStamp: CMTime = .zero
@@ -86,18 +85,21 @@ final class TSWriter {
         self.segmentDuration = segmentDuration
     }
 
+    // Anchor before hardware encoding: the first encoded audio and video
+    // callbacks can arrive hundreds of milliseconds apart. Independent origins
+    // would erase that offset and schedule pictures far ahead of clean audio.
+    func setTimestampOrigin(_ timestamp: CMTime) {
+        guard timestampOrigin == .invalid, timestamp.isNumeric else { return }
+        timestampOrigin = timestamp; clockTimeStamp = timestamp
+    }
+
     /// Appends a buffer.
     func append(_ audioBuffer: AVAudioBuffer, when: AVAudioTime) {
         guard let audioBuffer = audioBuffer as? AVAudioCompressedBuffer, canWriteFor else {
             return
         }
-        if audioTimeStamp == .invalid {
-            audioTimeStamp = when.makeTime()
-            if pcrPID == TSWriter.defaultAudioPID {
-                clockTimeStamp = audioTimeStamp
-            }
-        }
-        if var pes = PacketizedElementaryStream(audioBuffer, when: when, timeStamp: audioTimeStamp) {
+        setTimestampOrigin(when.makeTime())
+        if var pes = PacketizedElementaryStream(audioBuffer, when: when, timeStamp: timestampOrigin) {
             pes.streamID = 192
             writePacketizedElementaryStream(
                 TSWriter.defaultAudioPID,
@@ -115,13 +117,8 @@ final class TSWriter {
         }
         switch sampleBuffer.formatDescription?.mediaType {
         case .video:
-            if videoTimeStamp == .invalid {
-                videoTimeStamp = sampleBuffer.presentationTimeStamp
-                if pcrPID == Self.defaultVideoPID {
-                    clockTimeStamp = videoTimeStamp
-                }
-            }
-            if var pes = PacketizedElementaryStream(sampleBuffer, timeStamp: videoTimeStamp) {
+            setTimestampOrigin(sampleBuffer.presentationTimeStamp)
+            if var pes = PacketizedElementaryStream(sampleBuffer, timeStamp: timestampOrigin) {
                 let timestamp = sampleBuffer.decodeTimeStamp == .invalid ?
                     sampleBuffer.presentationTimeStamp : sampleBuffer.decodeTimeStamp
                 pes.streamID = 224
@@ -147,8 +144,7 @@ final class TSWriter {
         pat.programs.removeAll()
         pat.programs = [1: Self.defaultPMTPID]
         pmt = TSProgramMap()
-        videoTimeStamp = .invalid
-        audioTimeStamp = .invalid
+        timestampOrigin = .invalid
         clockTimeStamp = .zero
         rotatedTimeStamp = .zero
         expectedMedias.removeAll()
@@ -194,6 +190,8 @@ final class TSWriter {
     }
 
     private func writeProgram() {
+        // Audio remains continuous while adaptive video holds a still image.
+        pcrPID = audioFormat == nil ? Self.defaultVideoPID : Self.defaultAudioPID
         pmt.PCRPID = pcrPID
         var bytes = Data()
         var packets: [TSPacket] = []
@@ -219,7 +217,7 @@ final class TSWriter {
         var PCR: UInt64?
         let duration: Double = timestamp.seconds - clockTimeStamp.seconds
         if pcrPID == PID && 0.02 <= duration {
-            PCR = UInt64((timestamp.seconds - (PID == Self.defaultVideoPID ? videoTimeStamp : audioTimeStamp).seconds) * TSTimestamp.resolution)
+            PCR = UInt64(max(0, (timestamp.seconds - timestampOrigin.seconds) * TSTimestamp.resolution))
             clockTimeStamp = timestamp
         }
         var packets: [TSPacket] = []

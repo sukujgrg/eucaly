@@ -31,7 +31,11 @@ windows, including a standby clock. Hide/Clear retain it; the last window close
 or Stop releases it. Removing the last assigned output clears live ownership.
 
 OutputMediaRuntime owns one program AVPlayer and pools matching muted background
-resources. Independent background audio has one session owner. ScreenCaptureManager
+resources. Background bookmark resolution and security-scoped access belong to the
+source shared by active profiles, so appearance customization retains the resolved
+image and video playback. Composition passes resolved URLs and players into the
+background layer as rendering inputs, including asynchronous resolution changes.
+Independent background audio has one session owner. ScreenCaptureManager
 owns one picker-approved stream with reference-counted, GPU-backed consumers.
 Closing one output does not stop another. Every rendering layer uses the same
 explicit frame so media/background sizing cannot move foreground text.
@@ -216,24 +220,42 @@ cadence require rehearsal on production equipment.
 
 Version 4 adds the AltView Media built-in output kind without enabling network
 publication during migration. Each destination stores sourceAudienceID and the
-optional includeBackgroundAudio flag (default false). Its secret is separate in
-Keychain. OutputSRTDestinationSettings edits endpoint/source/audio configuration.
+optional includeBackgroundAudio flag (default false). Its SRT secret lives in
+the receiver's Keychain pairing record. OutputSRTDestinationSettings edits
+receiver/source/audio configuration and embeds the shared receiver pairing form.
 SRTMediaOutputRouter follows only an explicitly opened Audience window identity
 and generation. It uses ScreenCaptureKit for the scaled network copy and taps
 only live video/background players, with shared taps and bounded mixers.
 SRTMediaSession owns H.264/AAC MPEG-TS and encrypted SRT; closed attempts retire
 queues before cleanup. Preview remains private. See altview.md for setup/limits.
 
-AltView Media discovery uses `_altviewmedia._udp` independently of text discovery.
-The shared DNS-SD boundary runs on serial queues, bounds resolved services and
-advertises public UUID/version metadata only. Settings retain a stable receiver
-UUID and name; each SRT connection resolves against current discovery. Offline
-receivers wait without falling back to stale saved endpoints. Manual settings
-remain compatible. The media settings editor owns visible discovery demand;
-active Bonjour transmissions keep it running while Settings is closed.
+Lyrics and Media share one `_altview._tcp` discovery browser, control connection
+and Keychain pairing per stable receiver UUID. Protocol 3 provisions the current
+Media endpoint, readiness and generated SRT secret inside the authenticated
+control channel; discovery and output JSON carry no secret. Every SRT attempt
+requires current authenticated readiness and uses the fresh endpoint. Offline
+receivers wait without falling back to stale saved addresses. Separate Media
+discovery, manual endpoints and per-output passwords are retired. Pairing and
+control restoration remain independent of Lyrics/Media enablement and never
+start publication; Media starts with an explicit Show Slides or Retry Media.
 
 Live program audio conversion keeps a continuous 48 kHz sample cursor across
 converter callbacks, including buffered partial output. Assigning each chunk
 to its triggering input timestamp created gaps and overlaps. Pause, mute, format
 changes and source discontinuities reset that source’s converter clock. The live
 file regression checks both missing samples and waveform jumps before encoding.
+
+The shared player tap retains prerendered PCM in asset time until the playback
+timebase can map it to the host clock. AVPlayer may decode a short file entirely
+during preroll; those samples cannot be discarded just because the clock is still
+stopped. Gain and pending sample delivery are ordered under the same source lock.
+Player and timebase observations deliver state changes without waiting for the
+router's periodic inventory refresh, so short sounds cannot lose their play window.
+Preroll storage is bounded to 8 MiB and 256 buffers, resets on a new stream or
+format, and is released with the last consumer. The short-file regression forces
+preroll before playback and verifies delivery without polling the tap. A batched
+handoff regression also verifies that the mixer does not drop a preroll burst's tail.
+Converted PCM has the same 8 MiB budget per source and a 512-buffer fragment limit;
+its previous 64-packet limit discarded valid preroll based on packet size rather
+than memory use. Batch admission preserves decoded bursts without changing their
+original playback timestamps.

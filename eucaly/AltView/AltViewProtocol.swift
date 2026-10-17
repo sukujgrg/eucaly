@@ -4,11 +4,28 @@
 import Foundation
 import Darwin
 
+/// Sent only inside the authenticated control channel. Never publish in DNS-SD
+/// or saved output configuration. The address comes from this TLS peer's path.
+nonisolated struct AltViewMediaOffer: Codable, Equatable, Sendable {
+    let receiverID: UUID
+    let port: Int
+    let ready: Bool
+    let passphrase: String
+    var host: String?
+    var isValid: Bool {
+        (host == nil || (host?.isEmpty == false && (host?.utf8.count ?? 254) <= 253
+            && host?.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || ".-".contains($0)) } == true))
+            && (1...65535).contains(port) && (10...79).contains(passphrase.utf8.count)
+            && passphrase.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || "-_".contains($0)) }
+    }
+}
+
 nonisolated enum AltViewProtocol {
-    static let version = 2
+    static let version = 3
     static let confidenceText = "confidenceTextV1"
+    static let mediaProvisioning = "mediaProvisioningV1"
     static let localProjection = "localProjectionV1"
-    static let capabilities = [confidenceText, localProjection]
+    static let capabilities = [confidenceText, localProjection, mediaProvisioning]
     static let serviceType = "_altview._tcp"
     static let maximumFrameSize = 65_536
     static let maximumClients = 8
@@ -204,6 +221,7 @@ nonisolated struct AltViewWireMessage: Codable, Equatable, Sendable {
     var templatePolicy: AltViewTemplatePolicy?
     var capabilities: [String]?
     var localProcess: AltViewLocalProjectionProcess?
+    var media: AltViewMediaOffer?
 }
 
 nonisolated enum AltViewProtocolFailure: Error, LocalizedError {

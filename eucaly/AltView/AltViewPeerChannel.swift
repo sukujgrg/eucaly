@@ -59,7 +59,7 @@ nonisolated final class AltViewPeerChannel: @unchecked Sendable {
         guard !closed else { return }
         let timedOut = ready ? now - lastReceived > timeout : now - started > connectionTimeout
         if timedOut || sendStarted.map({ now - $0 > timeout }) == true {
-            close("Connection timed out.", retryable: !ready)
+            close("Connection timed out.", retryable: true)
         }
     }
     private func fail(_ error: NWError) {

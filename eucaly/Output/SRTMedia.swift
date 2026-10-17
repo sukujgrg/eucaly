@@ -14,16 +14,10 @@ nonisolated struct SRTMediaSettings: Codable, Equatable, Sendable {
     var frameRate = 60
     var latency = 80
     var bitRate = 20_000_000
-    // Optional for compatibility with saved manual endpoints. A discovered
-    // receiver is resolved by identity before each connection, never by cached IP.
+    // Stable control receiver identity. Resolve a fresh authenticated endpoint
+    // before each attempt; saved hosts/ports never authorize Media.
     var receiverID: UUID?
     var receiverName: String?
-    func resolving(in receivers: [SRTMediaReceiver]) -> Self? {
-        guard let receiverID else { return self }
-        guard let receiver = receivers.first(where: { $0.id == receiverID }) else { return nil }
-        var resolved = self; resolved.host = receiver.host; resolved.port = receiver.port
-        return resolved
-    }
     var isValid: Bool {
         !host.isEmpty && host.utf8.count <= 253 && !host.contains(where: { $0.isWhitespace })
             && (1...65535).contains(port) && [50, 60].contains(frameRate)
@@ -53,13 +47,18 @@ nonisolated enum SRTMediaError: LocalizedError {
     case invalidSettings, keychain(OSStatus)
     var errorDescription: String? {
         switch self {
-        case .invalidSettings: return "Check the address, port and passphrase (10–79 letters, numbers, - or _)."
-        case .keychain(let status): return "The media passphrase could not be saved or read in Keychain (\(status))."
+        case .invalidSettings: return "The receiver’s media settings or credential are invalid. Check its listening port and reconnect in eucaly’s output settings."
+        case .keychain(let status): return "The media credential could not be saved or read in Keychain (\(status))."
         }
     }
 }
 
-actor SRTMediaSecrets {
+nonisolated protocol SRTMediaSecretStoring: Sendable {
+    func read(_ account: String) async throws -> String?
+    func save(_ value: String, account: String) async throws
+}
+
+actor SRTMediaSecrets: SRTMediaSecretStoring {
     static let shared = SRTMediaSecrets()
     func read(_ account: String) throws -> String? {
         var query = base(account); query[kSecReturnData as String] = true
@@ -97,7 +96,12 @@ actor SRTMediaSecrets {
 // picture; a receiver can retain a small decoded burst for its timed display.
 nonisolated final class SRTMediaIngest: @unchecked Sendable {
     enum Sample: @unchecked Sendable { case video(CMSampleBuffer), audio(AVAudioPCMBuffer, AVAudioTime) }
+    struct VideoStatistics: Sendable { var offered = 0; var discarded = 0 }
     private let lock = NSLock()
+    private var statistics = VideoStatistics()
+    var videoStatistics: VideoStatistics {
+        lock.lock(); defer { lock.unlock() }; return statistics
+    }
     private var video: [CMSampleBuffer] = []
     private let videoCapacity: Int
     private var audio: [(AVAudioPCMBuffer, AVAudioTime)] = []
@@ -115,7 +119,8 @@ nonisolated final class SRTMediaIngest: @unchecked Sendable {
         if active {
             switch sample {
             case .video(let frame):
-                if video.count >= videoCapacity { video.removeFirst() }
+                statistics.offered += 1
+                if video.count >= videoCapacity { video.removeFirst(); statistics.discarded += 1 }
                 video.append(frame)
             case .audio(let buffer, let time):
                 if audio.count >= 8 { audio.removeFirst() }
@@ -166,10 +171,10 @@ actor SRTMediaSession {
             }
         }
     }
-    func receive(settings: SRTMediaSettings, passphrase: String, output: some StreamOutput) async throws {
+    func receive(settings: SRTMediaSettings, passphrase: String, output: some StreamOutput, onListening: (@Sendable () -> Void)? = nil) async throws {
         await stream.addOutput(output)
         await stream.setVideoOutputIsScheduled(false)
-        try await connection.connect(settings.url(passphrase: passphrase, listening: true))
+        try await connection.connect(settings.url(passphrase: passphrase, listening: true), onListening: onListening)
         await stream.play()
     }
     func isConnected() async -> Bool { await connection.connected }

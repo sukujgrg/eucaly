@@ -12,6 +12,7 @@ final class AltViewService: ObservableObject {
     @Published private(set) var connectionNotice: String?
     @Published private(set) var persistenceNotice: String?
     @Published private(set) var isConnecting = false
+    @Published private(set) var requiresPairingCode = false
     @Published private(set) var destination: AltViewDestination?
     @Published private(set) var submitted: AltViewDisplayContent?
 
@@ -24,6 +25,7 @@ final class AltViewService: ObservableObject {
     private var pairingKey: Data?
     private var pairedReceiverID: UUID?
     private var savedThisConnection = false
+    private var savedMedia: AltViewMediaOffer?
     private var activeSourceID: UUID?
     private var pendingTake: AltViewSubmission?
     private var submissionID: UUID?
@@ -88,6 +90,7 @@ final class AltViewService: ObservableObject {
         let typedCode = !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let key = AltViewPairingKey.parse(code)
         guard !typedCode || key != nil else {
+            requiresPairingCode = false
             connectionNotice = "Enter the eight-character code shown in AltView."
             return
         }
@@ -112,6 +115,7 @@ final class AltViewService: ObservableObject {
                     guard let credentials else {
                         self.isConnecting = false
                         self.connectionID = nil
+                        self.requiresPairingCode = notice == nil
                         self.connectionNotice = notice ?? "Enter the pairing code shown in AltView."
                         return
                     }
@@ -122,6 +126,11 @@ final class AltViewService: ObservableObject {
     }
 
     private func beginConnection(_ destination: AltViewDestination, key: Data, receiverID: UUID?, id: UUID) {
+        guard receiverID == nil || destination.receiverIdentity == nil || receiverID == destination.receiverIdentity else {
+            connectionID = nil; isConnecting = false
+            connectionNotice = "Saved receiver identity differs. Select the receiver and enter its code again."
+            return
+        }
         pairingKey = key
         pairedReceiverID = receiverID ?? destination.receiverIdentity
         startSenderIfReady(id: id)
@@ -147,8 +156,8 @@ final class AltViewService: ObservableObject {
     }
 
     func disconnect() {
-        connectionID = nil; pairingKey = nil; pairedReceiverID = nil; savedThisConnection = false
-        isConnecting = false; activeSourceID = nil; pendingTake = nil
+        connectionID = nil; pairingKey = nil; pairedReceiverID = nil; savedThisConnection = false; savedMedia = nil
+        isConnecting = false; requiresPairingCode = false; activeSourceID = nil; pendingTake = nil
         connectionNotice = nil
         submitted = nil; submissionID = nil
         startedSender = false
@@ -192,12 +201,13 @@ final class AltViewService: ObservableObject {
         defer { onStatusChange?() }
         if status.connected {
             isConnecting = false
-            if !savedThisConnection, let receiverID = status.receiverID, let pairingKey, let destination {
-                savedThisConnection = true
-                pairingStore.save(AltViewCredentials(key: pairingKey, receiverID: receiverID), for: destination) { [weak self] notice in
+            if (!savedThisConnection || savedMedia != status.media), let receiverID = status.receiverID, let pairingKey, let destination {
+                savedThisConnection = true; savedMedia = status.media
+                pairingStore.save(AltViewCredentials(key: pairingKey, receiverID: receiverID, media: status.media), for: destination) { [weak self] notice in
                     MainActor.assumeIsolated {
                         guard self?.connectionID == connectionID else { return }
                         self?.persistenceNotice = notice
+                        self?.onStatusChange?()
                     }
                 }
             }

@@ -173,7 +173,10 @@ extension SRTStream: _Stream {
                 writer.videoFormat = sampleBuffer.formatDescription
                 writer.append(sampleBuffer)
             } else {
-                if readyState == .publishing { outgoing.append(sampleBuffer) }
+                if readyState == .publishing {
+                    writer.setTimestampOrigin(sampleBuffer.presentationTimeStamp)
+                    outgoing.append(sampleBuffer)
+                }
                 outputs.forEach { $0.stream(self, didOutput: sampleBuffer) }
             }
         default:
@@ -184,7 +187,10 @@ extension SRTStream: _Stream {
     public func append(_ audioBuffer: AVAudioBuffer, when: AVAudioTime) {
         switch audioBuffer {
         case let audioBuffer as AVAudioPCMBuffer:
-            if readyState == .publishing { outgoing.append(audioBuffer, when: when) }
+            if readyState == .publishing {
+                writer.setTimestampOrigin(when.makeTime())
+                outgoing.append(audioBuffer, when: when)
+            }
             outputs.forEach { $0.stream(self, didOutput: audioBuffer, when: when) }
         case let audioBuffer as AVAudioCompressedBuffer:
             writer.audioFormat = audioBuffer.format

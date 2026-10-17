@@ -4,6 +4,7 @@ import MediaToolbox
 /// Taps only explicitly selected live program players. Preview playback and other apps can
 /// never enter this bus. The tap leaves the player's local audio untouched.
 nonisolated final class SRTProgramAudio: @unchecked Sendable {
+    fileprivate static let maximumBufferedBytes = 8 * 1024 * 1024
     private struct Segment { let start: Int64; let buffer: AVAudioPCMBuffer }
     private let queue = DispatchQueue(label: "eucaly.srt.program-audio")
     private let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)!
@@ -16,7 +17,7 @@ nonisolated final class SRTProgramAudio: @unchecked Sendable {
     private var timer: DispatchSourceTimer?
     private var active = true
     private let pendingLock = NSLock()
-    private var pendingBuffers = 0
+    private var pendingSubmissions = 0
     private let ingest: SRTMediaIngest
     init(ingest: SRTMediaIngest) { self.ingest = ingest }
     func start(at time: CMTime) {
@@ -36,45 +37,58 @@ nonisolated final class SRTProgramAudio: @unchecked Sendable {
         }
     }
     func remove(_ id: UUID) { queue.async { [self] in segments[id] = nil; gains[id] = nil; converters[id] = nil; convertedEnd[id] = nil; inputEnd[id] = nil } }
-    func append(_ input: AVAudioPCMBuffer, at host: CMTime, id: UUID) {
-        guard host.isNumeric else { return }
+    func append(_ inputs: [(AVAudioPCMBuffer, CMTime)], id: UUID) {
+        guard !inputs.isEmpty else { return }
         pendingLock.lock()
-        guard pendingBuffers < 8 else { pendingLock.unlock(); return }
-        pendingBuffers += 1; pendingLock.unlock()
+        guard pendingSubmissions < 8 else { pendingLock.unlock(); return }
+        pendingSubmissions += 1; pendingLock.unlock()
         queue.async { [self] in
-            defer { pendingLock.lock(); pendingBuffers -= 1; pendingLock.unlock() }
+            defer { pendingLock.lock(); pendingSubmissions -= 1; pendingLock.unlock() }
             guard active, (gains[id] ?? 0) > 0 else { return }
-            let timestamp = Int64((host.seconds * 48000).rounded())
-            // A PCM converter may retain part of an input and return it with the
-            // next input. Output belongs to one continuous sample clock, not to
-            // whichever input happened to trigger a conversion callback.
-            let discontinuity = inputEnd[id].map { abs(timestamp - $0) > 2400 } ?? false
-            if converters[id]?.inputFormat != input.format || discontinuity {
-                converters[id] = AVAudioConverter(from: input.format, to: format)
-                convertedEnd[id] = timestamp; segments[id] = []
-            }
-            inputEnd[id] = timestamp + Int64((Double(input.frameLength) * 48000 / input.format.sampleRate).rounded())
-            guard let converter = converters[id] else { return }
-            var supplied = false; var packets = segments[id] ?? []
-            var conversion: AVAudioConverterOutputStatus
-            repeat {
-                guard let output = AVAudioPCMBuffer(pcmFormat: format,
-                    frameCapacity: AVAudioFrameCount(Double(input.frameLength) * 48000 / input.format.sampleRate + 64)) else { break }
-                var error: NSError?
-                conversion = converter.convert(to: output, error: &error) { _, status in
-                    if supplied { status.pointee = .noDataNow; return nil }
-                    supplied = true; status.pointee = .haveData; return input
-                }
-                guard error == nil else { break }
-                if output.frameLength > 0 {
-                    let start = convertedEnd[id] ?? timestamp
-                    packets.append(.init(start: start, buffer: output))
-                    convertedEnd[id] = start + Int64(output.frameLength)
-                }
-            } while conversion == .haveData
-            if packets.count > 64 { packets.removeFirst(packets.count - 64) }
-            segments[id] = packets
+            // One source handoff may contain several prerendered buffers. Admit
+            // the bounded batch once rather than dropping its tail as a burst.
+            for (input, host) in inputs { convert(input, at: host, id: id) }
         }
+    }
+    // Runs only on the mixer queue.
+    private func convert(_ input: AVAudioPCMBuffer, at host: CMTime, id: UUID) {
+        guard host.isNumeric else { return }
+        let timestamp = Int64((host.seconds * 48000).rounded())
+        // A PCM converter may retain part of an input and return it with the
+        // next input. Output belongs to one continuous sample clock, not to
+        // whichever input happened to trigger a conversion callback.
+        let discontinuity = inputEnd[id].map { abs(timestamp - $0) > 2400 } ?? false
+        if converters[id]?.inputFormat != input.format || discontinuity {
+            converters[id] = AVAudioConverter(from: input.format, to: format)
+            convertedEnd[id] = timestamp; segments[id] = []
+        }
+        inputEnd[id] = timestamp + Int64((Double(input.frameLength) * 48000 / input.format.sampleRate).rounded())
+        guard let converter = converters[id] else { return }
+        var supplied = false; var packets = segments[id] ?? []
+        var conversion: AVAudioConverterOutputStatus
+        repeat {
+            guard let output = AVAudioPCMBuffer(pcmFormat: format,
+                frameCapacity: AVAudioFrameCount(Double(input.frameLength) * 48000 / input.format.sampleRate + 64)) else { break }
+            var error: NSError?
+            conversion = converter.convert(to: output, error: &error) { _, status in
+                if supplied { status.pointee = .noDataNow; return nil }
+                supplied = true; status.pointee = .haveData; return input
+            }
+            guard error == nil else { break }
+            if output.frameLength > 0 {
+                let start = convertedEnd[id] ?? timestamp
+                packets.append(.init(start: start, buffer: output))
+                convertedEnd[id] = start + Int64(output.frameLength)
+            }
+        } while conversion == .haveData
+        // PCM packet sizes vary. Bound storage by memory, while retaining a
+        // decoded preroll batch regardless of how the tap divided its samples.
+        let bytesPerFrame = MemoryLayout<Float>.stride * Int(format.channelCount)
+        var bufferedBytes = packets.reduce(0) { $0 + Int($1.buffer.frameLength) * bytesPerFrame }
+        while !packets.isEmpty && (packets.count > 512 || bufferedBytes > Self.maximumBufferedBytes) {
+            bufferedBytes -= Int(packets.removeFirst().buffer.frameLength) * bytesPerFrame
+        }
+        segments[id] = packets
     }
     private func render() {
         guard active, var sample = nextSample else { return }
@@ -108,28 +122,64 @@ nonisolated final class SRTProgramAudio: @unchecked Sendable {
 
 nonisolated private final class SRTTapContext: @unchecked Sendable {
     let id = UUID()
+    private struct PendingAudio { let buffer: AVAudioPCMBuffer; let time: CMTime; let byteCount: Int }
     private final class Client { weak var mixer: SRTProgramAudio?; init(_ mixer: SRTProgramAudio) { self.mixer = mixer } }
     private var clients: [ObjectIdentifier: Client] = [:]
     private let lock = NSLock()
     private var timebase: CMTimebase?
+    private var playbackGain: Float = 0
     private var format: AVAudioFormat?
+    private var pending: [PendingAudio] = []
+    private var pendingBytes = 0
+    private let maximumPendingBytes = SRTProgramAudio.maximumBufferedBytes
+    private let maximumPendingBuffers = 256
     func add(_ mixer: SRTProgramAudio) { lock.lock(); clients[ObjectIdentifier(mixer)] = Client(mixer); lock.unlock() }
-    func remove(_ mixer: SRTProgramAudio) { lock.lock(); clients[ObjectIdentifier(mixer)] = nil; lock.unlock(); mixer.remove(id) }
-    func gain(_ value: Float) {
-        lock.lock(); let mixers = clients.values.compactMap(\.mixer); lock.unlock()
-        mixers.forEach { $0.setGain(value, id: id) }
+    func remove(_ mixer: SRTProgramAudio) {
+        lock.lock(); clients[ObjectIdentifier(mixer)] = nil
+        if clients.isEmpty { discardPending() }
+        lock.unlock(); mixer.remove(id)
     }
+    func updatePlayback(from player: AVPlayer, item: AVPlayerItem) {
+        let current = player.currentItem === item
+        let timebase = current ? item.timebase : nil
+        let gain = current && !player.isMuted && player.rate != 0 ? player.volume : 0
+        lock.lock(); defer { lock.unlock() }
+        self.timebase = timebase
+        playbackGain = gain
+        let mixers = clients.values.compactMap(\.mixer)
+        // Enqueue gain before any prerendered samples, including when playback
+        // starts without another processing callback to deliver them.
+        mixers.forEach { $0.setGain(gain, id: id) }
+        flushPending(to: mixers)
+    }
+    // Called with the context lock held so gain, clock and sample submission
+    // stay ordered across the playback and audio processing queues.
+    private func flushPending(to mixers: [SRTProgramAudio]) {
+        guard playbackGain > 0, let timebase, CMTimebaseGetEffectiveRate(timebase) > 0 else { return }
+        var inputs: [(AVAudioPCMBuffer, CMTime)] = []
+        pending.removeAll { packet in
+            let host = CMSyncConvertTime(packet.time, from: timebase, to: CMClockGetHostTimeClock())
+            guard host.isNumeric else { return false }
+            inputs.append((packet.buffer, host))
+            pendingBytes -= packet.byteCount
+            return true
+        }
+        mixers.forEach { $0.append(inputs, id: id) }
+    }
+    private func discardPending() { pending.removeAll(); pendingBytes = 0 }
     func prepare(_ description: AudioStreamBasicDescription) {
         var value = description
-        lock.lock(); format = AVAudioFormat(streamDescription: &value); lock.unlock()
+        lock.lock(); discardPending(); format = AVAudioFormat(streamDescription: &value); lock.unlock()
     }
-    func setTimebase(_ value: CMTimebase?) { lock.lock(); timebase = value; lock.unlock() }
     func process(_ tap: MTAudioProcessingTap, frames: CMItemCount, buffers: UnsafeMutablePointer<AudioBufferList>,
                  actual: UnsafeMutablePointer<CMItemCount>, flags: UnsafeMutablePointer<MTAudioProcessingTapFlags>) {
         var range = CMTimeRange.invalid
         guard MTAudioProcessingTapGetSourceAudio(tap, frames, buffers, flags, &range, actual) == noErr, actual.pointee > 0 else { return }
-        lock.lock(); let format = format, timebase = timebase; lock.unlock()
-        guard let format, let timebase, CMTimebaseGetRate(timebase) > 0,
+        lock.lock()
+        if flags.pointee & kMTAudioProcessingTapFlag_StartOfStream != 0 { discardPending() }
+        let format = format
+        lock.unlock()
+        guard let format, range.start.isNumeric,
               let copy = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(actual.pointee)) else { return }
         copy.frameLength = AVAudioFrameCount(actual.pointee)
         let source = UnsafeMutableAudioBufferListPointer(buffers), target = UnsafeMutableAudioBufferListPointer(copy.mutableAudioBufferList)
@@ -138,9 +188,18 @@ nonisolated private final class SRTTapContext: @unchecked Sendable {
                 memcpy(to, from, min(Int(source[i].mDataByteSize), Int(target[i].mDataByteSize)))
             }
         }
-        let host = CMSyncConvertTime(range.start, from: timebase, to: CMClockGetHostTimeClock())
-        lock.lock(); let mixers = clients.values.compactMap(\.mixer); lock.unlock()
-        mixers.forEach { $0.append(copy, at: host, id: id) }
+        lock.lock(); defer { lock.unlock() }
+        guard !clients.isEmpty else { return }
+        // AVPlayer can decode all of a short file during preroll, before its
+        // timebase runs. A tap never receives that source audio a second time.
+        // Keep media timestamps until they can be mapped to the playback clock.
+        let byteCount = target.reduce(0) { $0 + Int($1.mDataByteSize) }
+        guard byteCount <= maximumPendingBytes else { return }
+        while !pending.isEmpty && (pending.count >= maximumPendingBuffers || pendingBytes + byteCount > maximumPendingBytes) {
+            pendingBytes -= pending.removeFirst().byteCount
+        }
+        pending.append(.init(buffer: copy, time: range.start, byteCount: byteCount)); pendingBytes += byteCount
+        flushPending(to: clients.values.compactMap(\.mixer))
     }
 }
 
@@ -153,9 +212,29 @@ private final class SRTSharedPlayerAudioTap {
     private var previous: AVAudioMix?
     private var installed: AVAudioMix?
     private var preparation: Task<Void, Never>?
+    private var playbackObservations: [NSKeyValueObservation] = []
+    private var observedTimebase: CMTimebase?
+    private var timebaseObservers: [NSObjectProtocol] = []
     init(player: AVPlayer) {
         self.player = player
         let item = player.currentItem; self.item = item
+        playbackObservations = [
+            player.observe(\.rate) { [weak player, weak item, context] _, _ in
+                if let player, let item { context.updatePlayback(from: player, item: item) }
+            },
+            player.observe(\.isMuted) { [weak player, weak item, context] _, _ in
+                if let player, let item { context.updatePlayback(from: player, item: item) }
+            },
+            player.observe(\.volume) { [weak player, weak item, context] _, _ in
+                if let player, let item { context.updatePlayback(from: player, item: item) }
+            }
+        ]
+        if let item {
+            playbackObservations.append(item.observe(\.status) { [weak self, weak player, weak item, context] _, _ in
+                if let player, let item { context.updatePlayback(from: player, item: item) }
+                Task { @MainActor [weak self] in self?.refresh() }
+            })
+        }
         preparation = Task { [weak self] in
             guard let item, let tracks = try? await item.asset.loadTracks(withMediaType: .audio), !Task.isCancelled,
                   let self, self.item === item else { return }
@@ -187,11 +266,26 @@ private final class SRTSharedPlayerAudioTap {
     }
     func matches(_ value: AVPlayer) -> Bool { player === value && item === value.currentItem }
     func refresh() {
-        context.setTimebase(item?.timebase)
-        context.gain(player?.isMuted == true || player?.rate == 0 ? 0 : player?.volume ?? 0)
+        guard let item, let player else { return }
+        let timebase = item.timebase
+        if observedTimebase !== timebase {
+            timebaseObservers.forEach { NotificationCenter.default.removeObserver($0) }
+            observedTimebase = timebase
+            timebaseObservers = timebase.map { clock in
+                [kCMTimebaseNotification_EffectiveRateChanged, kCMTimebaseNotification_TimeJumped].map { name in
+                    NotificationCenter.default.addObserver(forName: .init(name as String), object: clock, queue: nil) { [weak player, weak item, context] _ in
+                        if let player, let item { context.updatePlayback(from: player, item: item) }
+                    }
+                }
+            } ?? []
+        }
+        context.updatePlayback(from: player, item: item)
     }
     func stop() {
         preparation?.cancel(); preparation = nil
+        playbackObservations.forEach { $0.invalidate() }; playbackObservations.removeAll()
+        timebaseObservers.forEach { NotificationCenter.default.removeObserver($0) }; timebaseObservers.removeAll()
+        observedTimebase = nil
         if item?.audioMix === installed { item?.audioMix = previous }
         item = nil
     }

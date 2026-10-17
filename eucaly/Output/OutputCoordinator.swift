@@ -17,7 +17,7 @@ nonisolated enum OutputReadiness: String, Codable, Sendable {
 @MainActor
 final class OutputCoordinator: ObservableObject {
     let actionClock = OutputActionClock()
-    let media = OutputMediaRuntime()
+    let media: OutputMediaRuntime
     let profiles: OutputProfileStore
     let displays: ProjectionDisplayManager
     private let sleepPrevention: ProjectionSleepPrevention
@@ -85,9 +85,11 @@ final class OutputCoordinator: ObservableObject {
     }
 
     init(profiles: OutputProfileStore, displays: ProjectionDisplayManager, retainsPreparedSessions: Bool = false,
+         media: OutputMediaRuntime? = nil,
          sleepPrevention: ProjectionSleepPrevention = ProjectionSleepPrevention(),
          driverFactory: @escaping @MainActor () -> any OutputDestinationDriving = { OutputWindowDestination() }) {
         self.retainsPreparedSessions = retainsPreparedSessions
+        self.media = media ?? OutputMediaRuntime()
         self.profiles = profiles; self.displays = displays
         standbyConfigurations = profiles.document.destinations
         legacyMonitorTarget = displays.target
