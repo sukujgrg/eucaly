@@ -1,6 +1,33 @@
 {
-  "originHash" : "e721da7f9826abdffcb6185e886155efa2514bd6234475f1afa893e29eb258d6",
+  "originHash" : "365e784bb8b206581b0ae78c1fbc7b08429a7913df7863a9ecf820d6fdbf88a8",
   "pins" : [
+    {
+      "identity" : "libsrt-xcframework",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/HaishinKit/libsrt-xcframework.git",
+      "state" : {
+        "revision" : "48d7559dcda148fb02e75600a973acaa789a5472",
+        "version" : "1.5.7"
+      }
+    },
+    {
+      "identity" : "logboard",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/shogo4405/Logboard.git",
+      "state" : {
+        "revision" : "8f41c63afb903040b77049ee2efa8c257b8c0d50",
+        "version" : "2.6.0"
+      }
+    },
+    {
+      "identity" : "openssl-package",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/krzyzanowskim/OpenSSL-Package.git",
+      "state" : {
+        "revision" : "4ac3f9a68731cb3cf736a591814bad9a7a2008c8",
+        "version" : "3.6.5000"
+      }
+    },
     {
       "identity" : "sparkle",
       "kind" : "remoteSourceControl",

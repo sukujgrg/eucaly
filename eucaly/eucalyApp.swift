@@ -115,6 +115,11 @@ struct EucalyApp: App {
         }
         .windowToolbarStyle(.unified)
         .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Third-Party Notices…") {
+                    if let url = Bundle.main.url(forResource: "ThirdPartyNotices", withExtension: "txt") { NSWorkspace.shared.open(url) }
+                }
+            }
             AppUpdateCommands(viewModel: appDelegate.updates)
             CommandGroup(replacing: .appSettings) {
                 Button("Settings…") { appDelegate.showSettings() }

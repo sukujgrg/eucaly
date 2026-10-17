@@ -142,6 +142,12 @@ final class OutputProfileStore: ObservableObject {
     func profile(_ id: UUID) -> OutputProfile? { document.profiles.first { $0.id == id } }
     func assignmentProblem(for destination: OutputDestinationConfiguration) -> String? {
         guard destination.enabled else { return nil }
+        if profile(destination.profileID)?.kind == .altViewMedia {
+            guard destination.srt?.isValid == true, let source = destination.sourceAudienceID,
+                  document.destinations.contains(where: { $0.id == source && profile($0.profileID)?.kind == .audience }) else {
+                return "Choose an Audience output and configure the AltView Media address before enabling it."
+            }
+        }
         if let target = destination.monitor,
            let other = document.destinations.first(where: { $0.id != destination.id && $0.enabled && $0.monitor?.identity == target.identity }) {
             return "This monitor is used by \(other.name). Disable that output or choose a different monitor."

@@ -12,6 +12,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     let table = NSTableView()
     let addOutputMenu = NSPopUpButton(frame: .zero, pullsDown: true)
     let addNative = NSMenuItem(title: "Native Monitor Output", action: nil, keyEquivalent: "")
+    let addMedia = NSMenuItem(title: "AltView Media Output", action: nil, keyEquivalent: "")
     let addAltView = NSMenuItem(title: "AltView Text Output", action: nil, keyEquivalent: "")
     let removeOutput = NSButton(title: "−", target: nil, action: nil)
     let makeDefault = NSButton(title: "Make Default", target: nil, action: nil)
@@ -73,11 +74,12 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         list.borderType = .bezelBorder; list.documentView = table
         list.heightAnchor.constraint(greaterThanOrEqualToConstant: 190).isActive = true
         addNative.target = self; addNative.action = #selector(addNativeOutput(_:))
+        addMedia.target = self; addMedia.action = #selector(addMediaOutput(_:))
         addAltView.target = self; addAltView.action = #selector(addAltViewOutput(_:))
         let menu = NSMenu(); menu.autoenablesItems = false
         let glyph = NSMenuItem(title: "+", action: nil, keyEquivalent: "")
         glyph.image = NSImage(named: NSImage.addTemplateName)
-        menu.addItem(glyph); menu.addItem(addNative); menu.addItem(addAltView)
+        menu.addItem(glyph); menu.addItem(addNative); menu.addItem(addAltView); menu.addItem(addMedia)
         addOutputMenu.menu = menu; addOutputMenu.imagePosition = .imageOnly
         addOutputMenu.setAccessibilityLabel("Add Output")
         addOutputMenu.toolTip = "Add a disabled, unassigned output."
@@ -135,10 +137,12 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
             coordinator.displays.refresh(); router.startDiscovery(); reload()
             profileEditor?.render(force: true)
             destinationEditor?.remoteEditor?.setActive(true)
+            destinationEditor?.mediaEditor?.setActive(true)
         }
         else {
             if isViewLoaded { finishEditing() }
             destinationEditor?.remoteEditor?.setActive(false)
+            destinationEditor?.mediaEditor?.setActive(false)
             router.stopDiscovery()
         }
     }
@@ -182,6 +186,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         let canAdd = !profilesMode && store.document.destinations.count < 16 && store.recoveryNotice == nil
         addNative.isEnabled = canAdd && store.profile(OutputProfile.audienceID)?.isNative == true
         addAltView.isEnabled = canAdd && store.profile(OutputProfile.altViewID)?.kind == .altView
+        addMedia.isEnabled = canAdd && store.profile(OutputProfile.altViewMediaID) != nil
         addOutputMenu.isEnabled = canAdd
         removeOutput.isEnabled = !profilesMode && selectedID != nil && store.recoveryNotice == nil
         let isDefault = !profilesMode && selectedID != nil && selectedID == store.document.defaultDestinationID
@@ -253,9 +258,11 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         if previous !== child {
             previous?.view.isHidden = true
             (previous as? OutputDestinationEditor)?.remoteEditor?.setActive(false)
+            (previous as? OutputDestinationEditor)?.mediaEditor?.setActive(false)
         }
         child?.view.isHidden = false
         destinationEditor?.remoteEditor?.setActive(!isSuspended)
+        destinationEditor?.mediaEditor?.setActive(!isSuspended)
     }
     private func pruneDestinationForms() {
         let keys = Set(store.document.destinations.map { destination in
@@ -264,6 +271,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         for key in Array(destinationForms.keys) where !keys.contains(key) {
             let form = destinationForms.removeValue(forKey: key)
             form?.remoteEditor?.setActive(false)
+            form?.mediaEditor?.setActive(false)
             form?.view.removeFromSuperview(); form?.removeFromParent()
         }
     }
@@ -271,6 +279,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         profileForm?.view.removeFromSuperview(); profileForm?.removeFromParent()
         for form in destinationForms.values {
             form.remoteEditor?.setActive(false)
+            form.mediaEditor?.setActive(false)
             form.view.removeFromSuperview(); form.removeFromParent()
         }
         profileForm = nil; destinationForms.removeAll()
@@ -305,6 +314,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     }
     @objc private func addNativeOutput(_ sender: Any?) { addOutput(name: "Native Output", profileID: OutputProfile.audienceID) }
     @objc private func addAltViewOutput(_ sender: Any?) { addOutput(name: "AltView", profileID: OutputProfile.altViewID) }
+    @objc private func addMediaOutput(_ sender: Any?) { addOutput(name: "AltView Media", profileID: OutputProfile.altViewMediaID) }
     @objc private func addSelectedProfile(_ sender: Any?) {
         guard profilesMode, store.recoveryNotice == nil, let id = selectedID else { return }
         finishEditing()
@@ -320,7 +330,11 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     private func addOutput(name: String, profileID: UUID) {
         guard !profilesMode, store.recoveryNotice == nil, store.profile(profileID) != nil, store.document.destinations.count < 16 else { return }
         finishEditing()
-        let output = OutputDestinationConfiguration(name: name, profileID: profileID, monitor: nil, enabled: false)
+        var output = OutputDestinationConfiguration(name: name, profileID: profileID, monitor: nil, enabled: false)
+        if profileID == OutputProfile.altViewMediaID {
+            let sources = store.document.destinations.filter { store.profile($0.profileID)?.kind == .audience }
+            output.sourceAudienceID = sources.count == 1 ? sources.first?.id : nil
+        }
         store.edit { $0.destinations.append(output) }; selectDestination(output.id)
     }
     @objc private func removeSelectedOutput(_ sender: Any?) {

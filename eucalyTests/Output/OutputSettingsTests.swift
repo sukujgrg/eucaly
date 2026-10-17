@@ -612,7 +612,7 @@ final class OutputSettingsTests: XCTestCase {
         let first = try XCTUnwrap(controller.destinationEditor)
         let creationMenu = controller.addOutputMenu.menu
         XCTAssertNotNil(creationMenu?.items.first?.image, "The pull-down's first item owns the + glyph")
-        XCTAssertEqual(creationMenu?.items.map(\.title), ["+", "Native Monitor Output", "AltView Text Output"])
+        XCTAssertEqual(creationMenu?.items.map(\.title), ["+", "Native Monitor Output", "AltView Text Output", "AltView Media Output"])
         XCTAssertEqual(controller.makeDefault.title, "Default")
         XCTAssertFalse(controller.makeDefault.isEnabled)
         XCTAssertTrue(fixture.window.makeFirstResponder(first.nameField))
@@ -675,7 +675,7 @@ final class OutputSettingsTests: XCTestCase {
         controller.selectDestination(original.id)
         XCTAssertFalse(controller.addOutputMenu.isHiddenOrHasHiddenAncestor)
         XCTAssertTrue(controller.addProfile.isHiddenOrHasHiddenAncestor)
-        XCTAssertEqual(controller.addOutputMenu.menu?.numberOfItems, 3)
+        XCTAssertEqual(controller.addOutputMenu.menu?.numberOfItems, 4)
         // Removing the old compatibility row must not turn inventory updates
         // into an assignment on the new first output.
         NSApp.sendAction(try XCTUnwrap(controller.addNative.action), to: controller.addNative.target, from: controller.addNative)

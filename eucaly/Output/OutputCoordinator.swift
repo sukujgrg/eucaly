@@ -66,6 +66,7 @@ final class OutputCoordinator: ObservableObject {
         get { retainedAudio ?? audioWeak }
         set { audioWeak = newValue; retainedAudio = retainsPreparedSessions ? newValue : nil }
     }
+    lazy var mediaOutputs = SRTMediaOutputRouter(coordinator: self)
     var remoteOutputs: (any OutputRemoteRouting)?
     var isRunning: Bool { !windows.isEmpty || remoteOutputs?.isRunning == true }
     // A physical standby clock is independent of explicit program presentation.
@@ -135,6 +136,10 @@ final class OutputCoordinator: ObservableObject {
     }
     var audienceTarget: ProjectionMonitorTarget? {
         profiles.document.destinations.first(where: { $0.enabled && profiles.profile($0.profileID)?.kind == .audience }).flatMap { targets[$0.id] }
+    }
+    func windowIdentity(for destination: UUID) -> (UInt32, UUID)? {
+        guard let window = windows[destination], let number = window.windowNumber else { return nil }
+        return (number, window.generation)
     }
     func profile(for destination: UUID) -> OutputProfile? {
         profiles.document.destinations.first(where: { $0.id == destination }).flatMap { profiles.profile($0.profileID) }
@@ -307,6 +312,7 @@ final class OutputCoordinator: ObservableObject {
         return profiles.document.destinations.filter(\.enabled).map { destination in
             let state: OutputReadiness
             if conflicts.contains(destination.id) { state = .unavailable }
+            else if profiles.profile(destination.profileID)?.kind == .altViewMedia { state = mediaOutputs.readiness(for: destination.id) }
             else if profiles.profile(destination.profileID)?.kind == .altView { state = remoteOutputs?.readiness(for: destination.id) ?? .closed }
             else if let target = destination.monitor, displays.resolve(target) != nil {
                 state = windows[destination.id] != nil ? .ready : displays.isReserved(target) ? .unavailable : .closed
@@ -338,6 +344,7 @@ final class OutputCoordinator: ObservableObject {
     func stop() {
         cancelPendingLocalRequests()
         ownership.revoke()
+        mediaOutputs.stop()
         remoteOutputs?.stop()
         programStarted = false; backgroundWindowsOpen = false
         standbySuppressed.formUnion(profiles.document.destinations.map(\.id))
@@ -370,6 +377,7 @@ final class OutputCoordinator: ObservableObject {
         var ready = false
         for destination in profiles.document.destinations where destination.enabled {
             guard !conflicts.contains(destination.id) else { readiness[destination.id] = .unavailable; continue }
+            if profiles.profile(destination.profileID)?.kind == .altViewMedia { continue }
             if profiles.profile(destination.profileID)?.kind == .altView {
                 if remoteOutputs?.canPresent(destination) == true { ready = true }
                 readiness[destination.id] = remoteOutputs?.readiness(for: destination.id) ?? .closed
@@ -506,6 +514,7 @@ final class OutputCoordinator: ObservableObject {
                          localMedia: liveSlide)
         revision &+= 1
         remoteOutputs?.publish(snapshot, explicit: explicit)
+        mediaOutputs.synchronize(explicit: explicit)
         sessions = sessions.filter { $0.value.value != nil }
         if isPresenting || wasPresenting {
             for session in sessions.values.compactMap(\.value) {

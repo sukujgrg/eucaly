@@ -211,3 +211,29 @@ Tests include local media flow, workspace ownership, native rendering/clock,
 settings migration, display identity/loss, sleep prevention and real TLS sender
 interoperability. Physical LAN/HDMI, permission UI, VoiceOver and sustained GPU
 cadence require rehearsal on production equipment.
+
+## SRT media output
+
+Version 4 adds the AltView Media built-in output kind without enabling network
+publication during migration. Each destination stores sourceAudienceID and the
+optional includeBackgroundAudio flag (default false). Its secret is separate in
+Keychain. OutputSRTDestinationSettings edits endpoint/source/audio configuration.
+SRTMediaOutputRouter follows only an explicitly opened Audience window identity
+and generation. It uses ScreenCaptureKit for the scaled network copy and taps
+only live video/background players, with shared taps and bounded mixers.
+SRTMediaSession owns H.264/AAC MPEG-TS and encrypted SRT; closed attempts retire
+queues before cleanup. Preview remains private. See altview.md for setup/limits.
+
+AltView Media discovery uses `_altviewmedia._udp` independently of text discovery.
+The shared DNS-SD boundary runs on serial queues, bounds resolved services and
+advertises public UUID/version metadata only. Settings retain a stable receiver
+UUID and name; each SRT connection resolves against current discovery. Offline
+receivers wait without falling back to stale saved endpoints. Manual settings
+remain compatible. The media settings editor owns visible discovery demand;
+active Bonjour transmissions keep it running while Settings is closed.
+
+Live program audio conversion keeps a continuous 48 kHz sample cursor across
+converter callbacks, including buffered partial output. Assigning each chunk
+to its triggering input timestamp created gaps and overlaps. Pause, mute, format
+changes and source discontinuities reset that source’s converter clock. The live
+file regression checks both missing samples and waveform jumps before encoding.
