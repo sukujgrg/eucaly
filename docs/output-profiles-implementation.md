@@ -31,7 +31,11 @@ windows, including a standby clock. Hide/Clear retain it; the last window close
 or Stop releases it. Removing the last assigned output clears live ownership.
 
 OutputMediaRuntime owns one program AVPlayer and pools matching muted background
-resources. Independent background audio has one session owner. ScreenCaptureManager
+resources. Background bookmark resolution and security-scoped access belong to the
+source shared by active profiles, so appearance customization retains the resolved
+image and video playback. Composition passes resolved URLs and players into the
+background layer as rendering inputs, including asynchronous resolution changes.
+Independent background audio has one session owner. ScreenCaptureManager
 owns one picker-approved stream with reference-counted, GPU-backed consumers.
 Closing one output does not stop another. Every rendering layer uses the same
 explicit frame so media/background sizing cannot move foreground text.

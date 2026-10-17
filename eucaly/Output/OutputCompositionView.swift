@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 
 /// Composition is a native layer boundary. Every layer receives identical full
 /// screen geometry. A future frame adapter can provide GPU-backed offscreen output.
@@ -12,7 +13,8 @@ struct OutputCompositionView: View {
                 let confidence = OutputConfidenceContent(snapshot: coordinator.snapshot, profile: profile)
                 ZStack {
                     profile.background.colour.color.frame(width: size.width, height: size.height)
-                    OutputBackgroundView(profile: profile, media: coordinator.media, visible: coordinator.visible,
+                    OutputBackgroundView(profile: profile, url: coordinator.media.backgroundURL(for: profile),
+                                         player: coordinator.media.backgroundPlayer(for: profile), visible: coordinator.visible,
                                          isMedia: coordinator.liveSlide.map { AltViewPresentationAdapter.mode(for: $0) == .media } ?? false)
                         .frame(width: size.width, height: size.height)
                     content(profile: profile, confidence: confidence, size: size).frame(width: size.width, height: size.height)
@@ -66,16 +68,19 @@ struct OutputWebpageCompanionView: View {
 
 struct OutputBackgroundView: View {
     let profile: OutputProfile
-    let media: OutputMediaRuntime
+    // Resolved resources are rendering inputs. The runtime is stable while an
+    // asynchronous resolution changes these values, even for an unchanged profile.
+    let url: URL?
+    let player: AVPlayer?
     let visible: Bool
     let isMedia: Bool
     var body: some View {
         let background = profile.background
         let show = background.visible && (!visible ? background.whenHidden : isMedia ? background.whenMediaShown : background.whenTextShown)
         Group {
-            if let url = media.backgroundURL(for: profile) {
+            if let url {
                 if OutputMediaRuntime.isVideo(url) {
-                    AVPlayerViewRepresentable(player: media.backgroundPlayer(for: profile), isMuted: true, isFill: background.fit == "fill")
+                    AVPlayerViewRepresentable(player: player, isMuted: true, isFill: background.fit == "fill")
                 } else {
                     ImageSlideView(url: url, backgroundColour: profile.background.colour.color, contentMode: background.fit == "fill" ? .fill : .fit, showsLoadingIndicator: false, retainsPreviousImageWhileLoading: true)
                 }

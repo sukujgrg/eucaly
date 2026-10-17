@@ -1,10 +1,9 @@
 import AVFoundation
-import Combine
 
 /// One program playback owner. Destinations render the same AVPlayer; closing
 /// an individual view never resets playback or adds an audio owner.
 @MainActor
-final class OutputMediaRuntime: ObservableObject {
+final class OutputMediaRuntime {
     private let bookmarkResolver: @Sendable (String) async -> URL?
     init(bookmarkResolver: @escaping @Sendable (String) async -> URL? = { bookmark in
         await Task.detached { SecurityScopedBookmarks.resolve(bookmark)?.url }.value
@@ -20,10 +19,12 @@ final class OutputMediaRuntime: ObservableObject {
     private var seekRevision = -1
     private weak var session: PresentationSession?
     private var backgrounds: [String: BackgroundResource] = [:]
-    private var backgroundURLs: [UUID: URL] = [:]
-    private var bookmarkTasks: [UUID: Task<Void, Never>] = [:]
-    private var requestedBookmarks: [UUID: String] = [:]
-    private var scopedURLs: [UUID: URL] = [:]
+    // A source belongs to all active profiles that use its bookmark. Appearance
+    // customization changes profile identity, not the source or its lifetime.
+    private var backgroundURLs: [String: URL] = [:]
+    private var bookmarkTasks: [String: Task<Void, Never>] = [:]
+    private var requestedBookmarks: Set<String> = []
+    private var scopedURLs: [String: URL] = [:]
 
     private final class BackgroundResource {
         let player: AVPlayer
@@ -89,44 +90,41 @@ final class OutputMediaRuntime: ObservableObject {
         timeObserver = nil; loopObserver = nil; programPlayer = nil; programURL = nil; seekRevision = -1
     }
     static func isVideo(_ url: URL) -> Bool { ["mp4", "mov", "m4v", "avi", "mkv"].contains(url.pathExtension.lowercased()) }
-    func backgroundURL(for profile: OutputProfile) -> URL? { backgroundURLs[profile.id] }
+    func backgroundURL(for profile: OutputProfile) -> URL? {
+        profile.background.bookmark.flatMap { backgroundURLs[$0] }
+    }
     private func backgroundKey(_ profile: OutputProfile, url: URL) -> String {
         "\(url.standardizedFileURL.absoluteString)|\(profile.background.whenTextShown)|\(profile.background.whenHidden)|\(profile.background.whenMediaShown)"
     }
     func backgroundPlayer(for profile: OutputProfile) -> AVPlayer? {
-        guard let url = backgroundURLs[profile.id] else { return nil }
+        guard let url = backgroundURL(for: profile) else { return nil }
         return backgrounds[backgroundKey(profile, url: url)]?.player
     }
     func syncBackgrounds(profiles: [OutputProfile], visible: Bool, media: Bool, changed: @escaping () -> Void) {
-        let ids = Set(profiles.map(\.id))
-        for id in Array(requestedBookmarks.keys) where !ids.contains(id) {
-            bookmarkTasks.removeValue(forKey: id)?.cancel(); requestedBookmarks.removeValue(forKey: id)
-            backgroundURLs.removeValue(forKey: id)
-            scopedURLs.removeValue(forKey: id)?.stopAccessingSecurityScopedResource()
+        let bookmarks = Set(profiles.compactMap(\.background.bookmark).filter { !$0.isEmpty })
+        for bookmark in requestedBookmarks.subtracting(bookmarks) {
+            bookmarkTasks.removeValue(forKey: bookmark)?.cancel()
+            backgroundURLs.removeValue(forKey: bookmark)
+            scopedURLs.removeValue(forKey: bookmark)?.stopAccessingSecurityScopedResource()
         }
-        for profile in profiles {
-            let bookmark = profile.background.bookmark ?? ""
-            if requestedBookmarks[profile.id] != bookmark {
-                requestedBookmarks[profile.id] = bookmark
-                bookmarkTasks[profile.id]?.cancel()
-                backgroundURLs.removeValue(forKey: profile.id)
-                scopedURLs.removeValue(forKey: profile.id)?.stopAccessingSecurityScopedResource()
-                guard !bookmark.isEmpty else { continue }
-                // Bookmark resolution and filesystem access never run in a View body.
-                bookmarkTasks[profile.id] = Task {
-                    let url = await bookmarkResolver(bookmark)
-                    guard !Task.isCancelled, requestedBookmarks[profile.id] == bookmark else { return }
-                    if let url {
-                        if url.startAccessingSecurityScopedResource() { scopedURLs[profile.id] = url }
-                        backgroundURLs[profile.id] = url
-                    }
-                    changed()
+        let added = bookmarks.subtracting(requestedBookmarks)
+        requestedBookmarks = bookmarks
+        for bookmark in added {
+            // Bookmark resolution and filesystem access never run in a View body.
+            bookmarkTasks[bookmark] = Task {
+                let url = await bookmarkResolver(bookmark)
+                guard !Task.isCancelled, requestedBookmarks.contains(bookmark) else { return }
+                bookmarkTasks.removeValue(forKey: bookmark)
+                if let url {
+                    if url.startAccessingSecurityScopedResource() { scopedURLs[bookmark] = url }
+                    backgroundURLs[bookmark] = url
                 }
+                changed()
             }
         }
         var wanted: [String: (URL, Bool)] = [:]
         for profile in profiles {
-            guard let url = backgroundURLs[profile.id], Self.isVideo(url) else { continue }
+            guard let url = backgroundURL(for: profile), Self.isVideo(url) else { continue }
             let config = profile.background
             let showing = config.visible && (!visible ? config.whenHidden : media ? config.whenMediaShown : config.whenTextShown)
             let key = backgroundKey(profile, url: url)
