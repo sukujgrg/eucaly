@@ -166,4 +166,74 @@ final class SRTMediaOutputTests: XCTestCase {
             } else { XCTFail("Audio bus must not synthesize video") }
         }
     }
+
+    func testShortPrerolledFileReachesMediaOutput() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("srt-preroll-\(UUID()).caf")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2))
+        do {
+            let file = try AVAudioFile(forWriting: url, settings: format.settings)
+            let pcm = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1024)); pcm.frameLength = 1024
+            for channel in 0..<2 { for i in 0..<1024 { pcm.floatChannelData![channel][i] = Float(sin(Double(i) * 2 * .pi * 440 / 48000)) * 0.05 } }
+            try file.write(from: pcm)
+        }
+        let player = AVPlayer(url: url); player.volume = 0.001
+        defer { player.pause() }
+        let ingest = SRTMediaIngest(), audio = SRTProgramAudio(ingest: ingest)
+        let tap = SRTPlayerAudioTap(player: player, mixer: audio)
+        defer { tap.stop(); audio.stop(); ingest.finish() }
+        for _ in 0..<100 {
+            if player.status == .readyToPlay && player.currentItem?.audioMix != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        guard player.status == .readyToPlay, player.currentItem?.audioMix != nil else {
+            return XCTFail("The preroll fixture must be ready with its audio tap installed")
+        }
+        let prerolled = await player.preroll(atRate: 1)
+        XCTAssertTrue(prerolled)
+        audio.start(at: CMClockGetTime(CMClockGetHostTimeClock()))
+        player.play()
+        var audible = false
+        for _ in 0..<400 {
+            try await Task.sleep(for: .milliseconds(5))
+            audible = ingest.drain().contains { sample in
+                guard case .audio(let pcm, _) = sample, let channel = pcm.floatChannelData?[0] else { return false }
+                return (0..<Int(pcm.frameLength)).contains { abs(channel[$0]) > 0.000001 }
+            } || audible
+            if audible { break }
+        }
+        XCTAssertTrue(audible, "Source audio decoded during preroll must reach media output when playback starts")
+    }
+
+    func testPrerollBatchReachesMixerWithoutLosingItsTail() async throws {
+        let ingest = SRTMediaIngest(), audio = SRTProgramAudio(ingest: ingest), id = UUID()
+        defer { audio.stop(); ingest.finish() }
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2))
+        let firstSample = Int64((CMClockGetTime(CMClockGetHostTimeClock()).seconds + 0.1) * 48000)
+        var inputs: [(AVAudioPCMBuffer, CMTime)] = []
+        for index in 0..<96 {
+            let pcm = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 960)); pcm.frameLength = 960
+            for channel in 0..<2 { pcm.floatChannelData![channel].initialize(repeating: Float(index + 1) / 100, count: 960) }
+            inputs.append((pcm, CMTime(value: firstSample + Int64(index * 960), timescale: 48000)))
+        }
+        audio.setGain(1, id: id)
+        audio.append(inputs, id: id)
+        audio.start(at: CMTime(value: firstSample, timescale: 48000))
+        var samples: [SRTMediaIngest.Sample] = []
+        for _ in 0..<110 {
+            try await Task.sleep(for: .milliseconds(20))
+            samples.append(contentsOf: ingest.drain())
+        }
+        for index in 0..<96 {
+            let midpoint = firstSample + Int64(index * 960 + 480)
+            let actual: Float? = samples.compactMap { sample in
+                guard case .audio(let pcm, let when) = sample else { return nil }
+                let offset = midpoint - when.sampleTime
+                guard offset >= 0, offset < Int64(pcm.frameLength) else { return nil }
+                return pcm.floatChannelData?[0][Int(offset)]
+            }.first
+            XCTAssertEqual(try XCTUnwrap(actual), Float(index + 1) / 100, accuracy: 0.00001,
+                           "Every buffer in a preroll handoff must reach the encoded audio clock")
+        }
+    }
 }

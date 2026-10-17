@@ -241,3 +241,18 @@ converter callbacks, including buffered partial output. Assigning each chunk
 to its triggering input timestamp created gaps and overlaps. Pause, mute, format
 changes and source discontinuities reset that source’s converter clock. The live
 file regression checks both missing samples and waveform jumps before encoding.
+
+The shared player tap retains prerendered PCM in asset time until the playback
+timebase can map it to the host clock. AVPlayer may decode a short file entirely
+during preroll; those samples cannot be discarded just because the clock is still
+stopped. Gain and pending sample delivery are ordered under the same source lock.
+Player and timebase observations deliver state changes without waiting for the
+router's periodic inventory refresh, so short sounds cannot lose their play window.
+Preroll storage is bounded to 8 MiB and 256 buffers, resets on a new stream or
+format, and is released with the last consumer. The short-file regression forces
+preroll before playback and verifies delivery without polling the tap. A batched
+handoff regression also verifies that the mixer does not drop a preroll burst's tail.
+Converted PCM has the same 8 MiB budget per source and a 512-buffer fragment limit;
+its previous 64-packet limit discarded valid preroll based on packet size rather
+than memory use. Batch admission preserves decoded bursts without changing their
+original playback timestamps.
