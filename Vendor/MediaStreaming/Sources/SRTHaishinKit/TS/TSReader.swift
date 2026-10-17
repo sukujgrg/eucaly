@@ -106,14 +106,12 @@ final class TSReader {
         defer {
             packetizedElementaryStreams[id] = nil
         }
-        let formatDescription = makeFormatDescription(data, pes: &pes)
-        if let formatDescription, formatDescriptions[id] != formatDescription {
-            formatDescriptions[id] = formatDescription
-        }
+        let formatDescription: CMFormatDescription?
         var isNotSync = true
         switch data.streamType {
         case .h264:
             let units = nalUnitReader.read(&pes.data, type: H264NALUnit.self)
+            formatDescription = units.makeFormatDescription(nalUnitReader.nalUnitHeaderLength)
             if let unit = units.first(where: { $0.type == .idr || $0.type == .slice }) {
                 var data = Data([0x00, 0x00, 0x00, 0x01])
                 data.append(unit.data)
@@ -122,11 +120,16 @@ final class TSReader {
             isNotSync = !units.contains { $0.type == .idr }
         case .h265:
             let units = nalUnitReader.read(&pes.data, type: HEVCNALUnit.self)
+            formatDescription = units.makeFormatDescription(nalUnitReader.nalUnitHeaderLength)
             isNotSync = units.contains { $0.type == .sps }
         case .adtsAac:
+            formatDescription = ADTSHeader(validating: pes.data)?.makeFormatDescription()
             isNotSync = false
         default:
-            break
+            formatDescription = nil
+        }
+        if let formatDescription, formatDescriptions[id] != formatDescription {
+            formatDescriptions[id] = formatDescription
         }
         let sampleBuffer = pes.makeSampleBuffer(
             data.streamType,
@@ -138,15 +141,4 @@ final class TSReader {
         return sampleBuffer
     }
 
-    private func makeFormatDescription(_ data: ESSpecificData, pes: inout PacketizedElementaryStream) -> CMFormatDescription? {
-        switch data.streamType {
-        case .adtsAac:
-
-            return ADTSHeader(validating: pes.data)?.makeFormatDescription()
-        case .h264, .h265:
-            return nalUnitReader.makeFormatDescription(&pes.data, type: data.streamType)
-        default:
-            return nil
-        }
-    }
 }

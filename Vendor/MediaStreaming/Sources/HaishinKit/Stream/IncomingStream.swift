@@ -15,10 +15,17 @@ package final actor IncomingStream {
     private lazy var videoCodec = VideoCodec()
     private weak var stream: (any StreamConvertible)?
     private var audioPlayerNode: AudioPlayerNode?
+    private var videoOutputIsScheduled = true
 
     /// Creates a new instance.
     public init(_ stream: some StreamConvertible) {
         self.stream = stream
+    }
+
+    /// Disable before starting when the host schedules decoded video itself.
+    package func setVideoOutputIsScheduled(_ scheduled: Bool) {
+        guard !isRunning else { return }
+        videoOutputIsScheduled = scheduled
     }
 
     /// Sets the sound transform value control.
@@ -58,23 +65,31 @@ extension IncomingStream: AsyncRunner {
             return
         }
         audioCodec.settings.format = .pcm
+        let videoOutput = videoCodec.outputStream
+        let audioOutput = audioCodec.outputStream
         videoCodec.startRunning()
         audioCodec.startRunning()
         isRunning = true
-        Task {
-            await mediaLink.startRunning()
-            for await video in await mediaLink.dequeue {
-                await stream?.append(video)
+        if videoOutputIsScheduled {
+            Task {
+                await mediaLink.startRunning()
+                for await video in await mediaLink.dequeue {
+                    await stream?.append(video)
+                }
             }
         }
         Task {
-            for await video in videoCodec.outputStream {
-                await mediaLink.enqueue(video)
+            for await video in videoOutput {
+                if videoOutputIsScheduled {
+                    await mediaLink.enqueue(video)
+                } else {
+                    await stream?.append(video)
+                }
             }
         }
         Task {
             await audioPlayerNode?.startRunning()
-            for await audio in audioCodec.outputStream {
+            for await audio in audioOutput {
                 await audioPlayerNode?.enqueue(audio.0, when: audio.1)
                 await stream?.append(audio.0, when: audio.1)
             }
@@ -87,7 +102,7 @@ extension IncomingStream: AsyncRunner {
         }
         videoCodec.stopRunning()
         audioCodec.stopRunning()
-        Task { await mediaLink.stopRunning() }
+        if videoOutputIsScheduled { Task { await mediaLink.stopRunning() } }
         Task { await audioPlayerNode?.stopRunning() }
         isRunning = false
     }

@@ -9,17 +9,22 @@ final package class NALUnitReader {
     }
 
     package func read<T: NALUnit>(_ data: inout Data, type: T.Type) -> [T] {
-        var units: [T] = .init()
-        var lastIndexOf = data.count - 1
-        for i in (2..<data.count).reversed() {
-            guard data[i] == 1 && data[i - 1] == 0 && data[i - 2] == 0 else {
-                continue
+        // Borrow contiguous storage once instead of going through Foundation's
+        // Data subscript for every byte of every compressed video frame.
+        data.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) in
+            guard bytes.count > 3 else { return [] }
+            var units: [T] = []
+            var end = bytes.count
+            for i in (2..<bytes.count).reversed() {
+                guard bytes[i] == 1 && bytes[i - 1] == 0 && bytes[i - 2] == 0 else { continue }
+                let startCodeLength = i >= 3 && bytes[i - 3] == 0 ? 4 : 3
+                if i + 1 < end {
+                    units.append(T(Data(bytes: bytes.baseAddress!.advanced(by: i + 1), count: end - i - 1)))
+                }
+                end = i + 1 - startCodeLength
             }
-            let startCodeLength = 0 <= i - 3 && data[i - 3] == 0 ? 4 : 3
-            units.append(T.init(data.subdata(in: (i + 1)..<lastIndexOf + 1)))
-            lastIndexOf = i - startCodeLength
+            return units
         }
-        return units
     }
 
     package func read(_ buffer: CMSampleBuffer) -> [Data] {

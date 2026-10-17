@@ -14,6 +14,16 @@ nonisolated struct SRTMediaSettings: Codable, Equatable, Sendable {
     var frameRate = 60
     var latency = 80
     var bitRate = 20_000_000
+    // Optional for compatibility with saved manual endpoints. A discovered
+    // receiver is resolved by identity before each connection, never by cached IP.
+    var receiverID: UUID?
+    var receiverName: String?
+    func resolving(in receivers: [SRTMediaReceiver]) -> Self? {
+        guard let receiverID else { return self }
+        guard let receiver = receivers.first(where: { $0.id == receiverID }) else { return nil }
+        var resolved = self; resolved.host = receiver.host; resolved.port = receiver.port
+        return resolved
+    }
     var isValid: Bool {
         !host.isEmpty && host.utf8.count <= 253 && !host.contains(where: { $0.isWhitespace })
             && (1...65535).contains(port) && [50, 60].contains(frameRate)
@@ -83,17 +93,19 @@ actor SRTMediaSecrets {
     }
 }
 
-// Capture/audio callbacks can outpace an actor. One consumer, one replaceable
-// video frame and a bounded audio queue prevent a task per sample from piling up.
+// Capture/audio callbacks can outpace an actor. The sender keeps only the latest
+// picture; a receiver can retain a small decoded burst for its timed display.
 nonisolated final class SRTMediaIngest: @unchecked Sendable {
     enum Sample: @unchecked Sendable { case video(CMSampleBuffer), audio(AVAudioPCMBuffer, AVAudioTime) }
     private let lock = NSLock()
-    private var video: CMSampleBuffer?
+    private var video: [CMSampleBuffer] = []
+    private let videoCapacity: Int
     private var audio: [(AVAudioPCMBuffer, AVAudioTime)] = []
     private var active = true
     private let signal: AsyncStream<Void>.Continuation
     let signals: AsyncStream<Void>
-    init() {
+    init(videoCapacity: Int = 1) {
+        self.videoCapacity = max(1, videoCapacity)
         var continuation: AsyncStream<Void>.Continuation!
         signals = AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation = $0 }
         signal = continuation
@@ -102,7 +114,9 @@ nonisolated final class SRTMediaIngest: @unchecked Sendable {
         lock.lock()
         if active {
             switch sample {
-            case .video(let frame): video = frame
+            case .video(let frame):
+                if video.count >= videoCapacity { video.removeFirst() }
+                video.append(frame)
             case .audio(let buffer, let time):
                 if audio.count >= 8 { audio.removeFirst() }
                 audio.append((buffer, time))
@@ -114,11 +128,11 @@ nonisolated final class SRTMediaIngest: @unchecked Sendable {
     func drain() -> [Sample] {
         lock.lock(); defer { lock.unlock() }
         var samples = audio.map { Sample.audio($0.0, $0.1) }; audio.removeAll(keepingCapacity: true)
-        if let video { samples.append(.video(video)); self.video = nil }
+        samples.append(contentsOf: video.map { .video($0) }); video.removeAll(keepingCapacity: true)
         return samples
     }
     func finish() {
-        lock.lock(); active = false; video = nil; audio.removeAll(); signal.finish(); lock.unlock()
+        lock.lock(); active = false; video.removeAll(); audio.removeAll(); signal.finish(); lock.unlock()
     }
 }
 
@@ -154,6 +168,7 @@ actor SRTMediaSession {
     }
     func receive(settings: SRTMediaSettings, passphrase: String, output: some StreamOutput) async throws {
         await stream.addOutput(output)
+        await stream.setVideoOutputIsScheduled(false)
         try await connection.connect(settings.url(passphrase: passphrase, listening: true))
         await stream.play()
     }

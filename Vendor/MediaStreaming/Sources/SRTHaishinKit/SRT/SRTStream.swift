@@ -106,14 +106,17 @@ public actor SRTStream {
             }
             return
         }
-        await connection.recv()
+        // Install the reader and decoder consumers before receiving the first
+        // packet; losing the initial keyframe otherwise delays startup.
+        let input = reader.output
+        await incoming.startRunning()
         Task {
-            await incoming.startRunning()
-            for await buffer in reader.output {
+            for await buffer in input {
                 await incoming.append(buffer.1)
             }
         }
         readyState = .playing
+        await connection.recv()
     }
 
     /// Stops playing or publishing and makes available other uses.
@@ -134,6 +137,13 @@ public actor SRTStream {
     /// If you cannot call the append method before publishing, please use this method to explicitly specify the contents of the stream.
     public func setExpectedMedias(_ expectedMedias: Set<AVMediaType>) {
         writer.expectedMedias = expectedMedias
+    }
+
+    /// Set before play. A host with its own timed display layer can consume
+    /// decoded frames immediately without an additional display-link queue.
+    public func setVideoOutputIsScheduled(_ scheduled: Bool) async {
+        guard readyState == .idle else { return }
+        await incoming.setVideoOutputIsScheduled(scheduled)
     }
 
     func doInput(_ data: Data) {

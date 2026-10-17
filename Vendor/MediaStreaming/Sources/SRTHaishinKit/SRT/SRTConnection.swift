@@ -8,13 +8,29 @@ import libsrt
 /// Supports a one-to-one connection. Multiple connections cannot be established.
 public actor SRTConnection: NetworkConnection {
     /// The error domain codes.
-    public enum Error: Swift.Error {
+    public enum Error: Swift.Error, LocalizedError {
         /// An invalid internal stare.
         case invalidState
         /// The uri isn’t supported.
         case unsupportedUri(_ uri: URL?)
         /// The failed to connect.
         case failedToConnect(_ reason: SRTRejectReason)
+        case socketFailure(String)
+
+        public var errorDescription: String? {
+            switch self {
+            case .invalidState: return "SRT could not open the connection."
+            case .unsupportedUri: return "The SRT address is invalid."
+            case .socketFailure(let message): return "SRT socket: \(message)"
+            case .failedToConnect(let reason):
+                switch reason {
+                case .badsecret: return "AltView rejected the passphrase. Copy its media passphrase and Retry Media."
+                case .unsecure: return "The sender and receiver have different encryption settings. Check the media passphrase."
+                case .timeout: return "No SRT reply. Check the receiving address, UDP port and local-network access."
+                default: return "SRT connection rejected (\(reason)). Check that AltView is receiving on the selected port."
+                }
+            }
+        }
     }
 
     /// The SRT Library version.
@@ -34,16 +50,19 @@ public actor SRTConnection: NetworkConnection {
     private var streams: [SRTStream] = []
     private var listener: SRTSocket?
     private var networkMonitor: NetworkMonitor?
+    // libsrt owns process-wide socket tables and a garbage collector. Releasing
+    // a Swift connection must not shut that runtime down while socket actors
+    // and their detached receive/send tasks are still retiring.
+    private static let runtime: Void = { srt_startup() }()
 
     /// Creates an object.
     public init() {
-        srt_startup()
+        _ = Self.runtime
         socket = SRTSocket()
     }
 
     deinit {
         streams.removeAll()
-        srt_cleanup()
     }
 
     /// Gets a SRTSocketOption.
@@ -121,6 +140,8 @@ public actor SRTConnection: NetworkConnection {
             switch error {
             case .rejected(let reason):
                 throw Error.failedToConnect(reason)
+            case .illegalState(let message):
+                throw Error.socketFailure(message)
             default:
                 throw Error.invalidState
             }

@@ -137,10 +137,12 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
             coordinator.displays.refresh(); router.startDiscovery(); reload()
             profileEditor?.render(force: true)
             destinationEditor?.remoteEditor?.setActive(true)
+            destinationEditor?.mediaEditor?.setActive(true)
         }
         else {
             if isViewLoaded { finishEditing() }
             destinationEditor?.remoteEditor?.setActive(false)
+            destinationEditor?.mediaEditor?.setActive(false)
             router.stopDiscovery()
         }
     }
@@ -256,9 +258,11 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         if previous !== child {
             previous?.view.isHidden = true
             (previous as? OutputDestinationEditor)?.remoteEditor?.setActive(false)
+            (previous as? OutputDestinationEditor)?.mediaEditor?.setActive(false)
         }
         child?.view.isHidden = false
         destinationEditor?.remoteEditor?.setActive(!isSuspended)
+        destinationEditor?.mediaEditor?.setActive(!isSuspended)
     }
     private func pruneDestinationForms() {
         let keys = Set(store.document.destinations.map { destination in
@@ -267,6 +271,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         for key in Array(destinationForms.keys) where !keys.contains(key) {
             let form = destinationForms.removeValue(forKey: key)
             form?.remoteEditor?.setActive(false)
+            form?.mediaEditor?.setActive(false)
             form?.view.removeFromSuperview(); form?.removeFromParent()
         }
     }
@@ -274,6 +279,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         profileForm?.view.removeFromSuperview(); profileForm?.removeFromParent()
         for form in destinationForms.values {
             form.remoteEditor?.setActive(false)
+            form.mediaEditor?.setActive(false)
             form.view.removeFromSuperview(); form.removeFromParent()
         }
         profileForm = nil; destinationForms.removeAll()

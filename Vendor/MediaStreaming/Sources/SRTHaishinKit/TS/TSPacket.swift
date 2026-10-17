@@ -139,7 +139,7 @@ enum TSTimestamp {
         var result: Int64 = 0
         result |= Int64(data[offset + 0] & 0x0e) << 29
         result |= Int64(data[offset + 1]) << 22 | Int64(data[offset + 2] & 0xfe) << 14
-        result |= Int64(data[offset + 3]) << 7 | Int64(data[offset + 3] & 0xfe) << 1
+        result |= Int64(data[offset + 3]) << 7 | Int64(data[offset + 4] & 0xfe) >> 1
         return result
     }
 

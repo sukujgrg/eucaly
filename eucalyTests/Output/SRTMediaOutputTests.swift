@@ -83,10 +83,13 @@ final class SRTMediaOutputTests: XCTestCase {
         defer { first.stop(); second.stop(); player.pause(); a.stop(); b.stop(); one.finish(); two.finish() }
         let now = CMClockGetTime(CMClockGetHostTimeClock()); a.start(at: now); b.start(at: now); player.play()
         var heardA = false, heardB = false
-        func audible(_ samples: [SRTMediaIngest.Sample]) -> Bool {
+        func audible(_ samples: [SRTMediaIngest.Sample], from time: Double? = nil) -> Bool {
             samples.contains { sample in
-                guard case .audio(let buffer, _) = sample, let channel = buffer.floatChannelData?[0] else { return false }
-                return (0..<Int(buffer.frameLength)).contains { abs(channel[$0]) > 0.000001 }
+                guard case .audio(let buffer, let when) = sample, let channel = buffer.floatChannelData?[0] else { return false }
+                let first = time.map {
+                    min(Int(buffer.frameLength), max(0, Int(ceil($0 * when.sampleRate - Double(when.sampleTime)))))
+                } ?? 0
+                return (first..<Int(buffer.frameLength)).contains { abs(channel[$0]) > 0.000001 }
             }
         }
         for _ in 0..<80 {
@@ -97,10 +100,55 @@ final class SRTMediaOutputTests: XCTestCase {
         }
         XCTAssertTrue(heardA, "Live file audio must reach the first destination")
         XCTAssertTrue(heardB, "A second destination must share the tap without stealing it")
+        let pausedAt = CMClockGetTime(CMClockGetHostTimeClock()).seconds
         first.stop(); player.pause(); second.refresh()
         _ = two.drain()
         try await Task.sleep(nanoseconds: 100_000_000)
-        XCTAssertFalse(audible(two.drain()), "Paused video must not leak buffered audio")
+        let afterPause = two.drain()
+        XCTAssertTrue(afterPause.contains { sample in
+            guard case .audio(_, let when) = sample else { return false }
+            return Double(when.sampleTime) / when.sampleRate >= pausedAt
+        }, "Paused video must keep emitting silent audio")
+        // A pre-pause render can arrive after the drain above. Check the PCM
+        // sample clock so those already rendered samples do not race this test.
+        XCTAssertFalse(audible(afterPause, from: pausedAt), "Paused video must not leak buffered audio")
+    }
+    func testLiveFileAudioRemainsContinuousAfterStartup() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("srt-continuity-\(UUID()).caf")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2))
+        do {
+            let file = try AVAudioFile(forWriting: url, settings: format.settings)
+            let pcm = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 192000)); pcm.frameLength = 192000
+            for channel in 0..<2 { for i in 0..<192000 { pcm.floatChannelData![channel][i] = Float(sin(Double(i) * 2 * .pi * 440 / 48000)) * 0.05 } }
+            try file.write(from: pcm)
+        }
+        let ingest = SRTMediaIngest(), audio = SRTProgramAudio(ingest: ingest)
+        let player = AVPlayer(url: url); player.volume = 0.001
+        let tap = SRTPlayerAudioTap(player: player, mixer: audio)
+        defer { tap.stop(); player.pause(); audio.stop(); ingest.finish() }
+        audio.start(at: CMClockGetTime(CMClockGetHostTimeClock())); player.play()
+        var total = 0, silent = 0, emptyChunks = 0, maxSilent = 0, run = 0
+        var previous: Float?, maxJump: Float = 0
+        for tick in 0..<140 {
+            tap.refresh(); try await Task.sleep(nanoseconds: 20_000_000)
+            for sample in ingest.drain() {
+                guard tick > 30, case .audio(let buffer, _) = sample, let channel = buffer.floatChannelData?[0] else { continue }
+                var audible = false
+                for i in 0..<Int(buffer.frameLength) {
+                    total += 1
+                    if let previous { maxJump = max(maxJump, abs(channel[i] - previous)) }; previous = channel[i]
+                    if abs(channel[i]) < 0.0000001 { silent += 1; run += 1; maxSilent = max(maxSilent, run) }
+                    else { audible = true; run = 0 }
+                }
+                if !audible { emptyChunks += 1 }
+            }
+        }
+        print("Audio continuity: total=\(total), silence=\(silent), emptyChunks=\(emptyChunks), longest=\(maxSilent), maxJump=\(maxJump)")
+        XCTAssertGreaterThan(total, 48000)
+        XCTAssertLessThan(Double(silent) / Double(max(1, total)), 0.02, "A live sine wave must not be replaced by gaps before encoding")
+        XCTAssertLessThan(maxSilent, 48, "No gap longer than 1 ms in the live-file audio feed")
+        XCTAssertLessThan(maxJump, 0.00001, "PCM conversion must preserve waveform continuity across input chunks")
     }
     func testProgramAudioAlwaysHasBoundedContinuousSilenceWhenNoPlayerIsLive() async throws {
         let ingest = SRTMediaIngest(), audio = SRTProgramAudio(ingest: ingest)

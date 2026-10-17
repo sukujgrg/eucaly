@@ -19,7 +19,7 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
     let customizeButton = NSButton(title: "Customize Appearance…", target: nil, action: nil)
     let clearBackgroundButton = NSButton(title: "Clear Background", target: nil, action: nil)
     var onEditProfile: (UUID) -> Void = { _ in }
-    private var mediaEditor: OutputSRTDestinationSettings?
+    private(set) var mediaEditor: OutputSRTDestinationSettings?
     private(set) var remoteEditor: AltViewOutputDestinationSettings?
     private struct MonitorEntry: Equatable { let target: ProjectionMonitorTarget?; let title: String; let enabled: Bool }
     private struct ProfileEntry: Equatable { let id: UUID; let title: String }

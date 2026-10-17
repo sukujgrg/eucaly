@@ -3,11 +3,25 @@ import Combine
 import AVFoundation
 
 @MainActor
-final class SRTMediaOutputRouter {
+final class SRTMediaOutputRouter: ObservableObject {
+    @Published private(set) var receivers: [SRTMediaReceiver] = []
+    @Published private(set) var discoveryNotice: String?
+    private var discoveryVisible = false
+    private var discoveryRunning = false
+    private lazy var discovery = SRTMediaDiscovery { [weak self] receivers, notice in
+        self?.receivers = receivers; self?.discoveryNotice = notice
+    }
     private weak var coordinator: OutputCoordinator?
     private var channels: [UUID: SRTMediaTransmission] = [:]
     private var notices: [UUID: String] = [:]
     init(coordinator: OutputCoordinator) { self.coordinator = coordinator }
+    func startDiscovery() { discoveryVisible = true; refreshDiscovery() }
+    func stopDiscovery() { discoveryVisible = false; refreshDiscovery() }
+    private func refreshDiscovery() {
+        let needed = discoveryVisible || channels.values.contains { $0.settings.receiverID != nil }
+        guard needed != discoveryRunning else { return }; discoveryRunning = needed
+        if needed { discovery.start() } else { discovery.stop(); receivers = []; discoveryNotice = nil }
+    }
     func synchronize(explicit: Bool) {
         guard let coordinator else { stop(); return }
         let rows = coordinator.profiles.document.destinations.filter {
@@ -30,17 +44,19 @@ final class SRTMediaOutputRouter {
             channels.removeValue(forKey: row.id)?.stop()
             guard explicit else { notices[row.id] = "Show Slides again to start this media output."; continue }
             let channel = SRTMediaTransmission(settings: settings, windowID: identity.0, windowGeneration: identity.1,
-                secretAccount: "output-\(row.id.uuidString)", includeBackgroundAudio: row.includeBackgroundAudio, coordinator: coordinator) { [weak self, weak coordinator] in
+                secretAccount: "output-\(row.id.uuidString)", includeBackgroundAudio: row.includeBackgroundAudio, coordinator: coordinator,
+                resolve: { [weak self] in settings.resolving(in: self?.receivers ?? []) }) { [weak self, weak coordinator] in
                     coordinator?.remoteReadinessChanged()
                     self?.notices[row.id] = nil
                 }
             channels[row.id] = channel; channel.start()
         }
+        refreshDiscovery()
     }
     func readiness(for id: UUID) -> OutputReadiness { channels[id]?.connected == true ? .ready : channels[id] == nil ? .closed : .unavailable }
     func detail(for id: UUID) -> String { channels[id]?.status ?? notices[id] ?? "Stopped. Show Slides to send the selected Audience picture." }
     func retry(_ id: UUID) { channels.removeValue(forKey: id)?.stop(); synchronize(explicit: true) }
-    func stop() { channels.values.forEach { $0.stop() }; channels.removeAll(); notices.removeAll() }
+    func stop() { channels.values.forEach { $0.stop() }; channels.removeAll(); notices.removeAll(); refreshDiscovery() }
 }
 
 @MainActor
@@ -52,6 +68,7 @@ private final class SRTMediaTransmission {
     private let secretAccount: String
     private weak var coordinator: OutputCoordinator?
     private let changed: () -> Void
+    private let resolve: () -> SRTMediaSettings?
     private var task: Task<Void, Never>?
     private var session: SRTMediaSession?
     private var capture: SRTAudienceCapture?
@@ -64,10 +81,10 @@ private final class SRTMediaTransmission {
     private(set) var connected = false
     private(set) var status = "Connecting…"
     init(settings: SRTMediaSettings, windowID: UInt32, windowGeneration: UUID, secretAccount: String,
-         includeBackgroundAudio: Bool, coordinator: OutputCoordinator, changed: @escaping () -> Void) {
+         includeBackgroundAudio: Bool, coordinator: OutputCoordinator, resolve: @escaping () -> SRTMediaSettings?, changed: @escaping () -> Void) {
         self.settings = settings; self.windowID = windowID; self.windowGeneration = windowGeneration
         self.includeBackgroundAudio = includeBackgroundAudio
-        self.secretAccount = secretAccount; self.coordinator = coordinator; self.changed = changed
+        self.secretAccount = secretAccount; self.coordinator = coordinator; self.resolve = resolve; self.changed = changed
     }
     func start() {
         task = Task { [weak self] in
@@ -81,6 +98,11 @@ private final class SRTMediaTransmission {
             } catch { self.setStatus(error.localizedDescription); return }
             var attempt = 0
             while !Task.isCancelled && !self.stopped {
+                guard let endpoint = self.resolve() else {
+                    self.setStatus("Waiting for \(settings.receiverName ?? "AltView") · Start Receiving on that Mac.")
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    continue
+                }
                 let token = UUID(); self.attemptID = token
                 let session = SRTMediaSession(), ingest = SRTMediaIngest()
                 // Each attempt owns fresh queues so callbacks from a retired
@@ -88,8 +110,9 @@ private final class SRTMediaTransmission {
                 let audio = SRTProgramAudio(ingest: ingest)
                 self.session = session; self.ingest = ingest; self.mixer = audio; self.failure = nil
                 self.setStatus(attempt == 0 ? "Connecting to AltView…" : "Reconnecting to AltView…")
+                var connectionIssue: String?
                 do {
-                    try await session.publish(settings: settings, passphrase: passphrase, ingest: ingest)
+                    try await session.publish(settings: endpoint, passphrase: passphrase, ingest: ingest)
                     guard !self.stopped, !Task.isCancelled else { await session.close(); break }
                     let capture = SRTAudienceCapture(ingest: ingest, audio: audio) { [weak self] message in
                         guard let self, self.attemptID == token, !self.stopped else { return }
@@ -107,6 +130,7 @@ private final class SRTMediaTransmission {
                         try await Task.sleep(nanoseconds: 100_000_000)
                     }
                 } catch {
+                    connectionIssue = error.localizedDescription
                     if !self.stopped { self.setStatus("Media unavailable: \(error.localizedDescription)") }
                     // Capture permission/window failures need an explicit retry.
                     if self.capture != nil { self.failure = error.localizedDescription }
@@ -117,7 +141,7 @@ private final class SRTMediaTransmission {
                 guard !Task.isCancelled, !self.stopped else { break }
                 if let failure = self.failure { self.setStatus(failure + " · Retry Media after resolving it."); break }
                 attempt += 1
-                self.setStatus("AltView disconnected · retrying…")
+                self.setStatus((connectionIssue ?? "AltView disconnected") + " · retrying…")
                 try? await Task.sleep(nanoseconds: UInt64(min(8, attempt * 2)) * 1_000_000_000)
             }
         }

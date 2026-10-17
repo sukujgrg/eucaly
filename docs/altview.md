@@ -89,12 +89,13 @@ In Manage Outputs, add **AltView Media Output**. It is a separate output profile
 with an Audience source, network address, port, passphrase and video rate. It
 shares the selected Audience composition; the existing monitor keeps its current
 resolution. Only the network copy is scaled to 1080p H.264/AAC MPEG-TS over SRT.
-Choose 50/60 fps to match ATEM. Use wired Ethernet and start with 80 ms recovery
-on both ends. This is a transport buffer, not a measured total delay.
+Choose 50/60 fps to match ATEM. Ethernet is recommended; Wi-Fi also works. Start
+with 80 ms recovery buffer on Ethernet, or 120–200 ms for Wi-Fi testing, at both ends. This is a transport buffer, not a measured total delay.
 
 In AltView, open **eucaly Media**, choose the ATEM HDMI display and audio device,
-copy its separate media passphrase and click Start Receiving. Enter that Mac’s
-Ethernet address, port (default 10000) and passphrase in eucaly. Select the existing
+copy its separate media passphrase and click Start Receiving. Choose that Mac
+in eucaly’s Receiver menu and enter its passphrase. Manual address accepts its
+IPv4 address/local hostname and port (default 10000) when Bonjour is unavailable. Select the existing
 Audience output, enable the media output and Show Slides. Audience must be open;
 there is no extra monitor, render composition or AVPlayer. Allow eucaly’s capture
 permission when prompted, then Retry Media if needed. Passphrases use Keychain,
@@ -109,7 +110,10 @@ player tap fans out to enabled media destinations without stealing local playbac
 Configure, enable and private preparation never start publication. Show Slides
 starts the selected current Audience window. Stop/disable/delete/window replacement
 retires capture, audio taps and pending samples; a replacement needs Show or Retry
-Media; after changing the passphrase use Retry Media. A network outage retries the same valid source. Capture failures need an
+Media; after changing the passphrase use Retry Media. Bonjour remembers the receiver
+by stable UUID and refreshes its endpoint on reconnect; an offline receiver waits
+without substituting another Mac. Stop Receiving withdraws its advertisement.
+Discovery carries no passphrase. Socket/handshake errors remain visible during retries. A network outage retries the same valid source. Capture failures need an
 explicit Retry Media. AltView clears a stalled video connection after about three
 seconds. Its Stop Receiving and Audience text reception are independent.
 
@@ -119,3 +123,12 @@ and local fixes are in Vendor/MediaStreaming/PATCHES.md; the app menu exposes
 Third-Party Notices with SRT’s corresponding-source link. Encrypted loopback and
 live-file audio tests cover software delivery; real Screen Recording permission,
 Ethernet loss, HDMI routing, camera sync and total latency need a hardware rehearsal.
+
+The October 2026 performance pass keeps the shared vendor package aligned with
+AltView: blocking receive uses a dedicated dispatch queue, NAL parsing reuses one
+scan per frame, and hosts can bypass the library video scheduler when their own
+display layer schedules timestamps. AltView uses an eight-picture decoded mailbox
+and retains its tested 80 ms audio playout lead. Sender capture, bitrate, hardware
+encoding and program-audio behavior are unchanged. Multiple media destinations
+still own separate capture/encoder sessions; sharing matching sessions is future
+work requiring independent destination teardown and audio-policy validation.

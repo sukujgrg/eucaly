@@ -10,6 +10,8 @@ nonisolated final class SRTProgramAudio: @unchecked Sendable {
     private var segments: [UUID: [Segment]] = [:]
     private var gains: [UUID: Float] = [:]
     private var converters: [UUID: AVAudioConverter] = [:]
+    private var convertedEnd: [UUID: Int64] = [:]
+    private var inputEnd: [UUID: Int64] = [:]
     private var nextSample: Int64?
     private var timer: DispatchSourceTimer?
     private var active = true
@@ -30,10 +32,10 @@ nonisolated final class SRTProgramAudio: @unchecked Sendable {
     func setGain(_ value: Float, id: UUID) {
         queue.async { [self] in
             guard active else { return }; gains[id] = value
-            if value == 0 { segments[id] = [] }
+            if value == 0 { segments[id] = []; converters[id] = nil; convertedEnd[id] = nil; inputEnd[id] = nil }
         }
     }
-    func remove(_ id: UUID) { queue.async { [self] in segments[id] = nil; gains[id] = nil; converters[id] = nil } }
+    func remove(_ id: UUID) { queue.async { [self] in segments[id] = nil; gains[id] = nil; converters[id] = nil; convertedEnd[id] = nil; inputEnd[id] = nil } }
     func append(_ input: AVAudioPCMBuffer, at host: CMTime, id: UUID) {
         guard host.isNumeric else { return }
         pendingLock.lock()
@@ -42,17 +44,34 @@ nonisolated final class SRTProgramAudio: @unchecked Sendable {
         queue.async { [self] in
             defer { pendingLock.lock(); pendingBuffers -= 1; pendingLock.unlock() }
             guard active, (gains[id] ?? 0) > 0 else { return }
-            if converters[id]?.inputFormat != input.format { converters[id] = AVAudioConverter(from: input.format, to: format) }
-            guard let converter = converters[id], let output = AVAudioPCMBuffer(pcmFormat: format,
-                frameCapacity: AVAudioFrameCount(Double(input.frameLength) * 48000 / input.format.sampleRate + 64)) else { return }
-            var supplied = false; var error: NSError?
-            converter.convert(to: output, error: &error) { _, status in
-                if supplied { status.pointee = .noDataNow; return nil }
-                supplied = true; status.pointee = .haveData; return input
+            let timestamp = Int64((host.seconds * 48000).rounded())
+            // A PCM converter may retain part of an input and return it with the
+            // next input. Output belongs to one continuous sample clock, not to
+            // whichever input happened to trigger a conversion callback.
+            let discontinuity = inputEnd[id].map { abs(timestamp - $0) > 2400 } ?? false
+            if converters[id]?.inputFormat != input.format || discontinuity {
+                converters[id] = AVAudioConverter(from: input.format, to: format)
+                convertedEnd[id] = timestamp; segments[id] = []
             }
-            guard error == nil, output.frameLength > 0 else { return }
-            var packets = segments[id] ?? []
-            packets.append(.init(start: Int64(host.seconds * 48000), buffer: output))
+            inputEnd[id] = timestamp + Int64((Double(input.frameLength) * 48000 / input.format.sampleRate).rounded())
+            guard let converter = converters[id] else { return }
+            var supplied = false; var packets = segments[id] ?? []
+            var conversion: AVAudioConverterOutputStatus
+            repeat {
+                guard let output = AVAudioPCMBuffer(pcmFormat: format,
+                    frameCapacity: AVAudioFrameCount(Double(input.frameLength) * 48000 / input.format.sampleRate + 64)) else { break }
+                var error: NSError?
+                conversion = converter.convert(to: output, error: &error) { _, status in
+                    if supplied { status.pointee = .noDataNow; return nil }
+                    supplied = true; status.pointee = .haveData; return input
+                }
+                guard error == nil else { break }
+                if output.frameLength > 0 {
+                    let start = convertedEnd[id] ?? timestamp
+                    packets.append(.init(start: start, buffer: output))
+                    convertedEnd[id] = start + Int64(output.frameLength)
+                }
+            } while conversion == .haveData
             if packets.count > 64 { packets.removeFirst(packets.count - 64) }
             segments[id] = packets
         }
@@ -84,7 +103,7 @@ nonisolated final class SRTProgramAudio: @unchecked Sendable {
         ingest.offer(.audio(output, AVAudioTime(sampleTime: sample, atRate: 48000)))
         nextSample = sample + 960
     }
-    func stop() { queue.async { [self] in active = false; timer?.cancel(); timer = nil; segments.removeAll(); converters.removeAll() } }
+    func stop() { queue.async { [self] in active = false; timer?.cancel(); timer = nil; segments.removeAll(); converters.removeAll(); convertedEnd.removeAll(); inputEnd.removeAll() } }
 }
 
 nonisolated private final class SRTTapContext: @unchecked Sendable {

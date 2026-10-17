@@ -60,16 +60,22 @@ final actor SRTSocket {
     var inputs: AsyncStream<Data> {
         let handle = socket
         return AsyncStream<Data>(bufferingPolicy: .bufferingOldest(512)) { continuation in
-            // Blocking C I/O must not occupy the socket actor: Stop must be able
-            // to close an idle receiver while recv waits for its next packet.
-            Task.detached { [self] in
+            // libsrt blocks until data arrives. Keep it off both the socket
+            // actor and Swift's cooperative executor. Closing the socket wakes
+            // recv, so no actor hop/status query is needed for every datagram.
+            DispatchQueue(label: "com.haishinkit.srt.receive").async { [self] in
                 var bytes = [CChar](repeating: 0, count: 1316)
-                while await self.connected {
+                while true {
                     let count = srt_recvmsg(handle, &bytes, Int32(bytes.count))
                     guard count >= 0 else { break }
-                    if case .dropped = continuation.yield(Data(bytes: bytes, count: Int(count))) { break }
+                    switch continuation.yield(Data(bytes: bytes, count: Int(count))) {
+                    case .enqueued: continue
+                    case .dropped, .terminated: break
+                    @unknown default: break
+                    }
+                    break
                 }
-                await self.stopRunning()
+                Task { await self.stopRunning() }
                 continuation.finish()
             }
         }

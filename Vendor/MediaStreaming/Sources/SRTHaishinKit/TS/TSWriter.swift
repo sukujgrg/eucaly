@@ -162,6 +162,7 @@ final class TSWriter {
         packets[0].adaptationField?.randomAccessIndicator = randomAccessIndicator
 
         var bytes = Data()
+        bytes.reserveCapacity(packets.count * TSPacket.size)
         for var packet in packets {
             switch PID {
             case Self.defaultAudioPID:
