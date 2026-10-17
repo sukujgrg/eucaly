@@ -347,6 +347,18 @@ def next_build_number(previous):
     return str(build)
 
 
+def verify_app_archive(archive):
+    info = plistlib.loads((archive / "Info.plist").read_bytes())
+    application = f"Applications/{APP_NAME}.app"
+    properties = info.get("ApplicationProperties", {})
+    if (properties.get("ApplicationPath") != application
+            or not (archive / "Products" / application).is_dir()):
+        raise ReleaseError(f"Xcode produced a generic or invalid app archive: {archive}. "
+                           "Set SKIP_INSTALL=NO only on the app target, not on dependencies "
+                           "or the xcodebuild command line. Keep this failed preparation "
+                           "by moving its release directory aside before preparing the fixed source.")
+
+
 def verify_arm64_app(app):
     info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
     framework = app / "Contents/Frameworks/Sparkle.framework"
@@ -518,18 +530,23 @@ def prepare(directory, state, args):
     exported = preserved(directory, state, "export_hash", app)
     if not exported:
         archive = work / f"{APP_NAME}.xcarchive"
-        if not preserved(directory, state, "archive_hash", archive):
+        archived = preserved(directory, state, "archive_hash", archive)
+        if not archived:
             if archive.exists():
                 shutil.rmtree(archive)
             source_commit(state["commit"])
             # Preserve Sparkle's pre-signed copied binaries; strip only the app.
+            # SKIP_INSTALL belongs to the app target. A command-line override
+            # also installs Swift package objects, producing a generic archive.
             run("xcodebuild", "-project", PROJECT, "-scheme", APP_NAME,
                 "-destination", "generic/platform=macOS", "-configuration", "Release",
                 "-derivedDataPath", derived, "-archivePath", archive, "archive",
-                "ARCHS=arm64", "ONLY_ACTIVE_ARCH=NO", "SKIP_INSTALL=NO",
+                "ARCHS=arm64", "ONLY_ACTIVE_ARCH=NO",
                 "STRIP_INSTALLED_PRODUCT=YES", "COPY_PHASE_STRIP=NO",
                 f"CURRENT_PROJECT_VERSION={state['build']}", f"EUCALY_SOURCE_COMMIT={state['commit']}")
             source_commit(state["commit"])
+        verify_app_archive(archive)
+        if not archived:
             checkpoint(directory, state, archive_hash=digest(archive))
         if app.parent.exists():
             shutil.rmtree(app.parent)

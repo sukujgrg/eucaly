@@ -67,6 +67,7 @@ class ReleaseFlowTests(unittest.TestCase):
         self.notary_status = "Accepted"
         self.fail_feed = False
         self.after_archive = lambda: None
+        self.generic_archive = False
         self.latest = None
         self.latest_reads = 0
         self.latest_changed = False
@@ -258,6 +259,16 @@ class ReleaseFlowTests(unittest.TestCase):
                 archive = Path(args[args.index("-archivePath") + 1])
                 archive.mkdir(parents=True)
                 (archive / "build-number").write_text(build)
+                application = archive / "Products/Applications/eucaly.app"
+                application.mkdir(parents=True)
+                info = {"ArchiveVersion": 2}
+                if not self.generic_archive and "SKIP_INSTALL=NO" not in args:
+                    info["ApplicationProperties"] = {"ApplicationPath": "Applications/eucaly.app"}
+                else:
+                    objects = archive / "Products/Users/fixture/Objects"
+                    objects.mkdir(parents=True)
+                    (objects / "HaishinKit.o").write_bytes(b"dependency object")
+                (archive / "Info.plist").write_bytes(plistlib.dumps(info))
                 self.after_archive()
             elif "-exportArchive" in args:
                 archive = Path(args[args.index("-archivePath") + 1])
@@ -594,6 +605,36 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertEqual(self.archive_count(), 1)
         self.assertEqual(self.state["build"], build)
         self.assertFalse(self.remote_release["draft"])
+
+    def test_generic_archive_stops_before_export_and_keeps_failed_work(self):
+        self.generic_archive = True
+        with self.assertRaisesRegex(release.ReleaseError, "generic or invalid app archive"):
+            self.invoke()
+        archive = self.directory / "work/eucaly.xcarchive"
+        self.assertNotIn("archive_hash", self.state)
+        self.assertEqual(self.count("xcodebuild", "-exportArchive"), 0)
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 0)
+        self.assertTrue((archive / "Products/Applications/eucaly.app").is_dir())
+        self.assertEqual((archive / "Products/Users/fixture/Objects/HaishinKit.o").read_bytes(),
+                         b"dependency object")
+        self.assert_not_published()
+
+    def test_saved_generic_archive_is_rejected_without_modifying_its_checkpoint(self):
+        self.fail_once("export")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke()
+        archive = self.directory / "work/eucaly.xcarchive"
+        (archive / "Info.plist").write_bytes(plistlib.dumps({"ArchiveVersion": 2}))
+        # Simulate a generic archive checkpoint saved by the earlier release script.
+        release.checkpoint(self.directory, self.state, archive_hash=release.digest(archive))
+        original = self.state
+        with self.assertRaisesRegex(release.ReleaseError, "generic or invalid app archive"):
+            self.invoke()
+        self.assertEqual(self.state, original)
+        self.assertEqual(self.archive_count(), 1)
+        self.assertEqual(self.count("xcodebuild", "-exportArchive"), 1)
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 0)
+        self.assert_not_published()
 
     def test_notarization_wait_failure_resumes_the_same_submission_and_app(self):
         self.fail_once("wait")

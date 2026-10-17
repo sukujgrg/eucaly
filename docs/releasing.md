@@ -138,6 +138,14 @@ Do not edit recovery state to skip steps. Keep package contents unchanged,
 including Finder metadata inside `.app` and `.xcarchive` packages. Git's tag
 signing preferences are respected; a canceled signing prompt preserves artifacts.
 
+If Xcode reports a generic archive or rejects Developer ID export, check that
+`SKIP_INSTALL=NO` is set only on the app target. Passing it on the archive command
+line also installs dependency object files, which prevents app distribution.
+CI checks the archive's app metadata as well as the built binaries. After fixing
+and committing the source, preserve the failed `build/release/v<VERSION>/`
+directory under a different name before rerunning `make release`; a saved archive
+from the old source cannot be reused for the new commit.
+
 If `main` advances, the prepared release still belongs to its recorded commit.
 Check out that commit to finish it, or move unfinished preparation aside and
 prepare the newer source. If a tag already exists for the old commit, use a new
