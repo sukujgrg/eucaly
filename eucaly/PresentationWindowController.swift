@@ -63,6 +63,7 @@ final class PresentationSession: NSObject, ObservableObject {
     }
 
     @Published var slides: [Slide] = [] { didSet { scheduleOutputChange() } }
+    @Published private(set) var currentLyricsSourceURL: URL?
     @Published private(set) var pdfSlideSource: PDFSlideSource? { didSet { scheduleOutputChange() } }
     @Published var currentSlideID: Slide.ID? { didSet { scheduleOutputChange() } }
     @Published var isPresenting = false { didSet { scheduleOutputChange() } }
@@ -76,13 +77,20 @@ final class PresentationSession: NSObject, ObservableObject {
     private(set) var videoSeekTarget: Double = 0
     let playbackProgress = PlaybackProgressStore()
     @Published private(set) var backgroundVisualURL: URL? = nil
-    @Published var isBackgroundVisualVisible = true { didSet { outputCoordinator.setAudienceBackgroundVisibility(isBackgroundVisualVisible) } }
+    @Published var isBackgroundVisualVisible = true
     @Published private(set) var backgroundAudioURL: URL? = nil
     @Published private(set) var backgroundAudioPlaybackState = BackgroundAudioPlaybackState.stopped
     @Published private(set) var backgroundAudioLoop = true
     @Published private(set) var backgroundAudioVolume: Double = 1.0
     @Published var areSlidesVisible = true { didSet { scheduleOutputChange() } }
 
+    private var currentResourceScope: URL?
+    private var audioResourceScope: URL?
+    func setCurrentResourceScope(_ url: URL?) {
+        guard currentResourceScope != url else { return }
+        currentResourceScope?.stopAccessingSecurityScopedResource(); currentResourceScope = nil
+        if let url, url.startAccessingSecurityScopedResource() { currentResourceScope = url }
+    }
     private var backgroundAudioGeneration = UUID()
     private var backgroundAudioPlayer: AVPlayer?
     var programBackgroundAudioPlayer: AVPlayer? { backgroundAudioPlayer }
@@ -95,7 +103,7 @@ final class PresentationSession: NSObject, ObservableObject {
     private unowned let linkedOutputCoordinator: OutputCoordinator
     var outputCoordinator: OutputCoordinator { linkedOutputCoordinator }
     let projectionDisplays: ProjectionDisplayManager
-    var activePresentationTarget: ProjectionMonitorTarget? { outputCoordinator.audienceTarget }
+    var activePresentationTarget: ProjectionMonitorTarget? { outputCoordinator.audienceTarget(workspace: outputSourceID) }
     @Published var projectionDisplayIssue: String?
     private var currentThumbnailColumnCount: Int = 1
     private var currentDocumentRevision: UInt64 = 0
@@ -103,7 +111,8 @@ final class PresentationSession: NSObject, ObservableObject {
     private var navigationActionOrder: UInt64?
     private var navigationGeneration = UUID()
 
-    let outputSourceID = UUID()
+    let outputSourceID: UUID
+    let outputActionClock: OutputActionClock
     func cancelPendingProjection() {
         navigationGeneration = UUID()
         pendingNavigationCount = 0
@@ -118,7 +127,7 @@ final class PresentationSession: NSObject, ObservableObject {
     private var outputChangeScheduled = false
 
     var hasProjectionContent: Bool {
-        !isEmpty || hasAvailableBackgroundVisual || outputCoordinator.hasEnabledConfidenceOutput
+        !isEmpty || hasAvailableBackgroundVisual || outputCoordinator.hasEnabledConfidenceOutput(workspace: outputSourceID)
     }
 
     private func scheduleOutputChange() {
@@ -141,8 +150,8 @@ final class PresentationSession: NSObject, ObservableObject {
     }
 
     func requestCurrentProjection() {
-        guard (isPresenting && areSlidesVisible) || (outputCoordinator.isPresenting && outputCoordinator.visible) else { return }
-        guard outputCoordinator.presentLocal(self) else { return }
+        guard (isPresenting && areSlidesVisible) else { return }
+        guard outputCoordinator.presentLocal(self, activation: .current) else { return }
     }
 
     var isBackgroundAudioPlaying: Bool {
@@ -155,7 +164,7 @@ final class PresentationSession: NSObject, ObservableObject {
 
     init(projectionDisplays: ProjectionDisplayManager,
          sleepPrevention: ProjectionSleepPrevention = ProjectionSleepPrevention(),
-         outputCoordinator: OutputCoordinator? = nil) {
+         outputCoordinator: OutputCoordinator? = nil, workspaceID: UUID? = nil) {
         self.projectionDisplays = projectionDisplays
         if let outputCoordinator {
             standaloneOutputCoordinator = nil
@@ -165,11 +174,14 @@ final class PresentationSession: NSObject, ObservableObject {
             standaloneOutputCoordinator = coordinator
             linkedOutputCoordinator = coordinator
         }
+        outputSourceID = workspaceID ?? linkedOutputCoordinator.nextWorkspaceIdentity()
+        outputActionClock = linkedOutputCoordinator.program(outputSourceID).actionClock
         super.init()
         self.outputCoordinator.attach(self)
     }
 
     deinit {
+        currentResourceScope?.stopAccessingSecurityScopedResource(); audioResourceScope?.stopAccessingSecurityScopedResource()
         if let backgroundAudioEndObserver { NotificationCenter.default.removeObserver(backgroundAudioEndObserver) }
         if let backgroundAudioTimeObserver, let backgroundAudioPlayer { backgroundAudioPlayer.removeTimeObserver(backgroundAudioTimeObserver) }
     }
@@ -223,18 +235,21 @@ final class PresentationSession: NSObject, ObservableObject {
     }
 
     var hasAvailableBackgroundVisual: Bool {
+        if outputCoordinator.backgroundVisualVisibility(workspace: outputSourceID) != nil { return true }
         guard let url = backgroundVisualURL else { return false }
         return FileManager.default.fileExists(atPath: url.path)
     }
 
     func setSlides(
         _ slides: [Slide],
+        lyricsSourceURL: URL? = nil,
         preferredSelection: Slide.ID? = nil,
         preferredSelectionIndex: Int? = nil
     ) {
         currentDocumentRevision &+= 1
         let preservedSelection = preferredSelection ?? currentSlideID
         pdfSlideSource = nil
+        currentLyricsSourceURL = slides.isEmpty ? nil : lyricsSourceURL
         self.slides = slides
         if let preservedSelection,
            slides.contains(where: { $0.id == preservedSelection }) {
@@ -256,6 +271,7 @@ final class PresentationSession: NSObject, ObservableObject {
     ) {
         currentDocumentRevision &+= 1
         slides = []
+        currentLyricsSourceURL = nil
         pdfSlideSource = source
 
         if let preferredSelection,
@@ -273,11 +289,13 @@ final class PresentationSession: NSObject, ObservableObject {
 
     func clearSlides() {
         cancelPendingProjection()
-        outputCoordinator.clear()
+        outputCoordinator.clear(for: self)
         currentDocumentRevision &+= 1
         slides = []
+        currentLyricsSourceURL = nil
         pdfSlideSource = nil
         currentSlideID = nil
+        setCurrentResourceScope(nil)
         resetVideoPlaybackProgress()
         syncPDFDocumentCache()
     }
@@ -296,7 +314,7 @@ final class PresentationSession: NSObject, ObservableObject {
     }
 
     func stopPresentation() {
-        outputCoordinator.stop()
+        outputCoordinator.stop(for: self)
         isPresenting = false
     }
 
@@ -306,19 +324,22 @@ final class PresentationSession: NSObject, ObservableObject {
     }
 
     func hideSlides() {
-        guard isPresenting || outputCoordinator.isPresenting else { return }
+        guard isPresenting else { return }
         areSlidesVisible = false
-        if outputCoordinator.isRunning { outputCoordinator.hide() }
+        if outputCoordinator.isRunning(workspace: outputSourceID) { outputCoordinator.hide(for: self) }
     }
 
     func toggleBackgroundVisualVisibility() {
-        guard backgroundVisualURL != nil else { return }
-        if !isPresenting && !outputCoordinator.isPresenting && !outputCoordinator.hasOpenAudienceOutput {
+        guard hasAvailableBackgroundVisual else { return }
+        if !isPresenting && !outputCoordinator.hasOpenAudienceOutput(workspace: outputSourceID) {
             guard outputCoordinator.openBackgroundOutputs(for: self) else { return }
             isBackgroundVisualVisible = true
+            outputCoordinator.setAudienceBackgroundVisibility(true, for: self)
             return
         }
-        isBackgroundVisualVisible.toggle()
+        let visible = outputCoordinator.backgroundVisualVisibility(workspace: outputSourceID) ?? isBackgroundVisualVisible
+        isBackgroundVisualVisible = !visible
+        outputCoordinator.setAudienceBackgroundVisibility(isBackgroundVisualVisible, for: self)
     }
 
     func moveSelection(_ delta: Int) {
@@ -346,7 +367,7 @@ final class PresentationSession: NSObject, ObservableObject {
         let generation = navigationGeneration
         if pendingNavigationCount == 0 { navigationActionOrder = nil }
         pendingNavigationCount += 1
-        if (isPresenting && areSlidesVisible) || (outputCoordinator.isPresenting && outputCoordinator.visible) { navigationActionOrder = outputCoordinator.actionClock.next() }
+        if (isPresenting && areSlidesVisible) { navigationActionOrder = outputActionClock.next() }
         // SwiftUI can invoke onKeyPress during its update pass. Resolve each
         // queued move in order, after that pass, against the same Current document.
         DispatchQueue.main.async { [weak self] in
@@ -354,7 +375,7 @@ final class PresentationSession: NSObject, ObservableObject {
             guard self.navigationGeneration == generation else { return }
             self.pendingNavigationCount = max(0, self.pendingNavigationCount - 1)
             guard self.currentDocumentRevision == revision, !self.isEmpty else { return }
-            if let order = self.navigationActionOrder, order != self.outputCoordinator.actionClock.current { return }
+            if let order = self.navigationActionOrder, order != self.outputActionClock.current { return }
             let nextID: Slide.ID?
             if let currentID = self.currentSlideID, let index = self.slideIndex(for: currentID) {
                 let nextIndex = targetIndex(index, self.slideCount, self.currentThumbnailColumnCount)
@@ -412,6 +433,7 @@ final class PresentationSession: NSObject, ObservableObject {
     }
 
     func setBackgroundAudio(url: URL?, autoplay: Bool) {
+        guard outputCoordinator.profiles.document.workspaces.contains(where: { $0.id == outputSourceID }) else { return }
         if backgroundAudioURL == url {
             if autoplay {
                 playBackgroundAudio()
@@ -423,6 +445,7 @@ final class PresentationSession: NSObject, ObservableObject {
     }
 
     func playBackgroundAudio() {
+        guard outputCoordinator.profiles.document.workspaces.contains(where: { $0.id == outputSourceID }) else { return }
         outputCoordinator.claimBackgroundAudio(self)
         backgroundAudioGeneration = UUID()
         configureBackgroundAudioEndObserver()
@@ -456,6 +479,7 @@ final class PresentationSession: NSObject, ObservableObject {
         stopBackgroundAudioPlayback()
         removeBackgroundAudioTimeObserver()
         backgroundAudioPlayer = nil
+        audioResourceScope?.stopAccessingSecurityScopedResource(); audioResourceScope = nil
         backgroundAudioURL = nil
         playbackProgress.resetBackgroundAudio()
         removeBackgroundAudioEndObserver()
@@ -497,7 +521,9 @@ final class PresentationSession: NSObject, ObservableObject {
         playbackProgress.resetBackgroundAudio()
         removeBackgroundAudioEndObserver()
 
+        audioResourceScope?.stopAccessingSecurityScopedResource(); audioResourceScope = nil
         guard let url else { return }
+        if url.startAccessingSecurityScopedResource() { audioResourceScope = url }
         if autoplay { outputCoordinator.claimBackgroundAudio(self) }
 
         let player = AVPlayer(url: url)
@@ -584,8 +610,10 @@ struct PresentationView: View {
             ZStack {
                 Color.black.frame(width: size.width, height: size.height)
                 if session.areSlidesVisible, let slide = session.currentSlide {
-                    if AltViewPresentationAdapter.mode(for: slide) == .media {
-                        OutputMediaSlideView(slide: slide, session: session, runtime: session.outputCoordinator.media)
+                    if OutputContentClassifier.mode(for: slide) == .media {
+                        if let runtime = session.outputCoordinator.preparedMedia(workspace: session.outputSourceID) {
+                            OutputMediaSlideView(slide: slide, session: session, runtime: runtime)
+                        }
                     } else {
                         OutputTextView(content: OutputContentAdapter.text(for: slide), profile: previewProfile, size: size)
                     }
@@ -1301,6 +1329,7 @@ struct AVPlayerViewRepresentable: NSViewRepresentable {
 
 final class PresentationWindow: NSWindow {
     weak var outputCoordinator: OutputCoordinator?
+    var outputDestinationID: UUID?
 
     override var canBecomeKey: Bool { true }
     // Projection can receive slide shortcuts without replacing the workspace
@@ -1342,14 +1371,17 @@ final class PresentationWindow: NSWindow {
         requestHideSlides()
     }
 
-    private var commandSession: PresentationSession? { outputCoordinator?.preferredLocalSession ?? outputCoordinator?.localSession }
+    private var commandSession: PresentationSession? { outputCoordinator?.commandSession(for: self) }
 
-    private func requestHideSlides() { outputCoordinator?.hide() }
-    private func requestStopProjection() { outputCoordinator?.stop() }
-    private func requestToggleSlidesVisibility() { outputCoordinator?.toggleSlides() }
-    private func requestClearBackgroundVisual() { outputCoordinator?.clearBackgrounds() }
-    private func requestClearBackgroundAudio() { outputCoordinator?.clearAudio() }
-    private func requestClearAllLayers() { outputCoordinator?.clearAllLayers() }
+    private func requestHideSlides() { commandSession?.hideSlides() }
+    private func requestStopProjection() { commandSession?.stopPresentation() }
+    private func requestToggleSlidesVisibility() {
+        guard let session = commandSession else { return }
+        if session.isPresenting && session.areSlidesVisible { session.hideSlides() } else { session.showSlides() }
+    }
+    private func requestClearBackgroundVisual() { if let session = commandSession { outputCoordinator?.clearBackgrounds(for: session) } }
+    private func requestClearBackgroundAudio() { commandSession?.clearBackgroundAudio() }
+    private func requestClearAllLayers() { requestHideSlides(); requestClearBackgroundVisual(); requestClearBackgroundAudio() }
 
     private func requestMoveSelection(_ delta: Int) {
         commandSession?.moveSelection(delta)

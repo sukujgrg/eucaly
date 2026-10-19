@@ -1,44 +1,37 @@
-# Output profiles design
+# Workspace outputs: implemented direction
 
-This document describes the narrowed local-content scope. ViewTheWord owns its
-native scripture projection and appearance. eucaly profiles compose eucaly's own
-Current content and can send primary lyrics directly to AltView. Incoming
-presentation reception and forwarding are outside the supported architecture.
+The implementation uses named workspace tabs with one Sidebar → Preview → Current
+flow per workspace. Native tab detachment preserves the same window/session.
+Operator focus never owns a program or destination. Each saved destination has one
+workspace owner, and several destinations can share a workspace’s player/snapshot.
+Different workspaces can present simultaneously. Profiles own reusable appearance.
 
-## Responsibilities
+AppDelegate owns OutputProfileStore, OutputCoordinator, NDIOutputRouter and native
+Settings independently of controls windows. OutputCoordinator retains workspace
+sessions, Preview flows, accepted snapshots, action clocks and media runtimes.
+Per-destination generation/epoch fences and global monitor/source-name reservations
+preserve failure isolation and explicit action ordering.
 
-- PresentationFlowController owns Preview and explicit Preview -> Current movement.
-- PresentationSession owns a local Current document, selection and media controls.
-- OutputCoordinator owns active workspace identity, coherent snapshots, display
-  reservations, output windows, sleep prevention and shared program media.
-- OutputProfileStore owns versioned appearance and typed destination settings.
-- AltViewOutputRouter owns shared discovery and independent outgoing receiver
-  connections; AltView owns receiver appearance.
+The output picker displays owners and provides Move to This Workspace. Transfer is
+explicit and capability checked. Show, Load/navigation, Hide, Clear and ordinary
+Stop remain workspace scoped; Stop All Outputs is a separate global menu action.
+Hide/Clear/Stop retain assignments. Closing controls never stops live resources.
 
-## Output behavior
+Add NDI Output replaces the Lyrics/Media pair. All sources support lyrics and
+PDF/image/video on one connection. Source identity, sender/helper and receiver
+connection survive workspace/content-type changes. Transparent surrounds and
+actual empty/key replacement frames reveal cameras when independent opaque
+backgrounds are absent. Clear Current leaves backgrounds/music intact. The explicit
+local music owner and saved network music route are never silently replaced on move.
+Webpages and window capture retain their native-only limits.
 
-Audience, Confidence and Lower Third render the same activated Current through
-independent native compositions. Confidence shows Current/Next or its standby
-clock. Lower Third defaults to chroma green. Lyrics components remain distinct;
-missing companions reserve no space. All native media uses one playback/capture
-runtime. Webpages permit one Audience output and status-only companion views.
+Version 6 migrates existing rows to Workspace 1, preserves both legacy NDI sources
+as generic destinations with their names/identities/appearance/music, resolves
+legacy enabled-name duplicates by disabling later rows, and never publishes during
+restoration. New workspaces have no outputs. Earlier retirement of AltView/SRT and
+exact verified credential cleanup remain unchanged.
 
-Show, visible Current activation/navigation and live Load/Switch explicitly choose
-the active workspace. Preview, stopped preparation, hidden navigation, background
-controls and pairing do not. Hide retains private content; Clear removes it;
-Stop closes native outputs and releases AltView leases. A lost destination does
-not move to another monitor or stop another output.
-
-## Settings and acceptance
-
-Keep native controls in one Manage Outputs editor. Preserve local typography,
-backgrounds, physical monitor identities, custom profiles, independent audio and
-outgoing pairings during migration. Profile version 3 removes retired receiver
-and Bible-only settings. No migration opens an unassigned output.
-
-Validate Preview/Current privacy, explicit/passive ownership, same-slide actions,
-queued-navigation cancellation, every native media type, Confidence startup/clock,
-display hot-plug/mirroring, sleep prevention, native settings and independent
-AltView reconnect/pairing/acknowledgement. Use `make test`, then `make build`.
-See [implementation](output-profiles-implementation.md) and [AltView output](altview.md)
-for current architecture and manual validation boundaries.
+The maintained architecture, migration and verification details are in
+[output-profiles-implementation.md](output-profiles-implementation.md). Runtime setup
+and the open physical/two-hour qualification gates are in
+[ndi-runtime.md](ndi-runtime.md) and [ndi-output-plan.md](ndi-output-plan.md).

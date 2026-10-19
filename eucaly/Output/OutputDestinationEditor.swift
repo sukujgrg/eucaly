@@ -2,8 +2,9 @@ import AppKit
 
 @MainActor
 final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
+    let ownerLabel = outputSettingsLabel(secondary: true)
+    let moveWorkspaceButton = NSButton(title: "Move to This Workspace", target: nil, action: nil)
     let coordinator: OutputCoordinator
-    let router: AltViewOutputRouter
     let destinationID: UUID
     var store: OutputProfileStore { coordinator.profiles }
     var destination: OutputDestinationConfiguration? { store.document.destinations.first { $0.id == destinationID } }
@@ -19,78 +20,97 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
     let customizeButton = NSButton(title: "Customize Appearance…", target: nil, action: nil)
     let clearBackgroundButton = NSButton(title: "Clear Background", target: nil, action: nil)
     var onEditProfile: (UUID) -> Void = { _ in }
-    private(set) var mediaEditor: OutputSRTDestinationSettings?
-    private(set) var remoteEditor: AltViewOutputDestinationSettings?
     private struct MonitorEntry: Equatable { let target: ProjectionMonitorTarget?; let title: String; let enabled: Bool }
     private struct ProfileEntry: Equatable { let id: UUID; let title: String }
     private var monitors: [MonitorEntry] = []
     private var profiles: [ProfileEntry] = []
     private var confidenceActions: NSStackView?
+    private(set) var ndiEditor: NDIOutputSettingsEditor?
 
-    init(coordinator: OutputCoordinator, router: AltViewOutputRouter, destinationID: UUID) {
-        self.coordinator = coordinator; self.router = router; self.destinationID = destinationID
+    init(coordinator: OutputCoordinator, destinationID: UUID) {
+        self.coordinator = coordinator; self.destinationID = destinationID
         super.init(nibName: nil, bundle: nil)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func loadView() {
         let form = OutputSettingsForm(frame: .zero); view = form
-        guard let destination else { return }
-        let native = store.profile(destination.profileID)?.isNative == true
-        form.section(native ? "Native Output" : store.profile(destination.profileID)?.kind == .altViewMedia ? "AltView Media Output" : "AltView Output")
+        guard destination != nil else { return }
+        form.section(destination?.ndi == nil ? "Native Output" : "NDI Output")
         nameField.delegate = self; nameField.setAccessibilityLabel("Output name")
         enabledButton.target = self; enabledButton.action = #selector(enabledChanged(_:))
         profilePicker.autoenablesItems = false
+        profilePicker.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        profilePicker.cell?.lineBreakMode = .byTruncatingMiddle
         profilePicker.target = self; profilePicker.action = #selector(profileChanged(_:)); profilePicker.setAccessibilityLabel("Appearance profile")
         form.add(outputSettingsRow("Name", nameField)); form.add(enabledButton)
+        moveWorkspaceButton.target = self; moveWorkspaceButton.action = #selector(moveWorkspace(_:))
+        form.add(ownerLabel); form.add(outputSettingsActionRow([moveWorkspaceButton]))
         validationLabel.textColor = .systemOrange; validationLabel.isHidden = true; form.add(validationLabel)
-        if native {
-            customizeButton.target = self; customizeButton.action = #selector(editProfile(_:))
-            clearBackgroundButton.target = self; clearBackgroundButton.action = #selector(clearBackground(_:))
-            form.add(outputSettingsFieldGroup("Profile", profilePicker, actions: [
-                customizeButton,
-                clearBackgroundButton
-            ]))
-            monitorPicker.autoenablesItems = false
-            monitorPicker.target = self; monitorPicker.action = #selector(monitorChanged(_:)); monitorPicker.setAccessibilityLabel("Monitor assignment")
-            identifyButton.target = self; identifyButton.action = #selector(identifyMonitor(_:))
-            nameMonitorButton.target = self; nameMonitorButton.action = #selector(nameMonitor(_:))
-            form.add(outputSettingsFieldGroup("Monitor", monitorPicker, actions: [identifyButton, nameMonitorButton]))
-            form.add(statusLabel)
-            confidenceButton.target = self; confidenceButton.action = #selector(toggleConfidence(_:))
-            let confidenceActions = outputSettingsActionRow([confidenceButton])
-            self.confidenceActions = confidenceActions; form.add(confidenceActions)
-            form.add(outputSettingsLabel("All outputs follow the active eucaly Current. Close this output before changing its monitor. Disconnected monitors keep their assignment and require an explicit Show Slides to reopen.", secondary: true))
-        } else if store.profile(destination.profileID)?.kind == .altViewMedia {
-            let editor = OutputSRTDestinationSettings(coordinator: coordinator, destinationID: destinationID)
-            mediaEditor = editor; addChild(editor); form.add(editor.view)
-        } else {
-            let editor = AltViewOutputDestinationSettings(router: router, store: store, destinationID: destinationID)
-            remoteEditor = editor; addChild(editor); form.add(editor.view)
+        customizeButton.target = self; customizeButton.action = #selector(editProfile(_:))
+        clearBackgroundButton.target = self; clearBackgroundButton.action = #selector(clearBackground(_:))
+        form.add(outputSettingsFieldGroup("Appearance", profilePicker, actions: [
+            customizeButton,
+            clearBackgroundButton
+        ]))
+        if destination?.ndi != nil {
+            let editor = NDIOutputSettingsEditor(coordinator: coordinator, destinationID: destinationID)
+            ndiEditor = editor; addChild(editor)
+            let operations = editor.view
+            form.add(editor.configurationView)
+            let content = NSStackView(views: [operations, form]); content.orientation = .vertical
+            content.alignment = .leading; content.spacing = 12
+            for child in content.arrangedSubviews { child.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true }
+            view = content; render(); return
         }
+        monitorPicker.autoenablesItems = false
+        monitorPicker.target = self; monitorPicker.action = #selector(monitorChanged(_:)); monitorPicker.setAccessibilityLabel("Monitor assignment")
+        identifyButton.target = self; identifyButton.action = #selector(identifyMonitor(_:))
+        nameMonitorButton.target = self; nameMonitorButton.action = #selector(nameMonitor(_:))
+        form.add(outputSettingsFieldGroup("Monitor", monitorPicker, actions: [identifyButton, nameMonitorButton]))
+        form.add(statusLabel)
+        confidenceButton.target = self; confidenceButton.action = #selector(toggleConfidence(_:))
+        let confidenceActions = outputSettingsActionRow([confidenceButton])
+        self.confidenceActions = confidenceActions; form.add(confidenceActions)
+        form.add(outputSettingsLabel("This output follows its assigned workspace’s Current. Close this output before changing its monitor. Disconnected monitors keep their assignment and require an explicit Show Slides to reopen.", secondary: true))
+        render()
+    }
+    @objc private func moveWorkspace(_ sender: Any?) {
+        guard let session = coordinator.preferredLocalSession else { return }
+        if !coordinator.moveOutput(destinationID, to: session) { validationLabel.stringValue = session.projectionDisplayIssue ?? "Unable to move output." }
         render()
     }
     func render() {
         guard isViewLoaded, let destination, let profile = store.profile(destination.profileID) else { return }
+        ownerLabel.stringValue = "Workspace: " + store.workspaceName(destination.workspaceID)
+        moveWorkspaceButton.title = "Move to This Workspace (" + store.workspaceName(coordinator.focusedWorkspaceID) + ")"
+        moveWorkspaceButton.isEnabled = coordinator.focusedWorkspaceID != nil && destination.workspaceID != coordinator.focusedWorkspaceID
         validationLabel.isHidden = validationLabel.stringValue.isEmpty
         if nameField.currentEditor() == nil { nameField.stringValue = destination.name }
         enabledButton.state = destination.enabled ? .on : .off
-        guard profile.isNative else { mediaEditor?.render(); remoteEditor?.render(); return }
         customizeButton.isEnabled = store.canCustomizeProfile(for: destinationID)
+        customizeButton.title = profile.isReusable ? "Customize Appearance…" : "Edit Appearance…"
         clearBackgroundButton.isEnabled = customizeButton.isEnabled
+        clearBackgroundButton.isHidden = false
         let help = customizeButton.isEnabled ? nil : "The profile limit has been reached. Edit reusable profiles in Profiles."
         customizeButton.toolTip = help ?? "Edit an independent appearance for this output. Reusable profiles remain available in Profiles."
         clearBackgroundButton.toolTip = help ?? "Clear the background for this output only."
-        let nativeProfiles = store.document.profiles.filter(\.isNative).map { ProfileEntry(id: $0.id, title: $0.name) }
-        if profiles != nativeProfiles {
-            profiles = nativeProfiles
+        var choices = store.reusableProfiles.map { ProfileEntry(id: $0.id, title: $0.name) }
+        if !profile.isReusable {
+            choices.insert(.init(id: profile.id, title: "Custom Appearance (" + profile.name + ")"), at: 0)
+        }
+        if profiles != choices {
+            profiles = choices
             let menu = NSMenu(); menu.autoenablesItems = false
             for profile in profiles {
                 let item = NSMenuItem(title: profile.title, action: nil, keyEquivalent: "")
                 item.representedObject = profile.id; menu.addItem(item)
             }
+            if !profile.isReusable { menu.insertItem(.separator(), at: 1) }
             profilePicker.menu = menu
         }
+        profilePicker.toolTip = "Choose a reusable profile, or keep this output’s custom appearance. Customize Appearance edits this output only."
         profilePicker.select(profilePicker.itemArray.first { $0.representedObject as? UUID == destination.profileID })
+        if let ndiEditor { ndiEditor.render(); return }
         let displays = coordinator.displays
         var fresh = [MonitorEntry(target: nil, title: "None", enabled: true)]
         fresh += displays.displays.map { display in
@@ -145,8 +165,7 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
     }
     @objc private func profileChanged(_ sender: Any?) {
         guard let id = profilePicker.selectedItem?.representedObject as? UUID,
-              destination.flatMap({ store.profile($0.profileID) })?.isNative == true,
-              store.profile(id)?.isNative == true else { return }
+              store.profile(id) != nil else { return }
         store.selectProfile(id, for: destinationID)
     }
     @objc private func monitorChanged(_ sender: Any?) {
@@ -165,7 +184,7 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
     }
     @objc private func clearBackground(_ sender: Any?) {
         finishOutputSettingsFieldEditing(in: view)
-        store.editDestinationProfile(destinationID) { $0.clearBackground() }
+        store.clearDestinationBackground(destinationID)
     }
     @objc private func toggleConfidence(_ sender: Any?) {
         if coordinator.isOpen(destinationID) { coordinator.closeOutput(destinationID) }

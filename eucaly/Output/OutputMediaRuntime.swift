@@ -10,6 +10,11 @@ final class OutputMediaRuntime {
     }) { self.bookmarkResolver = bookmarkResolver }
     private var programPlayer: AVPlayer?
     var program: AVPlayer? { programPlayer }
+    var hasRunningPlayback: Bool {
+        programPlayer.map { $0.rate != 0 || $0.timeControlStatus == .waitingToPlayAtSpecifiedRate } == true
+            || backgrounds.values.contains { $0.wantsPlayback }
+    }
+    private(set) var programFill = false
     private var programURL: URL?
     private var programGeneration = UUID()
     private var programVisible = false
@@ -46,6 +51,7 @@ final class OutputMediaRuntime {
         }
     }
     func updateProgram(slide: Slide?, session: PresentationSession?, running: Bool, visible: Bool) {
+        programFill = session?.videoFill ?? false
         programVisible = visible && running
         let url = running ? slide?.videoURL : nil
         if programURL != url || self.session !== session {

@@ -22,7 +22,7 @@ final class OutputMigrationTests: XCTestCase {
         profiles[0]["componentTypography"] = typography; json["profiles"] = profiles
         defaults.set(try JSONSerialization.data(withJSONObject: json), forKey: OutputProfileStore.key)
         let store = OutputProfileStore(defaults: defaults); store.flush()
-        XCTAssertNil(store.recoveryNotice); XCTAssertEqual(store.document.version, 4)
+        XCTAssertNil(store.recoveryNotice); XCTAssertEqual(store.document.version, 6)
         XCTAssertEqual(store.document.destinations, document.destinations)
         XCTAssertEqual(store.audience, document.profiles[0])
         let saved = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(defaults.data(forKey: OutputProfileStore.key))) as? [String: Any])
@@ -57,7 +57,7 @@ final class OutputMigrationTests: XCTestCase {
         XCTAssertEqual(store.document, document)
         XCTAssertEqual(defaults.integer(forKey: "outputProfileDefaultsRevision"), 2)
         XCTAssertEqual(store.profile(OutputProfile.confidenceID)?.typography(for: .footer).size, 23)
-        for profile in store.document.profiles where profile.isNative {
+        for profile in store.document.profiles {
             XCTAssertEqual(profile.typographyOverrideRoles, OutputComponentRole.lyricRoles + (profile.kind == .confidence ? [.footer] : []))
         }
         XCTAssertEqual(OutputComponentRole.footer.title, "Playback status")

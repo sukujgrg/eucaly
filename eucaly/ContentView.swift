@@ -6,14 +6,15 @@ import Combine
 
 public struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var workspaceCommands = OutputWorkspaceCommands()
+    private let workspaceCommands: OutputWorkspaceCommands
+    @State private var hasInitializedControls = false
     @State private var importPanel = LibraryImportPanelController()
     @State private var lyricsEditor = LyricsEditorSession()
     @State private var lyricsEditorFocusController = PlainTextEditorFocusController()
     @StateObject private var session: PresentationSession
     @ObservedObject private var outputProfiles: OutputProfileStore
     @ObservedObject private var projectionDisplays: ProjectionDisplayManager
-    @StateObject private var flow = PresentationFlowController()
+    @StateObject private var flow: PresentationFlowController
     @State private var folderURL: URL?
     @State private var markdownFiles: [URL] = []
     @State private var previewLibraryFiles: [URL] = []
@@ -35,11 +36,9 @@ public struct ContentView: View {
     @State private var backgroundAudioVolumeDebounceToken = UUID()
     @State private var fileDisplayNames: [URL: String] = [:]
     @State private var newFileWarning: String? = nil
-    @State private var currentLyricsSourceURL: URL? = nil
     @State private var sidebarSelection: SidebarSelection? = nil
     @State private var selectedAudioURL: URL? = nil
     @State private var previewLoadToken = UUID()
-    @State private var previewSource: PreviewSource = .none
     @State private var pendingPreviewSource: PreviewSource? = nil
     @State private var previewLoadError: String? = nil
     @State private var librarySearch = LibrarySearchModel()
@@ -69,20 +68,26 @@ public struct ContentView: View {
     private let windowCaptureFrameRateOptions = [24, 30, 60]
     private let libraryFileScanner = LibraryFileScannerService()
 
-    init(projectionDisplays: ProjectionDisplayManager, outputs: OutputCoordinator? = nil) {
-        self.projectionDisplays = projectionDisplays
-        let session = PresentationSession(projectionDisplays: projectionDisplays, outputCoordinator: outputs)
+    init(session: PresentationSession, commands: OutputWorkspaceCommands) {
+        self.projectionDisplays = session.outputCoordinator.displays
+        workspaceCommands = commands
         _session = StateObject(wrappedValue: session)
+        _flow = StateObject(wrappedValue: session.outputCoordinator.program(session.outputSourceID).flow)
         _outputProfiles = ObservedObject(wrappedValue: session.outputCoordinator.profiles)
+        let prefix = "workspace." + session.outputSourceID.uuidString + "."
+        let legacy = session.outputSourceID == OutputWorkspaceRecord.primaryID
+        _backgroundVisualBookmark = AppStorage(wrappedValue: legacy ? UserDefaults.standard.string(forKey: "backgroundVisualBookmark") ?? "" : "", prefix + "backgroundVisualBookmark")
+        _backgroundAudioBookmark = AppStorage(wrappedValue: legacy ? UserDefaults.standard.string(forKey: "backgroundAudioBookmark") ?? "" : "", prefix + "backgroundAudioBookmark")
+        _backgroundAudioVolume = AppStorage(wrappedValue: legacy ? UserDefaults.standard.object(forKey: "backgroundAudioVolume") as? Double ?? 1 : 1, prefix + "backgroundAudioVolume")
+        _backgroundAudioLoop = AppStorage(wrappedValue: legacy ? UserDefaults.standard.object(forKey: "backgroundAudioLoop") as? Bool ?? true : true, prefix + "backgroundAudioLoop")
     }
 
-    private enum PreviewSource: Equatable {
-        case none
-        case file(URL)
-        case web(URL)
-        case window(CGWindowID)
-        case lyrics
+    private typealias PreviewSource = PresentationFlowController.PreviewSource
+    private var previewSource: PreviewSource {
+        get { flow.previewSource }
+        nonmutating set { flow.previewSource = newValue }
     }
+    private var currentLyricsSourceURL: URL? { session.currentLyricsSourceURL }
 
     private enum EditorExitAction: Equatable {
         case closeEditor
@@ -163,13 +168,10 @@ public struct ContentView: View {
                 OutputIssueBanner(session: session, manageOutputs: showOutputSettings)
             }
             .environment(\.lyricsProjectionSize, lyricsProjectionSize)
-            .environment(\.audienceOutputProfile, outputProfiles.audience)
+            .environment(\.audienceOutputProfile, session.outputCoordinator.thumbnailProfile(workspace: session.outputSourceID))
             .background(
-                InitialWindowFocus()
-                    .frame(width: 0, height: 0)
-            )
-            .background(
-                WindowCloseGuard(shouldClose: confirmMainWindowClose)
+                OutputWorkspaceCloseConfirmation(commands: workspaceCommands, shouldClose: confirmMainWindowClose,
+                                                 willClose: handleControlsWillClose)
                     .frame(width: 0, height: 0)
             )
     }
@@ -190,7 +192,6 @@ public struct ContentView: View {
             projectionToolbar
         }
         .applyToolbarBackgroundIfAvailable()
-        .background(OutputWorkspaceScope(commands: workspaceCommands, session: session).frame(width: 0, height: 0))
     }
 
     private var rootSplitWithLibrarySearchOverlay: some View {
@@ -218,6 +219,8 @@ public struct ContentView: View {
     private var rootSplitWithStateObservers: some View {
         rootSplitBase
         .onAppear {
+            guard !hasInitializedControls else { return }
+            hasInitializedControls = true
             handleRootOnAppear()
             syncWindowCaptureFrameRate()
         }
@@ -231,7 +234,8 @@ public struct ContentView: View {
             refreshLibraryRootAccess()
         }
         .onChange(of: backgroundVisualBookmark) { _, _ in
-            session.outputCoordinator.profiles.importLegacyAudienceBackground()
+            let bookmark = backgroundVisualBookmark
+            deferSessionChange { session.outputCoordinator.setBackgroundVisualBookmark(bookmark, for: session) }
             refreshBackgroundVisualAccess()
         }
         .onChange(of: backgroundAudioBookmark) { _, _ in
@@ -260,14 +264,17 @@ public struct ContentView: View {
         .onChange(of: webpageTitles) { _, _ in
             persistWebpageState()
         }
+        .onChange(of: outputProfiles.document.destinations) { _, _ in
+            updateLyricsProjectionSize()
+        }
         .onChange(of: projectionDisplays.revision) { _, _ in
             updateLyricsProjectionSize()
         }
-        .onDisappear(perform: handleRootOnDisappear)
     }
 
-    private func handleRootOnDisappear() {
+    private func handleControlsWillClose() {
         importPanel.cancel()
+        cancelPreviewLoad()
         librarySearch.cancelDebounce()
         libraryLoadTask?.cancel()
         isLibraryLoading = false
@@ -278,7 +285,7 @@ public struct ContentView: View {
     }
 
     private func handleExitCommand() {
-        guard (session.outputCoordinator.isPresenting && session.outputCoordinator.visible) || (session.isPresenting && session.areSlidesVisible) else { return }
+        guard (session.isPresenting && session.areSlidesVisible) else { return }
         deferSessionChange {
             flow.hideSlides(in: session)
         }
@@ -297,12 +304,13 @@ public struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .newLyrics), perform: handleNewLyricsNotification)
         .onReceive(NotificationCenter.default.publisher(for: .saveLyrics), perform: handleSaveLyricsNotification)
         .onReceive(NotificationCenter.default.publisher(for: .showLibrarySearch)) { _ in
+            guard workspaceCommands.isActive else { return }
             presentLibrarySearch()
         }
         .onReceive(NotificationCenter.default.publisher(for: .refreshLibrary)) { _ in
+            guard workspaceCommands.isActive else { return }
             refreshLibrary()
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification), perform: handleMainWindowWillCloseNotification)
     }
 
     @ViewBuilder
@@ -353,7 +361,7 @@ public struct ContentView: View {
             onPickWindow: pickWindowForPreview,
             onClearSelectedWindow: clearSelectedWindowFromSidebar
         )
-        .navigationTitle("")
+
     }
 
     @ViewBuilder
@@ -380,7 +388,7 @@ public struct ContentView: View {
 
         ToolbarItemGroup(placement: .primaryAction) {
             AppUpdateToolbarButton(viewModel: appUpdateViewModel)
-            OutputQuickControls(outputs: session.outputCoordinator, manageOutputs: showOutputSettings)
+            OutputQuickControls(outputs: session.outputCoordinator, workspaceID: session.outputSourceID, manageOutputs: showOutputSettings)
         }
         ToolbarItem(placement: .primaryAction) {
             ThumbnailSettingsMenu()
@@ -433,14 +441,15 @@ public struct ContentView: View {
             setSidebarSelectionWithoutLoading(nil)
             if flow.previewSlides.contains(where: { $0.captureWindowID != nil }) {
                 cancelPreviewLoad()
-                previewSource = .none
                 previewLoadError = nil
                 flow.clearPreviewDocument()
             }
         }
     }
 
-    private func handleWindowPickerSelection(_ windowID: CGWindowID) {
+    private func handleWindowPickerSelection(_ result: WindowCapturePickerRouting.Selection) {
+        guard result.workspaceID == session.outputSourceID else { return }
+        let windowID = result.windowID
         let selection = SidebarSelection.window(windowID)
         guard sidebarSelection != selection,
               captureWindows.contains(where: { $0.windowID == windowID }) else {
@@ -477,7 +486,7 @@ public struct ContentView: View {
     private func handleClearAllLayersNotification(_ notification: Notification) {
         guard workspaceCommands.isActive else { return }
         deferSessionChange {
-            session.outputCoordinator.profiles.clearBackgrounds()
+            session.outputCoordinator.clearBackgrounds(for: session)
             flow.hideSlides(in: session)
             clearBackgroundVisual()
             clearBackgroundAudio()
@@ -487,7 +496,7 @@ public struct ContentView: View {
     private func handleClearBackgroundVisualNotification(_ notification: Notification) {
         guard workspaceCommands.isActive else { return }
         deferSessionChange {
-            session.outputCoordinator.profiles.clearBackgrounds()
+            session.outputCoordinator.clearBackgrounds(for: session)
             clearBackgroundVisual()
         }
     }
@@ -511,20 +520,6 @@ public struct ContentView: View {
         guard lyricsEditor.isEditing, !isCurrentSelectionMediaFile else { return }
         deferSessionChange {
             _ = saveEditorDraft()
-        }
-    }
-
-    private func handleMainWindowWillCloseNotification(_ notification: Notification) {
-        guard let closingWindow = notification.object as? NSWindow else { return }
-        if closingWindow === workspaceCommands.window { importPanel.cancel() }
-        if closingWindow is PresentationWindow || closingWindow is NSPanel { return }
-        // Reusable file panels can remain in NSApp.windows while hidden.
-        let remainingNonPresentation = NSApp.windows.filter { window in
-            !(window is PresentationWindow) && !(window is NSPanel) && window != closingWindow
-        }
-        guard remainingNonPresentation.isEmpty else { return }
-        deferSessionChange {
-            session.stopPresentation()
         }
     }
 
@@ -715,10 +710,10 @@ public struct ContentView: View {
         preferredSelection: Slide.ID? = nil,
         preferredSelectionIndex: Int? = nil
     ) {
-        currentLyricsSourceURL = lyricsSourceURL
         flow.setCurrentSlides(
             slides,
             in: session,
+            lyricsSourceURL: lyricsSourceURL,
             preferredSelection: preferredSelection,
             preferredSelectionIndex: preferredSelectionIndex
         )
@@ -729,7 +724,6 @@ public struct ContentView: View {
         preferredSelection: Slide.ID? = nil,
         preferredSelectionIndex: Int? = nil
     ) {
-        currentLyricsSourceURL = nil
         flow.setCurrentPDFSource(
             source,
             in: session,
@@ -741,7 +735,6 @@ public struct ContentView: View {
     private func clearPreviewDocument() {
         let clearedWindowFromPreview = flow.previewSlides.contains { $0.captureWindowID != nil }
         cancelPreviewLoad()
-        previewSource = .none
         previewLoadError = nil
         flow.clearPreviewDocument()
         lyricsEditor.invalidatePreview()
@@ -753,7 +746,6 @@ public struct ContentView: View {
     private func clearCurrentDocument() {
         let clearedWindowFromCurrent = session.slides.contains { $0.captureWindowID != nil }
         flow.clearCurrentDocument(in: session)
-        currentLyricsSourceURL = nil
         flow.isCurrentCollapsed = true
         if clearedWindowFromCurrent, case .window = sidebarSelection {
             setSidebarSelectionWithoutLoading(nil)
@@ -779,6 +771,7 @@ public struct ContentView: View {
 
     private func handleLoadPreviewToCurrent() {
         guard canLoadPreviewToCurrent else { return }
+        session.setCurrentResourceScope(securityScopedRoot)
 
         if lyricsEditor.isEditing {
             commitCurrentSlides(
@@ -838,7 +831,7 @@ public struct ContentView: View {
     private func toggleSlidesFromUI() { flow.toggleSlidesVisibility(in: session) }
 
     private func updateLyricsProjectionSize() {
-        let size = projectionDisplays.resolvedMonitor()?.frame.size
+        let size = session.outputCoordinator.thumbnailGeometry(workspace: session.outputSourceID)
         deferSessionChange {
             lyricsProjectionSize = size
         }
@@ -1935,7 +1928,7 @@ public struct ContentView: View {
 
     private func pickWindowForPreview() {
         guard isWindowCaptureSupported else { return }
-        screenCaptureManager.presentWindowPicker()
+        screenCaptureManager.presentWindowPicker(workspaceID: session.outputSourceID)
     }
 
     private func removeWebpage(_ url: URL) {
@@ -2185,7 +2178,6 @@ public struct ContentView: View {
         guard previewTransitionIsCurrent(token: token, source: source) else { return }
         let clearedWindowFromPreview = flow.previewSlides.contains { $0.captureWindowID != nil }
         pendingPreviewSource = nil
-        previewSource = .none
         flow.clearPreviewDocument()
         previewLoadError = "Couldn’t load \(previewSourceName(source))."
         if clearedWindowFromPreview {

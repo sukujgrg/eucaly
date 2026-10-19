@@ -70,6 +70,23 @@ final class OutputSettingsDocumentView: NSView {
     override var isFlipped: Bool { true }
 }
 
+/// A section can be hidden as a unit while its controls keep their own state.
+@MainActor
+final class OutputSettingsGroup: NSStackView {
+    init() {
+        super.init(frame: .zero)
+        orientation = .vertical; alignment = .leading; spacing = 12
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    func add(_ row: NSView) {
+        addArrangedSubview(row); row.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+    }
+    func section(_ title: String) {
+        if !arrangedSubviews.isEmpty { let separator = NSBox(); separator.boxType = .separator; add(separator) }
+        add(outputSettingsLabel(title, heading: true))
+    }
+}
+
 /// Explicit widths keep native form rows aligned as the Settings window resizes.
 @MainActor
 final class OutputSettingsForm: NSScrollView {

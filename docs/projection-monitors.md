@@ -10,7 +10,7 @@ Choose a monitor before showing slides or background visuals. The selection is r
 
 While projection is open, eucaly keeps the Mac and displays awake. This includes hidden slides, an empty Current, and background-only output. **Stop Projection**, closing the projection window, disconnecting its monitor, or quitting releases the protection. Browsing, Identify, and audio playing without projection do not keep displays awake. Your macOS sleep settings are not changed.
 
-Names and assignments follow the macOS display UUID, using the same identity mechanism as AltView. macOS may report a different identity after changing cables or adapters; use Identify again to confirm the physical screens. If monitors report the same identity, eucaly refuses to guess. Use distinguishable connections and extended displays in macOS.
+Names and assignments follow the macOS display UUID. macOS may report a different identity after changing cables or adapters; use Identify again to confirm the physical screens. If monitors report the same identity, eucaly refuses to guess. Use distinguishable connections and extended displays in macOS.
 
 ## Implementation and validation
 

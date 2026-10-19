@@ -35,7 +35,7 @@ Browsing never silently replaces **Current**.
 - Recursive text search under library root
 - [Named projection monitors](docs/projection-monitors.md) with remembered numbers, physical display identity, and an Identify action
 - Keeps the Mac and displays awake while projection is open, including hidden slides and background-only output
-- [AltView Lyrics and Media outputs](docs/altview.md) with one receiver pairing, independent enablement, and nonblocking delivery of eucaly's own live program
+- Named workspace tabs with independent Currents, detachable windows and exclusive output assignments. Optional [generic NDI outputs](docs/ndi-runtime.md) carry keyed lyrics or full-frame media on the same stable 1080p30 source, with shared playback per workspace and an explicit background-music route, using a separately installed runtime. Physical receiver qualification is still required before production use.
 - Sparkle self-updates with quiet toolbar reminders during presentations
 
 Webpage behavior:

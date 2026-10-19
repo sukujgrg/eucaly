@@ -241,7 +241,6 @@ private final class NativeSettingsFixture {
     let defaults: UserDefaults
     let store: OutputProfileStore
     let outputs: OutputCoordinator
-    let router: AltViewOutputRouter
     let driver = NativeSettingsUpdateDriver()
     let cache = NativeSettingsCache()
     let controller: SettingsWindowController
@@ -250,16 +249,14 @@ private final class NativeSettingsFixture {
         defaults.set(savedPane, forKey: "settingsTab")
         store = OutputProfileStore(defaults: defaults)
         outputs = OutputCoordinator(profiles: store, displays: ProjectionDisplayManager(displays: { [] }), driverFactory: { FakeOutputDriver() })
-        router = AltViewOutputRouter(store: store, senderID: UUID(), defaults: defaults, pairingStore: RecordingAltViewPairingStore())
-        router.start(coordinator: outputs, discover: false)
         let updates = AppUpdateViewModel(driver: driver), cache = self.cache
         let general = GeneralSettingsController(updates: updates, defaults: defaults,
             readCacheStats: { cache.stats }, clearCache: { cache.clears += 1 })
-        controller = SettingsWindowController(outputs: outputs, router: router, updates: updates, defaults: defaults, general: general)
+        controller = SettingsWindowController(outputs: outputs, updates: updates, defaults: defaults, general: general)
         controller.window?.setFrameOrigin(.init(x: -10000, y: -10000))
     }
     func close() {
-        controller.close(); router.shutdown(); outputs.stop(); store.flush()
+        controller.close(); outputs.stop(); store.flush()
         defaults.removePersistentDomain(forName: suite)
     }
 }

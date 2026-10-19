@@ -238,8 +238,10 @@ final class LyricsLayoutRenderingTests: XCTestCase {
         defer { preferences.removePersistentDomain(forName: suiteName) }
         preferences.set("columns", forKey: "presentationLyricsLayout")
         preferences.set("left", forKey: "presentationTextAlignment")
-        let session = PresentationSession()
+        let fixture = LocalOutputHarness(); defer { fixture.stop() }
+        let session = fixture.session
         session.setSlides([slide])
+        session.showSlides()
 
         for position in PresentationVerticalPosition.allCases {
             preferences.set(position.rawValue, forKey: "presentationVerticalPosition")
@@ -343,8 +345,10 @@ final class LyricsLayoutRenderingTests: XCTestCase {
         defer { preferences.removePersistentDomain(forName: suiteName) }
         preferences.set("left", forKey: "presentationTextAlignment")
         preferences.set("top", forKey: "presentationVerticalPosition")
-        let session = PresentationSession()
+        let fixture = LocalOutputHarness(); defer { fixture.stop() }
+        let session = fixture.session
         session.setSlides([slide])
+        session.showSlides()
         let thumbnailSize = CGSize(width: 320, height: 180)
 
         for layout in PresentationLyricsLayout.allCases {
@@ -390,12 +394,14 @@ final class LyricsLayoutRenderingTests: XCTestCase {
         preferences.set("left", forKey: "presentationTextAlignment")
         preferences.set("top", forKey: "presentationVerticalPosition")
         preferences.set(0, forKey: "presentationPaddingScale")
-        let session = PresentationSession()
+        let fixture = LocalOutputHarness(); defer { fixture.stop() }
+        let session = fixture.session
         let thumbnailSize = CGSize(width: 320, height: 180)
 
         for (source, columnStarts) in fixtures {
             let slide = try XCTUnwrap(LyricsParser.parseDocument(source).slides.first)
             session.setSlides([slide])
+            session.showSlides()
             let projection = try render(
                 PresentationView().environmentObject(session).defaultAppStorage(preferences),
                 size: CGSize(width: 960, height: 360),

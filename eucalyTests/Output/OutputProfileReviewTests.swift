@@ -12,7 +12,7 @@ final class OutputProfileReviewTests: XCTestCase {
         let displays = ProjectionDisplayManager(displays: { monitors }); displays.select(monitors[0].target)
         let profiles = OutputProfileStore(monitor: monitors[0].target)
         profiles.edit { doc in
-            for index in 1..<doc.profiles.count where doc.profiles[index].isNative {
+            for index in 1..<doc.profiles.count {
                 doc.destinations.append(.init(name: doc.profiles[index].name, profileID: doc.profiles[index].id, monitor: monitors[index].target))
             }
         }
@@ -89,7 +89,7 @@ final class OutputProfileReviewTests: XCTestCase {
     }
 
     func testEscapeHidesActualForegroundAcrossEveryProfileAndKeepsCurrent() async throws {
-        for kind in OutputProfile.Kind.allCases where kind != .altView {
+        for kind in OutputProfile.Kind.allCases {
             let (outputs, session, destination) = setup(kind)
             defer { outputs.stop() }
             let slides = LyricsParser.parseDocument("Verse\nPrimary\nMeaning\nMeaning text\nTranslation\nTranslation text").slides
@@ -131,7 +131,7 @@ final class OutputProfileReviewTests: XCTestCase {
         var page = CGRect(x: 0, y: 0, width: 640, height: 360)
         let context = try XCTUnwrap(CGContext(pdfURL as CFURL, mediaBox: &page, nil))
         context.beginPDFPage(nil); context.setFillColor(NSColor.red.cgColor); context.fill(page); context.endPDFPage(); context.closePDF()
-        for kind in OutputProfile.Kind.allCases where kind != .altView {
+        for kind in OutputProfile.Kind.allCases {
             let (outputs, session, destination) = setup(kind); defer { outputs.stop() }
             session.setSlides([.init(index: 1, lines: [], label: "Image", videoURL: nil, pdfURL: nil, pdfPageIndex: nil, imageURL: imageURL)])
             session.showSlides()
@@ -159,7 +159,7 @@ final class OutputProfileReviewTests: XCTestCase {
     func testEveryVideoRendererUsesOneProgramPlayerAndHideLeavesOnlyConfidenceClock() async throws {
         let (outputs, session, _) = setup(.audience)
         outputs.profiles.edit { doc in
-            for profile in doc.profiles.dropFirst() where profile.isNative {
+            for profile in doc.profiles.dropFirst() {
                 doc.destinations.append(.init(name: profile.name, profileID: profile.id, monitor: nil))
             }
         }
@@ -241,32 +241,31 @@ final class OutputProfileReviewTests: XCTestCase {
         let displays = ProjectionDisplayManager(displays: { [monitor] }); displays.select(monitor.target)
         let profiles = OutputProfileStore(monitor: monitor.target)
         profiles.edit { $0.destinations[0].profileID = OutputProfile.confidenceID }
-        let workspace = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 480, height: 270),
-                                 styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        workspace.isReleasedWhenClosed = false
+        let focus = StandbyWorkspaceFocus()
         var opens = 0
         let outputs = OutputCoordinator(profiles: profiles, displays: displays, driverFactory: {
             let driver = RecordingStandbyDriver()
             driver.didOpen = { _, activate in
                 opens += 1
-                XCTAssertTrue(workspace.isVisible, "The native workspace must exist and be visible before projection opens")
+                XCTAssertTrue(focus.window?.isVisible == true, "The native workspace must exist and be visible before projection opens")
                 XCTAssertFalse(activate)
             }
             return driver
         })
         let session = PresentationSession(projectionDisplays: displays, outputCoordinator: outputs)
-        let commands = OutputWorkspaceCommands()
-        let scope = OutputWorkspaceScope.ScopeView(commands: commands, session: session)
-        defer { outputs.stop(); scope.detach(); workspace.close() }
+        let windows = makeWorkspaceWindows(outputs: outputs, keyWindow: { focus.window })
+        defer { outputs.stop(); for window in windows.windows.values { window.close() } }
         await settle()
-        XCTAssertEqual(opens, 0, "Constructing the runtime must not suppress SwiftUI's initial WindowGroup")
-        workspace.contentView = scope
+        XCTAssertEqual(opens, 0, "Constructing the runtime never opens a controls or projection window")
+        let workspace = try XCTUnwrap(windows.restoreWindow(identifier: OutputWorkspaceWindows.identifier(for: session.outputSourceID)))
+        XCTAssertFalse(workspace.isVisible)
         workspace.orderBack(nil)
         await settle(); XCTAssertEqual(opens, 0)
+        focus.window = workspace
         NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: workspace)
         await settle()
         XCTAssertEqual(opens, 1)
-        XCTAssertTrue(commands.window === workspace)
+        XCTAssertTrue(windows.controllers[session.outputSourceID]?.commands.window === workspace)
         XCTAssertTrue(outputs.isRunning); XCTAssertFalse(session.isPresenting)
         XCTAssertNil(outputs.ownership.source)
     }
@@ -296,20 +295,6 @@ final class OutputProfileReviewTests: XCTestCase {
         })
         defer { outputs.stop() }
         let session = PresentationSession(projectionDisplays: displays, outputCoordinator: outputs)
-        let sender = RecordingAltViewSender()
-        let suite = "ConfidenceStartup.\(UUID())", defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let service = AltViewService(defaults: defaults, pairingStore: RecordingAltViewPairingStore(), senderFactory: { _ in sender })
-        let router = AltViewOutputRouter(store: profiles, senderID: UUID(), defaults: defaults,
-            pairingStore: RecordingAltViewPairingStore(), channelFactory: { service })
-        let receiverID = UUID()
-        var remote = OutputDestinationConfiguration(name: "AltView", profileID: OutputProfile.altViewID, monitor: nil)
-        remote.destination = .altView(.init(receiverID: receiverID, name: "Receiver")); remote.savedReceiver = remote.receiver
-        profiles.edit { $0.destinations.append(remote) }
-        router.start(coordinator: outputs, discover: false)
-        defer { router.shutdown() }
-        router.receiveDiscovered([AltViewDestination(.init(name: "Receiver", endpoint: .hostPort(host: "127.0.0.1", port: 49721), receiverID: receiverID, isLocal: true))!], notice: nil)
-        router.connect(remote.id, code: "ABCD2345"); service.receive(sender.connectedStatus)
         session.setSlides(LyricsParser.parseDocument("Verse\nPrivate prepared lyrics").slides)
         let selection = session.currentSlideID
         outputs.workspaceWindowReady(session)
@@ -323,7 +308,6 @@ final class OutputProfileReviewTests: XCTestCase {
         XCTAssertEqual(outputs.actionClock.current, 0)
         XCTAssertTrue(outputs.text.isEmpty); XCTAssertNil(outputs.media.program)
         XCTAssertEqual(session.currentSlideID, selection)
-        XCTAssertEqual(sender.takes, 0); XCTAssertTrue(sender.submissions.isEmpty)
         let (window, view) = host(outputs, destination: destination); defer { window.close() }
         await settle(); try assertCenteredClock(view)
         outputs.toggleSlides(); await settle()
@@ -582,6 +566,9 @@ final class OutputProfileReviewTests: XCTestCase {
     private func settle() async { try? await Task.sleep(for: .milliseconds(100)) }
 }
 
+
+@MainActor
+private final class StandbyWorkspaceFocus { var window: NSWindow? }
 
 @MainActor
 private final class RecordingStandbyDriver: OutputDestinationDriving {

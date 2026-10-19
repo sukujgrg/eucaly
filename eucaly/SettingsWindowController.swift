@@ -5,9 +5,9 @@ import AppKit
 final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     let settings: NativeSettingsController
 
-    init(outputs: OutputCoordinator, router: AltViewOutputRouter, updates: AppUpdateViewModel,
+    init(outputs: OutputCoordinator, updates: AppUpdateViewModel,
          defaults: UserDefaults = .standard, general: GeneralSettingsController? = nil) {
-        settings = NativeSettingsController(outputs: outputs, router: router, updates: updates, defaults: defaults, general: general)
+        settings = NativeSettingsController(outputs: outputs, updates: updates, defaults: defaults, general: general)
         let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 820, height: 650),
                               styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "Settings"
@@ -56,11 +56,11 @@ final class NativeSettingsController: NSTabViewController {
     private var isConfigured = false
     var selectedPane: Pane { selectedTabViewItemIndex == 1 ? .outputs : .general }
 
-    init(outputs: OutputCoordinator, router: AltViewOutputRouter, updates: AppUpdateViewModel,
+    init(outputs: OutputCoordinator, updates: AppUpdateViewModel,
          defaults: UserDefaults, general: GeneralSettingsController?) {
         self.defaults = defaults
         self.general = general ?? GeneralSettingsController(updates: updates, defaults: defaults)
-        self.outputs = ManageOutputsController(coordinator: outputs, router: router)
+        self.outputs = ManageOutputsController(coordinator: outputs)
         let saved = defaults.string(forKey: "settingsTab") ?? "general"
         super.init(nibName: nil, bundle: nil)
         title = "Settings"; tabStyle = .toolbar; transitionOptions = []

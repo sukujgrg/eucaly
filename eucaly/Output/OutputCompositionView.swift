@@ -10,12 +10,12 @@ struct OutputCompositionView: View {
         GeometryReader { geometry in
             if let profile = coordinator.profile(for: destinationID) {
                 let size = geometry.size
-                let confidence = OutputConfidenceContent(snapshot: coordinator.snapshot, profile: profile)
+                let confidence = OutputConfidenceContent(snapshot: coordinator.snapshot(for: destinationID), profile: profile)
                 ZStack {
                     profile.background.colour.color.frame(width: size.width, height: size.height)
-                    OutputBackgroundView(profile: profile, url: coordinator.media.backgroundURL(for: profile),
-                                         player: coordinator.media.backgroundPlayer(for: profile), visible: coordinator.visible,
-                                         isMedia: coordinator.liveSlide.map { AltViewPresentationAdapter.mode(for: $0) == .media } ?? false)
+                    OutputBackgroundView(profile: profile, url: coordinator.media(for: destinationID)?.backgroundURL(for: profile),
+                                         player: coordinator.media(for: destinationID)?.backgroundPlayer(for: profile), visible: coordinator.snapshot(for: destinationID).visible,
+                                         isMedia: coordinator.snapshot(for: destinationID).localMedia.map { OutputContentClassifier.mode(for: $0) == .media } ?? false)
                         .frame(width: size.width, height: size.height)
                     content(profile: profile, confidence: confidence, size: size).frame(width: size.width, height: size.height)
                 }.frame(width: size.width, height: size.height).clipped()
@@ -26,17 +26,17 @@ struct OutputCompositionView: View {
         if profile.kind == .confidence {
             if confidence.isIdle {
                 OutputConfidenceIdleClock(size: size)
-            } else if let slide = confidence.media, let session = coordinator.localSession {
+            } else if let slide = confidence.media, let session = coordinator.session(for: destinationID) {
                 media(slide, profile: profile, session: session, size: size)
             } else {
                 OutputConfidenceView(profile: profile, content: confidence, size: size)
             }
-        } else if coordinator.visible {
-            if let slide = coordinator.liveSlide, let session = coordinator.localSession,
-                      AltViewPresentationAdapter.mode(for: slide) == .media {
+        } else if coordinator.snapshot(for: destinationID).visible {
+            if let slide = coordinator.snapshot(for: destinationID).localMedia, let session = coordinator.session(for: destinationID),
+                      OutputContentClassifier.mode(for: slide) == .media {
                 media(slide, profile: profile, session: session, size: size)
             } else {
-                OutputTextView(content: coordinator.text, profile: profile, size: size)
+                OutputTextView(content: coordinator.snapshot(for: destinationID).current, profile: profile, size: size)
             }
         }
     }
@@ -47,7 +47,7 @@ struct OutputCompositionView: View {
             if slide.webpageURL != nil && profile.kind != .audience {
                 OutputWebpageCompanionView()
             } else {
-                OutputMediaSlideView(slide: slide, session: session, runtime: coordinator.media,
+                OutputMediaSlideView(slide: slide, session: session, runtime: coordinator.program(session.outputSourceID).media,
                                      showsBackground: profile.background.whenMediaShown).id(slide.id)
             }
         }.frame(width: size.width, height: size.height)

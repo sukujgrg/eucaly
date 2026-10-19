@@ -6,19 +6,23 @@ nonisolated final class ProjectionSleepPrevention {
     private let beginActivity: (ProcessInfo.ActivityOptions, String) -> NSObjectProtocol
     private let endActivity: (NSObjectProtocol) -> Void
     private var activity: NSObjectProtocol?
+    private let preventsDisplaySleep: Bool
 
-    init(beginActivity: @escaping (ProcessInfo.ActivityOptions, String) -> NSObjectProtocol = {
+    init(preventsDisplaySleep: Bool = true, beginActivity: @escaping (ProcessInfo.ActivityOptions, String) -> NSObjectProtocol = {
         ProcessInfo.processInfo.beginActivity(options: $0, reason: $1)
     }, endActivity: @escaping (NSObjectProtocol) -> Void = {
         ProcessInfo.processInfo.endActivity($0)
     }) {
         self.beginActivity = beginActivity
         self.endActivity = endActivity
+        self.preventsDisplaySleep = preventsDisplaySleep
     }
 
     func start() {
         guard activity == nil else { return }
-        activity = beginActivity([.userInitiated, .idleSystemSleepDisabled, .idleDisplaySleepDisabled],
+        var options: ProcessInfo.ActivityOptions = [.userInitiated, .idleSystemSleepDisabled]
+        if preventsDisplaySleep { options.insert(.idleDisplaySleepDisabled) }
+        activity = beginActivity(options,
                                  "Presenting eucaly output")
     }
 

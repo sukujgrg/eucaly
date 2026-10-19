@@ -4,6 +4,32 @@ import AppKit
 import CoreGraphics
 import CoreVideo
 
+/// The system picker can change application/window focus while it is open.
+/// Keep the requesting workspace through asynchronous resolution and reject
+/// completions superseded by a newer request or cancellation.
+nonisolated struct WindowCapturePickerRouting {
+    struct Request: Equatable, Sendable {
+        let id = UUID()
+        let workspaceID: UUID
+    }
+    struct Selection: Sendable {
+        let workspaceID: UUID
+        let windowID: CGWindowID
+    }
+    private(set) var current: Request?
+    @discardableResult mutating func begin(workspaceID: UUID) -> Request {
+        let request = Request(workspaceID: workspaceID)
+        current = request
+        return request
+    }
+    mutating func complete(_ request: Request, windowID: CGWindowID) -> Selection? {
+        guard current == request else { return nil }
+        current = nil
+        return Selection(workspaceID: request.workspaceID, windowID: windowID)
+    }
+    mutating func cancel() { current = nil }
+}
+
 @available(macOS 14.0, *)
 final class ScreenCaptureManager: NSObject, ObservableObject {
     static let shared = ScreenCaptureManager()
@@ -21,7 +47,8 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
     @MainActor private var activeStreams: [CGWindowID: ActiveCapture] = [:]
     @MainActor private var captureFilters: [CGWindowID: SCContentFilter] = [:]
     @MainActor @Published var windows: [CapturedWindow] = []
-    @MainActor let windowPickerSelections = PassthroughSubject<CGWindowID, Never>()
+    @MainActor let windowPickerSelections = PassthroughSubject<WindowCapturePickerRouting.Selection, Never>()
+    @MainActor private var pickerRouting = WindowCapturePickerRouting()
     @MainActor private var availabilityMonitorTask: Task<Void, Never>?
     private var pickerConfigured = false
     private var pickerObserverRegistered = false
@@ -42,13 +69,15 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
 
     // MARK: - Picker
     @MainActor
-    func presentWindowPicker() {
+    func presentWindowPicker(workspaceID: UUID) {
+        pickerRouting.begin(workspaceID: workspaceID)
         configurePickerIfNeeded()
         SCContentSharingPicker.shared.present(using: .window)
     }
 
     @MainActor
     func clearWindows() {
+        pickerRouting.cancel()
         windows = []
         captureFilters = [:]
         stopAvailabilityMonitorIfIdle()
@@ -154,6 +183,7 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
 
     @MainActor
     func clearWindowSelectionAndDeactivatePicker() async {
+        pickerRouting.cancel()
         await stopAllCaptures()
         windows = []
         captureFilters = [:]
@@ -183,7 +213,9 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
     }
 
     @MainActor
-    private func updatePickedWindows(_ pickedWindows: [CapturedWindow], filter: SCContentFilter) async {
+    private func updatePickedWindows(_ pickedWindows: [CapturedWindow], filter: SCContentFilter,
+                                     request: WindowCapturePickerRouting.Request?) async {
+        guard pickerRouting.current == request else { return }
         windows = pickedWindows
 
         var nextFilters: [CGWindowID: SCContentFilter] = [:]
@@ -192,8 +224,11 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
         }
         captureFilters = nextFilters
 
-        if let pickedWindow = pickedWindows.first {
-            windowPickerSelections.send(pickedWindow.windowID)
+        if let request, let pickedWindow = pickedWindows.first,
+           let selection = pickerRouting.complete(request, windowID: pickedWindow.windowID) {
+            windowPickerSelections.send(selection)
+        } else {
+            pickerRouting.cancel()
         }
 
         let pickedWindowIDs = Set(pickedWindows.map(\.windowID))
@@ -332,14 +367,16 @@ extension ScreenCaptureManager: SCContentSharingPickerObserver {
     func contentSharingPicker(_ picker: SCContentSharingPicker, didCancelFor stream: SCStream?) {
         // Keep previous picked window list on cancel.
         Task { @MainActor in
+            pickerRouting.cancel()
             deactivatePickerIfIdle()
         }
     }
 
     func contentSharingPicker(_ picker: SCContentSharingPicker, didUpdateWith filter: SCContentFilter, for stream: SCStream?) {
-        Task {
+        Task { @MainActor in
+            let request = pickerRouting.current
             let pickedWindows = await resolvePickedWindows(from: filter)
-            await updatePickedWindows(pickedWindows, filter: filter)
+            await updatePickedWindows(pickedWindows, filter: filter, request: request)
         }
     }
 

@@ -30,7 +30,9 @@ eucaly does not receive or re-render its scripture.
 
 ### Main Entry
 - `eucaly/eucalyApp.swift`
-  - Main `WindowGroup`
+  - Native AppKit application entry, menus and app-owned workspace `NSWindowController`s, identified by durable workspace UUIDs
+  - `OutputWorkspaceWindows` owns named tabs, detaching, reopening and native state restoration; `NSHostingController` hosts the existing SwiftUI content and toolbar
+  - App-owned Manage Workspaces window provides Open, Rename and guarded Delete from the Workspace menu and workspace toolbar
   - Native Settings window (`SettingsWindowController`, `GeneralSettingsController`)
   - App command menu and shortcuts
 
@@ -49,36 +51,42 @@ eucaly does not receive or re-render its scripture.
 ### Main Composition
 - `eucaly/ContentView.swift`
   - App-level orchestrator
-  - Owns:
-    - `@StateObject var session = PresentationSession()`
-    - `@StateObject var flow = PresentationFlowController()`
+  - Receives the app-retained workspace `PresentationSession` and `PresentationFlowController`; SwiftUI tab visibility never owns live playback
   - Hosts split view, toolbar controls, selection handling, and sidebar callbacks
 
 ### Output Profiles
-- AppDelegate owns OutputProfileStore, OutputCoordinator and AltViewOutputRouter independently of controls windows. OutputCoordinator owns native destinations, local workspace ownership, snapshots and shared media. There is no incoming presentation receiver or forwarding path.
-- One output group follows one explicitly activated local Current. Profiles own typography and visual backgrounds; destinations independently reference physical monitor UUIDs or discovered AltView receiver UUIDs. Migration enables only the existing Audience output and never chooses a fallback monitor.
-- Show, live Load/Switch, visible Current navigation and same-slide activation select the active workspace. Hidden navigation and passive preparation in another workspace remain private. Hide retains the last snapshot privately; Clear removes it. Background and audio controls remain independent.
-- SwiftUI WindowGroup owns the workspace lifecycle. Coordinator construction never opens windows. The native workspace didBecomeKey notification permits Confidence standby after the workspace exists; no timer, polling or replacement main window is used. Projection windows can become key, never main, and are excluded from automatic restoration.
-- Open Confidence shows a large centered clock when empty, cleared or hidden. Current is on the left and Next on the right, with no source-name header or media filename. Enabled, assigned Confidence opens automatically after the real workspace becomes key or after assignment/enable. Standby never shows a slide, steals focus, takes ownership, starts program media or publishes to AltView. Stop, native close and display loss suppress reopening until Open Confidence/Show or a new assignment/enable. The old Timer/Clock overlay remains removed.
-- Local OutputActionClock order and session cancellation generations invalidate old queued navigation after newer commands or destination closure. Native close and outgoing connection callbacks are generation guarded.
-- Reservations and teardown are per destination. Losing one retains the others, resources, Current and saved assignments. Reconnection requires explicit Show; never silently move output to a different monitor. Enabled destinations cannot share a monitor or AltView receiver. Disabled rows retain assignments without reserving them. Pickers offer None.
+- AppDelegate owns OutputProfileStore, OutputCoordinator and NDIOutputRouter independently of controls windows. OutputCoordinator owns native destinations, local workspace ownership, snapshots and shared media. There is no incoming presentation receiver or forwarding path.
+- Each named workspace owns one Current, Preview flow, accepted snapshot, action clock and program media runtime. Destinations have one durable workspaceID; several outputs share its program playback and different workspaces present simultaneously. Profiles own reusable appearance, never content. New workspaces have no outputs. Native tabs retain editor/Preview/Current; detaching moves the same window. Tab/focus changes never reroute or start output.
+- Workspace creation is limited to four through one shared creation guard. Existing saved/recovered records above four remain available under the legacy persistence bound; do not trim or reassign them on restore. Keep at least one workspace. Manage Workspaces lists saved identities, assigned outputs (including disabled rows), playback/output status and open/closed controls. Delete is separate from closing a tab: reject any assigned destination or running program/background/audio playback, honor the native unsaved-edit check and revalidate after it. Deletion releases only that workspace's runtime/paused music owner and invalidates queued work without rerouting music or other outputs. Removed workspace restoration and late callbacks cannot revive it. Closing controls continues to preserve Current, live output and background audio.
+- Show, live Load/Switch, visible Current navigation, same-slide activation, playback and ordinary Stop operate only on that workspace’s assigned destinations. The output picker shows the saved owner and an explicit Move to This Workspace action; Show never takes another workspace’s output. Preflight transfers before changing ownership. Hide retains its private snapshot; Clear removes foreground only. Assignments survive Hide/Clear/Stop. Stop All Outputs is a distinct global action. Background and audio controls remain independent.
+- AppDelegate owns OutputWorkspaceWindows and its native workspace window controllers. SwiftUI content receives an already prepared session and never creates or discovers controls windows. AppKit restores windows by workspace UUID and owns tab groups; detaching moves the same window. Coordinator construction never opens windows. The native workspace didBecomeKey delegate callback permits Confidence standby after the workspace exists; no timer, polling or replacement main window is used. Projection windows can become key, never main, and are excluded from automatic restoration.
+- Open Confidence shows a large centered clock when empty, cleared or hidden. Current is on the left and Next on the right, with no source-name header or media filename. Enabled, assigned Confidence opens automatically after the real workspace becomes key or after assignment/enable. Standby never shows a slide, steals focus, takes ownership, starts program media or publishes to NDI. Stop, native close and display loss suppress reopening until Open Confidence/Show or a new assignment/enable. The old Timer/Clock overlay remains removed.
+- Per-workspace OutputActionClock order and session cancellation generations invalidate old queued navigation after newer commands, transfer or destination closure without canceling another workspace’s navigation. Native close and outgoing connection callbacks are generation guarded.
+- Reservations and teardown are per destination. Losing one retains the others, resources, Current and saved assignments. Reconnection requires explicit Show; never silently move output to a different monitor. Enabled destinations cannot share a monitor or NDI source name. Disabled rows retain assignments without reserving them. Pickers offer None.
 - Images, PDFs, video and picked windows use the same native media boundary in every enabled profile. Live webpages require one Audience monitor; companions show a webpage status without additional WebKit playback. Remote-only media, including deferred model refresh, must not replace a valid live lyrics program.
-- OutputMediaRuntime owns one program AVPlayer and pools matching muted background resources. ScreenCaptureManager owns one picker-approved stream with reference-counted consumers and GPU-backed sample-buffer fan-out. Closing one destination does not stop others. Independent background audio has one explicit session owner.
-- AppDelegate owns one native AppKit Settings window shared by the app menu, Manage Outputs toolbar action and inline output notices. General and Manage Outputs use native toolbar tabs. Appearance and backgrounds live in Manage Outputs; thumbnail size and font size use a separate native Thumbnails toolbar menu. Add Native and Add AltView create disabled, unassigned destinations. Audience, Confidence and Lower Third are native appearance profiles; AltView owns its appearance and has no profile picker. Lower Third defaults to chroma green. Retired Meaning/Translation presets migrate to Audience while custom copies retain their settings.
-- Validate a destination's assignment before enabling it. Conflicting monitor/receiver attempts leave its saved enabled state and assignment unchanged, with an inline settings error. Disabled destinations may retain shared assignments. Output failures use an inline workspace notice with Manage Outputs and Dismiss actions; never show a blocking output-unavailable dialog.
+- Each workspace’s OutputMediaRuntime owns one program AVPlayer shared by all its outputs and pools matching muted background resources. Independent workspaces have independent program players that outlive inactive tabs. ScreenCaptureManager owns one picker-approved stream with reference-counted consumers and GPU-backed sample-buffer fan-out. Closing one destination does not stop others. Independent background audio has one explicit session owner.
+- AppDelegate owns one native AppKit Settings window shared by the app menu, Manage Outputs toolbar action and inline output notices. General and Manage Outputs use native toolbar tabs. Appearance and backgrounds live in Manage Outputs; thumbnail size and font size use a separate native Thumbnails toolbar menu. Add Native and Add NDI Output create disabled destinations for the controlled workspace. Native monitors are unassigned; generic NDI sources require no receiver assignment. Multiple generic NDI outputs use unique enabled names, with eucaly as the first default source name. Audience, Confidence and Lower Third are locally rendered appearance profiles. NDI output-level edits own independent customized appearances. Lower Third defaults to chroma green. Retired Meaning/Translation presets migrate to Audience while custom copies retain their settings.
+- Validate a destination's assignment before enabling it. Conflicting monitor/source-name attempts leave its saved enabled state and assignment unchanged, with an inline settings error. Disabled destinations may retain shared assignments. Output failures use an inline workspace notice with Manage Outputs and Dismiss actions; never show a blocking output-unavailable dialog.
 - Manage Outputs uses AppKit list-and-detail navigation, with native controls, colour wells and NSFontPanel. Settings apply immediately; names commit on Return or editing end, with no Save button. The Settings window owns visibility, resizing and close/reopen lifecycle. Disclosure headers are clickable across the full row. Preserve requested fonts during fallback and relative size inheritance when choosing a component font. Pickers preserve duplicate names by UUID. Audience thumbnails use its typeface/layout with independent size controls. Readability notices remain operator-only.
 - Output-level Customize Appearance and toolbar edits use an exclusive customized profile, preserving reusable profiles and other outputs, including disabled rows. Direct Profiles-list edits intentionally affect every output using that profile. Import legacy appearance preferences only during migration; sidebar background changes must not reimport appearance.
-- Saved profile version 3 removes receiver enablement and Bible settings while retaining local typography, backgrounds, monitor/AltView assignments and pairings. Do not restore incoming reception, scripture components or hub protocol extensions. ViewTheWord's projection and appearance are independent.
+- Manage Outputs groups reusable profiles, assigned output appearances and unused saved appearances using customization metadata and references, never names. Output pickers offer reusable profiles plus the current appearance. Copying an output appearance creates a reusable profile without reassigning outputs. Remove only unused custom profiles, rechecking disabled destinations too; protect built-ins. Retain legacy names/settings until explicit removal. NDI Transparency explains Alpha/Chroma; its chroma colour well appears only in Chroma mode and uses exclusive output customization. Alpha retains the saved key colour. NDI-only appearance editors direct key-colour edits to the output; native/shared profiles explain the existing colour's native-background/chroma meaning. No schema migration or source restart is needed for this UI organization.
+- Saved document version 6 adds durable workspace records and exclusive destination ownership. Existing rows and both legacy NDI sources migrate to Workspace 1, retaining UUIDs, source names, appearances, monitors and music choice; both become generic outputs and are never merged. Duplicate enabled legacy names keep the first enabled row by saved order and disable later rows. Preserve the pre-v6 backup; orphaned owners recover as disabled rows in named recovered workspaces. Version-5 retirement still removes AltView/SRT data. No NDI source is automatically added or started. Credential cleanup follows verified persistence, uses only the exact retired eucaly services, has no authentication UI, and retries at most three times off the UI thread. Do not restore incoming reception, scripture components or hub protocol extensions. ViewTheWord's projection and appearance are independent.
 - See docs/output-profiles-implementation.md for architecture, verification and physical/profiling limits. Snapshot acceptance does not prove GPU cadence or physical delivery.
 
-### AltView Text Output
-- AppDelegate owns one AltViewOutputRouter, one native Bonjour browser and one AltViewService control channel per stable receiver UUID, independently of Lyrics/Media enablement. OutputCoordinator alone publishes the local live program. Preview and renderers never publish.
-- Pairing is embedded below the receiver picker in the existing Manage Outputs Settings form for both Lyrics and Media. Do not open a separate pairing window. Use compact rounded native actions at their intrinsic width; pairing remains receiver-level and never enables or publishes an output.
-- Native profiles use physical monitor UUIDs. AltView rows use stable discovered receiver UUIDs, fresh service resolution, receiver-level Keychain pairings, independent text leases and Media readiness, reconnect and submission-correlated acknowledgement. They allocate no native window and support lyrics without a local monitor. AltView owns its own appearance.
-- Send primary lyrics using LyricsSectionCatalog. Meaning, translation and transliteration remain local companions and never substitute primary lyrics. Media clears remote Audience text; LAN does not carry pixels or audio. Negotiated localProjectionV1 reports only eucaly's exact native Audience window for same-Mac AltView Confidence. Eucaly owns playback/audio for its media.
-- Connect Only, pairing restoration, discovery, passive refresh and reconnect never take a displaced output. Explicit visible presentation, including same-slide activation, independently takes enabled destinations. Retain requests through reconnect, interrupted grants and revoked cached leases. Stop/Disconnect cancels them and releases late grants. Resume applies only to a former owner.
-- Hide/Clear cancels unaccepted take requests while retaining an owned lease for hidden state. Readiness must preserve revision-correlated acceptance. Keep network/encoding/Keychain off the UI thread and use bounded latest-value mailboxes.
-- Outgoing discovery ignores retired presentation-hub advertisements. The outgoing sender identity migrates independently of the removed receiver. Do not restore a session event bridge or per-channel discovery/preferences. See docs/altview.md for setup, provenance and validation boundaries.
+### NDI Output
+- AppDelegate owns one NDIOutputRouter independently of controls windows. Constructors, restoration, assignment, enabling and appearance edits never load NDI or start helpers. Explicit Start/Show/Retry starts each generic source. There are no Lyrics/Media roles; multiple simultaneous outputs support the same content with globally unique enabled source names.
+- Source UUID/name, supervisor, exact helper and receiver connection belong to the app-level destination. Explicit workspace transfer changes accepted content/audio without stopping, renaming or recreating that sender. Content-type changes also retain it. Source name/format edits require a new explicit start after exact-child retirement.
+- The toolbar's NDI menu shows the saved owner and moves an existing source directly to any saved workspace's Current, including closed tabs. One source shows NDI: workspace; multiple sources have separate routing submenus, independent of the default appearance-editing output. Menu construction/focus never starts output or prepares closed sessions; explicit moves reuse the same preflight/transfer path, keep stopped/disabled sources stopped and report failed moves inline in the requesting workspace. Revalidate UUIDs for retained menu actions; do not open tabs, rename sources, change appearances/music routing or recreate helpers during routing.
+- NDIContentRoute owns a sender-lifetime revision counter and content-owner epoch. Transfer fences staged frames/audio; helper GPU completions and SDK pending/current pictures reject old epochs. Keep CVPixelBuffer ownership through GPU acknowledgement and SDK leases until the next async send/flush. Stop never waits on SDK code in the UI process; confirm exit before retrying a generation.
+- A separately installed signed NDI 6.3 runtime is loaded only by the bundled helper. No NDI binary is linked/bundled with the main app. Only the helper has the library-validation exception. Preserve vendor signature checks, private authenticated Mach IPC, exact-process supervision, bounded latest-frame/PCM admission and four output-surface leases.
+- One generic composition path renders the owning workspace’s cached multilingual SwiftUI lyrics, prepared PDF/image textures and AVPlayerItemVideoOutput from its shared player. Text has straight alpha and transparent surroundings by default; chroma retains its configured colour. Independent opaque visual backgrounds remain explicit. There is no Audience capture, dummy display, helper AVPlayer, incoming receiver or forwarding path.
+- Hide/Clear submit actual replacement empty/key frames. Without an opaque background, cleared pixels are transparent. Clear Current removes foreground/soundtrack but retains independent visuals and music. Clearing visual assets retains the remembered key colour, including in alpha mode.
+- Initial format remains SDR 1920×1080 at 30/1 fps, BGRA. Keep 50/60 fps unavailable until separate gates pass. GPU composition does not prove GPU-only encoding; UYVY/UYVA require measured colour/alpha parity and performance qualification.
+- Unsupported webpage/window content cannot replace a valid NDI-only program. Preflight rejects an unsupported transfer before accepting it; native companions may present it while NDI blanks explicitly. Failure or closure affects only that destination; other workspace outputs, Current and local music remain usable. Failed sources wait for explicit Retry/Show.
+- NDI-only program playback remains alive after the last native consumer closes. NDI holds system-sleep prevention; physical windows additionally hold display-sleep prevention. Confidence standby never starts program media or publishes NDI.
+- ProgramAudioBus/taps retain preroll, media/host-time mapping, mute and gain. Each output keeps its continuous audio clock on transfer; video follows its owning workspace. The single explicit local music owner and saved backgroundAudioDestinationID (Off/nil or one NDI UUID) do not change on transfer. No silent music substitution, duplication or rerouting. Preview, microphone, webpage and system audio are excluded. Audio gaps/overruns retire only the affected source.
+- Manage Outputs provides source-name/key/music controls, owner, explicit Move, actual published name, state and Start/Stop/Retry. Both typography and background controls apply to every generic output. Native Settings remain app-owned.
+- See docs/output-profiles-implementation.md, docs/ndi-runtime.md and docs/ndi-output-plan.md for migration, architecture, automated evidence and open physical/sustained qualification. SDK submissions, connections and loopback acceptance do not prove receiver display/audio delivery.
 
 ### Pane Containers
 - `eucaly/EditorPaneContainerView.swift`
@@ -157,7 +165,9 @@ If a new type cannot follow this contract, treat it as a design bug and refactor
 - Projection requires an explicitly selected monitor; there is no Auto selection or fallback. A previous Auto preference becomes unassigned and requires a choice. Each active projection pins the selected physical identity. Disconnect, mirroring, or ambiguous identity closes projection immediately, retaining Current, audio, names, and the saved assignment; reconnect requires an explicit Show Slides. Never silently move output to another monitor.
 
 ### Keyboard Shortcuts (Current)
-- `Cmd+1`: Stop Projection (close projection window and reclaim display)
+- `Cmd+T`: New Workspace Tab
+- `Cmd+1`: Stop Workspace Outputs (retain that workspace’s Current and assignments)
+- Stop All Outputs: explicit global Slides-menu action, without a shortcut
 - `Cmd+2`: Show/Hide Slides
 - `Cmd+3`: Clear Background Visual
 - `Cmd+4`: Clear Background Audio
@@ -181,7 +191,7 @@ Projection screen rule:
 ### Confidence Standby Clock
 - An open Confidence output with no visible text or media always shows a large centered clock.
 - Enabled, assigned Confidence opens its clock before the first slide at startup or after explicit assignment/enable.
-- This clock is local to Confidence and does not change ownership, Current, AltView output or session presentation state.
+- This clock is local to Confidence and does not change ownership, Current, NDI output or session presentation state.
 - Stop, Close Confidence and monitor loss retain an explicit closed state; Open Confidence or Show Slides resumes output on the saved physical identity.
 - The old optional Timer/Clock overlay and countdown controls have been removed.
 
@@ -202,7 +212,7 @@ Window capture supports live streaming of a user-picked app window into a slide.
   - Uses `SCContentSharingPicker` in `.window` mode.
   - `maximumStreamCount = 1`.
   - Maintains selected windows in `@Published var windows: [CapturedWindow]`.
-  - Picker updates are the source of truth for selectable windows.
+  - Picker updates are the source of truth for selectable windows. Only the controlled workspace accepts a picker selection into Preview.
 - No persisted allowlist model is used.
 
 ### Permission Behavior
@@ -395,7 +405,10 @@ When changing behavior, verify:
 - Lyrics/PDF/Image/Video/Webpage/Window all load into Preview.
 - Preview does not implicitly overwrite Current.
 - Load to Current works identically across media types.
-- Projection only renders Current; browsing and passive preparation in another workspace remain private.
+- Projection renders its destination’s assigned workspace Current; browsing, tab/focus changes and passive preparation stay private.
+- Simultaneous workspace programs remain independent; a live NDI transfer retains source identity/helper/connection and rejects prior-owner work.
+- Ordinary controls affect their workspace; Stop All Outputs is explicitly global.
+- Migration/restoration preserve names/IDs/appearances/music and never auto-start NDI.
 - Webpage navigation in Current updates Current/runtime state and projection without forcing Preview to reload.
 - Webpage navigation in Preview updates Preview only and does not rewrite sidebar saved entries.
 - Webpage mute affects Preview, Current, and projection consistently.
@@ -408,5 +421,6 @@ When changing behavior, verify:
 
 ## Keyboard Navigation (Current Pane)
 - Current pane focus is local to `CurrentPaneContainerView`.
-- Arrow keys move selection via `session.moveSelection(delta)`.
+- Arrow keys move selection via `session.moveSelection(delta)` and that workspace’s action clock.
+- Projection-window commands resolve its workspace by destination ID; focus never transfers assignments.
 - Focus state must not become a second selection source of truth.

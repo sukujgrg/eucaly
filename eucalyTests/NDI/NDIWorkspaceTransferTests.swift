@@ -1,0 +1,226 @@
+import XCTest
+import AppKit
+import IOSurface
+import AVFoundation
+@testable import eucaly
+
+@MainActor
+final class NDIWorkspaceTransferTests: XCTestCase {
+    func testToolbarMovesLiveNDIBetweenSharedAndSeparateCurrentUsingTheSameSender() async throws {
+        let log = SenderFactory(), router = NDIOutputRouter(senderFactory: { log.make($0) })
+        let monitor = ProjectionMonitor(id: 1, identity: UUID().uuidString, name: "Audience", frame: .init(x: 0, y: 0, width: 1920, height: 1080))
+        let displays = ProjectionDisplayManager(displays: { [monitor] })
+        let store = OutputProfileStore(monitor: monitor.target)
+        let house = OutputWorkspaceRecord.primaryID
+        XCTAssertTrue(store.renameWorkspace(house, name: "House"))
+        let online = try XCTUnwrap(store.addWorkspace(name: "Online"))
+        let native = store.document.destinations[0]
+        var row = OutputDestinationConfiguration(name: "YouTube", profileID: OutputProfile.lowerThirdID, monitor: nil)
+        row.ndi = .init(sourceName: "Existing eucaly source")
+        store.edit { $0.destinations.append(row); $0.backgroundAudioDestinationID = row.id }
+        let outputs = OutputCoordinator(profiles: store, displays: displays, retainsPreparedSessions: true, ndi: router,
+                                        driverFactory: { FakeOutputDriver() })
+        defer { outputs.stopAllOutputs() }
+        let a = outputs.session(workspace: house), b = outputs.session(workspace: online)
+        a.setSlides(LyricsParser.parseDocument("Verse\nHouse lyrics").slides); a.showSlides()
+        b.setSlides(LyricsParser.parseDocument("Verse\nOnline lyrics").slides)
+        outputs.program(online).flow.setPreviewSlides(LyricsParser.parseDocument("Verse\nPrivate draft").slides)
+        let controls = OutputQuickControlsController(outputs: outputs, workspaceID: house, manageOutputs: {})
+        try await until { log.senders.first?.submissions.last?.request.text?.text.components.first?.text == "House lyrics" }
+        let sender = try XCTUnwrap(log.senders.first), generation = sender.generation
+        let profiles = store.document.profiles, defaultID = store.document.defaultDestinationID
+        func move(to name: String) throws {
+            let item = try XCTUnwrap(controls.ndiButton.menu?.items.first { $0.title == "Move to " + name })
+            XCTAssertTrue(item.isEnabled)
+            NSApp.sendAction(try XCTUnwrap(item.action), to: item.target, from: item)
+        }
+        try move(to: "Online")
+        try await until { sender.submissions.last?.request.text?.text.components.first?.text == "Online lyrics" }
+        XCTAssertEqual(controls.ndiButton.title, "NDI: Online")
+        XCTAssertEqual(outputs.snapshot(for: native.id).current.components.first?.text, "House lyrics")
+        XCTAssertEqual(outputs.destination(native.id), native)
+        XCTAssertEqual(outputs.focusedWorkspaceID, house)
+        XCTAssertEqual(outputs.program(online).flow.previewSlides.first?.lines.first?.text, "Private draft")
+        a.setSlides(LyricsParser.parseDocument("Verse\nLater house lyrics").slides); a.showSlides()
+        try move(to: "House")
+        try await until { sender.submissions.last?.request.text?.text.components.first?.text == "Later house lyrics" }
+        XCTAssertEqual(controls.ndiButton.title, "NDI: House")
+        XCTAssertEqual(outputs.destination(row.id)?.ndi, row.ndi)
+        XCTAssertEqual(store.document.profiles, profiles)
+        XCTAssertEqual(store.document.defaultDestinationID, defaultID)
+        XCTAssertEqual(store.document.backgroundAudioDestinationID, row.id)
+        XCTAssertEqual(sender.name, "Existing eucaly source")
+        XCTAssertEqual(sender.generation, generation)
+        XCTAssertEqual(log.senders.count, 1); XCTAssertEqual(sender.starts, 1); XCTAssertEqual(sender.stops, 0)
+        XCTAssertTrue(zip(sender.submissions, sender.submissions.dropFirst()).allSatisfy { $0.request.revision < $1.request.revision })
+        XCTAssertGreaterThan(try XCTUnwrap(sender.submissions.last?.request.contentEpoch), 2)
+        outputs.stopAllOutputs(); await router.shutdown()
+    }
+
+    func testAppearanceCleanupAndTransparencyEditsKeepTheLiveSender() async throws {
+        let log = SenderFactory()
+        let router = NDIOutputRouter(senderFactory: { log.make($0) })
+        let store = OutputProfileStore()
+        var row = OutputDestinationConfiguration(name: "Online", profileID: OutputProfile.audienceID, monitor: nil)
+        row.ndi = .init(sourceName: "Existing source")
+        var unused = OutputProfile.builtIns[0]
+        unused.id = UUID(); unused.name = "NDI Lyrics Appearance"; unused.customizedForDestinationID = UUID()
+        store.edit { $0.destinations = [row]; $0.profiles.append(unused) }
+        let outputs = OutputCoordinator(profiles: store, displays: ProjectionDisplayManager(displays: { [] }), ndi: router)
+        let session = PresentationSession(projectionDisplays: outputs.displays, outputCoordinator: outputs)
+        defer { outputs.stopAllOutputs() }
+        session.setSlides(LyricsParser.parseDocument("Verse\nLive lyrics").slides); session.showSlides()
+        try await until { log.senders.first?.submissions.last?.request.text != nil }
+        let sender = try XCTUnwrap(log.senders.first), generation = sender.generation
+        let snapshot = outputs.snapshot(for: row.id).current
+        XCTAssertTrue(store.removeProfile(unused.id))
+        let editor = NDIOutputSettingsEditor(coordinator: outputs, destinationID: row.id)
+        _ = editor.view
+        editor.keyMode.selectItem(at: 1)
+        NSApp.sendAction(try XCTUnwrap(editor.keyMode.action), to: editor.keyMode.target, from: editor.keyMode)
+        editor.chromaColour.color = .green
+        NSApp.sendAction(try XCTUnwrap(editor.chromaColour.action), to: editor.chromaColour.target, from: editor.chromaColour)
+        try await until { sender.submissions.last?.request.colour.green == 1 && sender.submissions.last?.request.colour.alpha == 1 }
+        editor.keyMode.selectItem(at: 0)
+        NSApp.sendAction(try XCTUnwrap(editor.keyMode.action), to: editor.keyMode.target, from: editor.keyMode)
+        try await until { sender.submissions.last?.request.colour.alpha == 0 }
+        XCTAssertEqual(log.senders.count, 1); XCTAssertEqual(sender.starts, 1); XCTAssertEqual(sender.stops, 0)
+        XCTAssertEqual(sender.generation, generation); XCTAssertEqual(sender.name, "Existing source")
+        XCTAssertEqual(outputs.destination(row.id)?.ndi?.sourceID, row.ndi?.sourceID)
+        XCTAssertEqual(outputs.snapshot(for: row.id).current, snapshot)
+        XCTAssertEqual(outputs.destination(row.id)?.workspaceID, row.workspaceID)
+        outputs.stopAllOutputs(); await router.shutdown()
+    }
+
+    func testRouterKeepsOneSenderAcrossOwnersContentTypesAndClears() async throws {
+        let log = SenderFactory()
+        let router = NDIOutputRouter(senderFactory: { log.make($0) })
+        let store = OutputProfileStore()
+        store.edit { $0.destinations.removeAll() }
+        var row = OutputDestinationConfiguration(name: "Network", profileID: OutputProfile.audienceID, monitor: nil)
+        row.ndi = .init()
+        store.edit { $0.destinations.append(row) }
+        let outputs = OutputCoordinator(profiles: store, displays: ProjectionDisplayManager(displays: { [] }), ndi: router)
+        let a = PresentationSession(projectionDisplays: outputs.displays, outputCoordinator: outputs)
+        let b = PresentationSession(projectionDisplays: outputs.displays, outputCoordinator: outputs)
+        a.setSlides(LyricsParser.parseDocument("Verse\nHouse lyrics").slides); a.showSlides()
+        try await until { log.senders.first?.submissions.last?.request.text?.text.components.first?.text == "House lyrics" }
+        let sender = try XCTUnwrap(log.senders.first)
+        let initialGeneration = sender.generation
+        let originalSource = row.ndi?.sourceID
+        b.setSlides(LyricsParser.parseDocument("Verse\nOnline lyrics").slides)
+        XCTAssertTrue(outputs.moveOutput(row.id, to: b))
+        try await until { sender.submissions.last?.request.text?.text.components.first?.text == "Online lyrics" }
+        let transferredEpoch = try XCTUnwrap(sender.submissions.last?.request.contentEpoch)
+        XCTAssertGreaterThan(transferredEpoch, 1)
+        XCTAssertEqual(log.senders.count, 1); XCTAssertEqual(sender.starts, 1); XCTAssertEqual(sender.stops, 0)
+        XCTAssertEqual(sender.generation, initialGeneration); XCTAssertEqual(sender.name, "eucaly")
+        XCTAssertEqual(outputs.destination(row.id)?.ndi?.sourceID, originalSource)
+
+        let videoURL = try await Task.detached { try await NDIRegressionTests.makePortraitVideoFixture() }.value
+        defer { try? FileManager.default.removeItem(at: videoURL) }
+        b.setSlides([.init(index: 0, lines: [], label: "Video", videoURL: videoURL, pdfURL: nil, pdfPageIndex: nil, imageURL: nil)])
+        b.videoLoop = true; b.showSlides()
+        try await until { sender.submissions.last?.foreground?.pixelBuffer != nil }
+        XCTAssertNotNil(outputs.media(for: row.id)?.program)
+        XCTAssertEqual(log.senders.count, 1); XCTAssertEqual(sender.starts, 1); XCTAssertEqual(sender.stops, 0)
+        b.clearSlides()
+        try await until { sender.submissions.last.map { $0.request.text == nil && !$0.request.foreground && $0.request.colour.alpha == 0 } == true }
+        b.setSlides(LyricsParser.parseDocument("Verse\nAgain").slides); b.showSlides()
+        try await until { sender.submissions.last?.request.text?.text.components.first?.text == "Again" }
+        XCTAssertTrue(outputs.moveOutput(row.id, to: a))
+        try await until { sender.submissions.last?.request.text?.text.components.first?.text == "House lyrics" }
+        XCTAssertEqual(log.senders.count, 1); XCTAssertEqual(sender.starts, 1); XCTAssertEqual(sender.stops, 0)
+        XCTAssertEqual(sender.generation, initialGeneration)
+        XCTAssertTrue(zip(sender.submissions, sender.submissions.dropFirst()).allSatisfy { $0.request.revision < $1.request.revision })
+        outputs.stopAllOutputs(); await router.shutdown()
+    }
+
+    func testOldRouteRejectsLateFramesAndAudioWhileRevisionsStayMonotonic() {
+        let route = NDIContentRoute(), a = UUID(), b = UUID(), generation = UUID()
+        let first = route.select(a)
+        XCTAssertTrue(first.changed)
+        var frames: [NDIMediaSubmission] = [], blocks: [NDIAudioBlock] = []
+        let frame = NDIMediaSubmission(request: .init(generation: generation, revision: 500), foreground: nil, background: nil)
+        route.admit(frame, epoch: first.epoch) { frames.append($0) }
+        let second = route.select(b)
+        XCTAssertFalse(route.isCurrent(first.epoch), "A late decoder failure must not retire the transferred sender")
+        XCTAssertTrue(route.isCurrent(second.epoch))
+        route.admit(frame, epoch: first.epoch) { frames.append($0) }
+        route.admitAudio(.init(sampleTime: 0, pcm: Data(count: 7680)), epoch: first.epoch) { blocks.append($0) }
+        route.admit(frame, epoch: second.epoch) { frames.append($0) }
+        route.admitAudio(.init(sampleTime: 960, pcm: Data(count: 7680)), epoch: second.epoch) { blocks.append($0) }
+        XCTAssertEqual(frames.count, 2); XCTAssertEqual(blocks.count, 1)
+        XCTAssertEqual(frames.map(\.request.revision), [1, 2])
+        XCTAssertEqual(frames.map(\.request.contentEpoch), [first.epoch, second.epoch])
+        XCTAssertFalse(route.select(b).changed)
+        route.invalidate()
+        route.admit(frame, epoch: second.epoch) { frames.append($0) }
+        XCTAssertEqual(frames.count, 2)
+    }
+
+    func testStoppingOrFailingOneGenericSenderRetainsTheOther() async throws {
+        let log = SenderFactory(), router = NDIOutputRouter(senderFactory: { log.make($0) })
+        let store = OutputProfileStore()
+        var one = OutputDestinationConfiguration(name: "One", profileID: OutputProfile.audienceID, monitor: nil)
+        one.ndi = .init(sourceName: "One")
+        var two = OutputDestinationConfiguration(name: "Two", profileID: OutputProfile.audienceID, monitor: nil)
+        two.ndi = .init(sourceName: "Two")
+        store.edit { $0.destinations = [one, two] }
+        let outputs = OutputCoordinator(profiles: store, displays: ProjectionDisplayManager(displays: { [] }), ndi: router)
+        let session = PresentationSession(projectionDisplays: outputs.displays, outputCoordinator: outputs)
+        session.setSlides(LyricsParser.parseDocument("Verse\nSame program").slides); session.showSlides()
+        try await until { log.senders.count == 2 && log.senders.allSatisfy { !$0.submissions.isEmpty } }
+        let failed = log.senders[0], survivor = log.senders[1]
+        failed.fail()
+        try await until { !router.state(one.id).active }
+        XCTAssertTrue(router.state(two.id).active)
+        XCTAssertTrue(session.isPresenting)
+        XCTAssertEqual(session.currentSlide?.lines.first?.text, "Same program")
+        session.hideSlides()
+        try await until { survivor.submissions.last?.request.text == nil }
+        XCTAssertEqual(survivor.stops, 0)
+        XCTAssertEqual(log.senders.count, 2)
+        outputs.stopAllOutputs(); await router.shutdown()
+    }
+
+    private func until(_ condition: () -> Bool) async throws {
+        let deadline = ProcessInfo.processInfo.systemUptime + 3
+        while !condition() && ProcessInfo.processInfo.systemUptime < deadline { try await Task.sleep(for: .milliseconds(15)) }
+        XCTAssertTrue(condition())
+    }
+    @MainActor private final class SenderFactory {
+        var senders: [Sender] = []
+        func make(_ event: @escaping @Sendable (NDIHelperSupervisor.Event) -> Void) -> Sender {
+            let sender = Sender(event); senders.append(sender); return sender
+        }
+    }
+}
+
+nonisolated private final class Sender: NDISenderDriving, @unchecked Sendable {
+    private let lock = NSLock()
+    private let event: @Sendable (NDIHelperSupervisor.Event) -> Void
+    private var values: [NDIMediaSubmission] = []
+    private var epoch: UInt64 = 0
+    private var identifier = UUID()
+    private var startCount = 0, stopCount = 0
+    private var sourceName = ""
+    var submissions: [NDIMediaSubmission] { lock.withLock { values } }
+    var generation: UUID { lock.withLock { identifier } }
+    var starts: Int { lock.withLock { startCount } }
+    var stops: Int { lock.withLock { stopCount } }
+    var name: String { lock.withLock { sourceName } }
+    init(_ event: @escaping @Sendable (NDIHelperSupervisor.Event) -> Void) { self.event = event }
+    func startSender(generation: UUID, configuration: NDIHelperConfiguration) {
+        lock.withLock { identifier = generation; sourceName = configuration.sourceName; startCount += 1 }
+        event(.ready(generation))
+    }
+    func selectContent(epoch: UInt64) { lock.withLock { self.epoch = epoch } }
+    func renderMedia(_ submission: NDIMediaSubmission) {
+        lock.withLock { if submission.request.contentEpoch == epoch { values.append(submission) } }
+    }
+    func sendAudio(_ block: NDIAudioBlock, generation: UUID, contentEpoch: UInt64) {}
+    func stop() { lock.withLock { stopCount += 1 } }
+    func stopAndWait() async { event(.exited(generation)) }
+    func fail() { event(.failed(generation, "Injected source failure")) }
+}

@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import AppKit
+import CoreGraphics
 
 @MainActor
 final class PreviewSelectionState: ObservableObject {
@@ -9,6 +10,13 @@ final class PreviewSelectionState: ObservableObject {
 
 @MainActor
 final class PresentationFlowController: ObservableObject {
+    nonisolated enum PreviewSource: Equatable {
+        case none
+        case file(URL)
+        case web(URL)
+        case window(CGWindowID)
+        case lyrics
+    }
     struct PreviewDocumentState {
         var slides: [Slide]
         var pdfSource: PDFSlideSource?
@@ -37,6 +45,7 @@ final class PresentationFlowController: ObservableObject {
     }
 
     @Published private(set) var previewDocument: PreviewDocumentState?
+    @Published var previewSource: PreviewSource = .none
     @Published var isCurrentCollapsed: Bool = true
     let previewSelection = PreviewSelectionState()
 
@@ -113,6 +122,7 @@ final class PresentationFlowController: ObservableObject {
 
     func clearPreviewDocument() {
         previewDocument = nil
+        previewSource = .none
         previewSelection.selectedSlideID = nil
     }
 
@@ -136,11 +146,13 @@ final class PresentationFlowController: ObservableObject {
     func setCurrentSlides(
         _ slides: [Slide],
         in session: PresentationSession,
+        lyricsSourceURL: URL? = nil,
         preferredSelection: Slide.ID? = nil,
         preferredSelectionIndex: Int? = nil
     ) {
         session.setSlides(
             slides,
+            lyricsSourceURL: lyricsSourceURL,
             preferredSelection: preferredSelection,
             preferredSelectionIndex: preferredSelectionIndex
         )
@@ -176,8 +188,8 @@ final class PresentationFlowController: ObservableObject {
     }
 
     func toggleSlidesVisibility(in session: PresentationSession) {
-        if session.outputCoordinator.isPresenting && session.outputCoordinator.visible {
-            session.outputCoordinator.hide()
+        if session.isPresenting && session.areSlidesVisible {
+            session.outputCoordinator.hide(for: session)
             return
         }
         if session.isPresenting {

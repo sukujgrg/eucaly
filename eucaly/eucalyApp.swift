@@ -5,57 +5,79 @@
 //  Created by Suku on 3/2/2026.
 //
 
-import SwiftUI
 import AppKit
 import Combine
 
-private enum AppLaunchContext {
+enum AppLaunchContext {
     static let isRunningTests = NSClassFromString("XCTestCase") != nil
 }
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let updates = AppUpdateViewModel(driver: SparkleUpdateDriver())
-    lazy var altView = AltViewOutputRouter(store: outputProfiles)
     // Read monitor preferences after EucalyApp has migrated sandbox preferences.
     lazy var projectionDisplays = ProjectionDisplayManager(defaults: AppLaunchContext.isRunningTests ? nil : .standard)
 
-    lazy var outputProfiles = OutputProfileStore(defaults: AppLaunchContext.isRunningTests ? nil : .standard, monitor: projectionDisplays.target)
-    lazy var outputs = OutputCoordinator(profiles: outputProfiles, displays: projectionDisplays, retainsPreparedSessions: true)
+    lazy var outputProfiles = OutputProfileStore(defaults: AppLaunchContext.isRunningTests ? nil : .standard, monitor: projectionDisplays.target,
+        retirementCleanup: AppLaunchContext.isRunningTests ? nil : OutputRetirementCleanup(defaults: .standard))
+    lazy var ndiOutputs = NDIOutputRouter()
+    lazy var outputs = OutputCoordinator(profiles: outputProfiles, displays: projectionDisplays, retainsPreparedSessions: true, ndi: ndiOutputs)
+    lazy var workspaceWindows = OutputWorkspaceWindows(outputs: outputs, updates: updates,
+        defaults: AppLaunchContext.isRunningTests ? nil : .standard)
     private var settings: SettingsWindowController?
     private var settingsRequest: AnyCancellable?
+    private var restorationFinished: AnyCancellable?
+    private var menus: AppMenuController?
+    private var finishedLaunching = false
+    private var finishedRestoring = false
 
     func showSettings(pane: NativeSettingsController.Pane? = nil) {
-        if settings == nil { settings = SettingsWindowController(outputs: outputs, router: altView, updates: updates) }
+        if settings == nil { settings = SettingsWindowController(outputs: outputs, updates: updates) }
         settings?.show(pane: pane)
     }
 
     private var isTerminatingAfterCaptureCleanup = false
 
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
+        guard !AppLaunchContext.isRunningTests else { return }
+        menus = AppMenuController(app: self)
+        menus?.install(in: NSApp)
+        restorationFinished = NotificationCenter.default.publisher(for: NSApplication.didFinishRestoringWindowsNotification)
+            .sink { [weak self] _ in
+                self?.finishedRestoring = true
+                self?.openInitialWorkspaceIfReady()
+            }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Ensure the app runs as a regular GUI app when launched via `swift run`.
-        NSApplication.shared.setActivationPolicy(.regular)
-        NSApplication.shared.activate(ignoringOtherApps: true)
         settingsRequest = NotificationCenter.default.publisher(for: .showManageOutputsSettings)
             .sink { [weak self] _ in self?.showSettings(pane: .outputs) }
         // Hosted unit tests use an injected driver and never contact the feed.
         if !AppLaunchContext.isRunningTests {
             updates.start()
-            altView.start(coordinator: outputs)
+            finishedLaunching = true
+            openInitialWorkspaceIfReady()
+            NSApp.activate(ignoringOtherApps: true)
         }
     }
 
-    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        let nonPresentationWindow = sender.windows.first { !($0 is PresentationWindow) && !($0 is NSPanel) }
-        if let window = nonPresentationWindow {
-            if window === settings?.window { settings?.showWindow(nil) }
-            else { window.makeKeyAndOrderFront(nil) }
-        } else {
-            sender.sendAction(#selector(NSApplication.newWindowForTab), to: nil, from: nil)
-        }
-        sender.activate(ignoringOtherApps: true)
-        return true
+    private func openInitialWorkspaceIfReady() {
+        guard finishedLaunching, finishedRestoring else { return }
+        restorationFinished = nil
+        if workspaceWindows.controllers.isEmpty { workspaceWindows.reopen() }
     }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard !AppLaunchContext.isRunningTests else { return false }
+        workspaceWindows.reopen()
+        sender.activate(ignoringOtherApps: true)
+        return false
+    }
+
+    func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool { false }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool { true }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !isTerminatingAfterCaptureCleanup else {
@@ -69,8 +91,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings?.finishPresentation()
 
         Task { @MainActor in
-            outputs.stop()
-            altView.shutdown()
+            outputs.stopAllOutputs()
+            await ndiOutputs.shutdown()
             await ScreenCaptureManager.shared.stopAllCaptures()
             closePresentationWindows(in: sender)
             await outputProfiles.waitForPersistence()
@@ -88,117 +110,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-private enum AppLinks {
-    static let supportPage = URL(string: "https://sukujgrg.github.io/eucaly/")!
-}
-
 @main
-struct EucalyApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-
-    init() {
+@MainActor
+enum EucalyApp {
+    static func main() {
         if !AppLaunchContext.isRunningTests {
             SandboxPreferencesMigration.migrateIfNeeded()
         }
-    }
-
-    var body: some Scene {
-        WindowGroup {
-            // Unit tests construct their own views and sessions. Restoring the
-            // user's library here would perform unrelated file/network access.
-            if !AppLaunchContext.isRunningTests {
-                ContentView(projectionDisplays: appDelegate.projectionDisplays, outputs: appDelegate.outputs)
-                    .environmentObject(appDelegate.updates)
-                    .environmentObject(appDelegate.altView)
-                    .frame(minWidth: 1060, minHeight: 600)
-            }
-        }
-        .windowToolbarStyle(.unified)
-        .commands {
-            CommandGroup(after: .appInfo) {
-                Button("Third-Party Notices…") {
-                    if let url = Bundle.main.url(forResource: "ThirdPartyNotices", withExtension: "txt") { NSWorkspace.shared.open(url) }
-                }
-            }
-            AppUpdateCommands(viewModel: appDelegate.updates)
-            CommandGroup(replacing: .appSettings) {
-                Button("Settings…") { appDelegate.showSettings() }
-                    .keyboardShortcut(",", modifiers: .command)
-            }
-            CommandGroup(replacing: .newItem) {
-                Button("New Lyrics") {
-                    NotificationCenter.default.post(name: .newLyrics, object: nil)
-                }
-                .keyboardShortcut("n", modifiers: .command)
-            }
-            CommandGroup(after: .newItem) {
-                Button("Quick Open...") {
-                    NotificationCenter.default.post(name: .showLibrarySearch, object: nil)
-                }
-                .keyboardShortcut("o", modifiers: [.command, .shift])
-
-                Button("Refresh Library") {
-                    NotificationCenter.default.post(name: .refreshLibrary, object: nil)
-                }
-                .keyboardShortcut("r", modifiers: .command)
-            }
-            CommandGroup(replacing: .saveItem) {
-                Button("Save Lyrics") {
-                    NotificationCenter.default.post(name: .saveLyrics, object: nil)
-                }
-                .keyboardShortcut("s", modifiers: .command)
-            }
-            CommandGroup(after: .saveItem) {
-                Button("Close Window") {
-                    NSApp.keyWindow?.performClose(nil)
-                }
-                .keyboardShortcut("w", modifiers: .command)
-            }
-            CommandGroup(after: .help) {
-                Button("eucaly Support") {
-                    NSWorkspace.shared.open(AppLinks.supportPage)
-                }
-            }
-            CommandMenu("Slides") {
-                Button("Stop Projection") {
-                    appDelegate.outputs.stop()
-                }
-                .keyboardShortcut("1", modifiers: .command)
-
-                Divider()
-
-                Button("Show/Hide Slides") {
-                    appDelegate.outputs.toggleSlides()
-                }
-                .keyboardShortcut("2", modifiers: .command)
-
-                Button("Show/Hide Background") {
-                    appDelegate.outputs.preferredLocalSession?.toggleBackgroundVisualVisibility()
-                }
-
-                Button("Pause/Play Background Audio") {
-                    if let session = appDelegate.outputs.audioSession ?? appDelegate.outputs.preferredLocalSession {
-                        if session.isBackgroundAudioPlaying { session.pauseBackgroundAudio() } else { session.playBackgroundAudio() }
-                    }
-                }
-
-                Divider()
-
-                Button("Clear Background Visual") {
-                    appDelegate.outputs.clearBackgrounds()
-                }
-                .keyboardShortcut("3", modifiers: .command)
-
-                Button("Clear Background Audio") {
-                    appDelegate.outputs.clearAudio()
-                }
-                .keyboardShortcut("4", modifiers: .command)
-
-                Button("Clear All Layers") {
-                    appDelegate.outputs.clearAllLayers()
-                }
-                .keyboardShortcut("5", modifiers: .command)
-            }
+        let application = NSApplication.shared
+        let delegate = AppDelegate()
+        application.delegate = delegate
+        withExtendedLifetime(delegate) {
+            application.run()
         }
     }
 }

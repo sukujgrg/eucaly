@@ -363,6 +363,8 @@ def verify_arm64_app(app):
     info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
     framework = app / "Contents/Frameworks/Sparkle.framework"
     binaries = [app / "Contents/MacOS" / info["CFBundleExecutable"]]
+    helper = app / "Contents/Helpers/eucalyNDIHelper"
+    binaries.append(helper)
     binaries.extend(framework / path for path in (
         "Sparkle", "Autoupdate", "Updater.app/Contents/MacOS/Updater",
         "XPCServices/Installer.xpc/Contents/MacOS/Installer",
@@ -373,8 +375,9 @@ def verify_arm64_app(app):
         run("lipo", binary, "-verify_arch", "arm64")
     # Sparkle ships prebuilt universal helpers; require their arm64 slice without
     # rewriting third-party binaries. Our executable must be arm64 only.
-    if run("lipo", binaries[0], "-archs", capture=True).split() != ["arm64"]:
-        raise ReleaseError("eucaly must be built for arm64 only.")
+    for binary in binaries[:2]:
+        if run("lipo", binary, "-archs", capture=True).split() != ["arm64"]:
+            raise ReleaseError(f"{binary.name} must be built for arm64 only.")
     return binaries
 
 
@@ -399,6 +402,8 @@ def verify_app(app, state, team):
     if info.get("SUEnableInstallerLauncherService") or info.get("SUEnableDownloaderService"):
         raise ReleaseError("The unsandboxed app must not enable Sparkle's sandbox XPC services.")
     binaries = verify_arm64_app(app)
+    if any(app.rglob("libndi*")):
+        raise ReleaseError("NDI must use a separately installed runtime; do not bundle libndi.")
     run("codesign", "--verify", "--deep", "--strict", app)
     for binary in binaries:
         details = run("codesign", "-dv", "--verbose=4", "--arch", "arm64", binary,
@@ -415,6 +420,10 @@ def verify_app(app, state, team):
             raise ReleaseError(f"Debugging entitlement is present in {binary} (arm64).")
         if binary == binaries[0] and entitlements.get("com.apple.security.app-sandbox"):
             raise ReleaseError("eucaly must retain its unsandboxed file access (arm64).")
+        if binary == binaries[0] and entitlements.get("com.apple.security.cs.disable-library-validation"):
+            raise ReleaseError("Only the NDI helper may disable library validation, not eucaly.")
+        if binary == binaries[1] and not entitlements.get("com.apple.security.cs.disable-library-validation"):
+            raise ReleaseError("The NDI helper must permit its separately signed vendor runtime.")
 
 
 def notarize(directory, state, args, notary_zip):

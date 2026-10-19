@@ -15,14 +15,3 @@ struct AppUpdateToolbarButton: View {
         }
     }
 }
-
-struct AppUpdateCommands: Commands {
-    @ObservedObject var viewModel: AppUpdateViewModel
-
-    var body: some Commands {
-        CommandGroup(after: .appInfo) {
-            Button("Check for Updates…", action: viewModel.checkForUpdates)
-                .disabled(!viewModel.state.canCheckForUpdates)
-        }
-    }
-}

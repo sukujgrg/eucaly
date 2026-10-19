@@ -73,15 +73,14 @@ final class LayerControlsTests: XCTestCase {
 
     func testCmdBTogglesBackgroundIndependently() async {
         let result = await MainActor.run { () -> (firstSlides: Bool, firstBg: Bool, secondSlides: Bool, secondBg: Bool) in
-            let session = PresentationSession()
+            let fixture = LocalOutputHarness(); defer { fixture.stop() }
+            let session = fixture.session
             let tempURL = URL(fileURLWithPath: NSTemporaryDirectory())
                 .appendingPathComponent("eucaly-test-cmdb.jpg")
             FileManager.default.createFile(atPath: tempURL.path, contents: Data([0x00]), attributes: nil)
 
             session.setBackgroundVisual(tempURL)
-            session.isPresenting = true
-            session.areSlidesVisible = true
-            session.isBackgroundVisualVisible = true
+            session.showSlides()
 
             // First toggle: hide background
             session.toggleBackgroundVisualVisibility()

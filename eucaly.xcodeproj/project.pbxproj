@@ -5,10 +5,20 @@
 	};
 	objectVersion = 77;
 	objects = {
+/* Begin PBXCopyFilesBuildPhase section */
+		E5CD1100000000000000000C = {isa = PBXCopyFilesBuildPhase; buildActionMask = 2147483647; dstPath = "$(CONTENTS_FOLDER_PATH)/Helpers"; dstSubfolderSpec = 16; files = (E5CD1100000000000000000D,); name = "Embed output helper"; runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXBuildFile section */
-		E5CA20000000000000000003 = {isa = PBXBuildFile; productRef = E5CA20000000000000000002; };
 		C0DE09120000000000000001 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = C0DE09120000000000000002 /* Sparkle */; };
+		E5CD1100000000000000001E = {isa = PBXBuildFile; fileRef = E5CD11000000000000000014; };
+		E5CD1100000000000000001F = {isa = PBXBuildFile; fileRef = E5CD11000000000000000015; };
+		E5CD11000000000000000020 = {isa = PBXBuildFile; fileRef = E5CD11000000000000000016; };
+		E5CD11000000000000000021 = {isa = PBXBuildFile; fileRef = E5CD11000000000000000017; };
+		E5CD11000000000000000022 = {isa = PBXBuildFile; fileRef = E5CD11000000000000000018; };
+		E5CD1100000000000000000D = {isa = PBXBuildFile; fileRef = E5CD11000000000000000002; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
+		E5CD1100000000000000002A = {isa = PBXBuildFile; fileRef = E5CD11000000000000000028; };
+		E5CD1100000000000000002B = {isa = PBXBuildFile; fileRef = E5CD11000000000000000029; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -19,11 +29,20 @@
 			remoteGlobalIDString = B20C40842F31E99F0006903E;
 			remoteInfo = eucaly;
 		};
+		E5CD1100000000000000000A = {isa = PBXContainerItemProxy; containerPortal = B20C407D2F31E99F0006903E; proxyType = 1; remoteGlobalIDString = E5CD11000000000000000001; remoteInfo = eucalyNDIHelper; };
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		B20C40852F31E99F0006903E /* eucaly.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = eucaly.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B2C9AF862F37CCEE001697D2 /* eucalyTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = eucalyTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		E5CD11000000000000000014 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = eucaly/NDI/NDIHelperProtocol.swift; sourceTree = SOURCE_ROOT; };
+		E5CD11000000000000000015 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = eucaly/Output/OutputAppearance.swift; sourceTree = SOURCE_ROOT; };
+		E5CD11000000000000000016 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = eucaly/Output/OutputTypographyRendering.swift; sourceTree = SOURCE_ROOT; };
+		E5CD11000000000000000017 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = eucaly/PresentationTextAlignment.swift; sourceTree = SOURCE_ROOT; };
+		E5CD11000000000000000018 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = eucaly/LyricsTextFitLayout.swift; sourceTree = SOURCE_ROOT; };
+		E5CD11000000000000000002 = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; path = eucalyNDIHelper; sourceTree = BUILT_PRODUCTS_DIR; };
+		E5CD11000000000000000028 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = eucaly/NDI/NDIMachBridge.c; sourceTree = SOURCE_ROOT; };
+		E5CD11000000000000000029 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = eucaly/NDI/NDIMachMailbox.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -50,6 +69,7 @@
 			path = eucalyTests;
 			sourceTree = "<group>";
 		};
+		E5CD11000000000000000003 = {isa = PBXFileSystemSynchronizedRootGroup; path = eucalyNDIHelper; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -58,7 +78,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				C0DE09120000000000000001 /* Sparkle in Frameworks */,
-				E5CA20000000000000000003,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -69,6 +88,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		E5CD11000000000000000005 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -76,6 +96,15 @@
 			isa = PBXGroup;
 			children = (
 				B20C40872F31E99F0006903E /* eucaly */,
+				E5CD11000000000000000028,
+				E5CD11000000000000000029,
+				E5CD11000000000000000003,
+				E5CD11000000000000000014,
+				E5CD11000000000000000015,
+				E5CD11000000000000000016,
+				E5CD11000000000000000017,
+				E5CD11000000000000000018,
+
 				B2C9AF872F37CCEE001697D2 /* eucalyTests */,
 				B20C40862F31E99F0006903E /* Products */,
 			);
@@ -85,6 +114,7 @@
 			isa = PBXGroup;
 			children = (
 				B20C40852F31E99F0006903E /* eucaly.app */,
+				E5CD11000000000000000002,
 				B2C9AF862F37CCEE001697D2 /* eucalyTests.xctest */,
 			);
 			name = Products;
@@ -101,10 +131,12 @@
 				B20C40812F31E99F0006903E /* Sources */,
 				B20C40822F31E99F0006903E /* Frameworks */,
 				B20C40832F31E99F0006903E /* Resources */,
+				E5CD1100000000000000000C,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				E5CD1100000000000000000B,
 			);
 			fileSystemSynchronizedGroups = (
 				B20C40872F31E99F0006903E /* eucaly */,
@@ -112,7 +144,6 @@
 			name = eucaly;
 			packageProductDependencies = (
 				C0DE09120000000000000002 /* Sparkle */,
-				E5CA20000000000000000002,
 			);
 			productName = eucaly;
 			productReference = B20C40852F31E99F0006903E /* eucaly.app */;
@@ -141,6 +172,7 @@
 			productReference = B2C9AF862F37CCEE001697D2 /* eucalyTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		E5CD11000000000000000001 = {isa = PBXNativeTarget; buildConfigurationList = E5CD11000000000000000007; buildPhases = (E5CD11000000000000000004, E5CD11000000000000000005,); buildRules = (); dependencies = (); fileSystemSynchronizedGroups = (E5CD11000000000000000003,); name = eucalyNDIHelper; productName = eucalyNDIHelper; productReference = E5CD11000000000000000002; productType = "com.apple.product-type.tool"; };
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -171,13 +203,13 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				C0DE09120000000000000003 /* XCRemoteSwiftPackageReference "Sparkle" */,
-				E5CA20000000000000000001,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = B20C40862F31E99F0006903E /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
+				E5CD11000000000000000001,
 				B20C40842F31E99F0006903E /* eucaly */,
 				B2C9AF852F37CCEE001697D2 /* eucalyTests */,
 			);
@@ -234,6 +266,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		E5CD11000000000000000004 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (E5CD1100000000000000001E,E5CD1100000000000000001F,E5CD11000000000000000020,E5CD11000000000000000021,E5CD11000000000000000022,E5CD1100000000000000002A,E5CD1100000000000000002B); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -242,6 +275,7 @@
 			target = B20C40842F31E99F0006903E /* eucaly */;
 			targetProxy = B2C9AF8A2F37CCEE001697D2 /* PBXContainerItemProxy */;
 		};
+		E5CD1100000000000000000B = {isa = PBXTargetDependency; target = E5CD11000000000000000001; targetProxy = E5CD1100000000000000000A; };
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
@@ -398,6 +432,8 @@
 				/* This target has no App Intents. Remove this opt-out when adding them. */
 				LM_SKIP_METADATA_EXTRACTION = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.suku.eucaly;
+				SWIFT_OBJC_BRIDGING_HEADER = "eucaly/NDI/NDIMachBridge.h";
+				OTHER_LDFLAGS = "$(inherited) -lbsm";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SKIP_INSTALL = NO;
@@ -436,6 +472,8 @@
 				/* This target has no App Intents. Remove this opt-out when adding them. */
 				LM_SKIP_METADATA_EXTRACTION = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.suku.eucaly;
+				SWIFT_OBJC_BRIDGING_HEADER = "eucaly/NDI/NDIMachBridge.h";
+				OTHER_LDFLAGS = "$(inherited) -lbsm";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SKIP_INSTALL = NO;
@@ -496,6 +534,8 @@
 			};
 			name = Release;
 		};
+		E5CD11000000000000000008 = {isa = XCBuildConfiguration; buildSettings = {ARCHS = arm64; CODE_SIGN_STYLE = Automatic; CODE_SIGN_IDENTITY = "Apple Development"; DEVELOPMENT_TEAM = E5N29VFW8T; ENABLE_HARDENED_RUNTIME = YES; ENABLE_APP_SANDBOX = NO; MACOSX_DEPLOYMENT_TARGET = 14.0; PRODUCT_BUNDLE_IDENTIFIER = "com.suku.eucaly.ndi-helper"; OTHER_CODE_SIGN_FLAGS = "--identifier com.suku.eucaly.ndi-helper"; SWIFT_OBJC_BRIDGING_HEADER = "eucalyNDIHelper/HelperBridgingHeader.h"; CODE_SIGN_ENTITLEMENTS = "eucalyNDIHelper/eucalyNDIHelper.entitlements"; OTHER_LDFLAGS = "$(inherited) -lbsm"; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SWIFT_VERSION = 5.0; SWIFT_APPROACHABLE_CONCURRENCY = YES; SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated; }; name = Debug; };
+		E5CD11000000000000000009 = {isa = XCBuildConfiguration; buildSettings = {ARCHS = arm64; CODE_SIGN_STYLE = Automatic; CODE_SIGN_IDENTITY = "Apple Development"; DEVELOPMENT_TEAM = E5N29VFW8T; ENABLE_HARDENED_RUNTIME = YES; ENABLE_APP_SANDBOX = NO; MACOSX_DEPLOYMENT_TARGET = 14.0; PRODUCT_BUNDLE_IDENTIFIER = "com.suku.eucaly.ndi-helper"; OTHER_CODE_SIGN_FLAGS = "--identifier com.suku.eucaly.ndi-helper"; SWIFT_OBJC_BRIDGING_HEADER = "eucalyNDIHelper/HelperBridgingHeader.h"; CODE_SIGN_ENTITLEMENTS = "eucalyNDIHelper/eucalyNDIHelper.entitlements"; OTHER_LDFLAGS = "$(inherited) -lbsm"; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SWIFT_VERSION = 5.0; SWIFT_APPROACHABLE_CONCURRENCY = YES; SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated; }; name = Release; };
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -526,9 +566,9 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		E5CD11000000000000000007 = {isa = XCConfigurationList; buildConfigurations = (E5CD11000000000000000008, E5CD11000000000000000009,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 /* End XCConfigurationList section */
 /* Begin XCRemoteSwiftPackageReference section */
-		E5CA20000000000000000001 = {isa = XCLocalSwiftPackageReference; relativePath = "Vendor/MediaStreaming"; };
 		C0DE09120000000000000003 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/sparkle-project/Sparkle";
@@ -537,7 +577,6 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		E5CA20000000000000000002 = {isa = XCSwiftPackageProductDependency; package = E5CA20000000000000000001; productName = SRTHaishinKit; };
 		C0DE09120000000000000002 /* Sparkle */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = C0DE09120000000000000003 /* XCRemoteSwiftPackageReference "Sparkle" */;

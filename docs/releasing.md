@@ -29,6 +29,26 @@ The repository is derived from the single HTTPS GitHub push URL on `origin`
 and must match the embedded update-feed URL. No version, tag, build-number,
 repository, or validation-bypass flags are needed or accepted.
 
+## NDI helper and external runtime
+
+The app embeds and signs the arm64 `Contents/Helpers/eucalyNDIHelper` executable
+with the same team as eucaly. Release validation checks its architecture, hardened
+runtime and absence of debugging entitlements. Only this helper has the library
+validation exception needed to load the separately signed NDI runtime. The main
+application must retain library validation. Never copy `libndi.dylib`, an NDI
+installer or NDI Tools into the bundle; the release pipeline rejects bundled NDI
+libraries. Only the MIT-licensed SDK headers and their notices live in the source.
+
+After `make build`, verify the signed helper can load the installed runtime with
+its `--check-runtime` command. Verify missing-runtime behavior on a separate test
+installation without moving the maintainer's runtime. `make test` explicitly skips
+SDK loopback cases when no runtime is installed while retaining pure rendering,
+IPC, lifecycle and failure tests. No release has been published or notarized by
+this implementation work. Complete the physical receiver and sustained-operation
+gates, and the SDK distribution/EULA requirements in [NDI runtime setup](ndi-runtime.md),
+before shipping the feature. Sparkle signing keys and notarization credentials are
+unrelated to the retired AltView/SRT credential cleanup and must never be removed.
+
 ## Tooling layout
 
 The build and release entry points follow ViewTheWord's layout:

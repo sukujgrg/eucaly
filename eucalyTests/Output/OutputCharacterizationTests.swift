@@ -4,31 +4,27 @@ import XCTest
 @MainActor
 final class OutputCharacterizationTests: XCTestCase {
     func testPassiveReplacementAndPreviewNeverRequestPresentation() async throws {
-        let sender = RecordingAltViewSender(), service = AltViewService(pairingStore: RecordingAltViewPairingStore(), senderFactory: { _ in sender })
-        let hub = LocalOutputHarness(service: service); defer { hub.stop() }
-        service.receive(sender.connectedStatus)
+        let hub = LocalOutputHarness(); defer { hub.stop() }
         let session = hub.session, flow = hub.flow
         let current = LyricsParser.parseDocument("Verse\nCurrent").slides
         session.setSlides(current)
         session.showSlides()
         await settle()
-        let submissions = sender.submissions.count, takes = sender.takes
+        let revision = hub.outputs.revision, action = hub.outputs.actionClock.current
         flow.setPreviewSlides(LyricsParser.parseDocument("Verse\nPrivate draft").slides)
         flow.selectPreviewSlide(try XCTUnwrap(flow.previewSlides.first?.id))
         await settle()
-        XCTAssertEqual(sender.submissions.count, submissions)
+        XCTAssertEqual(hub.outputs.revision, revision)
         XCTAssertEqual(session.currentSlide?.id, current.first?.id)
         session.setSlides(LyricsParser.parseDocument("Verse\nPassive refresh").slides)
         await settle()
-        XCTAssertEqual(sender.submissions.last?.content.body, "Passive refresh")
-        XCTAssertEqual(sender.takes, takes)
+        XCTAssertEqual(hub.outputs.text.components.first?.text, "Passive refresh")
+        XCTAssertEqual(hub.outputs.actionClock.current, action)
         session.stopPresentation()
     }
 
     func testSameSlideActivationIsExplicitAndClearRetainsPreview() async {
-        let sender = RecordingAltViewSender(), service = AltViewService(pairingStore: RecordingAltViewPairingStore(), senderFactory: { _ in sender })
-        let hub = LocalOutputHarness(service: service); defer { hub.stop() }
-        service.receive(sender.connectedStatus)
+        let hub = LocalOutputHarness(); defer { hub.stop() }
         let session = hub.session, flow = hub.flow
         let slides = LyricsParser.parseDocument("Verse\nOne").slides
         session.setSlides(slides)
@@ -39,7 +35,7 @@ final class OutputCharacterizationTests: XCTestCase {
         await settle()
         session.selectCurrentSlide(slides[0].id)
         await settle()
-        XCTAssertEqual(sender.takes, 3, "Show and two same-slide activations are distinct actions")
+        XCTAssertEqual(hub.outputs.actionClock.current, 3, "Show and two same-slide activations are distinct actions")
         session.clearSlides()
         await settle()
         XCTAssertTrue(session.isEmpty)
