@@ -19,7 +19,8 @@ final class OffscreenMediaRenderer: @unchecked Sendable {
         let library = try device.makeLibrary(source: """
         #include <metal_stdlib>
         using namespace metal;
-        float4 layer(texture2d<float, access::sample> image, float2 uv, bool fill, constant float *g) {
+        float4 layer(texture2d<float, access::sample> image, texture2d<float, access::sample> chroma,
+                     float2 uv, bool fill, constant float *g, constant float *input) {
             float2 source = float2(g[0], g[1]);
             float2 canvas = float2(1920, 1080);
             float scale = fill ? max(canvas.x/source.x, canvas.y/source.y) : min(canvas.x/source.x, canvas.y/source.y);
@@ -27,15 +28,29 @@ final class OffscreenMediaRenderer: @unchecked Sendable {
             if (any(coord < 0.0) || any(coord > 1.0)) return float4(0.0);
             coord = float2(g[2] * coord.x + g[4] * coord.y + g[6], g[3] * coord.x + g[5] * coord.y + g[7]);
             constexpr sampler s(coord::normalized, address::clamp_to_edge, filter::linear);
-            return image.sample(s, coord);
+            if (input[0] == 0.0) return image.sample(s, coord);
+            // Read the decoder's two planes directly. Colour conversion is
+            // fused with composition; no expanded BGRA frame is allocated.
+            float y = image.sample(s, coord).r;
+            float2 offset = float2(input[4], input[5]) / float2(image.get_width(), image.get_height());
+            float2 cbcr = chroma.sample(s, coord + offset).rg * 255.0 - 128.0;
+            if (input[0] == 1.0) { y = (y * 255.0 - 16.0) / 219.0; cbcr /= 224.0; }
+            else { cbcr /= 255.0; }
+            float kr = input[1], kb = input[2], kg = 1.0 - kr - kb;
+            float r = y + (2.0 - 2.0 * kr) * cbcr.y;
+            float b = y + (2.0 - 2.0 * kb) * cbcr.x;
+            float green = y - kb * (2.0 - 2.0 * kb) / kg * cbcr.x - kr * (2.0 - 2.0 * kr) / kg * cbcr.y;
+            return float4(clamp(float3(r, green, b), 0.0, 1.0), 1.0);
         }
         float4 picture(texture2d<float, access::sample> foreground,
-                       texture2d<float, access::sample> background, constant float *u, uint2 p) {
+                       texture2d<float, access::sample> background,
+                       texture2d<float, access::sample> foregroundChroma,
+                       texture2d<float, access::sample> backgroundChroma, constant float *u, uint2 p) {
             float2 uv = (float2(p) + 0.5) / float2(1920, 1080);
             float3 colour = float3(u[0], u[1], u[2]) * u[3];
             float alpha = u[3];
             if (u[8] > 0.0) {
-                float4 bg = layer(background, uv, u[5] > 0.0, u + 20);
+                float4 bg = layer(background, backgroundChroma, uv, u[5] > 0.0, u + 20, u + 36);
                 // Dimming belongs to the visual texture. The saved key colour
                 // must remain exact in empty frames and fitted-image gutters.
                 bg.rgb *= (1.0 - u[6]);
@@ -43,7 +58,7 @@ final class OffscreenMediaRenderer: @unchecked Sendable {
                 alpha = bg.a + alpha * (1.0 - bg.a);
             }
             if (u[7] > 0.0 || u[9] > 0.0) {
-                float4 fg = layer(foreground, uv, u[4] > 0.0, u + 12);
+                float4 fg = layer(foreground, foregroundChroma, uv, u[4] > 0.0, u + 12, u + 28);
                 if (u[9] > 0.0) fg.rgb *= fg.a;
                 colour = fg.rgb + colour * (1.0 - fg.a);
                 alpha = fg.a + alpha * (1.0 - fg.a);
@@ -53,8 +68,10 @@ final class OffscreenMediaRenderer: @unchecked Sendable {
         kernel void compositeBGRA(texture2d<float, access::sample> foreground [[texture(0)]],
                                   texture2d<float, access::sample> background [[texture(1)]],
                                   texture2d<float, access::write> output [[texture(2)]],
+                                  texture2d<float, access::sample> foregroundChroma [[texture(3)]],
+                                  texture2d<float, access::sample> backgroundChroma [[texture(4)]],
                                   constant float *u [[buffer(0)]], uint2 p [[thread_position_in_grid]]) {
-            if (p.x < 1920 && p.y < 1080) output.write(picture(foreground, background, u, p), p);
+            if (p.x < 1920 && p.y < 1080) output.write(picture(foreground, background, foregroundChroma, backgroundChroma, u, p), p);
         }
         float3 rec709(float3 rgb) {
             float y = dot(rgb, float3(0.2126, 0.7152, 0.0722));
@@ -63,12 +80,14 @@ final class OffscreenMediaRenderer: @unchecked Sendable {
         uchar byte(float value) { return uchar(round(clamp(value, 0.0, 255.0))); }
         kernel void compositeYUV(texture2d<float, access::sample> foreground [[texture(0)]],
                                  texture2d<float, access::sample> background [[texture(1)]],
+                                 texture2d<float, access::sample> foregroundChroma [[texture(3)]],
+                                 texture2d<float, access::sample> backgroundChroma [[texture(4)]],
                                  constant float *u [[buffer(0)]], device uchar *output [[buffer(1)]],
                                  constant uint &hasAlpha [[buffer(2)]], uint2 p [[thread_position_in_grid]]) {
             if (p.x >= 960 || p.y >= 1080) return;
             uint2 pixel = uint2(p.x * 2, p.y);
-            float4 a = picture(foreground, background, u, pixel);
-            float4 b = picture(foreground, background, u, pixel + uint2(1, 0));
+            float4 a = picture(foreground, background, foregroundChroma, backgroundChroma, u, pixel);
+            float4 b = picture(foreground, background, foregroundChroma, backgroundChroma, u, pixel + uint2(1, 0));
             float3 ca = rec709(a.rgb), cb = rec709(b.rgb);
             // Transparent neighbours must not desaturate coloured glyph edges.
             float weight = a.a + b.a;
@@ -93,18 +112,21 @@ final class OffscreenMediaRenderer: @unchecked Sendable {
         var zero: UInt32 = 0; empty.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, withBytes: &zero, bytesPerRow: 4)
         self.empty = empty
     }
-    private func texture(_ surface: IOSurface?, usage: MTLTextureUsage = .shaderRead) throws -> MTLTexture {
+    private func texture(_ surface: IOSurface?, input: NDIMediaInput = .init(), plane: Int = 0,
+                         usage: MTLTextureUsage = .shaderRead) throws -> MTLTexture {
         guard let surface else { return empty }
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: surface.width, height: surface.height, mipmapped: false)
+        if input.format == .bgra && plane == 1 { return empty }
+        let planar = input.format != .bgra
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: planar ? (plane == 0 ? .r8Unorm : .rg8Unorm) : .bgra8Unorm,
+            width: planar ? surface.widthOfPlane(at: plane) : surface.width,
+            height: planar ? surface.heightOfPlane(at: plane) : surface.height, mipmapped: false)
         descriptor.storageMode = .shared; descriptor.usage = usage
-        guard let result = device.makeTexture(descriptor: descriptor, iosurface: surface, plane: 0) else { throw NDIHelperWire.Failure.invalidSurface }
+        guard let result = device.makeTexture(descriptor: descriptor, iosurface: surface, plane: plane) else { throw NDIHelperWire.Failure.invalidSurface }
         return result
     }
     func render(_ request: NDIMediaRenderRequest, foreground: IOSurface?, background: IOSurface?,
                 completion: @escaping @Sendable (NDIGPUFrame?, String?) -> Void) throws {
-        // Only a fully opaque base proves opacity for every possible media/text
-        // alpha and fit gutter. Otherwise keep the complete alpha plane.
-        let format: NDIVideoPixelFormat = request.colour.alpha == 1 ? .uyvy : .uyva
+        let format: NDIVideoPixelFormat = request.hasOpaqueCanvas(foreground: foreground, background: background) ? .uyvy : .uyva
         let frame: NDIGPUFrame?
         if packedVideo {
             frame = try videoPool?.acquire(format: format) ?? (videoPool == nil ? NDIGPUFrame(NDIVideoBufferPool.makeBuffer(device: device), format: format) : nil)
@@ -113,14 +135,17 @@ final class OffscreenMediaRenderer: @unchecked Sendable {
         }
         guard request.isValid, let frame, let command = queue.makeCommandBuffer(),
               let encoder = command.makeComputeCommandEncoder() else { throw NDIHelperWire.Failure.unavailable }
-        let fg = try texture(foreground), bg = try texture(background)
+        let fg = try texture(foreground, input: request.foregroundInput), bg = try texture(background, input: request.backgroundInput)
         let uniforms: [Float] = [Float(request.colour.red), Float(request.colour.green), Float(request.colour.blue), Float(request.colour.alpha),
             request.foregroundFill ? 1 : 0, request.backgroundFill ? 1 : 0, Float(request.dimming), request.foreground ? 1 : 0,
             request.background ? 1 : 0, request.text != nil ? 1 : 0, 0, 0]
             + (request.foregroundGeometry ?? NDIMediaGeometry(width: Double(fg.width), height: Double(fg.height))).uniforms
             + (request.backgroundGeometry ?? NDIMediaGeometry(width: Double(bg.width), height: Double(bg.height))).uniforms
+            + request.foregroundInput.uniforms + request.backgroundInput.uniforms
         encoder.setComputePipelineState(pipeline)
         encoder.setTexture(fg, index: 0); encoder.setTexture(bg, index: 1)
+        encoder.setTexture(try texture(foreground, input: request.foregroundInput, plane: 1), index: 3)
+        encoder.setTexture(try texture(background, input: request.backgroundInput, plane: 1), index: 4)
         if packedVideo {
             encoder.setBuffer(frame.buffer, offset: 0, index: 1)
             var alpha: UInt32 = format == .uyva ? 1 : 0

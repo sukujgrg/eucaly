@@ -183,8 +183,20 @@ prepared PDF/image textures and AVPlayerItemVideoOutput from the owning workspac
 player. Text is a cached transparent layer; background assets and full-frame media
 share Metal composition. The output is SDR 1920×1080 at 30/1 fps, Rec.709 UYVY for
 an opaque canvas or UYVA with full-range straight alpha. The final Metal pass
-composes directly into shared packed buffers; cached text and input media remain
-BGRA. Alpha mode leaves surroundings transparent; chroma uses the remembered profile
+composes directly into shared packed buffers; cached text and prepared images/PDFs
+remain BGRA. Explicitly tagged progressive SDR H.264/HEVC with supported colour
+metadata uses NV12 decoder planes in that same pass. Untagged, alpha, wide-colour,
+interlaced, composed and unknown formats retain AVFoundation's BGRA conversion.
+Each workspace's runtime owns a leased sampler per player/item, serializing frame
+acquisition across its NDI destinations while preserving per-destination composition
+and teardown. Sampler stop closes admission without waiting for its acquisition
+queue; the exact output detaches on the main actor after in-flight reads drain.
+Queued decoder errors carry a render-plan version and are revalidated on the main
+actor, in addition to the router's destination epoch. A new Current or Stop
+invalidates the old error without discarding the replacement plan.
+A proven opaque full-canvas image/PDF or NV12 layer can omit alpha;
+unknown BGRA opacity and any fit gutters retain UYVA. Alpha mode leaves surroundings
+transparent; chroma uses the remembered profile
 colour. An enabled opaque visual background remains independent. Hide and Clear
 submit actual replacement pictures, including zero-alpha pixels when no opaque
 background is present. Clearing visual assets retains the configured key colour.

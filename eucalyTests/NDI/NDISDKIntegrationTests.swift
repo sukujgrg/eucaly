@@ -522,14 +522,23 @@ final class NDISDKIntegrationTests: XCTestCase {
         let monitor = ProjectionMonitor(id: 1, identity: UUID().uuidString, name: "Test monitor", frame: CGRect(x: 0, y: 0, width: 1920, height: 1080))
         let displays = ProjectionDisplayManager(displays: { [monitor] }); displays.select(monitor.target)
         let store = OutputProfileStore(monitor: monitor.target)
+        let online = try XCTUnwrap(store.addWorkspace(name: "Online"))
         let native = store.document.destinations[0].id
         var destination = OutputDestinationConfiguration(name: "Media", profileID: OutputProfile.audienceID, monitor: nil)
         destination.ndi = .init(sourceName: "eucaly shared video test \(UUID())")
-        store.edit { $0.destinations[0].enabled = false; $0.destinations.append(destination) }
-        let router = NDIOutputRouter()
+        var companion = OutputDestinationConfiguration(name: "Companion", profileID: OutputProfile.audienceID, monitor: nil)
+        companion.ndi = .init(sourceName: "eucaly shared video companion \(UUID())")
+        store.edit { $0.destinations[0].enabled = false; $0.destinations += [destination, companion] }
+        var helpersCreated = 0
+        let router = NDIOutputRouter(senderFactory: { event in
+            helpersCreated += 1
+            return NDIHelperSupervisor(event: event)
+        })
         var opened = 0
         let outputs = OutputCoordinator(profiles: store, displays: displays, ndi: router, driverFactory: { opened += 1; return FakeOutputDriver() })
         let session = PresentationSession(projectionDisplays: displays, outputCoordinator: outputs)
+        let peer = outputs.session(workspace: online)
+        peer.setSlides(LyricsParser.parseDocument("Verse\nOnline · தமிழ்").slides)
         defer { outputs.stop() }
         session.videoLoop = true
         session.setSlides([Slide(index: 0, lines: [], label: "Video", videoURL: url, pdfURL: nil, pdfPageIndex: nil, imageURL: nil)])
@@ -537,6 +546,11 @@ final class NDISDKIntegrationTests: XCTestCase {
         let player = try XCTUnwrap(outputs.media.program)
         try await until("NDI-only video sending") { (router.statistics[destination.id]?.submittedFrames ?? 0) > 3 || !router.state(destination.id).active }
         XCTAssertTrue(router.state(destination.id).active, router.state(destination.id).title)
+        try await until("second destination shares the same video") { (router.statistics[companion.id]?.submittedFrames ?? 0) > 3 || !router.state(companion.id).active }
+        XCTAssertTrue(router.state(companion.id).active, router.state(companion.id).title)
+        XCTAssertEqual(outputs.media.ndiVideoFrames.sourceCount, 1)
+        XCTAssertEqual(player.currentItem?.outputs.filter { $0 is AVPlayerItemVideoOutput }.count, 1)
+        XCTAssertEqual(router.statistics[destination.id]?.videoFormat, .uyvy)
         XCTAssertEqual(opened, 0)
         let probeLog = NDIEventLog(), probeID = UUID(), probe = NDIHelperSupervisor(event: probeLog.record)
         defer { probe.stop() }
@@ -552,6 +566,43 @@ final class NDISDKIntegrationTests: XCTestCase {
             if sawRed && sawBlue { break }
         }
         XCTAssertTrue(sawRed && sawBlue, "Receiver must see moving video, not a repeated placeholder")
+        let sourceName = try XCTUnwrap(router.statistics[destination.id]?.sourceName)
+        var receiveRevision: UInt64 = 100
+        func receive(after boundary: Int64, matching matches: (NDIEventLog.Picture) -> Bool) async throws {
+            for _ in 0..<30 {
+                receiveRevision += 1
+                probe.render(request(probeID, revision: receiveRevision))
+                try await until("workspace transfer picture") { probeLog.state.revision == receiveRevision || probeLog.state.failure != nil }
+                XCTAssertNil(probeLog.state.failure)
+                if let picture = probeLog.state.picture, matches(picture), (probeLog.state.status?.lastTimecode ?? 0) >= boundary { return }
+            }
+            XCTFail("The same receiver did not receive the transferred Current")
+            throw NDIHelperWire.Failure.unavailable
+        }
+        for _ in 0..<3 {
+            var boundary = Int64(DispatchTime.now().uptimeNanoseconds / 100)
+            XCTAssertTrue(outputs.moveOutput(destination.id, to: peer))
+            try await receive(after: boundary) { $0.hasGlyph && $0.corner.3 == 0 }
+            XCTAssertEqual(outputs.media(for: companion.id)?.ndiVideoFrames.sourceCount, 1)
+            XCTAssertTrue(outputs.media(for: companion.id)?.program === player)
+            XCTAssertEqual(player.currentItem?.outputs.filter { $0 is AVPlayerItemVideoOutput }.count, 1)
+            boundary = Int64(DispatchTime.now().uptimeNanoseconds / 100)
+            XCTAssertTrue(outputs.moveOutput(destination.id, to: session))
+            try await receive(after: boundary) {
+                $0.corner.3 == 255 && (($0.corner.2 > 180 && $0.corner.0 < 40) || ($0.corner.0 > 180 && $0.corner.2 < 40))
+            }
+            XCTAssertTrue(outputs.media.program === player)
+            XCTAssertEqual(outputs.media.ndiVideoFrames.sourceCount, 1)
+            XCTAssertEqual(router.statistics[destination.id]?.sourceName, sourceName)
+            XCTAssertEqual(helpersCreated, 2, "Workspace transfer must retain both senders")
+            XCTAssertEqual(probeLog.state.readyCount, 1, "The receiver must remain connected")
+        }
+        outputs.closeOutput(companion.id)
+        try await until("companion retires independently") { router.state(companion.id) == .stopped }
+        XCTAssertEqual(outputs.media.ndiVideoFrames.sourceCount, 1)
+        XCTAssertEqual(player.currentItem?.outputs.filter { $0 is AVPlayerItemVideoOutput }.count, 1)
+        let survivingCount = router.statistics[destination.id]?.submittedFrames ?? 0
+        try await until("remaining destination keeps sending") { (router.statistics[destination.id]?.submittedFrames ?? 0) >= survivingCount + 10 }
         store.setEnabled(true, for: native); session.showSlides()
         XCTAssertTrue(outputs.media.program === player); XCTAssertEqual(opened, 1)
         outputs.closeOutput(native)
@@ -625,7 +676,9 @@ final class NDISDKIntegrationTests: XCTestCase {
     nonisolated private static func videoFixture() async throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("ndi-video-\(UUID()).mov")
         let writer = try AVAssetWriter(url: url, fileType: .mov)
-        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 320, AVVideoHeightKey: 180])
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 320, AVVideoHeightKey: 180,
+            AVVideoColorPropertiesKey: [AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
+                AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2, AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2]])
         let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA, kCVPixelBufferWidthKey as String: 320,
             kCVPixelBufferHeightKey as String: 180

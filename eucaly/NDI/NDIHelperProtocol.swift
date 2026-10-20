@@ -5,8 +5,8 @@ import CoreVideo
 /// No SDK types, AVPlayer, bookmarks, file paths or observable state cross IPC.
 /// The schema is shared by the app and its separately linked helper executable.
 nonisolated enum NDIHelperWire {
-    static let version = 8
-    static let build = "ndi-yuv-1"
+    static let version = 9
+    static let build = "ndi-media-2"
     static let maximumMessageBytes = 65_536
     static let width = 1920
     static let height = 1080
@@ -34,10 +34,104 @@ nonisolated enum NDIHelperWire {
             && surface.bytesPerRow == width * 2 && surface.allocationSize == format.byteCount && surface.planeCount == 0
     }
     static func validMedia(_ surface: IOSurface) -> Bool {
-        (1...4096).contains(surface.width) && (1...4096).contains(surface.height)
-            && surface.bytesPerElement == 4 && surface.planeCount == 0 && surface.pixelFormat == 0x42475241
-            && surface.bytesPerRow >= surface.width * 4 && surface.bytesPerRow <= 16_384
-            && surface.allocationSize >= surface.bytesPerRow * surface.height && surface.allocationSize <= 67_108_864
+        guard (1...4096).contains(surface.width), (1...4096).contains(surface.height),
+              surface.allocationSize <= 67_108_864 else { return false }
+        if surface.pixelFormat == kCVPixelFormatType_32BGRA {
+            return surface.bytesPerElement == 4 && surface.planeCount == 0
+                && surface.bytesPerRow >= surface.width * 4 && surface.bytesPerRow <= 16_384
+                && surface.allocationSize >= surface.bytesPerRow * surface.height
+        }
+        guard surface.pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+                || surface.pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+              surface.width.isMultiple(of: 2), surface.height.isMultiple(of: 2), surface.planeCount == 2 else { return false }
+        var previousEnd = 0
+        for plane in 0..<2 {
+            let width = surface.widthOfPlane(at: plane), height = surface.heightOfPlane(at: plane)
+            let stride = surface.bytesPerRowOfPlane(at: plane)
+            let offset = surface.baseAddress.distance(to: surface.baseAddressOfPlane(at: plane))
+            guard width == surface.width / (plane == 0 ? 1 : 2), height == surface.height / (plane == 0 ? 1 : 2),
+                  surface.bytesPerElementOfPlane(at: plane) == (plane == 0 ? 1 : 2),
+                  (surface.width...16_384).contains(stride), offset >= previousEnd,
+                  offset <= surface.allocationSize, stride * height <= surface.allocationSize - offset else { return false }
+            previousEnd = offset + stride * height
+        }
+        return true
+    }
+}
+
+/// Pixel layout and colour interpretation travel with each immutable input.
+/// Only SDR 601/709 NV12 enters the planar path; other video retains BGRA.
+nonisolated struct NDIMediaInput: Codable, Equatable, Sendable {
+    enum Format: String, Codable, Sendable { case bgra, nv12VideoRange, nv12FullRange }
+    enum Matrix: String, Codable, Sendable {
+        case rec601, rec709
+        static let attachments: [String: Matrix] = [kCVImageBufferYCbCrMatrix_ITU_R_601_4 as String: .rec601,
+                                                    kCVImageBufferYCbCrMatrix_ITU_R_709_2 as String: .rec709]
+    }
+    enum ChromaLocation: String, Codable, Sendable {
+        case center, left, topLeft, top, bottomLeft, bottom
+        static let attachments: [String: ChromaLocation] = [kCVImageBufferChromaLocation_Center as String: .center,
+            kCVImageBufferChromaLocation_Left as String: .left, kCVImageBufferChromaLocation_TopLeft as String: .topLeft,
+            kCVImageBufferChromaLocation_Top as String: .top, kCVImageBufferChromaLocation_BottomLeft as String: .bottomLeft,
+            kCVImageBufferChromaLocation_Bottom as String: .bottom]
+    }
+    var format: Format = .bgra
+    var matrix: Matrix = .rec709
+    var chromaLocation: ChromaLocation = .center
+    // BGRA opacity comes only from a non-alpha image or the opaque PDF raster.
+    // An arbitrary BGRA surface never implies opaque pixels.
+    var opaque = false
+    var isOpaque: Bool { opaque || format != .bgra }
+    func matches(_ surface: IOSurface) -> Bool {
+        guard NDIHelperWire.validMedia(surface) else { return false }
+        switch format {
+        case .bgra: return surface.pixelFormat == kCVPixelFormatType_32BGRA
+        case .nv12VideoRange: return surface.pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        case .nv12FullRange: return surface.pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+        }
+    }
+    var uniforms: [Float] {
+        let offset: (Float, Float) = switch chromaLocation {
+        case .center: (0, 0)
+        case .left: (0.5, 0)
+        case .topLeft: (0.5, 0.5)
+        case .top: (0, 0.5)
+        case .bottomLeft: (0.5, -0.5)
+        case .bottom: (0, -0.5)
+        }
+        return [format == .bgra ? 0 : format == .nv12VideoRange ? 1 : 2,
+                matrix == .rec709 ? 0.2126 : 0.299, matrix == .rec709 ? 0.0722 : 0.114, 0,
+                offset.0, offset.1, 0, 0]
+    }
+    init(format: Format = .bgra, matrix: Matrix = .rec709, chromaLocation: ChromaLocation = .center, opaque: Bool = false) {
+        self.format = format; self.matrix = matrix; self.chromaLocation = chromaLocation; self.opaque = opaque
+    }
+    init?(pixelBuffer: CVPixelBuffer) {
+        let pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer)
+        if pixelFormat == kCVPixelFormatType_32BGRA { self.init(); return }
+        guard pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+                || pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange else { return nil }
+        func attachment(_ key: CFString) -> String? {
+            CVBufferCopyAttachment(pixelBuffer, key, nil) as? String
+        }
+        guard Self.supportsPlanarColour(primaries: attachment(kCVImageBufferColorPrimariesKey),
+                                       transfer: attachment(kCVImageBufferTransferFunctionKey)) else { return nil }
+        let matrix: Matrix
+        if let name = attachment(kCVImageBufferYCbCrMatrixKey) {
+            guard let value = Matrix.attachments[name] else { return nil }; matrix = value
+        } else {
+            matrix = CVPixelBufferGetWidth(pixelBuffer) > 720 || CVPixelBufferGetHeight(pixelBuffer) > 576 ? .rec709 : .rec601
+        }
+        let chroma: ChromaLocation
+        if let name = attachment(kCVImageBufferChromaLocationTopFieldKey) {
+            guard let value = ChromaLocation.attachments[name] else { return nil }; chroma = value
+        } else { chroma = .center }
+        self.init(format: pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange ? .nv12VideoRange : .nv12FullRange,
+                  matrix: matrix, chromaLocation: chroma)
+    }
+    static func supportsPlanarColour(primaries: String?, transfer: String?) -> Bool {
+        (primaries == nil || primaries == kCVImageBufferColorPrimaries_ITU_R_709_2 as String)
+            && (transfer == nil || transfer == kCVImageBufferTransferFunction_ITU_R_709_2 as String)
     }
 }
 
@@ -230,12 +324,28 @@ nonisolated struct NDIMediaRenderRequest: Codable, Equatable, Sendable {
     var colour = OutputColour.black
     var foregroundGeometry: NDIMediaGeometry? = nil
     var backgroundGeometry: NDIMediaGeometry? = nil
+    var foregroundInput = NDIMediaInput()
+    var backgroundInput = NDIMediaInput()
     var producedAtNanoseconds: UInt64 = 0
     var isValid: Bool {
         (text?.isValid ?? true) && (text == nil || (!foreground && text?.generation == generation && text?.transparent == true))
             && dimming.isFinite && (0...1).contains(dimming)
             && [colour.red, colour.green, colour.blue, colour.alpha].allSatisfy { $0.isFinite && (0...1).contains($0) }
             && (foregroundGeometry?.isValid ?? true) && (backgroundGeometry?.isValid ?? true)
+            && (foreground || foregroundInput == NDIMediaInput()) && (background || backgroundInput == NDIMediaInput())
+    }
+
+    func hasOpaqueCanvas(foreground: IOSurface?, background: IOSurface?) -> Bool {
+        func covers(_ surface: IOSurface?, _ geometry: NDIMediaGeometry?, _ fill: Bool, _ input: NDIMediaInput) -> Bool {
+            guard let surface, input.isOpaque, input.matches(surface) else { return false }
+            let width = geometry?.width ?? Double(surface.width), height = geometry?.height ?? Double(surface.height)
+            // Equal aspect ratios or explicit fill prove coverage. Do not use a
+            // tolerance that could erase a real, narrow transparent fit gutter.
+            return fill || width * Double(NDIHelperWire.height) == height * Double(NDIHelperWire.width)
+        }
+        return colour.alpha == 1
+            || (self.foreground && covers(foreground, foregroundGeometry, foregroundFill, foregroundInput))
+            || (self.background && covers(background, backgroundGeometry, backgroundFill, backgroundInput))
     }
 }
 
@@ -283,12 +393,16 @@ nonisolated final class NDIFrameResource: @unchecked Sendable {
     let surface: IOSurface
     let pixelBuffer: CVPixelBuffer?
     let geometry: NDIMediaGeometry?
-    init(surface: IOSurface) { self.surface = surface; pixelBuffer = nil; geometry = nil }
+    let input: NDIMediaInput
+    init(surface: IOSurface, opaque: Bool = false) {
+        self.surface = surface; pixelBuffer = nil; geometry = nil; input = .init(opaque: opaque)
+    }
     init?(pixelBuffer: CVPixelBuffer, transform: CGAffineTransform = .identity) {
-        guard let surface = CVPixelBufferGetIOSurface(pixelBuffer)?.takeUnretainedValue(), NDIHelperWire.validMedia(surface) else { return nil }
+        guard let surface = CVPixelBufferGetIOSurface(pixelBuffer)?.takeUnretainedValue(),
+              let input = NDIMediaInput(pixelBuffer: pixelBuffer), input.matches(surface) else { return nil }
         let geometry = NDIMediaGeometry(pixelBuffer: pixelBuffer, transform: transform)
         guard geometry.isValid else { return nil }
-        self.surface = surface; self.pixelBuffer = pixelBuffer; self.geometry = geometry
+        self.surface = surface; self.pixelBuffer = pixelBuffer; self.geometry = geometry; self.input = input
     }
 }
 nonisolated struct NDIMediaSubmission: Sendable {
@@ -299,5 +413,7 @@ nonisolated struct NDIMediaSubmission: Sendable {
         request.isValid && request.foreground == (foreground != nil) && request.background == (background != nil)
             && (foreground.map { NDIHelperWire.validMedia($0.surface) } ?? true)
             && (background.map { NDIHelperWire.validMedia($0.surface) } ?? true)
+            && (foreground.map { request.foregroundInput == $0.input && $0.input.matches($0.surface) } ?? true)
+            && (background.map { request.backgroundInput == $0.input && $0.input.matches($0.surface) } ?? true)
     }
 }

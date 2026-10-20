@@ -86,8 +86,8 @@ final class HelperService: @unchecked Sendable {
                   request.background == (message.second != 0) else { fail("Invalid media render request"); return }
             let foreground = message.first == 0 ? nil : IOSurfaceLookupFromMachPort(message.first)
             let background = message.second == 0 ? nil : IOSurfaceLookupFromMachPort(message.second)
-            guard (!request.foreground || foreground.map(NDIHelperWire.validMedia) == true),
-                  (!request.background || background.map(NDIHelperWire.validMedia) == true) else { fail("Invalid media surface"); return }
+            guard (!request.foreground || foreground.map(request.foregroundInput.matches) == true),
+                  (!request.background || background.map(request.backgroundInput.matches) == true) else { fail("Invalid media surface"); return }
             busy = true; lastRevision = request.revision
             terminalColour = request.colour
             renderMedia(request, foreground: foreground, background: background)

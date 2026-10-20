@@ -7,7 +7,10 @@ import IOSurface
 @MainActor
 final class NDIRegressionTests: XCTestCase {
     func testPortraitVideoPreservesDisplayTransform() async throws {
-        let url = try await Task.detached { try await Self.makePortraitVideoFixture() }.value
+        for tagged in [false, true] { try await checkPortraitVideo(tagged: tagged) }
+    }
+    private func checkPortraitVideo(tagged: Bool) async throws {
+        let url = try await Task.detached { try await Self.makePortraitVideoFixture(tagged: tagged) }.value
         defer { try? FileManager.default.removeItem(at: url) }
         let store = OutputProfileStore()
         let outputs = OutputCoordinator(profiles: store, displays: ProjectionDisplayManager(displays: { [] }), ndi: RecordingNDIOutput())
@@ -110,10 +113,15 @@ final class NDIRegressionTests: XCTestCase {
         while !check() && ProcessInfo.processInfo.systemUptime < end { try await Task.sleep(for: .milliseconds(20)) }
         guard check() else { XCTFail("Timed out waiting for the regression fixture"); throw NDIHelperWire.Failure.unavailable }
     }
-    nonisolated static func makePortraitVideoFixture() async throws -> URL {
+    nonisolated static func makePortraitVideoFixture(tagged: Bool = false) async throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("ndi-review-portrait-\(UUID()).mov")
         let writer = try AVAssetWriter(url: url, fileType: .mov)
-        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 320, AVVideoHeightKey: 180])
+        var settings: [String: Any] = [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 320, AVVideoHeightKey: 180]
+        if tagged {
+            settings[AVVideoColorPropertiesKey] = [AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
+                AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2, AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2]
+        }
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: settings)
         input.transform = .init(a: 0, b: 1, c: -1, d: 0, tx: 180, ty: 0)
         let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA, kCVPixelBufferWidthKey as String: 320, kCVPixelBufferHeightKey as String: 180])
         writer.add(input); guard writer.startWriting() else { throw NDIHelperWire.Failure.unavailable }; writer.startSession(atSourceTime: .zero)

@@ -1,7 +1,6 @@
 @preconcurrency import AVFoundation
 import IOSurface
 import ImageIO
-import QuartzCore
 
 /// Immutable local render intent. URLs and players remain in the host; only
 /// validated surface capabilities and small composition values enter the helper.
@@ -20,7 +19,7 @@ final class OutputMediaFrameBroker {
     private let generation: UUID
     private let clock: NDIMediaFrameClock
     private let prepared = OutputPreparedMedia()
-    private var players: [ObjectIdentifier: NDIVideoFrameSource] = [:]
+    private var players: [ObjectIdentifier: NDIVideoFrameLease] = [:]
     private var requested: [Int: OutputPreparedMedia.Key] = [:]
     private var pictures: [Int: NDIFrameResource] = [:]
     private var plan: NDIMediaFrameClock.Plan?
@@ -29,7 +28,12 @@ final class OutputMediaFrameBroker {
 
     init(generation: UUID, deliver: @escaping @Sendable (NDIMediaSubmission) -> Void, failure: @escaping @MainActor (String) -> Void) {
         self.generation = generation; self.failure = failure
-        clock = NDIMediaFrameClock(deliver: deliver) { reason in Task { @MainActor in failure(reason) } }
+        clock = NDIMediaFrameClock(deliver: deliver) { clock, version, reason in
+            Task { @MainActor in
+                guard clock.acceptsFailure(version: version) else { return }
+                failure(reason)
+            }
+        }
     }
     func update(_ snapshot: OutputContentSnapshot, profile: OutputProfile, runtime: OutputMediaRuntime, keyMode: NDIOutputSettings.KeyMode = .alpha) {
         guard !stopped else { return }
@@ -48,16 +52,16 @@ final class OutputMediaFrameBroker {
         let intent = OutputRenderSnapshot(workspace: snapshot.source, revision: snapshot.revision,
             visible: snapshot.visible, profile: profile, geometry: .init(width: 1920, height: 1080), foreground: foregroundKey, background: backgroundKey)
         var required: Set<ObjectIdentifier> = []
-        func source(_ player: AVPlayer?) -> NDIVideoFrameSource? {
+        func source(_ player: AVPlayer?) -> NDIVideoFrameLease? {
             guard let player else { return nil }
             let key = ObjectIdentifier(player); required.insert(key)
             if let old = players[key], old.item === player.currentItem { return old }
-            players[key]?.detach()
-            let value = NDIVideoFrameSource(player: player); players[key] = value; return value
+            players[key]?.release()
+            let value = runtime.ndiVideoFrames.acquire(player); players[key] = value; return value
         }
         let foregroundVideo = source(slide?.videoURL != nil ? runtime.program : nil)
         let backgroundVideo = source(backgroundURL.map(OutputMediaRuntime.isVideo) == true ? runtime.backgroundPlayer(for: profile) : nil)
-        for key in Array(players.keys) where !required.contains(key) { players.removeValue(forKey: key)?.detach() }
+        for key in Array(players.keys) where !required.contains(key) { players.removeValue(forKey: key)?.release() }
         request(intent.foreground, slot: 0); request(intent.background, slot: 1)
         var textProfile = profile; textProfile.background.bookmark = nil; textProfile.usesLegacySizing = false
         let text = snapshot.visible && supported && !snapshot.current.isEmpty
@@ -91,81 +95,28 @@ final class OutputMediaFrameBroker {
     func stop() {
         guard !stopped else { return }; stopped = true
         clock.stop(); prepared.stop()
-        for source in players.values { source.detach() }
+        for source in players.values { source.release() }
         players.removeAll(); pictures.removeAll(); requested.removeAll(); plan = nil
     }
     func forceNextFrame() { clock.forceNextFrame() }
 }
 
-nonisolated private final class NDIVideoFrameSource: @unchecked Sendable {
-    let player: AVPlayer
-    let item: AVPlayerItem?
-    private let output: AVPlayerItemVideoOutput
-    private var cached: NDIFrameResource?
-    private var previousTime: CMTime = .invalid
-    private var lastFrame = ProcessInfo.processInfo.systemUptime
-    private let lock = NSLock()
-    private var transform: CGAffineTransform?
-    private var preparationFailed = false
-    @MainActor private var preparation: Task<Void, Never>?
-    @MainActor init(player: AVPlayer) {
-        self.player = player; item = player.currentItem
-        output = AVPlayerItemVideoOutput(pixelBufferAttributes: [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-            kCVPixelBufferIOSurfacePropertiesKey as String: [String: Int](), kCVPixelBufferMetalCompatibilityKey as String: true
-        ])
-        output.suppressesPlayerRendering = false
-        item?.add(output); output.requestNotificationOfMediaDataChange(withAdvanceInterval: 0.03)
-        preparation = Task { [weak self, item] in
-            do {
-                guard let item, let track = try await item.asset.loadTracks(withMediaType: .video).first else { throw Failure.format }
-                let transform = try await track.load(.preferredTransform)
-                guard !Task.isCancelled else { return }
-                self?.setTransform(transform)
-            } catch { if !Task.isCancelled { self?.setTransform(nil) } }
-        }
-    }
-    private func setTransform(_ value: CGAffineTransform?) {
-        lock.lock(); transform = value; preparationFailed = value == nil; lock.unlock()
-    }
-    @MainActor func detach() { preparation?.cancel(); preparation = nil; item?.remove(output) }
-    // Only the media clock reads/mutates the cached frame. AVFoundation's video
-    // output maps the same player's host timeline; no second AVPlayer is created.
-    func latest() throws -> NDIFrameResource? {
-        lock.lock(); let transform = transform, failed = preparationFailed; lock.unlock()
-        if failed { throw Failure.format }
-        guard let transform else {
-            if ProcessInfo.processInfo.systemUptime - lastFrame > 5 { throw Failure.decoder }
-            return nil
-        }
-        if item?.status == .failed { throw Failure.decoder }
-        let time = output.itemTime(forHostTime: CACurrentMediaTime())
-        if previousTime.isNumeric && time.isNumeric && time < previousTime { cached = nil }
-        previousTime = time
-        if time.isNumeric, output.hasNewPixelBuffer(forItemTime: time), let buffer = output.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: nil) {
-            guard let frame = NDIFrameResource(pixelBuffer: buffer, transform: transform) else { throw Failure.format }
-            cached = frame; lastFrame = ProcessInfo.processInfo.systemUptime
-        } else if player.rate != 0 && ProcessInfo.processInfo.systemUptime - lastFrame > 5 { throw Failure.decoder }
-        else if player.rate == 0 { lastFrame = ProcessInfo.processInfo.systemUptime }
-        return cached
-    }
-    enum Failure: Error { case decoder, format }
-}
-
 /// Timer callbacks coalesce on a dedicated queue. Host-side handoff is latest
 /// only; the supervisor retains one pending and one in-flight pair of buffers.
-nonisolated private final class NDIMediaFrameClock: @unchecked Sendable {
+nonisolated final class NDIMediaFrameClock: @unchecked Sendable {
     struct Plan: Sendable {
         var request: NDIMediaRenderRequest
-        var foregroundVideo: NDIVideoFrameSource?
-        var backgroundVideo: NDIVideoFrameSource?
+        var foregroundVideo: NDIVideoFrameLease?
+        var backgroundVideo: NDIVideoFrameLease?
         var foreground: NDIFrameResource?
         var background: NDIFrameResource?
     }
+    typealias Picture = (foreground: NDIFrameResource?, background: NDIFrameResource?)
     private let lock = NSLock()
     private let queue = DispatchQueue(label: "com.suku.eucaly.ndi.media-clock", qos: .userInitiated)
     private var plan: Plan?
     private var planVersion: UInt64 = 0
+    private var failedPlanVersion: UInt64?
     private var stopped = false
     private var timer: DispatchSourceTimer?
     private var revision: UInt64 = 0
@@ -173,29 +124,40 @@ nonisolated private final class NDIMediaFrameClock: @unchecked Sendable {
     private var previousForeground: NDIFrameResource?
     private var previousBackground: NDIFrameResource?
     private let deliver: @Sendable (NDIMediaSubmission) -> Void
-    private let failure: @Sendable (String) -> Void
-    init(deliver: @escaping @Sendable (NDIMediaSubmission) -> Void, failure: @escaping @Sendable (String) -> Void) {
-        self.deliver = deliver; self.failure = failure
+    private let failure: @Sendable (NDIMediaFrameClock, UInt64, String) -> Void
+    private let read: @Sendable (Plan) throws -> Picture
+    init(read: @escaping @Sendable (Plan) throws -> Picture = {
+        (try $0.foregroundVideo?.latest() ?? $0.foreground, try $0.backgroundVideo?.latest() ?? $0.background)
+    }, deliver: @escaping @Sendable (NDIMediaSubmission) -> Void,
+         failure: @escaping @Sendable (NDIMediaFrameClock, UInt64, String) -> Void) {
+        self.read = read; self.deliver = deliver; self.failure = failure
         queue.async { [self] in
             let timer = DispatchSource.makeTimerSource(queue: queue)
             timer.schedule(deadline: .now(), repeating: .nanoseconds(1_000_000_000 / 30), leeway: .milliseconds(1))
             timer.setEventHandler { [weak self] in self?.tick() }; self.timer = timer; timer.resume()
         }
     }
-    func update(_ plan: Plan) { lock.lock(); if !stopped { self.plan = plan; planVersion &+= 1 }; lock.unlock() }
+    func update(_ plan: Plan) {
+        lock.lock()
+        if !stopped { self.plan = plan; planVersion &+= 1; failedPlanVersion = nil }
+        lock.unlock()
+    }
+    func acceptsFailure(version: UInt64) -> Bool {
+        lock.withLock { !stopped && planVersion == version && failedPlanVersion == version }
+    }
     func forceNextFrame() { queue.async { [self] in previousRequest = nil; tick() } }
     func stop() {
-        lock.lock(); stopped = true; plan = nil; lock.unlock()
+        lock.lock(); stopped = true; plan = nil; failedPlanVersion = nil; lock.unlock()
         queue.async { [self] in timer?.cancel(); timer = nil; previousForeground = nil; previousBackground = nil }
     }
     private func tick() {
         lock.lock(); let value = stopped ? nil : plan, version = planVersion; lock.unlock()
         guard let value else { return }
         do {
-            let foreground = try value.foregroundVideo?.latest() ?? value.foreground
-            let background = try value.backgroundVideo?.latest() ?? value.background
+            let (foreground, background) = try read(value)
             var request = value.request; request.foreground = foreground != nil; request.background = background != nil
             request.foregroundGeometry = foreground?.geometry; request.backgroundGeometry = background?.geometry
+            request.foregroundInput = foreground?.input ?? .init(); request.backgroundInput = background?.input ?? .init()
             guard request != previousRequest || foreground !== previousForeground || background !== previousBackground else { return }
             lock.lock(); defer { lock.unlock() }
             // Commit the cache only with the admitted plan. A superseded tick
@@ -206,14 +168,17 @@ nonisolated private final class NDIMediaFrameClock: @unchecked Sendable {
                 foreground: request.foreground, background: request.background, foregroundFill: request.foregroundFill,
                 backgroundFill: request.backgroundFill, dimming: request.dimming, colour: request.colour,
                 foregroundGeometry: request.foregroundGeometry, backgroundGeometry: request.backgroundGeometry,
+                foregroundInput: request.foregroundInput, backgroundInput: request.backgroundInput,
                 producedAtNanoseconds: DispatchTime.now().uptimeNanoseconds)
             deliver(.init(request: request, foreground: foreground, background: background))
         } catch {
             lock.lock()
             let current = !stopped && version == planVersion
-            if current { stopped = true; plan = nil }
+            // Quiesce this failed plan while its main-actor callback is queued.
+            // A newer Current can replace it before that callback is delivered.
+            if current { failedPlanVersion = version; plan = nil }
             lock.unlock()
-            if current { stop(); failure("NDI could not read the shared video frame. Use an SDR video file and choose Retry.") }
+            if current { failure(self, version, "NDI could not read the shared video frame. Use an SDR video file and choose Retry.") }
         }
     }
 }
@@ -304,6 +269,7 @@ nonisolated final class OutputPreparedMedia: @unchecked Sendable {
             context.concatenate(page.getDrawingTransform(.cropBox, rect: CGRect(origin: .zero, size: sourceSize), rotate: 0, preserveAspectRatio: true))
             context.drawPDFPage(page)
         }
-        return .init(surface: surface)
+        let opaque = page != nil || image.map { [.none, .noneSkipFirst, .noneSkipLast].contains($0.alphaInfo) } == true
+        return .init(surface: surface, opaque: opaque)
     }
 }

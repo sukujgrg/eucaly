@@ -4,6 +4,7 @@ import AVFoundation
 /// an individual view never resets playback or adds an audio owner.
 @MainActor
 final class OutputMediaRuntime {
+    let ndiVideoFrames = NDISharedVideoFrames()
     private let bookmarkResolver: @Sendable (String) async -> URL?
     init(bookmarkResolver: @escaping @Sendable (String) async -> URL? = { bookmark in
         await Task.detached { SecurityScopedBookmarks.resolve(bookmark)?.url }.value
@@ -89,6 +90,7 @@ final class OutputMediaRuntime {
         }
     }
     private func stopProgram() {
+        if let program { ndiVideoFrames.stop(player: program) }
         programGeneration = UUID(); durationTask?.cancel(); durationTask = nil
         program?.pause()
         if let timeObserver { program?.removeTimeObserver(timeObserver) }
@@ -136,7 +138,9 @@ final class OutputMediaRuntime {
             let key = backgroundKey(profile, url: url)
             wanted[key] = (url, (wanted[key]?.1 ?? false) || showing)
         }
-        for key in Array(backgrounds.keys) where wanted[key] == nil { backgrounds.removeValue(forKey: key) }
+        for key in Array(backgrounds.keys) where wanted[key] == nil {
+            if let resource = backgrounds.removeValue(forKey: key) { ndiVideoFrames.stop(player: resource.player) }
+        }
         for (key, value) in wanted {
             if backgrounds[key] == nil { backgrounds[key] = BackgroundResource(url: value.0) }
             backgrounds[key]?.setPlayback(value.1)
@@ -144,6 +148,7 @@ final class OutputMediaRuntime {
     }
     var backgroundResourceCount: Int { backgrounds.count }
     func stop() {
+        ndiVideoFrames.stop()
         stopProgram(); backgrounds.removeAll()
         for task in bookmarkTasks.values { task.cancel() }
         bookmarkTasks.removeAll(); requestedBookmarks.removeAll(); backgroundURLs.removeAll()

@@ -163,7 +163,24 @@ The implementation follows NDI's
 asynchronous submission, explicit frame ownership and worker isolation. The final
 Metal pass composes and converts directly to Rec.709 UYVY (opaque canvas) or UYVA
 (alpha may be needed), including a full-resolution, full-range alpha plane.
-Input textures and cached text remain BGRA. The four shared output buffers stay
+Cached text and prepared images/PDFs remain BGRA. Explicitly tagged, progressive
+SDR H.264/HEVC with supported 601/709 matrices and Rec.709 primaries/transfer uses
+decoder NV12 planes directly in the compositor, preserving range, chroma location,
+crop and display transforms. Untagged, alpha, wide-colour, interlaced, composed and
+unknown video keeps AVFoundation's BGRA conversion. Each workspace's media runtime
+shares one leased sampler per player/item across its NDI destinations. Frames retain
+their pixel buffers until each helper acknowledges GPU completion; stopping or moving
+one output releases only its lease.
+Sampler shutdown closes admission immediately and detaches its exact AVFoundation
+output after in-flight reads finish, without waiting on the main thread. Queued
+decoder failures are checked against the current render plan as well as the owning
+destination's content epoch, so a replaced item cannot retire newer Current content.
+
+UYVY also applies when a proven opaque image/PDF or NV12 layer covers the entire
+canvas. Fit gutters, unknown BGRA opacity and transparent media retain UYVA; no
+pixel scan or nearly-equal aspect-ratio shortcut decides opacity. The live 30 fps
+clock, including with no receivers, and the existing audio timing remain unchanged.
+The four shared output buffers stay
 leased through GPU completion and the next SDK send/flush. Each buffer reserves
 6,220,800 bytes for UYVA; the SDK reads 4,147,200 bytes for UYVY, compared with
 8,294,400 bytes for the former BGRA frame. This reduces SDK input memory traffic,

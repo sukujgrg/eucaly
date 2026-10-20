@@ -46,7 +46,13 @@ output or CPU colour conversion on the normal send path. The helper
 alone dynamically loads the signed external NDI 6.3 runtime. Preserve vendor checks,
 helper-only library-validation exception, bounded latest-frame admission, four output
 buffers, SDK borrow leases, authenticated private Mach IPC, bounded PCM and exact-child
-supervision. Cached text and input media remain BGRA. GPU conversion does not move
+supervision. Cached text and prepared images/PDFs remain BGRA. Qualifying tagged
+SDR video uses decoder NV12 planes directly, with explicit matrix, range and chroma
+location. Other video retains AVFoundation's BGRA conversion. Workspace-owned
+reference-counted samplers share acquisition across destinations without sharing
+their composition, sender or teardown. A proven opaque full-canvas media layer can
+also select UYVY; fit gutters and unknown opacity always retain alpha.
+GPU conversion does not move
 the NDI codec onto the GPU. Higher frame rates remain a separate qualification gate.
 The offline packed-pixel tests check legal-range Rec.709, packing, independent alpha
 and coloured/transparent edges. Optional real-SDK tests compare against the former
@@ -128,6 +134,53 @@ After these additions, `make test` passed 539 app tests (including eleven real-S
 tests) and 108 offline release/feed tests. `make build` also archived/exported the
 Release app successfully. Local stress-test logs and a summary are retained in
 `build/ndi-yuv/workspace-format/`.
+
+### Shared video acquisition and planar input check, 2026-10-20
+
+`make test` passed 544 XCTest cases, the existing Swift Testing smoke test and
+108 offline release/feed tests with the installed NDI 6.3.2 runtime. All eleven
+real-SDK tests passed. The shared-video test now runs two generic destinations
+against one player and one sampler, verifies moving video at a connected receiver,
+then closes one destination and checks that the other continues submitting. Tagged
+NV12 video uses opaque UYVY when it covers the canvas. Portrait fit/fill runs through
+both tagged NV12 and untagged BGRA inputs.
+
+Five additional input regressions check 601/709 matrices, full/video range, actual
+packed pixels, plane bounds and descriptor mismatches, transparent fit gutters,
+conservative format selection, concurrent sampling and cancellation/late lease
+release. The first playback check exposed decoder-guessed SMPTE-C colour on untagged
+SD video; eligibility now requires explicit supported colour metadata before the
+output attaches, preserving AVFoundation's conversion for those files.
+
+`make build` archived/exported the arm64 Release app. Its signed helper passed
+`--check-runtime` without publishing a source. Passing logs and the runtime check
+are retained in `build/ndi-media/`. These checks establish neither a general CPU
+speedup nor physical receiver qualification. Idle submission, the 30 fps clocks,
+audio routing and network defaults remain unchanged.
+
+### Workspace-transfer and shutdown stability review, 2026-10-20
+
+A gated frame-read regression reproduced the sampler's old shutdown path waiting
+on AVFoundation while holding the main thread. Stop now closes admission under a
+short state lock, rejects late results and queues exact-output detachment after
+active reads finish. The regression verifies prompt stop and eventual detachment;
+existing lease tests cover independent consumers and late releases.
+
+Queued decoder failures now carry their render-plan version. A new Current or
+Stop invalidates the pending failure before its main-actor callback can retire the
+destination; the existing workspace epoch and sender generation checks still apply.
+Three clock regressions cover replacement before failure delivery, replacement
+during a failed read and stop before failure delivery.
+
+`make test` passed 548 XCTest cases, the existing Swift Testing smoke test and
+108 offline release/feed tests. All eleven real-SDK tests passed. The shared-video
+integration test performs three video-to-lyrics-to-video workspace round trips
+through one connected receiver, checks that neither sender is recreated and closes
+the companion source while the remaining source continues with the shared player.
+`make build` archived/exported the signed arm64 Release app, and its helper passed
+the read-only NDI 6.3.2 runtime check. Review logs are retained in
+`build/ndi-media/review/`. Physical delivery and sustained-operation gates below
+remain open.
 
 ## Equipment and sustained operation
 
