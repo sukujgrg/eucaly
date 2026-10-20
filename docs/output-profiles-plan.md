@@ -25,7 +25,7 @@ backgrounds are absent. Clear Current leaves backgrounds/music intact. The expli
 local music owner and saved network music route are never silently replaced on move.
 Webpages and window capture retain their native-only limits.
 
-Version 6 migrates existing rows to Workspace 1, preserves both legacy NDI sources
+Version 6 migrates existing rows to Home, preserves both legacy NDI sources
 as generic destinations with their names/identities/appearance/music, resolves
 legacy enabled-name duplicates by disabling later rows, and never publishes during
 restoration. New workspaces have no outputs. Earlier retirement of AltView/SRT and

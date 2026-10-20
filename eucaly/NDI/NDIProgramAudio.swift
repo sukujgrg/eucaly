@@ -63,28 +63,33 @@ nonisolated final class NDIAudioDistribution: @unchecked Sendable {
 @MainActor
 final class NDIProgramAudio {
     private let distribution: NDIAudioDistribution
+    private let makeBus: (@escaping ProgramAudioBus.StemDelivery) -> ProgramAudioBus
     private var bus: ProgramAudioBus?
     private var videoTap: PlayerAudioTap?
     private var musicTap: PlayerAudioTap?
     private weak var runtime: OutputMediaRuntime?
     private weak var session: PresentationSession?
     private var timer: Timer?
-    init(musicRoute: NDIMusicRoute? = nil) { distribution = NDIAudioDistribution(musicRoute: musicRoute) }
+    init(musicRoute: NDIMusicRoute? = nil,
+         makeBus: @escaping (@escaping ProgramAudioBus.StemDelivery) -> ProgramAudioBus = { ProgramAudioBus(deliverStems: $0) }) {
+        distribution = NDIAudioDistribution(musicRoute: musicRoute); self.makeBus = makeBus
+    }
     func update(targets: [NDIAudioDistribution.Target], music: UUID?, preparing: Bool, wantsVideo: Bool,
                 runtime: OutputMediaRuntime, session: PresentationSession?) {
-        distribution.configure(targets, music: music)
         self.runtime = wantsVideo ? runtime : nil
         self.session = music != nil ? session : nil
         guard !targets.isEmpty || preparing else { stop(); return }
         if bus == nil {
             let distribution = distribution
-            let bus = ProgramAudioBus(deliverStems: { distribution.deliver(program: $0, background: $1, time: $2) })
+            let bus = makeBus { distribution.deliver(program: $0, background: $1, time: $2) }
             self.bus = bus; bus.start(at: CMClockGetTime(CMClockGetHostTimeClock()))
             timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.refresh() }
             }
         }
         refresh()
+        let distribution = distribution
+        bus?.updateDelivery { distribution.configure(targets, music: music) }
     }
     private func refresh() {
         guard let bus else { return }

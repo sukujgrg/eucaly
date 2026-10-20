@@ -55,7 +55,7 @@ timings. The reference sender is Debug-only; it is not an operator format settin
 
 ## Migration
 
-Version 6 creates Workspace 1 for legacy output rows. Keep both legacy NDI destinations
+Version 6 creates Home for legacy output rows. Keep both legacy NDI destinations
 as generic outputs, preserving customized names, source identities, appearances and
 music selection. Never silently merge receiver-visible sources. Duplicate enabled
 names retain the first enabled row by saved order and disable later duplicates.

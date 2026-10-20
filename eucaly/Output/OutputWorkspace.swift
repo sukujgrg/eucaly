@@ -7,7 +7,7 @@ nonisolated struct OutputWorkspaceRecord: Codable, Equatable, Identifiable, Send
     // workspaces, assignments or recovery records during restoration.
     static let legacyPersistenceLimit = 32
     static let primaryID = UUID(uuidString: "00000000-0000-4000-8000-000000000100")!
-    static let primary = Self(id: primaryID, name: "Workspace 1")
+    static let primary = Self(id: primaryID, name: "Home")
     var id: UUID
     var name: String
 }
@@ -29,6 +29,12 @@ final class OutputWorkspaceProgram {
 }
 
 extension OutputProfileStore {
+    @discardableResult
+    func setDefaultWorkspace(_ id: UUID) -> Bool {
+        guard recoveryNotice == nil, document.workspaces.contains(where: { $0.id == id }) else { return false }
+        edit { $0.defaultWorkspaceID = id }
+        return document.defaultWorkspaceID == id
+    }
     var canAddWorkspace: Bool { recoveryNotice == nil && document.workspaces.count < OutputWorkspaceRecord.creationLimit }
     @discardableResult
     func addWorkspace(name: String? = nil) -> UUID? {
@@ -93,6 +99,8 @@ struct OutputWorkspaceView: View {
                     Button("New Workspace Tab", action: newWorkspace)
                         .disabled(!store.canAddWorkspace)
                     Button("Manage Workspaces…", action: manageWorkspaces)
+                    Button("Make Default Workspace") { store.setDefaultWorkspace(session.outputSourceID) }
+                        .disabled(store.document.defaultWorkspaceID == session.outputSourceID || store.recoveryNotice != nil)
                     Button("Rename Workspace…") { draftName = store.workspaceName(session.outputSourceID); renaming = true }
                     Button("Move Tab to New Window", action: detach)
                     Divider()

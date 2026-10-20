@@ -61,6 +61,56 @@ final class NDIWorkspaceTransferTests: XCTestCase {
         outputs.stopAllOutputs(); await router.shutdown()
     }
 
+    func testRapidWorkspaceSwitchingAndAppearanceEditsKeepEachLatestProgramAndSender() async throws {
+        let log = SenderFactory(), router = NDIOutputRouter(senderFactory: { log.make($0) })
+        let store = OutputProfileStore()
+        let home = OutputWorkspaceRecord.primaryID, online = try XCTUnwrap(store.addWorkspace(name: "Online"))
+        var one = OutputDestinationConfiguration(name: "One", profileID: OutputProfile.audienceID, monitor: nil)
+        one.ndi = .init(sourceName: "One")
+        var two = OutputDestinationConfiguration(name: "Two", profileID: OutputProfile.audienceID, monitor: nil, workspaceID: online)
+        two.ndi = .init(sourceName: "Two")
+        store.edit { $0.destinations = [one, two]; $0.defaultDestinationID = one.id }
+        let outputs = OutputCoordinator(profiles: store, displays: ProjectionDisplayManager(displays: { [] }), retainsPreparedSessions: true, ndi: router)
+        defer { outputs.stopAllOutputs() }
+        let a = outputs.session(workspace: home), b = outputs.session(workspace: online)
+        a.setSlides(LyricsParser.parseDocument("Verse\nHome · தமிழ்").slides)
+        b.setSlides(LyricsParser.parseDocument("Verse\nOnline · Ελληνικά").slides)
+        a.showSlides(); b.showSlides()
+        try await until { log.senders.count == 2 && log.senders.allSatisfy { !$0.submissions.isEmpty } }
+        let first = try XCTUnwrap(log.senders.first { $0.name == "One" })
+        let second = try XCTUnwrap(log.senders.first { $0.name == "Two" })
+        let firstGeneration = first.generation, secondGeneration = second.generation
+        let reusable = try XCTUnwrap(store.profile(OutputProfile.audienceID))
+        for index in 0..<40 {
+            outputs.focusWorkspace(index.isMultiple(of: 2) ? b : a)
+            XCTAssertTrue(outputs.moveOutput(one.id, to: index.isMultiple(of: 2) ? b : a))
+            store.editDefaultProfile(try XCTUnwrap(store.quickEditTarget)) {
+                $0.typography.size = Double(60 + index)
+                $0.layout = index.isMultiple(of: 2) ? "columns" : "stacked"
+                $0.position = index.isMultiple(of: 2) ? "top" : "bottom"
+                $0.typography.colour = .init(red: Double(index) / 40, green: 0.25, blue: 1)
+                $0.padding = Double(index) / 40
+            }
+            if index.isMultiple(of: 5) { await Task.yield() }
+        }
+        var profile = try XCTUnwrap(outputs.profile(for: one.id))
+        XCTAssertEqual(profile.typography.size, 99)
+        profile.usesLegacySizing = false
+        try await until { first.submissions.last?.request.text?.profile == profile }
+        XCTAssertEqual(first.submissions.last?.request.text?.text.components.first?.text, "Home · தமிழ்")
+        XCTAssertEqual(second.submissions.last?.request.text?.text.components.first?.text, "Online · Ελληνικά")
+        XCTAssertEqual(first.submissions.last?.request.contentEpoch, 41)
+        XCTAssertEqual(second.submissions.last?.request.contentEpoch, 1)
+        XCTAssertEqual(store.profile(OutputProfile.audienceID), reusable)
+        XCTAssertEqual(outputs.destination(two.id)?.profileID, OutputProfile.audienceID)
+        XCTAssertEqual(log.senders.count, 2)
+        for (sender, generation) in [(first, firstGeneration), (second, secondGeneration)] {
+            XCTAssertEqual(sender.starts, 1); XCTAssertEqual(sender.stops, 0); XCTAssertEqual(sender.generation, generation)
+            XCTAssertTrue(zip(sender.submissions, sender.submissions.dropFirst()).allSatisfy { $0.request.revision < $1.request.revision })
+        }
+        outputs.stopAllOutputs(); await router.shutdown()
+    }
+
     func testToolbarMovesLiveNDIBetweenSharedAndSeparateCurrentUsingTheSameSender() async throws {
         let log = SenderFactory(), router = NDIOutputRouter(senderFactory: { log.make($0) })
         let monitor = ProjectionMonitor(id: 1, identity: UUID().uuidString, name: "Audience", frame: .init(x: 0, y: 0, width: 1920, height: 1080))

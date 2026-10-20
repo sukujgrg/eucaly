@@ -68,10 +68,10 @@ nonisolated enum OutputLegacyMigration {
         }
         if version < 6 {
             // Old windows had no durable workspace identity. Retain every row,
-            // sender identity, name, appearance and music route in Workspace 1.
+            // sender identity, name, appearance and music route in Home.
             // Both legacy NDI roles become equally capable generic outputs;
             // merging them would discard names and receiver connections.
-            root["workspaces"] = [["id": OutputWorkspaceRecord.primaryID.uuidString, "name": "Workspace 1"]]
+            root["workspaces"] = [["id": OutputWorkspaceRecord.primaryID.uuidString, "name": OutputWorkspaceRecord.primary.name]]
             var names: Set<String> = []
             root["destinations"] = (root["destinations"] as? [[String: Any]] ?? []).map { original in
                 var row = original

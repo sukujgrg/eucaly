@@ -135,7 +135,7 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
                 actions.addItem(info("Owner: " + owner))
                 actions.addItem(command("Move to This Workspace", enabled: workspaceID != nil && row.workspaceID != workspaceID) { [weak self] in
                     guard let self, let id = self.workspaceID else { return }
-                    _ = self.outputs.moveOutput(row.id, to: self.outputs.session(workspace: id))
+                    _ = self.outputs.moveOutput(row.id, toWorkspace: id, reportingTo: id)
                 })
                 submenu(store.destinationLabel(row) + " · " + owner, actions, in: assignments)
             }
@@ -243,10 +243,8 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
     private func moveNDIOutput(_ destinationID: UUID, to targetWorkspaceID: UUID) {
         // Revalidate retained menu actions before preparing a session. Removed
         // workspaces and destinations must never be recreated by a stale menu.
-        guard store.recoveryNotice == nil, outputs.destination(destinationID)?.ndi != nil,
-              store.document.workspaces.contains(where: { $0.id == targetWorkspaceID }),
-              workspaceID.map({ id in store.document.workspaces.contains { $0.id == id } }) != false else { return }
-        _ = outputs.moveOutput(destinationID, to: outputs.session(workspace: targetWorkspaceID), reportingTo: workspaceID)
+        guard outputs.destination(destinationID)?.ndi != nil else { return }
+        _ = outputs.moveOutput(destinationID, toWorkspace: targetWorkspaceID, reportingTo: workspaceID)
         render()
     }
 

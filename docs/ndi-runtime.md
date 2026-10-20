@@ -77,6 +77,8 @@ backgrounds remain visible. **Chroma Colour** shows a colour well on the output;
 configure the receiver to remove that colour. Editing the well customizes that
 output's appearance without changing other outputs or its source identity. NDI-only
 appearance editors direct transparency/key-colour changes back to these controls.
+Visual dimming does not alter the key colour, including empty frames and the gutters
+around a fitted image or video.
 
 The toolbar's **NDI: workspace** menu shows the source's saved owner. Choose
 **Move to Online** to use Online's Current, then **Move to Worship** to share
@@ -107,7 +109,7 @@ an empty/key picture and withdraws the source. Source name/format edits require
 explicit Start/Retry/Show after retirement; content-type changes do not.
 
 Restoration never starts NDI. Existing native rows and both old NDI rows migrate to
-Workspace 1. Both old sources become generic, retaining source UUIDs, custom names,
+Home. Both old sources become generic, retaining source UUIDs, custom names,
 appearance and music choice. They are not merged. Duplicate enabled legacy names
 keep the first enabled row and disable later rows without renaming. New workspaces
 start with no assigned outputs. See [migration details](output-profiles-implementation.md#settings-and-persistence).
@@ -171,7 +173,7 @@ Colour conversion uses studio-range luma/chroma with full-range straight alpha.
 Shared chroma is weighted by alpha to avoid transparent neighbours desaturating
 coloured glyph edges. Ordinary 8-bit YUV quantization and 4:2:2 chroma subsampling
 still apply: a decoded RGB key colour can differ slightly from its original RGB
-value. Format changes
+value. Dimming never changes the configured key before conversion. Format changes
 retain the source/helper/connection; no setting migration or restart is needed.
 The one terminal empty/key picture is filled in packed YUV on the submission worker
 without waiting for a GPU lease during teardown. NDI encoding remains SDK-owned.

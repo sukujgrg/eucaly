@@ -234,6 +234,16 @@ final class OutputCoordinator: ObservableObject {
     /// Explicit reassignment is transactional. No destination is stopped or
     /// renamed. Its next publication is fenced from the previous owner's work.
     @discardableResult
+    func moveOutput(_ id: UUID, toWorkspace workspaceID: UUID, reportingTo requesterID: UUID? = nil) -> Bool {
+        // Native menus can retain an action beyond deletion or reconfiguration.
+        // Validate all identities before constructing a closed workspace's Current.
+        guard profiles.recoveryNotice == nil, destination(id) != nil,
+              profiles.document.workspaces.contains(where: { $0.id == workspaceID }),
+              requesterID.map({ id in profiles.document.workspaces.contains { $0.id == id } }) != false else { return false }
+        return moveOutput(id, to: session(workspace: workspaceID), reportingTo: requesterID)
+    }
+
+    @discardableResult
     func moveOutput(_ id: UUID, to session: PresentationSession, reportingTo workspaceID: UUID? = nil) -> Bool {
         guard let row = destination(id), profiles.recoveryNotice == nil,
               profiles.document.workspaces.contains(where: { $0.id == session.outputSourceID }) else { return false }

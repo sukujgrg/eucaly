@@ -5,6 +5,93 @@ import XCTest
 
 @MainActor
 final class WorkspaceManagementTests: XCTestCase {
+    func testManagerTracksPlayerActivityWithoutAnotherSessionPublication() async throws {
+        let f = Fixture(); defer { f.close() }
+        let id = try XCTUnwrap(f.store.addWorkspace(name: "Playback"))
+        let session = f.outputs.session(workspace: id)
+        let audio = try silentAudio(frameCount: 480000)
+        defer { try? FileManager.default.removeItem(at: audio) }
+        session.setBackgroundAudio(url: audio, autoplay: false)
+        let player = try XCTUnwrap(session.programBackgroundAudioPlayer)
+        f.windows.showManagement()
+        let manager = try XCTUnwrap(f.windows.management?.manager)
+        manager.selectWorkspace(id)
+        XCTAssertTrue(manager.deleteButton.isEnabled)
+        player.play()
+        for _ in 0..<100 {
+            if !manager.deleteButton.isEnabled { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(manager.deleteButton.isEnabled, "Actual player activity must update deletion safety without a session publication")
+        player.pause()
+        for _ in 0..<100 {
+            if manager.deleteButton.isEnabled { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(manager.deleteButton.isEnabled, "A late player pause must refresh the manager")
+        XCTAssertEqual(session.backgroundAudioPlaybackState, .stopped)
+    }
+
+    func testDefaultWorkspacePersistsWithoutChangingFocusCurrentOrOutputs() throws {
+        let f = Fixture(); defer { f.close() }
+        XCTAssertEqual(f.store.workspaceName(f.session.outputSourceID), "Home")
+        XCTAssertEqual(f.store.document.defaultWorkspaceID, f.session.outputSourceID)
+        let other = try XCTUnwrap(f.store.addWorkspace(name: "Online"))
+        let saved = f.store.document
+        f.session.setSlides(LyricsParser.parseDocument("Verse\nPrepared Current").slides)
+        XCTAssertTrue(f.store.setDefaultWorkspace(other))
+        XCTAssertNil(f.outputs.preparedSession(workspace: other))
+        XCTAssertEqual(f.outputs.focusedWorkspaceID, f.session.outputSourceID)
+        XCTAssertEqual(f.session.currentSlide?.lines.first?.text, "Prepared Current")
+        XCTAssertEqual(f.store.document.destinations, saved.destinations)
+        XCTAssertEqual(f.store.document.profiles, saved.profiles)
+        XCTAssertEqual(f.store.document.defaultDestinationID, saved.defaultDestinationID)
+        XCTAssertTrue(f.ndi.starts.isEmpty)
+        XCTAssertFalse(f.store.setDefaultWorkspace(UUID()))
+        f.store.flush()
+        XCTAssertEqual(OutputProfileStore(defaults: f.defaults).document, f.store.document)
+        XCTAssertTrue(f.store.renameWorkspace(other, name: "Streaming"))
+        XCTAssertEqual(f.store.document.defaultWorkspaceID, other)
+        XCTAssertNil(f.windows.deleteWorkspace(other))
+        XCTAssertEqual(f.store.document.defaultWorkspaceID, f.session.outputSourceID)
+    }
+
+    func testLaunchOpensDefaultInsteadOfLastWorkspaceAndKeepsRestoredWindows() throws {
+        let f = Fixture(); defer { f.close() }
+        let other = try XCTUnwrap(f.store.addWorkspace(name: "Online"))
+        let restored = try XCTUnwrap(f.windows.restoreWindow(identifier: OutputWorkspaceWindows.identifier(for: other)))
+        f.defaults.set(other.uuidString, forKey: "lastControlsWorkspaceID")
+        let saved = f.store.document
+        f.windows.openDefault()
+        XCTAssertNotNil(f.windows.controllers[f.session.outputSourceID])
+        XCTAssertTrue(f.windows.controllers[other]?.window === restored)
+        XCTAssertEqual(f.store.document, saved)
+        XCTAssertTrue(f.ndi.starts.isEmpty)
+        XCTAssertTrue(f.store.setDefaultWorkspace(other))
+        for window in f.windows.windows.values { window.close() }
+        f.windows.openDefault()
+        XCTAssertEqual(Set(f.windows.controllers.keys), [other])
+        XCTAssertFalse(f.outputs.isRunning)
+    }
+
+    func testManagerCanChooseDefaultWithoutOpeningOrRoutingTheWorkspace() throws {
+        let f = Fixture(); defer { f.close() }
+        let other = try XCTUnwrap(f.store.addWorkspace(name: "Online"))
+        let saved = f.store.document
+        f.windows.showManagement()
+        let manager = try XCTUnwrap(f.windows.management?.manager)
+        manager.selectWorkspace(other)
+        XCTAssertTrue(manager.defaultButton.isEnabled)
+        manager.defaultButton.performClick(nil)
+        XCTAssertEqual(f.store.document.defaultWorkspaceID, other)
+        XCTAssertFalse(manager.defaultButton.isEnabled)
+        XCTAssertNil(f.outputs.preparedSession(workspace: other))
+        XCTAssertTrue(f.windows.controllers.isEmpty)
+        XCTAssertEqual(f.store.document.destinations, saved.destinations)
+        XCTAssertEqual(f.store.document.profiles, saved.profiles)
+        XCTAssertTrue(f.ndi.starts.isEmpty)
+    }
+
     func testCreationLimitKeepsLegacyWorkspacesAndOnlyAllowsNewCreationBelowFour() throws {
         let f = Fixture(); defer { f.close() }
         for _ in 1..<4 { XCTAssertNotNil(f.store.addWorkspace()) }
@@ -191,7 +278,7 @@ final class WorkspaceManagementTests: XCTestCase {
         for appearance in ["NSAppearanceNameAqua", "NSAppearanceNameDarkAqua"] {
             window.appearance = NSAppearance(named: .init(appearance))
             window.setContentSize(.init(width: 620, height: 420)); window.layoutIfNeeded(); manager.view.layoutSubtreeIfNeeded()
-            for button in [manager.openButton, manager.renameButton, manager.deleteButton] {
+            for button in [manager.openButton, manager.renameButton, manager.defaultButton, manager.deleteButton] {
                 XCTAssertTrue(manager.view.bounds.contains(manager.view.convert(button.bounds, from: button)))
             }
         }
@@ -208,7 +295,8 @@ final class WorkspaceManagementTests: XCTestCase {
             if manager.deleteButton.isEnabled { break }
             try await Task.sleep(for: .milliseconds(10))
         }
-        XCTAssertTrue(manager.deleteButton.isEnabled)
+        XCTAssertTrue(manager.deleteButton.isEnabled,
+                      "Selected: \(String(describing: manager.selectedID)); reason: \(manager.deletionLabel.stringValue); rate: \(String(describing: session.programBackgroundAudioPlayer?.rate)); status: \(String(describing: session.programBackgroundAudioPlayer?.timeControlStatus)); state: \(session.backgroundAudioPlaybackState)")
         manager.deleteButton.performClick(nil)
         XCTAssertFalse(f.store.document.workspaces.contains { $0.id == id })
         XCTAssertEqual(f.store.document.destinations, saved.destinations)
@@ -217,13 +305,13 @@ final class WorkspaceManagementTests: XCTestCase {
         XCTAssertTrue(f.windows.management?.window === window)
     }
 
-    private func silentAudio() throws -> URL {
+    private func silentAudio(frameCount: AVAudioFrameCount = 4800) throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("workspace-\(UUID()).wav")
         let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2))
         let file = try AVAudioFile(forWriting: url, settings: format.settings)
-        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4800))
-        buffer.frameLength = 4800
-        for channel in 0..<2 { buffer.floatChannelData?[channel].initialize(repeating: 0, count: 4800) }
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount))
+        buffer.frameLength = frameCount
+        for channel in 0..<2 { buffer.floatChannelData?[channel].initialize(repeating: 0, count: Int(frameCount)) }
         try file.write(from: buffer)
         return url
     }

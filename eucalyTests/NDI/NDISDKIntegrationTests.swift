@@ -192,6 +192,72 @@ final class NDISDKIntegrationTests: XCTestCase {
         return url
     }
 
+    func testLiveWorkspaceAndAppearanceChangesReachTheSameConnectedReceiver() async throws {
+        try requireRuntime()
+        let senderLog = NDIEventLog(), probeLog = NDIEventLog(), probeID = UUID()
+        var helpersCreated = 0
+        let router = NDIOutputRouter(senderFactory: { event in
+            helpersCreated += 1
+            return NDIHelperSupervisor { senderLog.record($0); event($0) }
+        })
+        let store = OutputProfileStore()
+        let online = try XCTUnwrap(store.addWorkspace(name: "Online"))
+        var row = OutputDestinationConfiguration(name: "Online output", profileID: OutputProfile.audienceID, monitor: nil)
+        row.ndi = .init(sourceName: "eucaly appearance test \(UUID())")
+        store.edit { $0.destinations = [row] }
+        store.editDestinationProfile(row.id) {
+            $0.typography.colour = .init(red: 1); $0.position = "top"; $0.alignment = "left"
+        }
+        let outputs = OutputCoordinator(profiles: store, displays: ProjectionDisplayManager(displays: { [] }), retainsPreparedSessions: true, ndi: router)
+        let a = outputs.session(workspace: OutputWorkspaceRecord.primaryID), b = outputs.session(workspace: online)
+        let probe = NDIHelperSupervisor(event: probeLog.record)
+        defer { probe.stop(); outputs.stopAllOutputs() }
+        a.setSlides(LyricsParser.parseDocument("Verse\nHome · தமிழ்").slides)
+        b.setSlides(LyricsParser.parseDocument("Verse\nOnline · Ελληνικά").slides)
+        a.showSlides()
+        try await until("sender ready") { senderLog.state.ready || senderLog.state.failure != nil }
+        XCTAssertNil(senderLog.state.failure)
+        let source = try XCTUnwrap(senderLog.state.status?.sourceName)
+        probe.start(generation: probeID, configuration: .init(purpose: .loopbackProbe, sourceName: source))
+        try await until("receiver connected") { probeLog.state.ready || probeLog.state.failure != nil }
+        XCTAssertNil(probeLog.state.failure)
+        var revision: UInt64 = 0
+        func receive(_ matches: (NDIEventLog.Picture) -> Bool) async throws {
+            for _ in 0..<20 {
+                revision += 1
+                probe.render(request(probeID, revision: revision))
+                try await until("receiver picture") { probeLog.state.revision == revision || probeLog.state.failure != nil }
+                XCTAssertNil(probeLog.state.failure)
+                if let picture = probeLog.state.picture, matches(picture) { return }
+            }
+            XCTFail("The connected receiver did not receive the latest appearance")
+        }
+        try await receive { $0.redGlyphs > 100 && $0.blueGlyphs == 0 && $0.glyphMaxY < 540 }
+        let initialTimecode = try XCTUnwrap(probeLog.state.status?.lastTimecode)
+        let sourceID = row.ndi?.sourceID
+        for index in 0..<24 {
+            XCTAssertTrue(outputs.moveOutput(row.id, to: index.isMultiple(of: 2) ? a : b))
+            outputs.focusWorkspace(index.isMultiple(of: 2) ? b : a)
+            store.editDestinationProfile(row.id) {
+                $0.typography.size = Double(72 + index)
+                $0.position = index.isMultiple(of: 2) ? "top" : "bottom"
+                $0.alignment = index.isMultiple(of: 2) ? "left" : "right"
+                $0.layout = index.isMultiple(of: 2) ? "stacked" : "columns"
+                $0.typography.colour = index.isMultiple(of: 2) ? .init(red: 1) : .init(blue: 1)
+            }
+            if index.isMultiple(of: 4) { await Task.yield() }
+        }
+        try await receive { $0.blueGlyphs > 100 && $0.redGlyphs == 0 && $0.glyphMinY > 540 }
+        XCTAssertEqual(helpersCreated, 1, "Workspace and appearance changes keep the live sender")
+        XCTAssertEqual(senderLog.state.status?.sourceName, source)
+        XCTAssertEqual(outputs.destination(row.id)?.ndi?.sourceID, sourceID)
+        XCTAssertEqual(outputs.destination(row.id)?.workspaceID, online)
+        XCTAssertEqual(outputs.snapshot(for: row.id).current.components.first?.text, "Online · Ελληνικά")
+        XCTAssertGreaterThan(probeLog.state.status?.lastTimecode ?? 0, initialTimecode)
+        XCTAssertNil(senderLog.state.failure); XCTAssertNil(probeLog.state.failure)
+        outputs.stopAllOutputs(); await router.shutdown(); await probe.stopAndWait()
+    }
+
     private func requireRuntime() throws {
         guard NDIHelperWire.installedRuntimePaths.contains(where: { FileManager.default.fileExists(atPath: $0) }) else {
             throw XCTSkip("Optional NDI runtime is not installed; real transport qualification requires it.")
@@ -631,6 +697,7 @@ private final class NDIEventLog: @unchecked Sendable {
         var minimumAlpha: UInt8 = 255, maximumAlpha: UInt8 = 0
         var whiteGlyphs = 0
         var hasGlyph = false, hasStraightEdge = false, isGreen = true, isBlack = true, isMagenta = true
+        var redGlyphs = 0, blueGlyphs = 0, glyphMinY = Int.max, glyphMaxY = 0
         init(_ surface: IOSurface) {
             _ = surface.lock(options: .readOnly, seed: nil)
             defer { _ = surface.unlock(options: .readOnly, seed: nil) }
@@ -643,6 +710,12 @@ private final class NDIEventLog: @unchecked Sendable {
                 minimumAlpha = min(minimumAlpha, p[i+3]); maximumAlpha = max(maximumAlpha, p[i+3])
                 if p[i] > 220 && p[i+1] > 220 && p[i+2] > 220 && p[i+3] > 200 { whiteGlyphs += 1 }
                 if p[i+3] > 0 { hasGlyph = true }
+                if p[i+3] > 200, p[i] > 200 || p[i+2] > 200 {
+                    if p[i+2] > 200 && p[i] < 50 { redGlyphs += 1 }
+                    if p[i] > 200 && p[i+2] < 50 { blueGlyphs += 1 }
+                    let y = i / surface.bytesPerRow
+                    glyphMinY = min(glyphMinY, y); glyphMaxY = max(glyphMaxY, y)
+                }
                 if p[i+3] > 5 && p[i+3] < 230 && p[i] > 235 { hasStraightEdge = true }
                 if p[i] > 10 || p[i+1] < 245 || p[i+2] > 10 || p[i+3] < 250 { isGreen = false }
                 if p[i] < 245 || p[i+1] > 10 || p[i+2] < 245 || p[i+3] < 250 { isMagenta = false }

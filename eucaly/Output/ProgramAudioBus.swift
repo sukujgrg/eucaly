@@ -4,6 +4,7 @@ import MediaToolbox
 /// Taps only explicitly selected live program players. Preview playback and other apps can
 /// never enter this bus. The tap leaves the player's local audio untouched.
 nonisolated final class ProgramAudioBus: @unchecked Sendable {
+    typealias StemDelivery = @Sendable (AVAudioPCMBuffer, AVAudioPCMBuffer, AVAudioTime) -> Void
     fileprivate static let maximumBufferedBytes = 8 * 1024 * 1024
     private struct Segment {
         let start: Int64
@@ -44,9 +45,14 @@ nonisolated final class ProgramAudioBus: @unchecked Sendable {
     private let pendingLock = NSLock()
     private var pendingSubmissions = 0
     private let deliver: (@Sendable (AVAudioPCMBuffer, AVAudioTime) -> Void)?
-    private let deliverStems: (@Sendable (AVAudioPCMBuffer, AVAudioPCMBuffer, AVAudioTime) -> Void)?
+    private let deliverStems: StemDelivery?
     init(deliver: @escaping @Sendable (AVAudioPCMBuffer, AVAudioTime) -> Void) { self.deliver = deliver; deliverStems = nil }
-    init(deliverStems: @escaping @Sendable (AVAudioPCMBuffer, AVAudioPCMBuffer, AVAudioTime) -> Void) { self.deliverStems = deliverStems; deliver = nil }
+    init(deliverStems: @escaping StemDelivery) { self.deliverStems = deliverStems; deliver = nil }
+    /// Retarget delivery only after prior blocks finish and queued tap removals
+    /// have discarded the previous owner's PCM. The host sample clock continues.
+    func updateDelivery(_ change: @escaping @Sendable () -> Void) {
+        queue.async { [self] in guard active else { return }; change() }
+    }
     func setBackground(_ value: Bool, id: UUID) {
         queue.async { [self] in if value { backgroundInputs.insert(id) } else { backgroundInputs.remove(id) } }
     }

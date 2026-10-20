@@ -56,11 +56,11 @@ final class AppMenuTests: XCTestCase {
         app.outputs = hub.outputs
         app.workspaceWindows = makeWorkspaceWindows(outputs: hub.outputs)
         defer { for window in app.workspaceWindows.windows.values { window.close() } }
-        let secondID = try XCTUnwrap(app.outputProfiles.addWorkspace(name: "Workspace 1"))
+        let secondID = try XCTUnwrap(app.outputProfiles.addWorkspace(name: "Home"))
         let menus = AppMenuController(app: app)
         menus.menuNeedsUpdate(menus.workspaceMenu)
         let saved = menus.workspaceMenu.items.filter { $0.representedObject is UUID }
-        XCTAssertEqual(saved.map(\.title), ["Open Workspace 1", "Open Workspace 1"])
+        XCTAssertEqual(saved.map(\.title), ["Open Home", "Open Home"])
         XCTAssertEqual(saved.compactMap { $0.representedObject as? UUID }, [hub.session.outputSourceID, secondID])
         let item = try XCTUnwrap(saved.last)
         let index = menus.workspaceMenu.index(of: item)

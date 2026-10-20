@@ -7,7 +7,7 @@ helpers and 1920×1080 at 30 fps. The obsolete AltView pairing-provisioning and 
 stabilization tasks are retired. Their history and source recovery are recorded
 in [the restoration note](docs/altview-lyrics-restoration-note.md).
 
-- [ ] Complete the two-hour moving video/audio session with Lyrics and Media,
+- [ ] Complete the two-hour moving video/audio session with simultaneous generic sources,
   both without a native monitor and alongside native projection. Record source,
   submitted, received and displayed rates separately, audio drift, memory,
   CPU/GPU load, queue occupancy and UI responsiveness.
@@ -24,5 +24,5 @@ in [the restoration note](docs/altview-lyrics-restoration-note.md).
 - [ ] Qualify 50 and 60 fps separately after 30 fps passes the equipment gates.
   Former SRT cadence measurements do not qualify NDI; higher rates stay disabled.
 
-See [the NDI plan](docs/ndi-output-plan.md#validation-and-production-gates) for
+See [the NDI plan](docs/ndi-output-plan.md#equipment-and-sustained-operation) for
 acceptance criteria and [runtime setup](docs/ndi-runtime.md) for receiver discovery.

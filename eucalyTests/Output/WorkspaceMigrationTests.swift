@@ -3,6 +3,31 @@ import XCTest
 
 @MainActor
 final class WorkspaceMigrationTests: XCTestCase {
+    func testDefaultWorkspaceMigrationPreservesOperatorNamesAndRecoversMissingDefaults() throws {
+        let store = OutputProfileStore()
+        let other = try XCTUnwrap(store.addWorkspace(name: "Online"))
+        var root = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(store.document)) as? [String: Any])
+        root.removeValue(forKey: "defaultWorkspaceID")
+        root["workspaces"] = [["id": OutputWorkspaceRecord.primaryID.uuidString, "name": "Workspace 1"],
+                              ["id": other.uuidString, "name": "Online"]]
+        let home = try OutputLegacyMigration.decode(JSONSerialization.data(withJSONObject: root))
+        XCTAssertEqual(home.workspaces.first?.name, "Home")
+        XCTAssertEqual(home.defaultWorkspaceID, OutputWorkspaceRecord.primaryID)
+        XCTAssertEqual(home.destinations, store.document.destinations)
+        root["workspaces"] = [["id": OutputWorkspaceRecord.primaryID.uuidString, "name": "Morning Service"],
+                              ["id": other.uuidString, "name": "Online"]]
+        let named = try OutputLegacyMigration.decode(JSONSerialization.data(withJSONObject: root))
+        XCTAssertEqual(named.workspaces.first?.name, "Morning Service")
+        root["workspaces"] = [["id": other.uuidString, "name": "Online"]]
+        root["destinations"] = []
+        root["defaultDestinationID"] = NSNull()
+        root["defaultWorkspaceID"] = UUID().uuidString
+        let recovered = try OutputLegacyMigration.decode(JSONSerialization.data(withJSONObject: root))
+        XCTAssertEqual(recovered.defaultWorkspaceID, other)
+        XCTAssertEqual(recovered.workspaces, [.init(id: other, name: "Online")])
+        XCTAssertTrue(recovered.isValid)
+    }
+
     func testLegacyPairRetainsBothIdentitiesAppearancesNamesAndMusicChoice() throws {
         let store = OutputProfileStore()
         var lyrics = OutputDestinationConfiguration(name: "Worship Key", profileID: OutputProfile.audienceID, monitor: nil)

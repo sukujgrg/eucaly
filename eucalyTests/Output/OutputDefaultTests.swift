@@ -345,7 +345,7 @@ final class OutputDefaultTests: XCTestCase {
         let outputs = OutputCoordinator(profiles: store, displays: displays, driverFactory: { FakeOutputDriver() })
         let driver = ToolbarUpdateDriver()
         let updates = AppUpdateViewModel(driver: driver)
-        let search = NSSearchField()
+        let search = LibrarySearchField()
         search.placeholderString = "Search"
         search.widthAnchor.constraint(equalToConstant: 220).isActive = true
         let window = NSWindow(contentRect: .init(x: -10000, y: -10000, width: 1060, height: 600),

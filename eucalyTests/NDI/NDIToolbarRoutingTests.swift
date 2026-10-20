@@ -4,6 +4,26 @@ import XCTest
 
 @MainActor
 final class NDIToolbarRoutingTests: XCTestCase {
+    func testRetainedAssignmentActionCannotPrepareADeletedWorkspaceOrRemovedOutput() throws {
+        for deleteWorkspace in [true, false] {
+            let f = Fixture(); defer { f.outputs.stopAllOutputs() }
+            let controls = OutputQuickControlsController(outputs: f.outputs, workspaceID: f.online, manageOutputs: {})
+            let assignments = try XCTUnwrap(try item("Workspace Assignments", in: controls.outputButton.menu).submenu)
+            let network = try XCTUnwrap(assignments.items.last?.submenu)
+            let action = try item("Move to This Workspace", in: network)
+            XCTAssertTrue(action.isEnabled)
+            XCTAssertNil(f.outputs.preparedSession(workspace: f.online))
+            if deleteWorkspace { XCTAssertTrue(f.outputs.deleteWorkspace(f.online)) }
+            else { f.store.edit { $0.destinations.removeAll { $0.id == f.network } } }
+            let saved = f.store.document
+            invoke(action)
+            XCTAssertNil(f.outputs.preparedSession(workspace: f.online), "A retained action must validate before preparing Current")
+            if deleteWorkspace { XCTAssertNil(f.outputs.preparedMedia(workspace: f.online), "Deleted programs must stay deleted") }
+            XCTAssertEqual(f.store.document, saved)
+            XCTAssertTrue(f.transport.starts.isEmpty)
+        }
+    }
+
     func testMultipleSourcesAndDuplicateWorkspaceNamesRouteByIdentityWithoutChangingDefaults() throws {
         let f = Fixture(); defer { f.outputs.stopAllOutputs() }
         XCTAssertTrue(f.store.renameWorkspace(f.house, name: "Same"))

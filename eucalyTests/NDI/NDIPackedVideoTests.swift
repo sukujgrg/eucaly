@@ -40,7 +40,7 @@ final class NDIPackedVideoTests: XCTestCase {
             }
             XCTAssertEqual(output[3840 * 1080 + 540 * 1920 + x], c[3], "Alpha is full range, independent of YUV legal range")
         }
-        helper.renderMedia(.init(request: .init(generation: id, revision: 2, colour: .chromaGreen), foreground: nil, background: nil))
+        helper.renderMedia(.init(request: .init(generation: id, revision: 2, dimming: 0.8, colour: .chromaGreen), foreground: nil, background: nil))
         try await until { log.revision == 2 || log.failure != nil }
         XCTAssertNil(log.failure)
         let chroma = try XCTUnwrap(log.surface)
@@ -50,7 +50,7 @@ final class NDIPackedVideoTests: XCTestCase {
         for offset in stride(from: 0, to: chroma.allocationSize, by: 4) {
             guard Int(key[offset]) == green.1, Int(key[offset + 1]) == green.0,
                   Int(key[offset + 2]) == green.2, Int(key[offset + 3]) == green.0 else {
-                XCTFail("Incorrect packed chroma picture at byte \(offset)"); break
+                XCTFail("Dimming changed an empty chroma picture at byte \(offset)"); break
             }
         }
         // The receiver's prior export must remain unchanged after a new frame.

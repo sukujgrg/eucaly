@@ -9,7 +9,7 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
     let workspaceMenu = NSMenu(title: "Workspace")
 
     private enum Command: String {
-        case settings, updates, notices, support, newWorkspace, openWorkspace, detach, manageWorkspaces
+        case settings, updates, notices, support, newWorkspace, openWorkspace, detach, manageWorkspaces, defaultWorkspace
         case newLyrics, quickOpen, refresh, save, stop, stopAll, slides, background, audio
         case clearBackground, clearAudio, clearAll
     }
@@ -116,6 +116,8 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         workspaceMenu.removeAllItems()
         add("New Workspace Tab", to: workspaceMenu, command: .newWorkspace)
         add("Manage Workspaces…", to: workspaceMenu, command: .manageWorkspaces)
+        let makeDefault = add("Make Default Workspace", to: workspaceMenu, command: .defaultWorkspace)
+        makeDefault.state = app.workspaceWindows.activeWorkspaceID == app.outputProfiles.document.defaultWorkspaceID ? .on : .off
         add("Move Tab to New Window", to: workspaceMenu, command: .detach)
         workspaceMenu.addItem(.separator())
         for record in app.outputProfiles.document.workspaces {
@@ -130,6 +132,10 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         switch command {
         case .updates: return app.updates.state.canCheckForUpdates
         case .newWorkspace: return app.workspaceWindows.canCreateWorkspace
+        case .defaultWorkspace:
+            return app.outputProfiles.recoveryNotice == nil && app.workspaceWindows.activeWorkspaceID.map {
+                $0 != app.outputProfiles.document.defaultWorkspaceID
+            } == true
         case .detach: return app.workspaceWindows.activeWorkspaceID != nil
         case .newLyrics, .quickOpen, .refresh, .save: return app.workspaceWindows.activeWorkspaceID != nil
         case .stop, .slides, .background, .audio, .clearBackground, .clearAudio, .clearAll:
@@ -151,6 +157,8 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         case .support: NSWorkspace.shared.open(URL(string: "https://sukujgrg.github.io/eucaly/")!)
         case .newWorkspace: app.workspaceWindows.newWorkspace()
         case .manageWorkspaces: app.workspaceWindows.showManagement()
+        case .defaultWorkspace:
+            if let id = app.workspaceWindows.activeWorkspaceID { app.outputProfiles.setDefaultWorkspace(id) }
         case .openWorkspace:
             if let id = sender.representedObject as? UUID { app.workspaceWindows.open(id, beside: app.workspaceWindows.activeWorkspaceID) }
         case .detach:

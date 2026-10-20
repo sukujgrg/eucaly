@@ -13,8 +13,8 @@ contain reusable appearance settings and have no content ownership.
 AppDelegate owns `OutputWorkspaceWindows`, with one AppKit `NSWindowController` per
 open workspace UUID. The native application entry and menus create, reopen and close
 these windows. `NSWindowRestoration` recreates only saved workspace identities and
-leaves geometry, minimization and tab groups to AppKit; launch opens a default
-workspace only after native restoration finishes. Dock reopen selects the existing
+leaves geometry, minimization and tab groups to AppKit; launch opens the saved default
+workspace only after native restoration finishes, keeping restored windows available. Dock reopen selects the existing
 or last controlled workspace without creating another workspace record.
 
 `NSHostingController` hosts the existing SwiftUI controls and uses the public macOS
@@ -41,10 +41,23 @@ library access or cancel its private preparation. Initial view setup runs once p
 controls window.
 
 **Manage Workspaces…** in the Workspace menu and workspace toolbar opens one native,
-app-owned manager with Open, Rename and Delete. It lists each saved UUID's output
+app-owned manager with Open, Rename, Make Default and Delete. It lists each saved UUID's output
 assignments (including disabled destinations), current activity and whether controls
 are open. Opening or browsing the manager never constructs unopened sessions or
 starts output. Rename retains Current, assignments and NDI source identity.
+While open, the manager observes session publications and actual program/audio player
+rate and time-control changes. Player replacement rebinds these observations. Late
+AVPlayer pause/readiness changes refresh deletion safety without polling or waiting
+for another workspace command; closing the manager releases the observations.
+
+The initial workspace is **Home**. **Make Default Workspace** in the Workspace menu
+or toolbar, and **Make Default** in Manage Workspaces, save the workspace opened at
+launch. This preference does not change the default output used by appearance controls,
+focus the workspace immediately, assign destinations or start NDI. The default is
+marked in Manage Workspaces. Its UUID survives rename; deleting it selects the first
+remaining saved workspace. Older version-6 documents gain this additive preference
+without changing output assignments. Only the former built-in `Workspace 1` name
+becomes Home; operator names are retained.
 
 New workspace creation is limited to four through the same guard in the store,
 native menu, toolbar and tab/window entry points. The version-6 document retains its
@@ -83,8 +96,9 @@ names disambiguated. Full names remain accessible while the button title is boun
 using native font metrics. Its menus are retained across status-only updates and
 rebuild on source/owner/workspace changes. Rendering the menu never prepares closed
 sessions; an explicit choice may prepare that workspace without opening controls.
-Retained actions revalidate source kind, both workspace identities and recovery
-state before preparation, preventing deleted-workspace resurrection. Moves use
+Retained actions in both the NDI and Output assignment menus revalidate destination,
+workspace identities and recovery state before preparation; NDI routing also rechecks
+source kind. This prevents deleted-workspace resurrection. Moves use
 `moveOutput` and the existing sender epoch fence. Live sources retain identity and
 helper generation; stopped/disabled sources stay stopped. Failed preflight leaves
 the old program running and reports an inline notice in the requesting workspace,
@@ -174,6 +188,9 @@ BGRA. Alpha mode leaves surroundings transparent; chroma uses the remembered pro
 colour. An enabled opaque visual background remains independent. Hide and Clear
 submit actual replacement pictures, including zero-alpha pixels when no opaque
 background is present. Clearing visual assets retains the configured key colour.
+Visual dimming affects the texture only: empty/key frames and fitted-image gutters
+keep the configured chroma colour before conversion during appearance changes,
+Hide and Clear. Decoded RGB is subject to ordinary 8-bit 4:2:2 quantization.
 
 Each helper retains four shared output buffers for GPU, pending/current and SDK borrow
 leases, plus an immutable cached text layer. Pixel buffers live through GPU
@@ -189,7 +206,10 @@ GPU composition/conversion does not move the NDI codec onto the GPU.
 A continuous ProgramAudioBus per destination preserves its audio clock across moves.
 All buses use the same 960-sample host grid; a shared bounded music-route history
 selects one destination per block even when sender queues drain in different orders.
-PlayerAudioTap shares the tap on each real program player. Video follows the owning
+PlayerAudioTap shares the tap on each real program player. Delivery retargeting is
+queued behind tap removal on the mixer queue, so an in-flight old-owner PCM block
+cannot acquire the new owner's epoch. This retains the bus and its sample clock.
+Video follows the owning
 workspace's playback/mute state; preview, microphone, webpages and system audio are
 excluded. The existing single explicit local music owner and saved
 `backgroundAudioDestinationID` remain independent of workspace transfer. Moving an
@@ -243,7 +263,7 @@ and video backgrounds remain independent in both modes. These controls do not al
 source identity, workspace ownership, music routing or sender lifetime.
 
 Document version 6 adds durable workspace records and destination ownership. Existing
-native rows and both legacy NDI rows migrate to Workspace 1 with their UUIDs, monitor
+native rows and both legacy NDI rows migrate to Home with their UUIDs, monitor
 identities, source names, appearances and explicit music choice retained. Both old
 NDI rows become generic; they are not silently merged. Duplicate enabled legacy
 NDI names keep the first enabled row in saved order and disable later duplicates
@@ -320,6 +340,39 @@ failed preflight reported in the requesting workspace. Native toolbar checks cov
 bounded long labels, both themes, minimum/larger widths and the update reminder
 without losing the active search editor. The final run reported no observable-state
 update or unsatisfiable-constraint warnings.
+
+The subsequent reliability/coherence review fixed four issues: NDI visual dimming
+altered the receiver's chroma key; mixer delivery could relabel an in-flight
+old-workspace PCM block with the new epoch; retained Output assignment actions could
+construct deleted workspace programs; and Manage Workspaces could miss late player
+state changes used by its deletion guard. Each issue has a regression that failed
+before its fix. The manager now observes player state while open, and audio delivery
+changes are ordered behind tap removal without replacing the continuous mixer clock.
+
+On 20 October 2026, the reviewed changes passed `make test`: 531 XCTest cases, one
+Swift Testing case, seven feed regressions and 101 release regressions, with no skips.
+The ten added cases include Home/default migration, persistence and launch selection;
+40 rapid workspace transfers with independent appearance edits; exact chroma pixels;
+stale actions and in-flight PCM fencing. A real connected SDK loopback receiver
+verified the final text colour and position after repeated workspace/appearance
+changes while retaining one sender and source identity. Both manager playback tests
+also passed 20 consecutive iterations (40 cases). The full run emitted a Thread
+Performance Checker QoS warning in the native-toolbar test, but no observable-state
+update or unsatisfiable-constraint warnings. No release was signed or published.
+
+The toolbar performance follow-up traced that warning to AppKit synchronously
+finishing text checking as its search field editor resigned focus. Quick Open now
+owns a plain query editor with automatic text checking disabled, without changing
+the window's shared editor for other fields. Its deferred initial focus also
+preserves an already active editor and selection. The toolbar fixture uses this
+same production search field. Search and toolbar regressions passed 30 cases over
+ten fresh app launches with zero build or saved runtime warnings; Xcode's
+performance checker remains enabled. The final `make test` run passed 532 XCTest
+cases, one Swift Testing case, seven feed regressions and 101 release regressions
+with no skips, zero build/analyzer warnings and no saved runtime warnings. The
+normal `make build` Release archive/export also completed without warnings; the
+app and helper are arm64, and the exported app passed strict deep code-signature
+verification.
 
 Physical receivers, real monitor hot-plug, alpha mixing over cameras, A/V drift,
 minimum supported OS/hardware, permission UI, accessibility and two-hour sustained

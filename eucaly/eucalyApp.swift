@@ -65,7 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func openInitialWorkspaceIfReady() {
         guard finishedLaunching, finishedRestoring else { return }
         restorationFinished = nil
-        if workspaceWindows.controllers.isEmpty { workspaceWindows.reopen() }
+        workspaceWindows.openDefault()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {

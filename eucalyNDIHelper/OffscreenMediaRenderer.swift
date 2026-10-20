@@ -36,10 +36,12 @@ final class OffscreenMediaRenderer: @unchecked Sendable {
             float alpha = u[3];
             if (u[8] > 0.0) {
                 float4 bg = layer(background, uv, u[5] > 0.0, u + 20);
+                // Dimming belongs to the visual texture. The saved key colour
+                // must remain exact in empty frames and fitted-image gutters.
+                bg.rgb *= (1.0 - u[6]);
                 colour = bg.rgb + colour * (1.0 - bg.a);
                 alpha = bg.a + alpha * (1.0 - bg.a);
             }
-            colour *= (1.0 - u[6]);
             if (u[7] > 0.0 || u[9] > 0.0) {
                 float4 fg = layer(foreground, uv, u[4] > 0.0, u + 12);
                 if (u[9] > 0.0) fg.rgb *= fg.a;

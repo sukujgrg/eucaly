@@ -68,11 +68,18 @@ final class OutputWorkspaceWindows: ObservableObject {
         return id
     }
 
-    /// Called only after native launch/restoration completes, or on a Dock reopen.
+    /// Launch selects the saved default, retaining any windows restored by
+    /// AppKit. This preference never assigns destinations or starts NDI.
+    func openDefault() {
+        let beside = activeWorkspaceID ?? outputs.focusedWorkspaceID
+        open(outputs.profiles.document.defaultWorkspaceID, beside: beside)
+    }
+
+    /// A Dock reopen returns to the last controls workspace used this run.
     func reopen() {
         let saved = defaults?.string(forKey: Self.lastWorkspaceKey).flatMap(UUID.init(uuidString:))
         let candidates = [activeWorkspaceID, outputs.focusedWorkspaceID, saved,
-                          outputs.profiles.document.workspaces.first?.id].compactMap { $0 }
+                          outputs.profiles.document.defaultWorkspaceID].compactMap { $0 }
         guard let id = candidates.first(where: { candidate in
             outputs.profiles.document.workspaces.contains { $0.id == candidate }
         }) else { return }

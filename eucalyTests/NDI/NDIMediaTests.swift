@@ -6,6 +6,67 @@ import IOSurface
 
 @MainActor
 final class NDIMediaTests: XCTestCase {
+    func testWorkspaceAudioHandoffDoesNotRelabelAnInFlightOldProgramBlock() async throws {
+        let route = NDIContentRoute(), record = AudioEvents(), source = UUID(), destination = UUID()
+        let old = route.select(UUID())
+        let entered = expectation(description: "Old-owner PCM is in flight")
+        let firstBlock = AudioHandoffGate(), resume = DispatchSemaphore(value: 0)
+        var mixer: ProgramAudioBus?
+        let audio = NDIProgramAudio(makeBus: { deliver in
+            let bus = ProgramAudioBus(deliverStems: { program, background, time in
+                if firstBlock.takeFirst() {
+                    entered.fulfill()
+                    _ = resume.wait(timeout: .now() + 3)
+                }
+                deliver(program, background, time)
+            })
+            mixer = bus
+            return bus
+        })
+        let runtime = OutputMediaRuntime()
+        defer { resume.signal(); audio.stop() }
+        audio.update(targets: [.init(id: destination, send: { block in route.admitAudio(block, epoch: old.epoch) { record.add($0, id: destination) } })],
+                     music: nil, preparing: true, wantsVideo: false, runtime: runtime, session: nil)
+        let bus = try XCTUnwrap(mixer)
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2))
+        let pcm = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 48000)); pcm.frameLength = 48000
+        for channel in 0..<2 { pcm.floatChannelData![channel].initialize(repeating: 0.5, count: 48000) }
+        let sample = CMClockGetTime(CMClockGetHostTimeClock()).convertScale(48000, method: .roundHalfAwayFromZero).value / 960 * 960
+        bus.setGain(1, id: source)
+        bus.append([(pcm, CMTime(value: sample, timescale: 48000))], id: source)
+        await fulfillment(of: [entered], timeout: 2)
+        let new = route.select(UUID())
+        // PlayerAudioTap.stop enqueues removal on this same mixer queue.
+        bus.remove(source)
+        audio.update(targets: [.init(id: destination, send: { block in route.admitAudio(block, epoch: new.epoch) { record.add($0, id: destination) } })],
+                     music: nil, preparing: true, wantsVideo: false, runtime: runtime, session: nil)
+        resume.signal()
+        try await until { record.values(destination).count >= 3 }
+        XCTAssertTrue(record.values(destination).allSatisfy { $0 == 0 }, "Old-owner PCM must not be relabelled with the new content epoch")
+    }
+
+    func testDimmingPreservesExactChromaColourAndFitGutters() async throws {
+        let state = MediaEvents(), generation = UUID()
+        let helper = NDIHelperSupervisor(event: state.record)
+        defer { helper.stop() }
+        helper.start(generation: generation)
+        try await until { state.ready || state.failure != nil }
+        XCTAssertNil(state.failure)
+        helper.renderMedia(.init(request: .init(generation: generation, revision: 1, dimming: 0.8, colour: .chromaGreen), foreground: nil, background: nil))
+        try await until { state.revision == 1 || state.failure != nil }
+        XCTAssertNil(state.failure)
+        XCTAssertEqual(pixel(try XCTUnwrap(state.surface), 10, 10), [0, 255, 0, 255],
+                       "An empty/key frame must match the receiver's configured chroma colour")
+        let background = try resource(width: 2, height: 2, bgra: [255, 0, 0, 255])
+        helper.renderMedia(.init(request: .init(generation: generation, revision: 2,
+            background: true, dimming: 0.8, colour: .chromaGreen), foreground: nil, background: background))
+        try await until { state.revision == 2 || state.failure != nil }
+        XCTAssertNil(state.failure)
+        let picture = try XCTUnwrap(state.surface)
+        XCTAssertEqual(pixel(picture, 10, 540), [0, 255, 0, 255], "Fit gutters retain the exact key colour")
+        XCTAssertEqual(Int(pixel(picture, 960, 540)[0]), 51, accuracy: 1, "Only the visual is dimmed")
+    }
+
     func testOffscreenCompositionFitsMediaDimsBackgroundAndExplicitlyBlanks() async throws {
         let state = MediaEvents(), generation = UUID()
         let helper = NDIHelperSupervisor(event: state.record); defer { helper.stop() }
@@ -30,7 +91,7 @@ final class NDIMediaTests: XCTestCase {
         try await until { state.revision == 3 || state.failure != nil }
         XCTAssertNil(state.failure)
         let solid = pixel(try XCTUnwrap(state.surface), 960, 540)
-        XCTAssertEqual(Int(solid[1]), 128, accuracy: 1, "Solid backgrounds must obey opacity and dimming without a texture")
+        XCTAssertEqual(Int(solid[1]), 255, accuracy: 1, "Dimming must preserve the configured solid/key colour")
         XCTAssertEqual(Int(solid[3]), 128, accuracy: 1)
     }
     func testGenericPipelineTransitionsFromAlphaTextToMediaAndTransparentClear() async throws {
@@ -202,6 +263,16 @@ final class NDIMediaTests: XCTestCase {
     private func pixel(_ surface: IOSurface, _ x: Int, _ y: Int) -> [UInt8] {
         let p = surface.baseAddress.assumingMemoryBound(to: UInt8.self), offset = y * surface.bytesPerRow + x * 4
         return (0..<4).map { p[offset + $0] }
+    }
+}
+
+nonisolated private final class AudioHandoffGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var taken = false
+    func takeFirst() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard !taken else { return false }
+        taken = true; return true
     }
 }
 
