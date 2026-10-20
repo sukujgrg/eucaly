@@ -80,7 +80,7 @@ final class HelperService: @unchecked Sendable {
                 #endif
             } else { render(request, fault: fault) }
         case .media:
-            guard configuration.purpose == .sender || configuration.purpose == .renderOnly, let request = packet.media, request.isValid,
+            guard configuration.purpose == .sender || configuration.purpose == .renderOnly || configuration.purpose == .renderYUV, let request = packet.media, request.isValid,
                   request.generation == generation, request.contentEpoch == contentEpoch, request.revision == packet.revision, !busy,
                   request.revision >= lastRevision, request.foreground == (message.first != 0),
                   request.background == (message.second != 0) else { fail("Invalid media render request"); return }
@@ -144,7 +144,7 @@ final class HelperService: @unchecked Sendable {
 
     private func prepare() {
         switch configuration.purpose {
-        case .renderOnly: ready(nil)
+        case .renderOnly, .renderYUV: ready(nil)
         case .sender:
             let sender = NDISubmissionWorker(); self.sender = sender
             sender.start(name: configuration.sourceName) { [self] status, error in
@@ -186,11 +186,24 @@ final class HelperService: @unchecked Sendable {
     }
 
     private func render(_ request: NDITextRenderRequest, fault: String) {
+        let epoch = contentEpoch
         worker.async { [self] in
             #if DEBUG
             if fault == "crash" { _exit(71) }
             if fault == "stall" { DispatchSemaphore(value: 0).wait() }
             #endif
+            if configuration.purpose == .sender || configuration.purpose == .renderYUV {
+                // Text-only sends use the same final compositor and format as
+                // mixed media; the cached text layer itself remains BGRA.
+                let layer = NDITextRenderRequest(generation: request.generation, revision: request.revision,
+                    text: request.text, profile: request.profile, transparent: true)
+                let media = NDIMediaRenderRequest(generation: request.generation, revision: request.revision,
+                    contentEpoch: epoch, text: request.text.isEmpty ? nil : layer,
+                    colour: request.transparent ? .init(alpha: 0) : request.profile.background.colour,
+                    producedAtNanoseconds: request.producedAtNanoseconds)
+                renderMedia(media, foreground: nil, background: nil)
+                return
+            }
             DispatchQueue.main.async { [self] in
                 do {
                     if renderer == nil { renderer = try OffscreenTextRenderer(pooled: configuration.purpose == .sender) }
@@ -208,8 +221,8 @@ final class HelperService: @unchecked Sendable {
         if let text = request.text {
             DispatchQueue.main.async { [self] in
                 do {
-                    if composedText?.text == text.text, composedText?.profile == text.profile, let frame = composedTextFrame {
-                        composite(request, foreground: frame.surface, background: background, textFrame: frame)
+                    if composedText?.text == text.text, composedText?.profile == text.profile, let frame = composedTextFrame, let surface = frame.surface {
+                        composite(request, foreground: surface, background: background, textFrame: frame)
                         return
                     }
                     // Text is an immutable cached layer, separate from the four
@@ -217,9 +230,9 @@ final class HelperService: @unchecked Sendable {
                     if renderer == nil { renderer = try OffscreenTextRenderer(pooled: false) }
                     try renderer?.render(text) { [self] frame, error in
                         DispatchQueue.main.async { [self] in
-                            if let frame, error == nil {
+                            if let frame, let surface = frame.surface, error == nil {
                                 composedText = text; composedTextFrame = frame
-                                composite(request, foreground: frame.surface, background: background, textFrame: frame)
+                                composite(request, foreground: surface, background: background, textFrame: frame)
                             } else { queue.async { [self] in complete(nil, revision: request.revision, error: error ?? "Text rendering failed", epoch: request.contentEpoch) } }
                         }
                     }
@@ -230,7 +243,10 @@ final class HelperService: @unchecked Sendable {
     private func composite(_ request: NDIMediaRenderRequest, foreground: IOSurface?, background: IOSurface?, textFrame: NDIGPUFrame? = nil) {
         worker.async { [self] in
             do {
-                if mediaRenderer == nil { mediaRenderer = try OffscreenMediaRenderer(pooled: configuration.purpose == .sender) }
+                if mediaRenderer == nil {
+                    mediaRenderer = try OffscreenMediaRenderer(pooled: configuration.purpose == .sender,
+                        packedVideo: configuration.purpose != .renderOnly && !configuration.referenceBGRA)
+                }
                 try mediaRenderer?.render(request, foreground: foreground, background: background) { [self] frame, error in
                     withExtendedLifetime(textFrame) {}
                     queue.async { [self] in complete(frame, revision: request.revision, error: error,
@@ -240,7 +256,8 @@ final class HelperService: @unchecked Sendable {
         }
     }
 
-    private func complete(_ frame: NDIGPUFrame?, revision: UInt64, error: String?, producedAt: UInt64 = 0, epoch: UInt64 = 0) {
+    private func complete(_ frame: NDIGPUFrame?, revision: UInt64, error: String?, producedAt: UInt64 = 0, epoch: UInt64 = 0,
+                          probeStatus: NDIHelperStatus? = nil) {
         guard !stopping else { return }
         if sender != nil, epoch != contentEpoch {
             // Old-owner GPU success and failure have the same disposition:
@@ -251,10 +268,9 @@ final class HelperService: @unchecked Sendable {
             }
             return
         }
-        guard error == nil, let frame, NDIHelperWire.valid(frame.surface), let peer else {
+        guard error == nil, let frame, frame.isValid, let peer else {
             fail(error ?? "Invalid rendered surface"); return
         }
-        let surface = frame.surface
         if producedAt > 0 { frame.producedAtNanoseconds = producedAt }
         if let sender {
             if epoch == contentEpoch { sender.offer(frame, epoch: epoch) }; busy = false
@@ -265,13 +281,22 @@ final class HelperService: @unchecked Sendable {
             }
             return
         }
+        let surface: IOSurface
+        do {
+            #if DEBUG
+            surface = try frame.exportedSurface()
+            #else
+            guard let value = frame.surface else { throw NDIHelperWire.Failure.invalidSurface }
+            surface = value
+            #endif
+        } catch { fail("Surface export failed"); return }
         let right = IOSurfaceCreateMachPort(surface)
         guard right != 0 else { fail("Surface handoff failed"); return }
         defer { eucaly_mach_send_release(right) }
         busy = false
         // COPY_SEND gives the receiver its own reference. Never export a global
         // IOSurface ID or recycle a surface while another process can hold it.
-        if !NDIMachMailbox.send(.init(kind: .frame, generation: generation, revision: revision),
+        if !NDIMachMailbox.send(.init(kind: .frame, generation: generation, revision: revision, status: probeStatus),
                                to: peer.second, first: right) {
             fail("Frame queue unavailable")
         }
@@ -312,8 +337,10 @@ final class HelperService: @unchecked Sendable {
                 if result > 0 {
                     let report = NDIHelperStatus(runtimeVersion: probe.version, sourceName: configuration.sourceName, lastTimecode: timecode)
                     queue.async { [self] in
-                        if let peer { _ = NDIMachMailbox.send(.init(kind: .status, generation: generation, status: report), to: peer.first) }
-                        complete(NDIGPUFrame(surface), revision: revision, error: nil)
+                        // Receiver pixels and their timecode are one observation.
+                        // Separate control/frame ports can be delivered in either
+                        // order, pairing a new picture with an older timestamp.
+                        complete(NDIGPUFrame(surface), revision: revision, error: nil, probeStatus: report)
                     }
                     return
                 }

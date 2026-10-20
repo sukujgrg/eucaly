@@ -290,8 +290,19 @@ nonisolated final class NDIHelperSupervisor: @unchecked Sendable {
             event(.audio(generation, observation))
         } else {
             guard packet.kind == .frame, message.first != 0, let surface = IOSurfaceLookupFromMachPort(message.first),
-                  NDIHelperWire.valid(surface) else { fail("Output helper returned an invalid frame"); return }
-            if packet.revision == latestRevision { event(.frame(generation, packet.revision, surface)) }
+                  (configuration.purpose == .renderYUV ? NDIHelperWire.validPackedVideo(surface) : NDIHelperWire.valid(surface)) else {
+                fail("Output helper returned an invalid frame"); return
+            }
+            if packet.revision == latestRevision {
+                if configuration.purpose == .loopbackProbe {
+                    guard let status = packet.status, status.validMetrics,
+                          status.sourceName.utf8.count <= 512, status.runtimeVersion.utf8.count <= 512 else {
+                        fail("Invalid receiver frame status"); return
+                    }
+                    event(.status(generation, status))
+                }
+                event(.frame(generation, packet.revision, surface))
+            }
         }
         inFlight = nil; workStartedAt = nil
         // Superseded frames never become accepted program state.

@@ -14,6 +14,8 @@ int eucaly_ndi_connections(eucaly_ndi *ndi);
 // Async buffer remains borrowed until the NEXT send/flush/destroy RETURNS.
 void eucaly_ndi_send_bgra(eucaly_ndi *ndi, void *bytes, int width, int height,
                          int stride, int64_t timecode);
+void eucaly_ndi_send_yuv(eucaly_ndi *ndi, void *bytes, int width, int height,
+                       int stride, bool alpha, int64_t timecode);
 void eucaly_ndi_flush(eucaly_ndi *ndi);
 void eucaly_ndi_send_audio(eucaly_ndi *ndi, const void *planar_pcm, int64_t sample_time);
 void eucaly_ndi_close(eucaly_ndi *ndi);

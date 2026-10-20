@@ -167,20 +167,24 @@ packets cannot be recalled; a receiver's buffer is outside this acceptance bound
 One generic media composition pipeline supports cached multilingual SwiftUI text,
 prepared PDF/image textures and AVPlayerItemVideoOutput from the owning workspace's
 player. Text is a cached transparent layer; background assets and full-frame media
-share Metal composition. The output is SDR 1920×1080 at 30/1 fps, BGRA with straight
-alpha. Alpha mode leaves surroundings transparent; chroma uses the remembered profile
+share Metal composition. The output is SDR 1920×1080 at 30/1 fps, Rec.709 UYVY for
+an opaque canvas or UYVA with full-range straight alpha. The final Metal pass
+composes directly into shared packed buffers; cached text and input media remain
+BGRA. Alpha mode leaves surroundings transparent; chroma uses the remembered profile
 colour. An enabled opaque visual background remains independent. Hide and Clear
 submit actual replacement pictures, including zero-alpha pixels when no opaque
 background is present. Clearing visual assets retains the configured key colour.
 
-Each helper retains four output surfaces for GPU, pending/current and SDK borrow
+Each helper retains four shared output buffers for GPU, pending/current and SDK borrow
 leases, plus an immutable cached text layer. Pixel buffers live through GPU
 acknowledgement; the previous async SDK lease lives until the next send/flush returns.
 Static preparation has two latest slots and two bounded caches. Video preserves
 rotation, mirroring, clean aperture and pixel aspect. PDF vectors rasterize at output
 resolution. No Audience capture, helper AVPlayer, dummy monitor, incoming receiver
-or forwarding path exists. 50/60 fps and UYVY/UYVA remain gated separately. GPU
-composition is not evidence that the NDI codec executes only on GPU.
+or forwarding path exists. Packed-byte tests check Rec.709 levels, pair packing,
+alpha range and multilingual edges; optional SDK tests compare BGRA and GPU YUV
+receiver pixels, timings and submission cadence. 50/60 fps remains gated separately.
+GPU composition/conversion does not move the NDI codec onto the GPU.
 
 A continuous ProgramAudioBus per destination preserves its audio clock across moves.
 All buses use the same 960-sample host grid; a shared bounded music-route history

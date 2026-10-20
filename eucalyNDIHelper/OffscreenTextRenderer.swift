@@ -71,7 +71,7 @@ final class OffscreenTextRenderer {
         // process. Production sender leases remain entirely inside this helper.
         guard let frame = pool != nil ? pool?.acquire() : NDIGPUFrame(try NDISurfacePool.makeSurface()),
               let source = cachedTexture else { throw NDIHelperWire.Failure.unavailable }
-        let surface = frame.surface
+        guard let surface = frame.surface else { throw NDIHelperWire.Failure.invalidSurface }
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
         descriptor.usage = .shaderWrite; descriptor.storageMode = .shared
         guard let target = device.makeTexture(descriptor: descriptor, iosurface: surface, plane: 0),

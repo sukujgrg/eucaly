@@ -38,12 +38,20 @@ it. Clear Current retains independent visual backgrounds and music. Each workspa
 owns one shared program player; other workspace players run independently of tabs.
 The single explicit background-music owner/route is retained on output transfer.
 
-Initial qualification remains SDR 1920×1080 at 30/1 fps, BGRA/straight alpha. The helper
+The output remains SDR 1920×1080 at 30/1 fps. The final Metal compositor writes
+Rec.709 studio-range UYVY directly into shared buffers when the canvas is opaque,
+or UYVA with a full-range straight-alpha plane otherwise. Alpha is retained
+conservatively when media opacity cannot be proven. There is no intermediate BGRA
+output or CPU colour conversion on the normal send path. The helper
 alone dynamically loads the signed external NDI 6.3 runtime. Preserve vendor checks,
 helper-only library-validation exception, bounded latest-frame admission, four output
-surfaces, SDK borrow leases, authenticated private Mach IPC, bounded PCM and exact-child
-supervision. Do not infer GPU-only encoding from GPU composition. Higher frame rates
-and UYVY/UYVA require separate parity/performance evidence.
+buffers, SDK borrow leases, authenticated private Mach IPC, bounded PCM and exact-child
+supervision. Cached text and input media remain BGRA. GPU conversion does not move
+the NDI codec onto the GPU. Higher frame rates remain a separate qualification gate.
+The offline packed-pixel tests check legal-range Rec.709, packing, independent alpha
+and coloured/transparent edges. Optional real-SDK tests compare against the former
+BGRA path, including receiver colour/alpha, measured submission cadence and GPU/SDK
+timings. The reference sender is Debug-only; it is not an operator format setting.
 
 ## Migration
 
@@ -66,6 +74,60 @@ limits are recorded in [the implementation document](output-profiles-implementat
 The pre-refactor local SDK/signing evidence under `build/ndi-transition/` is historical.
 It must not be reported as qualification of live workspace transfers. This work does
 not authorize signing, notarization or publication.
+
+### GPU colour-conversion check, 2026-10-20
+
+`make test` passed 536 app tests plus 108 offline release/feed tests on the local
+Apple Silicon Mac (macOS 27.0.1, signed NDI runtime 6.3.2.0). This includes three
+packed-byte tests and nine real-SDK tests: source/appearance transfers, shared video,
+audio, alpha/chroma replacement, exact-child shutdown and conversion comparison.
+`make build` also archived/exported the Release app successfully; the exported
+helper accepted the signed runtime with its read-only `--check-runtime` command.
+
+The comparison ran two senders and two loopback receivers, then drove both renderers
+with the same 90 changing gradient-background frames at approximately 30 Hz. In that
+run BGRA measured 28.7% of one CPU core versus 24.4% for GPU UYVA (about 15% less
+helper CPU); both completed 30 SDK submissions/s. Median GPU duration was 0.394 ms
+versus 0.542 ms. Median async SDK call duration was 0.014 ms versus 0.019 ms; this
+call duration is not total codec CPU time. These are local measurements, not a
+general performance guarantee. The test preserves its measurements as an XCTest
+attachment; a local summary and log are retained in `build/ndi-yuv/`.
+
+Packed-pixel tests independently check Rec.709 legal-range levels, both lumas and
+shared chroma, full-range alpha, transparent colour edges and multilingual glyph
+alpha against the original raster. Receiver palette checks require GPU conversion
+to reproduce source colour/alpha within the SDK conversion tolerance and preserve or improve
+accuracy relative to the SDK's approximate BGRA conversion. UYVA input is 6,220,800
+bytes/frame and UYVY is 4,147,200, versus 8,294,400 for BGRA. This is an SDK input
+memory reduction, not a claim about encoded network bandwidth. The equipment and
+sustained-operation gates below remain open.
+
+### Rapid workspace/format regression coverage
+
+Two real-SDK receiver tests each issue 96 rapid workspace/format operations in
+5 ms steps, ending at all four workspace/alpha-chroma combinations. They retain
+one source/helper/receiver and check three fresh, advancing receiver frames at
+each checkpoint. Coverage includes half-transparent red/blue PNGs, multilingual
+lyrics, a cleared Current, green and magenta keys, straight alpha, stable decoded
+colour, the four-buffer bound and continuous source timecodes. A separate offline
+test runs the same ownership/transparency churn while checking that another source,
+its Current, source identity and shared appearance remain unchanged.
+
+The tests exposed a Debug receiver-observation race: timecodes travelled over the
+control port separately from frame pixels. The probe now sends them in one frame
+packet, and the supervisor delivers matching status before the frame event. PNG
+fixtures use explicit sRGB colours and encoding rather than display-dependent
+Device RGB. Exact packed tests now include half-transparent primaries. The installed
+SDK decodes half-transparent blue as 242 through UYVA versus 239 through BGRA from
+a 255 source, despite correct packed GPU values. Stress checks compare colour before
+and after churn, with strict independent alpha/key checks; the SDK comparison still
+requires source accuracy to equal or improve on BGRA. No compensating colour change
+is applied to production rendering.
+
+After these additions, `make test` passed 539 app tests (including eleven real-SDK
+tests) and 108 offline release/feed tests. `make build` also archived/exported the
+Release app successfully. Local stress-test logs and a summary are retained in
+`build/ndi-yuv/workspace-format/`.
 
 ## Equipment and sustained operation
 

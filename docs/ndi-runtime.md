@@ -158,9 +158,23 @@ does not enable multicast video by default. See the official
 
 The implementation follows NDI's
 [performance guidance](https://docs.ndi.video/all/developing-with-ndi/sdk/performance-and-implementation):
-asynchronous submission, explicit frame ownership and worker isolation. BGRA is
-the initial alpha-correct interchange format. UYVY/UYVA conversion is a measured
-optimization gate; GPU composition does not imply GPU-only NDI encoding.
+asynchronous submission, explicit frame ownership and worker isolation. The final
+Metal pass composes and converts directly to Rec.709 UYVY (opaque canvas) or UYVA
+(alpha may be needed), including a full-resolution, full-range alpha plane.
+Input textures and cached text remain BGRA. The four shared output buffers stay
+leased through GPU completion and the next SDK send/flush. Each buffer reserves
+6,220,800 bytes for UYVA; the SDK reads 4,147,200 bytes for UYVY, compared with
+8,294,400 bytes for the former BGRA frame. This reduces SDK input memory traffic,
+not the encoded network bitrate by the same ratio.
+
+Colour conversion uses studio-range luma/chroma with full-range straight alpha.
+Shared chroma is weighted by alpha to avoid transparent neighbours desaturating
+coloured glyph edges. Ordinary 8-bit YUV quantization and 4:2:2 chroma subsampling
+still apply: a decoded RGB key colour can differ slightly from its original RGB
+value. Format changes
+retain the source/helper/connection; no setting migration or restart is needed.
+The one terminal empty/key picture is filled in packed YUV on the submission worker
+without waiting for a GPU lease during teardown. NDI encoding remains SDK-owned.
 
 ## Distribution requirements
 

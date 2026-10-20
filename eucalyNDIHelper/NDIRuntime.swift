@@ -90,10 +90,21 @@ final class NDISubmissionWorker: @unchecked Sendable {
         report.gpuMilliseconds = surface.gpuMilliseconds
         report.maximumGPUMilliseconds = max(report.maximumGPUMilliseconds, surface.gpuMilliseconds)
         report.surfacePoolHighWaterMark = max(report.surfacePoolHighWaterMark, surface.poolOccupancy)
+        report.videoFormat = surface.format
         pending = surface
         lock.unlock()
     }
-    func status() -> NDIHelperStatus { lock.lock(); defer { lock.unlock() }; return report }
+    func status() -> NDIHelperStatus {
+        lock.lock(); var value = report; lock.unlock()
+        #if DEBUG
+        var usage = rusage()
+        if getrusage(RUSAGE_SELF, &usage) == 0 {
+            value.processCPUSeconds = Double(usage.ru_utime.tv_sec + usage.ru_stime.tv_sec)
+                + Double(usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) / 1_000_000
+        }
+        #endif
+        return value
+    }
     func sendAudio(_ block: NDIAudioBlock, epoch: UInt64 = 0, completion: @escaping @Sendable () -> Void) {
         lock.lock()
         guard !stopping, let runtime else { lock.unlock(); return }
@@ -129,9 +140,14 @@ final class NDISubmissionWorker: @unchecked Sendable {
         let tick = started / 100
         let timecode = max(tick, lastTick + 1); lastTick = timecode
         let previous = borrowed
-        let surface = current.surface
-        eucaly_ndi_send_bgra(runtime.handle, surface.baseAddress, Int32(surface.width), Int32(surface.height),
-                            Int32(surface.bytesPerRow), Int64(timecode))
+        if current.format == .bgra {
+            // Only the explicit Debug comparison configuration produces BGRA.
+            eucaly_ndi_send_bgra(runtime.handle, current.baseAddress, Int32(NDIHelperWire.width), Int32(NDIHelperWire.height),
+                                Int32(current.format.bytesPerRow), Int64(timecode))
+        } else {
+            eucaly_ndi_send_yuv(runtime.handle, current.baseAddress, Int32(NDIHelperWire.width), Int32(NDIHelperWire.height),
+                               Int32(current.format.bytesPerRow), current.format == .uyva, Int64(timecode))
+        }
         let finished = DispatchTime.now().uptimeNanoseconds
         metrics.submitted(at: finished, newPictureProducedAt: current !== previous ? current.producedAtNanoseconds : nil)
         withExtendedLifetime(previous) {} // Previous async borrow is now synchronized.
@@ -154,30 +170,43 @@ final class NDISubmissionWorker: @unchecked Sendable {
             // workers remain isolated from control and the parent's UI thread.
             audioQueue.async { [self] in
                 queue.async { [self] in
-                    var pixel: UInt32?
+                    var report = NDIHelperShutdown(terminalPixelBGRA: nil)
                     if let retiring {
-                        pixel = sendTerminalPicture(colour, runtime: retiring)
+                        report = sendTerminalPicture(colour, runtime: retiring)
                         borrowed = nil; current = nil
                         // Explicitly destroy BEFORE completion exits the process.
                         // A local strong reference otherwise postpones deinit forever.
                         retiring.close()
                     }
-                    completion(.init(terminalPixelBGRA: pixel))
+                    completion(report)
                 }
             }
         }
     }
-    private func sendTerminalPicture(_ colour: OutputColour, runtime: NDIRuntime) -> UInt32 {
+    private func sendTerminalPicture(_ colour: OutputColour, runtime: NDIRuntime) -> NDIHelperShutdown {
         func byte(_ value: Double) -> UInt32 { UInt32((min(1, max(0, value)) * 255).rounded()) }
         let pixel = byte(colour.blue) | byte(colour.green) << 8 | byte(colour.red) << 16 | byte(colour.alpha) << 24
+        let y = 0.2126 * colour.red + 0.7152 * colour.green + 0.0722 * colour.blue
+        let luma = UInt32((16 + 219 * y).rounded())
+        let u = UInt32((128 + 224 * (colour.blue - y) / 1.8556).rounded())
+        let v = UInt32((128 + 224 * (colour.red - y) / 1.5748).rounded())
+        let pair = u | luma << 8 | v << 16 | luma << 24
+        let format: NDIVideoPixelFormat = colour.alpha == 1 ? .uyvy : .uyva
         // One bounded shutdown buffer, independent of GPU leases still in use.
-        var pixels = [UInt32](repeating: pixel, count: NDIHelperWire.width * NDIHelperWire.height)
+        // A single constant colour needs no GPU scheduling during teardown.
+        var pixels = [UInt32](repeating: pair, count: format.byteCount / 4)
+        if format == .uyva {
+            _ = pixels.withUnsafeMutableBytes { bytes in
+                bytes.baseAddress!.advanced(by: NDIHelperWire.width * NDIHelperWire.height * 2)
+                    .initializeMemory(as: UInt8.self, repeating: UInt8(byte(colour.alpha)), count: NDIHelperWire.width * NDIHelperWire.height)
+            }
+        }
         let timecode = max(DispatchTime.now().uptimeNanoseconds / 100, lastTick + 1)
         pixels.withUnsafeMutableBytes { bytes in
-            eucaly_ndi_send_bgra(runtime.handle, bytes.baseAddress!, Int32(NDIHelperWire.width), Int32(NDIHelperWire.height),
-                                Int32(NDIHelperWire.width * 4), Int64(timecode))
+            eucaly_ndi_send_yuv(runtime.handle, bytes.baseAddress!, Int32(NDIHelperWire.width), Int32(NDIHelperWire.height),
+                               Int32(format.bytesPerRow), format == .uyva, Int64(timecode))
             eucaly_ndi_flush(runtime.handle)
         }
-        return pixel
+        return .init(terminalPixelBGRA: pixel, videoFormat: format, terminalUYVY: pair, terminalAlpha: UInt8(byte(colour.alpha)))
     }
 }

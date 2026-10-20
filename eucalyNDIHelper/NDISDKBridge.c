@@ -45,16 +45,25 @@ const char *eucaly_ndi_source_name(eucaly_ndi *ndi) {
 int eucaly_ndi_connections(eucaly_ndi *ndi) {
     return ndi->api->send_get_no_connections(ndi->sender, 0);
 }
-void eucaly_ndi_send_bgra(eucaly_ndi *ndi, void *bytes, int width, int height,
-                         int stride, int64_t timecode) {
+static void send_video(eucaly_ndi *ndi, void *bytes, int width, int height,
+                       int stride, NDIlib_FourCC_video_type_e format, int64_t timecode) {
     NDIlib_video_frame_v2_t frame = {0};
     frame.xres = width; frame.yres = height;
-    frame.FourCC = NDIlib_FourCC_video_type_BGRA;
+    frame.FourCC = format;
     frame.frame_rate_N = 30; frame.frame_rate_D = 1;
     frame.picture_aspect_ratio = (float)width / (float)height;
     frame.frame_format_type = NDIlib_frame_format_type_progressive;
     frame.timecode = timecode; frame.p_data = bytes; frame.line_stride_in_bytes = stride;
     ndi->api->send_send_video_async_v2(ndi->sender, &frame);
+}
+void eucaly_ndi_send_bgra(eucaly_ndi *ndi, void *bytes, int width, int height,
+                         int stride, int64_t timecode) {
+    send_video(ndi, bytes, width, height, stride, NDIlib_FourCC_video_type_BGRA, timecode);
+}
+void eucaly_ndi_send_yuv(eucaly_ndi *ndi, void *bytes, int width, int height,
+                       int stride, bool alpha, int64_t timecode) {
+    send_video(ndi, bytes, width, height, stride,
+               alpha ? NDIlib_FourCC_video_type_UYVA : NDIlib_FourCC_video_type_UYVY, timecode);
 }
 void eucaly_ndi_flush(eucaly_ndi *ndi) {
     if (ndi->sender) ndi->api->send_send_video_async_v2(ndi->sender, NULL);

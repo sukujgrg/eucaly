@@ -5,8 +5,8 @@ import CoreVideo
 /// No SDK types, AVPlayer, bookmarks, file paths or observable state cross IPC.
 /// The schema is shared by the app and its separately linked helper executable.
 nonisolated enum NDIHelperWire {
-    static let version = 7
-    static let build = "ndi-workspaces-2"
+    static let version = 8
+    static let build = "ndi-yuv-1"
     static let maximumMessageBytes = 65_536
     static let width = 1920
     static let height = 1080
@@ -28,12 +28,26 @@ nonisolated enum NDIHelperWire {
             && surface.bytesPerRow == width * 4 && surface.allocationSize == maximumSurfaceBytes
             && surface.pixelFormat == 0x42475241 && surface.planeCount == 0
     }
+    static func validPackedVideo(_ surface: IOSurface) -> Bool {
+        guard let format = NDIVideoPixelFormat(rawValue: surface.pixelFormat), format != .bgra else { return false }
+        return surface.width == width && surface.height == height && surface.bytesPerElement == 2
+            && surface.bytesPerRow == width * 2 && surface.allocationSize == format.byteCount && surface.planeCount == 0
+    }
     static func validMedia(_ surface: IOSurface) -> Bool {
         (1...4096).contains(surface.width) && (1...4096).contains(surface.height)
             && surface.bytesPerElement == 4 && surface.planeCount == 0 && surface.pixelFormat == 0x42475241
             && surface.bytesPerRow >= surface.width * 4 && surface.bytesPerRow <= 16_384
             && surface.allocationSize >= surface.bytesPerRow * surface.height && surface.allocationSize <= 67_108_864
     }
+}
+
+/// IOSurface tags use character order; the helper bridge maps these to the SDK's
+/// own FourCC constants. UYVA has a tightly packed, full-resolution alpha plane.
+nonisolated enum NDIVideoPixelFormat: UInt32, Codable, Sendable {
+    case bgra = 0x42475241, uyvy = 0x55595659, uyva = 0x55595641
+    var bytesPerRow: Int { NDIHelperWire.width * (self == .bgra ? 4 : 2) }
+    var byteCount: Int { NDIHelperWire.width * NDIHelperWire.height * (self == .bgra ? 4 : self == .uyva ? 3 : 2) }
+    var name: String { self == .bgra ? "BGRA" : self == .uyva ? "UYVA" : "UYVY" }
 }
 
 nonisolated struct NDIHelperBootstrap: Codable {
@@ -46,12 +60,18 @@ nonisolated struct NDIHelperBootstrap: Codable {
 }
 
 nonisolated struct NDIHelperConfiguration: Codable, Sendable {
-    enum Purpose: String, Codable, Sendable { case renderOnly, sender, loopbackProbe, audioProbe }
+    enum Purpose: String, Codable, Sendable { case renderOnly, renderYUV, sender, loopbackProbe, audioProbe }
     var purpose: Purpose = .renderOnly
     var sourceName = ""
+    // Debug-only comparison against the previous SDK input path. Never saved or
+    // exposed as an operator setting; Release always submits GPU-produced YUV.
+    var referenceBGRA = false
     var isValid: Bool {
+        #if !DEBUG
+        guard !referenceBGRA, purpose != .renderYUV else { return false }
+        #endif
         switch purpose {
-        case .renderOnly: return sourceName.isEmpty
+        case .renderOnly, .renderYUV: return sourceName.isEmpty && !referenceBGRA
         case .sender, .loopbackProbe, .audioProbe:
             return !sourceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 && sourceName.utf8.count <= (purpose == .sender ? 120 : 512)
@@ -76,6 +96,8 @@ nonisolated struct NDIHelperStatus: Codable, Sendable {
     var frameAgeMilliseconds: Double? = nil
     var submissionMilliseconds: Double = 0
     var slowCadence = false
+    var videoFormat: NDIVideoPixelFormat? = nil
+    var processCPUSeconds: Double? = nil // Debug qualification; not a codec-only measurement.
 
     var validMetrics: Bool {
         [effectiveFramesPerSecond, frameAgeMilliseconds, submissionMilliseconds].compactMap { $0 }
@@ -164,8 +186,11 @@ nonisolated struct NDIHelperPacket: Codable, Sendable {
 /// Emitted only after the SDK's terminal send, flush and sender destruction
 /// return. This proves sender cleanup, independently of receiver buffering.
 nonisolated struct NDIHelperShutdown: Codable, Sendable {
-    // The actual packed pixel submitted, or nil if startup created no sender.
+    // Requested empty/key colour, plus the actual SDK format and packed pair.
     let terminalPixelBGRA: UInt32?
+    var videoFormat: NDIVideoPixelFormat? = nil
+    var terminalUYVY: UInt32? = nil
+    var terminalAlpha: UInt8? = nil
 }
 
 nonisolated struct NDIAudioObservation: Codable, Sendable {

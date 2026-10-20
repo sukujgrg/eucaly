@@ -2,12 +2,196 @@ import XCTest
 import AppKit
 import IOSurface
 import AVFoundation
+import ImageIO
 @testable import eucaly
 
 /// Tests exercise the real runtime only in owned helper processes. CI machines
 /// without the optional runtime still run the IPC/render/fault regression suite.
 @MainActor
 final class NDISDKIntegrationTests: XCTestCase {
+    func testRapidWorkspaceAndFormatChangesPreserveTranslucentMediaOnTheSameReceiver() async throws {
+        try await exerciseRapidWorkspaceFormatChanges(translucentImages: true)
+    }
+
+    func testRapidWorkspaceAndFormatChangesDoNotReviveLyricsInAClearedWorkspace() async throws {
+        try await exerciseRapidWorkspaceFormatChanges(translucentImages: false)
+    }
+
+    private func exerciseRapidWorkspaceFormatChanges(translucentImages: Bool) async throws {
+        try requireRuntime()
+        let senderLog = NDIEventLog(), probeLog = NDIEventLog(), probeID = UUID()
+        var helpersCreated = 0
+        let router = NDIOutputRouter(senderFactory: { event in
+            helpersCreated += 1
+            return NDIHelperSupervisor { senderLog.record($0); event($0) }
+        })
+        let store = OutputProfileStore(), online = try XCTUnwrap(store.addWorkspace(name: "Online"))
+        var row = OutputDestinationConfiguration(name: "Switching output", profileID: OutputProfile.audienceID, monitor: nil)
+        row.ndi = .init(sourceName: "eucaly format transfer \(UUID())")
+        store.edit { $0.destinations = [row] }
+        store.editDestinationProfile(row.id) {
+            $0.background.dimming = 0
+            $0.background.colour = .chromaGreen; $0.background.visible = false; $0.background.bookmark = nil
+            $0.typography.colour = .white
+        }
+        let outputs = OutputCoordinator(profiles: store, displays: ProjectionDisplayManager(displays: { [] }), retainsPreparedSessions: true, ndi: router)
+        let home = outputs.session(workspace: OutputWorkspaceRecord.primaryID), peer = outputs.session(workspace: online)
+        let probe = NDIHelperSupervisor(event: probeLog.record)
+        var fixtures: [URL] = []
+        defer {
+            probe.stop(); outputs.stopAllOutputs()
+            for url in fixtures { try? FileManager.default.removeItem(at: url) }
+        }
+        if translucentImages {
+            for blue in [false, true] { fixtures.append(try translucentImageFixture(blue: blue)) }
+            for (index, url) in fixtures.enumerated() {
+                let frame = try OutputPreparedMedia.prepare(.init(url: url, page: nil, identity: "fixture"))
+                let x = index == 0 ? frame.surface.width / 4 : frame.surface.width * 3 / 4
+                let offset = frame.surface.height / 2 * frame.surface.bytesPerRow + x * 4
+                let p = frame.surface.baseAddress.assumingMemoryBound(to: UInt8.self)
+                XCTAssertEqual(Array(UnsafeBufferPointer(start: p + offset, count: 4)), index == 0 ? [0, 0, 128, 128] : [128, 0, 0, 128])
+            }
+            for (session, url) in zip([home, peer], fixtures) {
+                session.setSlides([.init(index: 0, lines: [], label: "Translucent image", videoURL: nil,
+                    pdfURL: nil, pdfPageIndex: nil, imageURL: url)])
+            }
+        } else {
+            home.setSlides(LyricsParser.parseDocument("Verse\nHome · தமிழ் · Ελληνικά · العربية").slides)
+            peer.setSlides(LyricsParser.parseDocument("Verse\nThis Current was cleared").slides)
+            peer.clearSlides()
+        }
+        home.showSlides()
+        try await until("format-switch sender ready") { senderLog.state.ready || senderLog.state.failure != nil }
+        XCTAssertNil(senderLog.state.failure)
+        let source = try XCTUnwrap(senderLog.state.status?.sourceName), generation = try XCTUnwrap(senderLog.state.generation)
+        let sourceID = try XCTUnwrap(outputs.destination(row.id)?.ndi?.sourceID)
+        probe.start(generation: probeID, configuration: .init(purpose: .loopbackProbe, sourceName: source))
+        try await until("format-switch receiver connected") { probeLog.state.ready || probeLog.state.failure != nil }
+        XCTAssertNil(probeLog.state.failure)
+
+        var revision: UInt64 = 0, lastTimecode: Int64 = -1
+        var receivedFormats: Set<NDIVideoPixelFormat> = []
+        var alphaReferences: [Bool: NDIEventLog.Picture] = [:]
+        var keyColour = OutputColour.chromaGreen
+        func receive(homeOwnsOutput: Bool, mode: NDIOutputSettings.KeyMode, after boundary: Int64 = 0) async throws -> NDIEventLog.Picture {
+            let format: NDIVideoPixelFormat = mode == .alpha ? .uyva : .uyvy
+            try await until("latest format \(format) is submitting") {
+                (senderLog.state.status?.videoFormat == format && (senderLog.state.status?.connections ?? 0) > 0)
+                    || senderLog.state.failure != nil
+            }
+            XCTAssertNil(senderLog.state.failure)
+            var consecutive = 0
+            var lastDescription = "No picture"
+            for _ in 0..<32 {
+                revision += 1
+                probe.render(request(probeID, revision: revision))
+                try await until("format-switch decoded picture") {
+                    probeLog.state.revision == revision || probeLog.state.failure != nil || senderLog.state.failure != nil
+                }
+                XCTAssertNil(senderLog.state.failure); XCTAssertNil(probeLog.state.failure)
+                let picture = try XCTUnwrap(probeLog.state.picture), timecode = try XCTUnwrap(probeLog.state.status?.lastTimecode)
+                XCTAssertGreaterThanOrEqual(timecode, lastTimecode, "The connected source clock must not reset on a workspace/format change")
+                let advanced = timecode > lastTimecode
+                lastTimecode = timecode
+                lastDescription = "left=\(picture.left), right=\(picture.right), alpha=\(picture.minimumAlpha)...\(picture.maximumAlpha), white=\(picture.whiteGlyphs)"
+                let key = [keyColour.blue, keyColour.green, keyColour.red, 1].map { Int(($0 * 255).rounded()) }
+                func isKey(_ pixel: (UInt8, UInt8, UInt8, UInt8)) -> Bool {
+                    zip([pixel.0, pixel.1, pixel.2, pixel.3].map(Int.init), key).allSatisfy { abs($0.0 - $0.1) <= 5 }
+                }
+                let matches: Bool
+                if translucentImages {
+                    let foreground = homeOwnsOutput ? picture.left : picture.right
+                    let empty = homeOwnsOutput ? picture.right : picture.left
+                    if mode == .alpha {
+                        let correctColour = homeOwnsOutput ? foreground.2 > 230 && foreground.0 < 6 : foreground.0 > 230 && foreground.2 < 6
+                        let reference = alphaReferences[homeOwnsOutput].map { homeOwnsOutput ? $0.left : $0.right }
+                        // Compare decoded colour before/after churn; the SDK's
+                        // alpha-bearing blue path is approximate even at rest.
+                        let stableColour = reference.map {
+                            zip([foreground.0, foreground.1, foreground.2].map(Int.init), [$0.0, $0.1, $0.2].map(Int.init))
+                                .allSatisfy { abs($0.0 - $0.1) <= 3 }
+                        } ?? true
+                        matches = abs(Int(foreground.3) - 128) <= 4 && empty.3 == 0 && correctColour && stableColour && foreground.1 < 6
+                    } else {
+                        let actual = [foreground.0, foreground.1, foreground.2, foreground.3].map(Int.init)
+                        var expected = [Int((keyColour.blue * 127).rounded()), Int((keyColour.green * 127).rounded()),
+                            Int((keyColour.red * 127).rounded()), 255]
+                        expected[homeOwnsOutput ? 2 : 0] += 128
+                        matches = zip(actual, expected).allSatisfy { abs($0.0 - $0.1) <= 6 }
+                            && isKey(empty) && picture.minimumAlpha == 255
+                    }
+                } else if homeOwnsOutput {
+                    matches = picture.whiteGlyphs > 100 && (mode == .alpha
+                        ? picture.corner.3 == 0 && picture.hasStraightEdge
+                        : isKey(picture.corner) && picture.minimumAlpha == 255)
+                } else {
+                    matches = mode == .alpha ? picture.maximumAlpha == 0 : (keyColour == .chromaGreen ? picture.isGreen : picture.isMagenta)
+                }
+                // Drain buffered old pictures, then require several successive
+                // replacements so a late old-owner completion cannot pass once.
+                if !matches || timecode < boundary { consecutive = 0 }
+                else if advanced { consecutive += 1 }
+                if consecutive == 3 { receivedFormats.insert(format); return picture }
+            }
+            XCTFail("Receiver did not settle on \(homeOwnsOutput ? "Home" : "Online") in \(mode): \(lastDescription)")
+            throw NDIHelperWire.Failure.unavailable
+        }
+        alphaReferences[true] = try await receive(homeOwnsOutput: true, mode: .alpha)
+        XCTAssertTrue(outputs.moveOutput(row.id, to: peer))
+        alphaReferences[false] = try await receive(homeOwnsOutput: false, mode: .alpha, after: Int64(DispatchTime.now().uptimeNanoseconds / 100))
+        for checkpoint in 0..<8 {
+            let homeOwnsOutput = checkpoint.isMultiple(of: 2)
+            let mode: NDIOutputSettings.KeyMode = checkpoint % 4 < 2 ? .alpha : .chroma
+            let target = homeOwnsOutput ? home : peer, other = homeOwnsOutput ? peer : home
+            let previousRender = senderLog.state.renderedRevision
+            keyColour = checkpoint < 4 ? .chromaGreen : .init(red: 1, blue: 1)
+            store.editDestinationProfile(row.id) { $0.background.colour = keyColour }
+            // Each 60 ms burst crosses ownership and changes format faster than
+            // the 30 Hz output clock. Settled checkpoints cover all four pairs.
+            for step in 0..<12 {
+                var settings = try XCTUnwrap(outputs.destination(row.id)?.ndi)
+                settings.keyMode = step.isMultiple(of: 2) ? (mode == .alpha ? .chroma : .alpha) : mode
+                if step.isMultiple(of: 2) {
+                    XCTAssertNil(store.setNDISettings(settings, for: row.id))
+                    XCTAssertTrue(outputs.moveOutput(row.id, to: other))
+                } else {
+                    XCTAssertTrue(outputs.moveOutput(row.id, to: target))
+                    XCTAssertNil(store.setNDISettings(settings, for: row.id))
+                }
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            let boundary = Int64(DispatchTime.now().uptimeNanoseconds / 100)
+            try await until("new-owner render acknowledged") { senderLog.state.renderedRevision > previousRender || senderLog.state.failure != nil }
+            _ = try await receive(homeOwnsOutput: homeOwnsOutput, mode: mode, after: boundary)
+            XCTAssertEqual(outputs.destination(row.id)?.workspaceID, homeOwnsOutput ? OutputWorkspaceRecord.primaryID : online)
+            XCTAssertEqual(outputs.destination(row.id)?.ndi?.sourceID, sourceID)
+            XCTAssertEqual(senderLog.state.generation, generation); XCTAssertEqual(senderLog.state.readyCount, 1)
+            XCTAssertEqual(senderLog.state.status?.sourceName, source); XCTAssertEqual(helpersCreated, 1)
+            XCTAssertFalse(senderLog.state.exited); XCTAssertFalse(probeLog.state.exited)
+            XCTAssertLessThanOrEqual(senderLog.state.status?.surfacePoolHighWaterMark ?? 0, 4)
+        }
+        XCTAssertEqual(receivedFormats, [.uyvy, .uyva])
+        XCTAssertEqual(probeLog.state.readyCount, 1, "The receiver must stay connected through all transitions")
+        XCTAssertNil(senderLog.state.failure); XCTAssertNil(probeLog.state.failure)
+        outputs.stopAllOutputs(); await router.shutdown(); await probe.stopAndWait()
+    }
+
+    private func translucentImageFixture(blue: Bool) throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("ndi-alpha-\(UUID()).png")
+        let space = try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB))
+        let context = try XCTUnwrap(CGContext(data: nil, width: 320, height: 180, bitsPerComponent: 8, bytesPerRow: 1280,
+            space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.clear(.init(x: 0, y: 0, width: 320, height: 180))
+        // Device RGB is display-dependent and can add other channels during
+        // conversion. Both the drawing colour and PNG must explicitly be sRGB.
+        context.setFillColor(try XCTUnwrap(CGColor(colorSpace: space, components: [blue ? 0 : 1, 0, blue ? 1 : 0, 0.5])))
+        context.fill(.init(x: blue ? 160 : 0, y: 0, width: 160, height: 180))
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, try XCTUnwrap(context.makeImage()), nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        return url
+    }
+
     private func requireRuntime() throws {
         guard NDIHelperWire.installedRuntimePaths.contains(where: { FileManager.default.fileExists(atPath: $0) }) else {
             throw XCTSkip("Optional NDI runtime is not installed; real transport qualification requires it.")
@@ -39,6 +223,8 @@ final class NDISDKIntegrationTests: XCTestCase {
         XCTAssertTrue(senderLog.state.status?.runtimeVersion.contains("6.3") == true)
         sender.render(request(id, revision: 1))
         try await until("continuous submission") { (senderLog.state.status?.submittedFrames ?? 0) >= 3 }
+        XCTAssertEqual(senderLog.state.status?.videoFormat, .uyva)
+        XCTAssertLessThanOrEqual(senderLog.state.status?.surfacePoolHighWaterMark ?? 0, 4)
         probe.start(generation: probeID, configuration: .init(purpose: .loopbackProbe, sourceName: source))
         try await until("receiver ready") { probeLog.state.ready || probeLog.state.failure != nil }
         XCTAssertNil(probeLog.state.failure)
@@ -52,6 +238,7 @@ final class NDISDKIntegrationTests: XCTestCase {
         let firstTimecode = try XCTUnwrap(probeLog.state.status?.lastTimecode)
         sender.render(request(id, revision: 2, empty: true))
         try await until("empty frame rendered") { senderLog.state.renderedRevision == 2 }
+        try await until("opaque picture uses UYVY") { senderLog.state.status?.videoFormat == .uyvy }
         // A real receiver may have buffered earlier pictures. Consume a finite
         // number and require it to transition to the explicit blank/key frame.
         for revision in 2...14 {
@@ -132,7 +319,11 @@ final class NDISDKIntegrationTests: XCTestCase {
                     profile: content.profile, transparent: role == "alpha")
                 sender.render(content)
             }
-            try await until("shutdown picture submitted") { (senderLog.state.status?.submittedFrames ?? 0) >= 3 }
+            try await until("shutdown picture submitted for \(role)") {
+                (senderLog.state.status?.submittedFrames ?? 0) >= 3 || senderLog.state.failure != nil || senderLog.state.exited
+            }
+            XCTAssertNil(senderLog.state.failure, "Shutdown role \(role)")
+            guard (senderLog.state.status?.submittedFrames ?? 0) >= 3 else { XCTFail("No initial picture for \(role)"); return }
             probe.start(generation: probeID, configuration: .init(purpose: .loopbackProbe,
                 sourceName: try XCTUnwrap(senderLog.state.status?.sourceName)))
             try await until("shutdown receiver connected") { probeLog.state.ready || probeLog.state.failure != nil }
@@ -153,7 +344,109 @@ final class NDISDKIntegrationTests: XCTestCase {
             let report = try XCTUnwrap(senderLog.state.shutdown, "SDK cleanup must be acknowledged before exit")
             let expected: UInt32 = role == "alpha" ? 0 : role == "chroma" ? 0xFF00FF00 : 0xFF000000
             XCTAssertEqual(report.terminalPixelBGRA, expected, "Stop must flush the correct empty/key pixel before destroying the sender")
+            XCTAssertEqual(report.videoFormat, role == "alpha" ? .uyva : .uyvy)
+            XCTAssertEqual(report.terminalAlpha, role == "alpha" ? 0 : 255)
+            XCTAssertEqual(report.terminalUYVY, role == "chroma" ? 0xAD1AAD2A : 0x10801080)
         }
+    }
+
+    func testGPUYUVMatchesSDKBGRAColourAndMaintainsSubmissionCadence() async throws {
+        try requireRuntime()
+        let oldLog = NDIEventLog(), newLog = NDIEventLog(), oldProbeLog = NDIEventLog(), newProbeLog = NDIEventLog()
+        let oldID = UUID(), newID = UUID(), oldProbeID = UUID(), newProbeID = UUID()
+        let baseline = NDIHelperSupervisor(event: oldLog.record), sender = NDIHelperSupervisor(event: newLog.record)
+        let oldProbe = NDIHelperSupervisor(event: oldProbeLog.record), newProbe = NDIHelperSupervisor(event: newProbeLog.record)
+        defer { baseline.stop(); sender.stop(); oldProbe.stop(); newProbe.stop() }
+        baseline.start(generation: oldID, configuration: .init(purpose: .sender, sourceName: "eucaly BGRA reference \(oldID)", referenceBGRA: true))
+        sender.start(generation: newID, configuration: .init(purpose: .sender, sourceName: "eucaly GPU YUV \(newID)"))
+        try await until("comparison senders ready") { (oldLog.state.ready && newLog.state.ready) || oldLog.state.failure != nil || newLog.state.failure != nil }
+        XCTAssertNil(oldLog.state.failure); XCTAssertNil(newLog.state.failure)
+        oldProbe.start(generation: oldProbeID, configuration: .init(purpose: .loopbackProbe, sourceName: try XCTUnwrap(oldLog.state.status?.sourceName)))
+        newProbe.start(generation: newProbeID, configuration: .init(purpose: .loopbackProbe, sourceName: try XCTUnwrap(newLog.state.status?.sourceName)))
+        try await until("comparison receivers ready") { (oldProbeLog.state.ready && newProbeLog.state.ready) || oldProbeLog.state.failure != nil || newProbeLog.state.failure != nil }
+        XCTAssertNil(oldProbeLog.state.failure); XCTAssertNil(newProbeLog.state.failure)
+        let colours: [OutputColour] = [.init(red: 1), .chromaGreen, .init(blue: 1),
+            .init(red: 1, green: 1, blue: 1), .black, .init(red: 0.5, green: 0.5, blue: 0.5), .init(red: 1, alpha: 0.5), .init(blue: 1, alpha: 0.5)]
+        var receiveRevision: UInt64 = 0
+        for (index, colour) in colours.enumerated() {
+            let revision = UInt64(index + 1)
+            baseline.renderMedia(.init(request: .init(generation: oldID, revision: revision, colour: colour), foreground: nil, background: nil))
+            sender.renderMedia(.init(request: .init(generation: newID, revision: revision, colour: colour), foreground: nil, background: nil))
+            try await until("comparison render") { (oldLog.state.renderedRevision == revision && newLog.state.renderedRevision == revision) || oldLog.state.failure != nil || newLog.state.failure != nil }
+            let expected = [colour.blue, colour.green, colour.red, colour.alpha].map { Int(($0 * 255).rounded()) }
+            var matched = false
+            var lastBefore: [Int] = [], lastAfter: [Int] = []
+            for _ in 0..<25 {
+                receiveRevision += 1
+                oldProbe.render(request(oldProbeID, revision: receiveRevision)); newProbe.render(request(newProbeID, revision: receiveRevision))
+                try await until("comparison decoded pictures") {
+                    (oldProbeLog.state.revision == receiveRevision && newProbeLog.state.revision == receiveRevision)
+                        || oldProbeLog.state.failure != nil || newProbeLog.state.failure != nil
+                }
+                let a = try XCTUnwrap(oldProbeLog.state.picture).corner, b = try XCTUnwrap(newProbeLog.state.picture).corner
+                let before = [a.0, a.1, a.2, a.3].map(Int.init), after = [b.0, b.1, b.2, b.3].map(Int.init)
+                lastBefore = before; lastAfter = after
+                // The SDK's BGRA conversion is approximate (notably saturated
+                // blue). Require opaque output close to the source and alpha
+                // output at least as accurate as the old path.
+                // The installed SDK's alpha-bearing blue conversion is also
+                // approximate for UYVA (242 vs 239 for BGRA from a 255 source).
+                // Exact packed GPU values are checked by NDIPackedVideoTests.
+                let receiverTolerance = colour.alpha < 1 ? 20 : 5
+                if zip(before, expected).allSatisfy({ abs($0.0 - $0.1) <= 20 }) && zip(after, expected).allSatisfy({ abs($0.0 - $0.1) <= receiverTolerance }) {
+                    for channel in 0..<4 {
+                        XCTAssertLessThanOrEqual(abs(after[channel] - expected[channel]), abs(before[channel] - expected[channel]) + 2,
+                            "GPU conversion must preserve or improve source colour/alpha accuracy for palette \(index)")
+                    }
+                    matched = true; break
+                }
+            }
+            print("NDI palette \(index): expected \(expected), BGRA \(lastBefore), GPU YUV \(lastAfter)")
+            XCTAssertTrue(matched, "Both receivers must reach palette entry \(index): expected \(expected), BGRA \(lastBefore), GPU YUV \(lastAfter)")
+        }
+        // Drive both compositors with the same changing full-frame texture;
+        // measure complete helper CPU as well as GPU and async SDK call times.
+        let texture = try XCTUnwrap(IOSurface(properties: [.width: 320, .height: 180,
+            .bytesPerElement: 4, .bytesPerRow: 1280, .allocSize: 1280 * 180, .pixelFormat: 0x42475241]))
+        let pixels = texture.baseAddress.assumingMemoryBound(to: UInt8.self)
+        for y in 0..<180 {
+            for x in 0..<320 {
+                let offset = y * 1280 + x * 4
+                pixels[offset] = UInt8((x ^ y) & 255); pixels[offset + 1] = UInt8(y * 255 / 179)
+                pixels[offset + 2] = UInt8(x * 255 / 319); pixels[offset + 3] = 255
+            }
+        }
+        let resource = NDIFrameResource(surface: texture)
+        let oldCPU = oldLog.state.status?.processCPUSeconds ?? 0, newCPU = newLog.state.status?.processCPUSeconds ?? 0
+        let started = ProcessInfo.processInfo.systemUptime
+        var oldSamples: [NDIHelperStatus] = [], newSamples: [NDIHelperStatus] = []
+        for index in 0..<90 {
+            let revision = UInt64(100 + index), dimming = Double(index % 17) / 50
+            baseline.renderMedia(.init(request: .init(generation: oldID, revision: revision,
+                background: true, backgroundFill: true, dimming: dimming, colour: .init(alpha: 0)), foreground: nil, background: resource))
+            sender.renderMedia(.init(request: .init(generation: newID, revision: revision,
+                background: true, backgroundFill: true, dimming: dimming, colour: .init(alpha: 0)), foreground: nil, background: resource))
+            if index.isMultiple(of: 8), let a = oldLog.state.status, let b = newLog.state.status { oldSamples.append(a); newSamples.append(b) }
+            try await Task.sleep(for: .milliseconds(33))
+        }
+        try await until("comparison rate measurements", timeout: 5) {
+            (oldLog.state.status?.effectiveFramesPerSecond ?? 0) >= 27 && (newLog.state.status?.effectiveFramesPerSecond ?? 0) >= 27
+        }
+        let a = try XCTUnwrap(oldLog.state.status), b = try XCTUnwrap(newLog.state.status)
+        XCTAssertEqual(a.videoFormat, .bgra); XCTAssertEqual(b.videoFormat, .uyva)
+        XCTAssertLessThanOrEqual(b.surfacePoolHighWaterMark, 4)
+        func median(_ values: [Double]) -> Double { let sorted = values.sorted(); return sorted[sorted.count / 2] }
+        let elapsed = ProcessInfo.processInfo.systemUptime - started
+        let cpuA = ((a.processCPUSeconds ?? oldCPU) - oldCPU) / elapsed * 100
+        let cpuB = ((b.processCPUSeconds ?? newCPU) - newCPU) / elapsed * 100
+        let measurement = "BGRA: median GPU \(median(oldSamples.map(\.gpuMilliseconds))) ms, median SDK \(median(oldSamples.map(\.submissionMilliseconds))) ms, \(a.effectiveFramesPerSecond ?? 0) fps, helper CPU \(cpuA)% of one core; "
+            + "GPU YUV: median GPU \(median(newSamples.map(\.gpuMilliseconds))) ms, median SDK \(median(newSamples.map(\.submissionMilliseconds))) ms, \(b.effectiveFramesPerSecond ?? 0) fps, helper CPU \(cpuB)% of one core. "
+            + "SDK input bytes/frame: \(NDIVideoPixelFormat.bgra.byteCount) BGRA, \(NDIVideoPixelFormat.uyva.byteCount) UYVA, \(NDIVideoPixelFormat.uyvy.byteCount) UYVY."
+        let attachment = XCTAttachment(string: measurement); attachment.name = "NDI GPU conversion comparison"; attachment.lifetime = .keepAlways
+        add(attachment)
+        print(measurement)
+        XCTAssertNil(oldLog.state.failure); XCTAssertNil(newLog.state.failure)
+        XCTAssertNil(oldProbeLog.state.failure); XCTAssertNil(newProbeLog.state.failure)
     }
 
     func testNDIOnlyVideoUsesSharedPlayerAndSurvivesNativeDestinationClose() async throws {
@@ -322,6 +615,8 @@ final class NDISDKIntegrationTests: XCTestCase {
 private final class NDIEventLog: @unchecked Sendable {
     struct State {
         var ready = false, exited = false
+        var generation: UUID?
+        var readyCount = 0
         var failure: String?
         var status: NDIHelperStatus?
         var revision: UInt64 = 0, renderedRevision: UInt64 = 0
@@ -331,16 +626,26 @@ private final class NDIEventLog: @unchecked Sendable {
     }
     struct Picture {
         var corner: (UInt8, UInt8, UInt8, UInt8)
-        var hasGlyph = false, hasStraightEdge = false, isGreen = true, isBlack = true
+        var left: (UInt8, UInt8, UInt8, UInt8)
+        var right: (UInt8, UInt8, UInt8, UInt8)
+        var minimumAlpha: UInt8 = 255, maximumAlpha: UInt8 = 0
+        var whiteGlyphs = 0
+        var hasGlyph = false, hasStraightEdge = false, isGreen = true, isBlack = true, isMagenta = true
         init(_ surface: IOSurface) {
             _ = surface.lock(options: .readOnly, seed: nil)
             defer { _ = surface.unlock(options: .readOnly, seed: nil) }
             let p = surface.baseAddress.assumingMemoryBound(to: UInt8.self)
             corner = (p[0], p[1], p[2], p[3])
+            let leftOffset = 540 * surface.bytesPerRow + 480 * 4, rightOffset = 540 * surface.bytesPerRow + 1440 * 4
+            left = (p[leftOffset], p[leftOffset + 1], p[leftOffset + 2], p[leftOffset + 3])
+            right = (p[rightOffset], p[rightOffset + 1], p[rightOffset + 2], p[rightOffset + 3])
             for i in stride(from: 0, to: surface.allocationSize, by: 4) {
+                minimumAlpha = min(minimumAlpha, p[i+3]); maximumAlpha = max(maximumAlpha, p[i+3])
+                if p[i] > 220 && p[i+1] > 220 && p[i+2] > 220 && p[i+3] > 200 { whiteGlyphs += 1 }
                 if p[i+3] > 0 { hasGlyph = true }
                 if p[i+3] > 5 && p[i+3] < 230 && p[i] > 235 { hasStraightEdge = true }
                 if p[i] > 10 || p[i+1] < 245 || p[i+2] > 10 || p[i+3] < 250 { isGreen = false }
+                if p[i] < 245 || p[i+1] > 10 || p[i+2] < 245 || p[i+3] < 250 { isMagenta = false }
                 if p[i] > 10 || p[i+1] > 10 || p[i+2] > 10 || p[i+3] < 250 { isBlack = false }
             }
         }
@@ -351,7 +656,7 @@ private final class NDIEventLog: @unchecked Sendable {
     func record(_ event: NDIHelperSupervisor.Event) {
         lock.lock(); defer { lock.unlock() }
         switch event {
-        case .ready: stored.ready = true
+        case .ready(let generation): stored.ready = true; stored.generation = generation; stored.readyCount += 1
         case .audio(_, let audio): stored.audio = audio
         case .frame(_, let revision, let surface): stored.revision = revision; stored.picture = Picture(surface)
         case .rendered(_, let revision): stored.renderedRevision = revision

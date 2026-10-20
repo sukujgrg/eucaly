@@ -6,6 +6,61 @@ import AVFoundation
 
 @MainActor
 final class NDIWorkspaceTransferTests: XCTestCase {
+    func testRapidWorkspaceAndTransparencyChangesKeepTheLatestCanvasAndOtherSource() async throws {
+        let log = SenderFactory(), router = NDIOutputRouter(senderFactory: { log.make($0) })
+        let store = OutputProfileStore(), homeID = OutputWorkspaceRecord.primaryID
+        let onlineID = try XCTUnwrap(store.addWorkspace(name: "Online"))
+        var moving = OutputDestinationConfiguration(name: "Moving", profileID: OutputProfile.audienceID, monitor: nil)
+        moving.ndi = .init(sourceName: "Moving")
+        var stationary = OutputDestinationConfiguration(name: "Stationary", profileID: OutputProfile.audienceID, monitor: nil, workspaceID: onlineID)
+        stationary.ndi = .init(sourceName: "Stationary")
+        store.edit { $0.destinations = [moving, stationary] }
+        store.editDestinationProfile(moving.id) { $0.background.colour = .chromaGreen }
+        let outputs = OutputCoordinator(profiles: store, displays: ProjectionDisplayManager(displays: { [] }), retainsPreparedSessions: true, ndi: router)
+        let home = outputs.session(workspace: homeID), online = outputs.session(workspace: onlineID)
+        defer { outputs.stopAllOutputs() }
+        home.setSlides(LyricsParser.parseDocument("Verse\nHome · தமிழ்").slides)
+        online.setSlides(LyricsParser.parseDocument("Verse\nOnline · Ελληνικά").slides)
+        home.showSlides(); online.showSlides()
+        try await until { log.senders.count == 2 && log.senders.allSatisfy { !$0.submissions.isEmpty } }
+        let sender = try XCTUnwrap(log.senders.first { $0.name == "Moving" })
+        let other = try XCTUnwrap(log.senders.first { $0.name == "Stationary" })
+        let generation = sender.generation, otherGeneration = other.generation
+        let originalStationary = try XCTUnwrap(outputs.destination(stationary.id))
+        let originalProfile = try XCTUnwrap(outputs.profile(for: stationary.id))
+        for checkpoint in 0..<8 {
+            let homeOwnsOutput = checkpoint.isMultiple(of: 2)
+            let mode: NDIOutputSettings.KeyMode = checkpoint % 4 < 2 ? .alpha : .chroma
+            let target = homeOwnsOutput ? home : online, previous = homeOwnsOutput ? online : home
+            let colour: OutputColour = checkpoint < 4 ? .chromaGreen : .init(red: 1, blue: 1)
+            store.editDestinationProfile(moving.id) { $0.background.colour = colour }
+            for step in 0..<12 {
+                var settings = try XCTUnwrap(outputs.destination(moving.id)?.ndi)
+                settings.keyMode = step.isMultiple(of: 2) ? (mode == .alpha ? .chroma : .alpha) : mode
+                XCTAssertNil(store.setNDISettings(settings, for: moving.id))
+                XCTAssertTrue(outputs.moveOutput(moving.id, to: step.isMultiple(of: 2) ? previous : target))
+                await Task.yield()
+            }
+            let text = homeOwnsOutput ? "Home · தமிழ்" : "Online · Ελληνικά"
+            let canvas: OutputColour = mode == .alpha ? .init(alpha: 0) : colour
+            try await until { sender.submissions.last?.request.text?.text.components.first?.text == text && sender.submissions.last?.request.colour == canvas }
+            XCTAssertEqual(sender.submissions.last?.request.colour, canvas)
+            XCTAssertEqual(outputs.destination(moving.id)?.workspaceID, homeOwnsOutput ? homeID : onlineID)
+            XCTAssertEqual(outputs.destination(moving.id)?.ndi?.sourceID, moving.ndi?.sourceID)
+            XCTAssertEqual(other.submissions.last?.request.text?.text.components.first?.text, "Online · Ελληνικά")
+            XCTAssertTrue(other.submissions.allSatisfy { $0.request.colour.alpha == 0 && $0.request.contentEpoch == 1 })
+            XCTAssertEqual(outputs.destination(stationary.id), originalStationary)
+            XCTAssertEqual(outputs.profile(for: stationary.id), originalProfile)
+        }
+        XCTAssertEqual(log.senders.count, 2)
+        for (value, original) in [(sender, generation), (other, otherGeneration)] {
+            XCTAssertEqual(value.generation, original); XCTAssertEqual(value.starts, 1); XCTAssertEqual(value.stops, 0)
+            XCTAssertTrue(zip(value.submissions, value.submissions.dropFirst()).allSatisfy { $0.request.revision < $1.request.revision })
+        }
+        XCTAssertGreaterThan(sender.submissions.last?.request.contentEpoch ?? 0, 80)
+        outputs.stopAllOutputs(); await router.shutdown()
+    }
+
     func testToolbarMovesLiveNDIBetweenSharedAndSeparateCurrentUsingTheSameSender() async throws {
         let log = SenderFactory(), router = NDIOutputRouter(senderFactory: { log.make($0) })
         let monitor = ProjectionMonitor(id: 1, identity: UUID().uuidString, name: "Audience", frame: .init(x: 0, y: 0, width: 1920, height: 1080))
