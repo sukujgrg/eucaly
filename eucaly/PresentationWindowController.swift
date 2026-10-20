@@ -93,6 +93,10 @@ final class PresentationSession: NSObject, ObservableObject {
     }
     private var backgroundAudioGeneration = UUID()
     private var backgroundAudioPlayer: AVPlayer?
+    let backgroundAudioGain = ProgramAudioGain()
+    // An explicit Play without an NDI route may request standalone local
+    // music. Output transfers/closure never create that request implicitly.
+    private(set) var backgroundAudioHasStandaloneLocalRoute = false
     var programBackgroundAudioPlayer: AVPlayer? { backgroundAudioPlayer }
     private var backgroundAudioEndObserver: NSObjectProtocol?
     private var backgroundAudioTimeObserver: Any?
@@ -446,6 +450,7 @@ final class PresentationSession: NSObject, ObservableObject {
 
     func playBackgroundAudio() {
         guard outputCoordinator.profiles.document.workspaces.contains(where: { $0.id == outputSourceID }) else { return }
+        backgroundAudioHasStandaloneLocalRoute = outputCoordinator.canPlayStandaloneBackgroundAudio(workspace: outputSourceID)
         outputCoordinator.claimBackgroundAudio(self)
         backgroundAudioGeneration = UUID()
         configureBackgroundAudioEndObserver()
@@ -456,6 +461,7 @@ final class PresentationSession: NSObject, ObservableObject {
             }
             return
         }
+        outputCoordinator.refreshMedia()
         player.play()
         backgroundAudioPlaybackState = .playing
     }
@@ -479,6 +485,7 @@ final class PresentationSession: NSObject, ObservableObject {
         stopBackgroundAudioPlayback()
         removeBackgroundAudioTimeObserver()
         backgroundAudioPlayer = nil
+        backgroundAudioHasStandaloneLocalRoute = false
         audioResourceScope?.stopAccessingSecurityScopedResource(); audioResourceScope = nil
         backgroundAudioURL = nil
         playbackProgress.resetBackgroundAudio()
@@ -492,7 +499,13 @@ final class PresentationSession: NSObject, ObservableObject {
     func setBackgroundAudioVolume(_ volume: Double) {
         let clamped = min(max(volume, 0.0), 1.0)
         backgroundAudioVolume = clamped
-        backgroundAudioPlayer?.volume = Float(clamped)
+        backgroundAudioGain.set(Float(clamped))
+        updateBackgroundAudioLocalPlayback(enabled: outputCoordinator.localBackgroundAudioEnabled(workspace: outputSourceID))
+        outputCoordinator.refreshMedia()
+    }
+
+    func updateBackgroundAudioLocalPlayback(enabled: Bool) {
+        backgroundAudioPlayer?.volume = enabled ? Float(backgroundAudioVolume) : 0
     }
 
     func seekBackgroundAudio(to time: Double) {
@@ -524,14 +537,17 @@ final class PresentationSession: NSObject, ObservableObject {
         audioResourceScope?.stopAccessingSecurityScopedResource(); audioResourceScope = nil
         guard let url else { return }
         if url.startAccessingSecurityScopedResource() { audioResourceScope = url }
+        backgroundAudioHasStandaloneLocalRoute = autoplay && outputCoordinator.canPlayStandaloneBackgroundAudio(workspace: outputSourceID)
         if autoplay { outputCoordinator.claimBackgroundAudio(self) }
 
         let player = AVPlayer(url: url)
-        player.volume = Float(backgroundAudioVolume)
+        backgroundAudioGain.set(Float(backgroundAudioVolume))
+        player.volume = outputCoordinator.localBackgroundAudioEnabled(workspace: outputSourceID) ? Float(backgroundAudioVolume) : 0
         backgroundAudioPlayer = player
         configureBackgroundAudioEndObserver()
         configureBackgroundAudioTimeObserver()
         refreshBackgroundAudioProgress()
+        outputCoordinator.refreshMedia()
         if autoplay {
             player.play()
             backgroundAudioPlaybackState = .playing

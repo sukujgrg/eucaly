@@ -15,9 +15,19 @@ typedef struct {
     mach_msg_max_trailer_t trailer;
 } Envelope;
 
+static void destroy_unsent(mach_msg_header_t *message, mach_msg_return_t result) {
+    // Timeout pseudo-receives copied rights back into this task. Freeing only
+    // the bytes leaks those new references, including IOSurface capabilities.
+    // Match libsyscall's recoverable-send cases; other errors may have already
+    // partially consumed the message. COPY_SEND inputs retain caller ownership.
+    if (result == MACH_SEND_TIMED_OUT || result == MACH_SEND_INTERRUPTED || result == MACH_SEND_INVALID_DEST) {
+        mach_msg_destroy(message);
+    }
+}
+
 mach_port_t eucaly_mach_port_create(void) {
     mach_port_t p = MACH_PORT_NULL;
-    mach_port_options_t options = { .flags = MPO_INSERT_SEND_RIGHT, .mpl = { .mpl_qlimit = 4 } };
+    mach_port_options_t options = { .flags = MPO_INSERT_SEND_RIGHT | MPO_QLIMIT, .mpl = { .mpl_qlimit = 4 } };
     if (mach_port_construct(mach_task_self(), &options, 0, &p) != KERN_SUCCESS) return MACH_PORT_NULL;
     return p;
 }
@@ -86,15 +96,29 @@ int eucaly_mach_send(mach_port_t destination, const void *data, uint32_t count,
     // Zero timeout: IPC backpressure is a bounded failure, never a UI wait.
     int result = mach_msg(&m->header, MACH_SEND_MSG | MACH_SEND_TIMEOUT,
                          m->header.msgh_size, 0, MACH_PORT_NULL, 0, MACH_PORT_NULL);
+    destroy_unsent(&m->header, result);
     free(m); return result;
+}
+void eucaly_mach_receive_wake(mach_port_t port) {
+    mach_msg_header_t message = {0};
+    message.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0);
+    message.msgh_size = sizeof(message);
+    message.msgh_remote_port = port;
+    // A cancellation wake needs no payload or transferred rights. A full port
+    // already has a message to wake its reader, so a zero-timeout failure is safe.
+    int result = mach_msg(&message, MACH_SEND_MSG | MACH_SEND_TIMEOUT, sizeof(message), 0,
+                         MACH_PORT_NULL, 0, MACH_PORT_NULL);
+    destroy_unsent(&message, result);
 }
 int eucaly_mach_receive(mach_port_t port, void *data, uint32_t capacity, uint32_t *count,
                        mach_port_t *first, mach_port_t *second, int32_t *pid) {
     Envelope *m = calloc(1, sizeof(Envelope));
     if (!m) return KERN_RESOURCE_SHORTAGE;
-    int result = mach_msg(&m->header, MACH_RCV_MSG | MACH_RCV_TIMEOUT
+    int result = mach_msg(&m->header, MACH_RCV_MSG
         | MACH_RCV_TRAILER_TYPE(MACH_MSG_TRAILER_FORMAT_0) | MACH_RCV_TRAILER_ELEMENTS(MACH_RCV_TRAILER_AUDIT),
-        0, sizeof(Envelope), port, 100, MACH_PORT_NULL);
+        // Only the mailbox's dedicated thread blocks here. Cancellation sends
+        // a wake; the reader owns destruction after its last callback returns.
+        0, sizeof(Envelope), port, 0, MACH_PORT_NULL);
     if (result != KERN_SUCCESS) { free(m); return result; }
     size_t base = offsetof(Envelope, data), size = m->header.msgh_size;
     if (!(m->header.msgh_bits & MACH_MSGH_BITS_COMPLEX) || m->header.msgh_id != 0x45554331

@@ -181,6 +181,33 @@ final class OutputCoordinator: ObservableObject {
     }
     func destination(_ id: UUID) -> OutputDestinationConfiguration? { profiles.document.destinations.first { $0.id == id } }
     func destinations(workspace: UUID) -> [OutputDestinationConfiguration] { profiles.document.destinations.filter { $0.workspaceID == workspace } }
+    func monitorAudioLocally(workspace: UUID) -> Bool {
+        profiles.document.workspaces.first { $0.id == workspace }?.monitorAudioLocally ?? false
+    }
+    func setMonitorAudioLocally(_ enabled: Bool, workspace: UUID) {
+        guard profiles.recoveryNotice == nil, monitorAudioLocally(workspace: workspace) != enabled,
+              profiles.document.workspaces.contains(where: { $0.id == workspace }) else { return }
+        profiles.edit { document in
+            if let index = document.workspaces.firstIndex(where: { $0.id == workspace }) {
+                document.workspaces[index].monitorAudioLocally = enabled
+            }
+        }
+        // This is an audio-level edit, never a presentation/ownership command.
+        // Do not accept snapshots, start outputs, seek or recreate players.
+        refreshMedia()
+    }
+    func localBackgroundAudioEnabled(workspace: UUID) -> Bool {
+        let rows = destinations(workspace: workspace)
+        return monitorAudioLocally(workspace: workspace)
+            || rows.contains { $0.enabled && $0.isMonitorDestination && windows[$0.id] != nil }
+            // Retain explicit standalone local music. A saved NDI music route
+            // never falls back to local speakers when its sender stops/moves.
+            || (programs[workspace]?.session?.backgroundAudioHasStandaloneLocalRoute == true
+                && canPlayStandaloneBackgroundAudio(workspace: workspace))
+    }
+    func canPlayStandaloneBackgroundAudio(workspace: UUID) -> Bool {
+        profiles.document.backgroundAudioDestinationID == nil && !destinations(workspace: workspace).contains { $0.ndi != nil }
+    }
     func profile(for destination: UUID) -> OutputProfile? { self.destination(destination).flatMap { profiles.profile($0.profileID) } }
     func snapshot(for destination: UUID) -> OutputContentSnapshot {
         self.destination(destination)?.workspaceID.flatMap { programs[$0]?.snapshot } ?? .init(visible: false)
@@ -544,8 +571,10 @@ final class OutputCoordinator: ObservableObject {
         let rows = destinations(workspace: state.id)
         let live = rows.filter { isOpen($0.id) }
         let playbackReady = live.contains { $0.isMonitorDestination || ndi.state($0.id) != .starting }
+        state.session?.updateBackgroundAudioLocalPlayback(enabled: localBackgroundAudioEnabled(workspace: state.id))
         state.media.updateProgram(slide: state.snapshot.localMedia, session: state.session,
-            running: state.started && !live.isEmpty, visible: state.snapshot.visible && playbackReady)
+            running: state.started && !live.isEmpty, visible: state.snapshot.visible && playbackReady,
+            localAudioEnabled: monitorAudioLocally(workspace: state.id) || live.contains { $0.isMonitorDestination })
         let active = Set(live.map(\.profileID))
         let workspaceID = state.id
         state.media.syncBackgrounds(profiles: profiles.document.profiles.filter { active.contains($0.id) }, visible: state.snapshot.visible,

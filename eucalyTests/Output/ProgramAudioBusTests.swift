@@ -4,6 +4,152 @@ import AVFoundation
 
 @MainActor
 final class ProgramAudioBusTests: XCTestCase {
+    func testLocalSilenceAndMonitorTogglesPreserveIndependentProgramAudio() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("program-audio-monitor-\(UUID()).caf")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2))
+        do {
+            let file = try AVAudioFile(forWriting: url, settings: format.settings)
+            let pcm = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 480000))
+            pcm.frameLength = 480000
+            for channel in 0..<2 { for i in 0..<480000 {
+                pcm.floatChannelData![channel][i] = Float(sin(Double(i) * 2 * .pi * 440 / 48000)) * 0.05
+            } }
+            try file.write(from: pcm)
+        }
+        let received = RecordedProgramAudio(), bus = ProgramAudioBus { received.offer(.audio($0, $1)) }
+        let player = AVPlayer(url: url), gain = ProgramAudioGain()
+        gain.set(0.25)
+        player.volume = 0 // Quiet before first playback, even while the tap prepares.
+        let tap = PlayerAudioTap(player: player, mixer: bus, programGain: gain)
+        defer { tap.stop(); player.pause(); bus.stop(); received.finish() }
+        let deadline = ProcessInfo.processInfo.systemUptime + 5
+        while player.currentItem?.audioMix == nil || player.status != .readyToPlay {
+            guard ProcessInfo.processInfo.systemUptime < deadline else { return XCTFail("Monitoring fixture did not become ready") }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let ready = await player.preroll(atRate: 1)
+        XCTAssertTrue(ready)
+        bus.start(at: CMClockGetTime(CMClockGetHostTimeClock())); player.play()
+        try await Task.sleep(for: .milliseconds(300)); _ = received.drain()
+        var lastSample: Int64?
+        for localVolume: Float in [0, 0.001, 0, 0.001, 0] {
+            player.volume = localVolume; tap.refresh()
+            try await Task.sleep(for: .milliseconds(200))
+            let blocks = received.drain().compactMap { sample -> (AVAudioPCMBuffer, AVAudioTime)? in
+                guard case .audio(let pcm, let time) = sample else { return nil }; return (pcm, time)
+            }
+            XCTAssertGreaterThan(blocks.count, 4)
+            for (pcm, time) in blocks {
+                if let lastSample { XCTAssertEqual(time.sampleTime - lastSample, 960) }
+                lastSample = time.sampleTime
+                let samples = UnsafeBufferPointer(start: try XCTUnwrap(pcm.floatChannelData?[0]), count: Int(pcm.frameLength))
+                let rms = sqrt(samples.reduce(0.0) { $0 + Double($1 * $1) } / Double(samples.count))
+                XCTAssertEqual(rms, 0.05 * 0.25 / sqrt(2), accuracy: 0.0003,
+                    "Local output gain must not scale or interrupt the transmitted programme")
+            }
+        }
+        gain.set(0); tap.refresh()
+        try await Task.sleep(for: .milliseconds(100)); _ = received.drain()
+        try await Task.sleep(for: .milliseconds(100))
+        for sample in received.drain() {
+            guard case .audio(let pcm, _) = sample else { continue }
+            XCTAssertTrue((0..<Int(pcm.frameLength)).allSatisfy { pcm.floatChannelData![0][$0] == 0 })
+        }
+        gain.set(0.25); tap.refresh()
+        try await Task.sleep(for: .milliseconds(100)); _ = received.drain()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(received.drain().contains { sample in
+            guard case .audio(let pcm, _) = sample else { return false }
+            return (0..<Int(pcm.frameLength)).contains { abs(pcm.floatChannelData![0][$0]) > 0.01 }
+        }, "Programme unmute must restore NDI audio while the Mac remains silent")
+        XCTAssertEqual(player.volume, 0)
+    }
+
+    func testAudioTimerCatchesUpWithoutAccumulatingTimestampDelay() async throws {
+        let recorded = RecordedProgramAudio(), bus = ProgramAudioBus { recorded.offer(.audio($0, $1)) }
+        defer { bus.stop(); recorded.finish() }
+        let now = CMClockGetTime(CMClockGetHostTimeClock())
+        // Simulate timer callbacks starting 100 ms late. A continuous clock
+        // must recover that scheduling delay, rather than carrying it forever.
+        bus.start(at: now - CMTime(value: 4800, timescale: 48000))
+        try await Task.sleep(for: .milliseconds(180))
+        let times = recorded.drain().compactMap { value -> Int64? in
+            guard case .audio(_, let time) = value else { return nil }
+            return time.sampleTime
+        }
+        let last = try XCTUnwrap(times.last)
+        for (a, b) in zip(times, times.dropFirst()) { XCTAssertEqual(b - a, 960) }
+        let current = CMClockGetTime(CMClockGetHostTimeClock()).convertScale(48000, method: .roundHalfAwayFromZero).value
+        let lag = Double(current - last - 960) / 48000
+        print("Audio scheduling lag: \(lag)s")
+        XCTAssertLessThan(lag, 0.06, "Coalesced callbacks must not leave the audio clock progressively behind video")
+    }
+
+    func testLateJoiningOutputReceivesAudioAlreadyDecodedByTheSharedTap() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("program-audio-late-join-\(UUID()).caf")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2))
+        do {
+            let file = try AVAudioFile(forWriting: url, settings: format.settings)
+            let pcm = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 192000))
+            pcm.frameLength = 192000
+            for channel in 0..<2 { for i in 0..<192000 {
+                pcm.floatChannelData![channel][i] = Float(sin(Double(i) * 2 * .pi * 440 / 48000)) * 0.05
+            } }
+            try file.write(from: pcm)
+        }
+        let firstAudio = RecordedProgramAudio(), joinedAudio = RecordedProgramAudio()
+        let a = ProgramAudioBus { firstAudio.offer(.audio($0, $1)) }
+        let b = ProgramAudioBus { joinedAudio.offer(.audio($0, $1)) }
+        let player = AVPlayer(url: url); player.volume = 0.001
+        let first = PlayerAudioTap(player: player, mixer: a)
+        defer { first.stop(); player.pause(); a.stop(); b.stop(); firstAudio.finish(); joinedAudio.finish() }
+        let deadline = ProcessInfo.processInfo.systemUptime + 5
+        while player.currentItem?.audioMix == nil || player.status != .readyToPlay {
+            guard ProcessInfo.processInfo.systemUptime < deadline else { return XCTFail("Audio fixture did not become ready") }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let prerolled = await player.preroll(atRate: 1)
+        XCTAssertTrue(prerolled)
+        a.start(at: CMClockGetTime(CMClockGetHostTimeClock())); player.play()
+        try await Task.sleep(for: .milliseconds(400))
+        // The joining mixer may still be draining setup/conversion work.
+        // Reject its first replay batch, then ensure the shared tap retries
+        // that same unplayed preroll after admission opens again.
+        let blocked = expectation(description: "Joining mixer is occupied")
+        let resume = DispatchSemaphore(value: 0)
+        defer { resume.signal() }
+        b.updateDelivery { blocked.fulfill(); _ = resume.wait(timeout: .now() + 3) }
+        await fulfillment(of: [blocked], timeout: 2)
+        let filler = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1))
+        filler.frameLength = 1
+        for channel in 0..<2 { filler.floatChannelData![channel][0] = 0 }
+        let silentInput = UUID()
+        for _ in 0..<8 { b.append([(filler, .zero)], id: silentInput) }
+        let joined = PlayerAudioTap(player: player, mixer: b)
+        defer { joined.stop() }
+        b.start(at: CMClockGetTime(CMClockGetHostTimeClock()))
+        resume.signal()
+        try await Task.sleep(for: .milliseconds(80)); _ = joinedAudio.drain()
+        var total = 0, silent = 0
+        for _ in 0..<20 {
+            first.refresh(); joined.refresh()
+            try await Task.sleep(for: .milliseconds(20))
+            for sample in joinedAudio.drain() {
+                guard case .audio(let pcm, _) = sample, let channel = pcm.floatChannelData?[0] else { continue }
+                for i in 0..<Int(pcm.frameLength) {
+                    total += 1
+                    if abs(channel[i]) < 0.0000001 { silent += 1 }
+                }
+            }
+        }
+        print("Late audio join: total=\(total), silent=\(silent)")
+        XCTAssertGreaterThan(total, 12000)
+        XCTAssertLessThan(Double(silent) / Double(max(1, total)), 0.02,
+            "A new output must receive still-unplayed PCM already decoded for the existing output")
+    }
+
     func testLiveFileAudioTapReachesTwoMediaOutputsAndRetiresCleanly() async throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("program-audio-audio-\(UUID()).caf")
         defer { try? FileManager.default.removeItem(at: url) }

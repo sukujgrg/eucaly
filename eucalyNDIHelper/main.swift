@@ -7,13 +7,13 @@ final class HelperService: @unchecked Sendable {
     private let generation: UUID
     private let parentPID: Int32
     private let configuration: NDIHelperConfiguration
-    private let queue = DispatchQueue(label: "com.suku.eucaly.ndi.helper-control")
-    private let worker = DispatchQueue(label: "com.suku.eucaly.ndi.prototype-submission")
+    private let queue = DispatchQueue(label: "com.suku.eucaly.ndi.helper-control", qos: .userInitiated)
+    private let worker = DispatchQueue(label: "com.suku.eucaly.ndi.prototype-submission", qos: .userInitiated)
     private var control: NDIMachMailbox?
+    private var audio: NDIMachMailbox?
     private var peer: NDIMachMessage?
     private var busy = false
-    private var audioBusy = false
-    private var lastAudioSample: Int64?
+    private let audioInput = NDIAudioInput()
     private var lastRevision: UInt64 = 0
     private var contentEpoch: UInt64 = 0
     @MainActor private var composedText: NDITextRenderRequest?
@@ -24,6 +24,7 @@ final class HelperService: @unchecked Sendable {
     private var fault = ""
     private var sender: NDISubmissionWorker?
     private var statusTimer: DispatchSourceTimer?
+    private var liveActivity: NSObjectProtocol?
     #if DEBUG
     private var probe: NDIRuntime? // Confined to worker.
     #endif
@@ -35,18 +36,27 @@ final class HelperService: @unchecked Sendable {
     }
 
     func start(parentPort: mach_port_t) throws {
-        control = try NDIMachMailbox(label: "com.suku.eucaly.ndi.helper-inbox") { [weak self] message in
+        control = try NDIMachMailbox(label: "com.suku.eucaly.ndi.helper-inbox", queue: queue) { [weak self] message in
+            self?.receive(message)
+        }
+        audio = try NDIMachMailbox(label: "com.suku.eucaly.ndi.helper-audio-inbox") { [weak self] message in
             guard let self else { return }
-            self.queue.sync { self.receive(message) }
+            audioInput.receive(message, generation: generation, parentPID: parentPID) { [weak self] reason in
+                self?.queue.async { [weak self] in self?.fail(reason) }
+            }
         }
         guard NDIMachMailbox.send(.init(kind: .hello, generation: generation), to: parentPort,
-                                  first: control!.port) else { throw NDIHelperWire.Failure.unavailable }
+                                  first: control!.port, second: audio!.port) else { throw NDIHelperWire.Failure.unavailable }
     }
 
     private func receive(_ message: NDIMachMessage) {
         // senderPID comes from the kernel audit trailer, never the JSON payload.
         guard message.senderPID == parentPID, message.packet.generation == generation else { return }
         let packet = message.packet
+        #if DEBUG
+        NDIAudioTrace.record("control-start-\(packet.kind.rawValue)", sample: packet.audio?.sampleTime ?? 0, generation: generation)
+        defer { NDIAudioTrace.record("control-end-\(packet.kind.rawValue)", sample: packet.audio?.sampleTime ?? 0, generation: generation) }
+        #endif
         guard packet.version == NDIHelperWire.version, packet.build == NDIHelperWire.build else { _exit(65) }
         if stopping {
             if shutdownComplete, packet.kind == .shutdownAccepted, message.first == 0, message.second == 0 { _exit(0) }
@@ -60,9 +70,14 @@ final class HelperService: @unchecked Sendable {
         switch packet.kind {
         case .route:
             guard packet.contentEpoch >= contentEpoch else { return }
-            if packet.contentEpoch != contentEpoch {
-                contentEpoch = packet.contentEpoch; lastAudioSample = nil
-                sender?.selectContent(epoch: contentEpoch)
+            let epoch = packet.contentEpoch
+            contentEpoch = epoch
+            if let sender {
+                sender.selectContent(epoch: epoch) { [weak self] in
+                    self?.queue.async { [weak self] in self?.acknowledgeRoute(epoch) }
+                }
+            } else {
+                acknowledgeRoute(epoch)
             }
         case .render:
             guard let request = packet.request, request.isValid, request.generation == generation,
@@ -93,56 +108,69 @@ final class HelperService: @unchecked Sendable {
             renderMedia(request, foreground: foreground, background: background)
         case .ping:
             pong(packet.token)
-        case .audio:
-            guard let sender, let block = packet.audio, block.isValid, !audioBusy else { fail("Invalid audio block"); return }
-            if packet.contentEpoch != contentEpoch {
-                if let peer { _ = NDIMachMailbox.send(.init(kind: .audioAccepted, generation: generation, revision: UInt64(block.sampleTime)), to: peer.first) }
-                return
-            }
-            if let lastAudioSample, block.sampleTime != lastAudioSample + Int64(NDIAudioBlock.samples) {
-                fail("NDI audio discontinuity. Choose Retry to restart this source."); return
-            }
-            lastAudioSample = block.sampleTime; audioBusy = true
-            sender.sendAudio(block, epoch: contentEpoch) { [self] in
-                queue.async { [self] in
-                    guard !stopping else { return }
-                    audioBusy = false
-                    guard let peer, NDIMachMailbox.send(.init(kind: .audioAccepted, generation: generation,
-                        revision: UInt64(block.sampleTime)), to: peer.first) else { fail("Audio acknowledgement failed"); return }
-                }
-            }
         case .fault:
             #if DEBUG
-            guard let value = packet.detail, ["stall", "crash", "sdk-stall", "sdk-crash"].contains(value) else {
+            guard let value = packet.detail, ["stall", "crash", "sdk-stall", "sdk-crash", "audio-stall"].contains(value) else {
                 fail("Unknown test fault"); return
             }
             fault = value
             sender?.injectFault(value)
-            if value == "stall" || value == "sdk-stall" { signal(SIGTERM, SIG_IGN) }
+            if value == "stall" || value == "sdk-stall" || value == "audio-stall" { signal(SIGTERM, SIG_IGN) }
             pong(packet.token)
             #else
             fail("Test faults are disabled")
             #endif
         case .stop:
+            #if DEBUG
+            NDIAudioTrace.flush()
+            #endif
             // A blocked submission/cleanup worker is contained by the parent's
             // hard termination path, independently of this live control queue.
-            stopping = true; statusTimer?.cancel(); statusTimer = nil
+            stopping = true; audioInput.close(); statusTimer?.cancel(); statusTimer = nil
             if let sender {
                 sender.stop(colour: terminalColour) { [self] report in
                     queue.async { [self] in
+                        endLiveActivity()
                         shutdownComplete = true
                         guard let peer, NDIMachMailbox.send(.init(kind: .shutdownComplete, generation: generation,
                             shutdown: report), to: peer.first) else { _exit(70) }
                     }
                 }
             }
-            else { worker.async { _exit(0) } }
+            else { endLiveActivity(); worker.async { _exit(0) } }
         default:
             fail("Unexpected control message")
         }
     }
 
     private func prepare() {
+        switch configuration.purpose {
+        case .sender, .loopbackProbe, .audioProbe:
+            // AppKit's windowless role caps all queues at default QoS, even
+            // when they request userInitiated. This child performs the app's
+            // explicit live presentation work. Classify it as an application
+            // component so those normal per-thread QoS requests can take effect.
+            // This sets neither foreground status nor a real-time priority;
+            // the classification belongs only to this short-lived child.
+            var category = task_category_policy_data_t(role: TASK_DEFAULT_APPLICATION)
+            let policyCount = MemoryLayout<task_category_policy_data_t>.size / MemoryLayout<integer_t>.size
+            let configured = withUnsafeMutablePointer(to: &category) { policy in
+                policy.withMemoryRebound(to: integer_t.self, capacity: policyCount) {
+                    task_policy_set(mach_task_self_, UInt32(TASK_CATEGORY_POLICY), $0, UInt32(policyCount))
+                }
+            }
+            guard configured == KERN_SUCCESS else {
+                fail("Could not configure the live NDI helper's scheduling (\(configured)). Choose Retry to restart this source.")
+                return
+            }
+            // The parent activity does not describe this separate process's
+            // live work. Audio's 20 ms deadlines require precise I/O/timer
+            // scheduling as well as App Nap prevention. Scope that request to
+            // this source's lifetime; the app still owns sleep policy.
+            liveActivity = ProcessInfo.processInfo.beginActivity(options: [.userInitiatedAllowingIdleSystemSleep, .latencyCritical],
+                reason: "Sending or monitoring live NDI video and audio")
+        default: break
+        }
         switch configuration.purpose {
         case .renderOnly, .renderYUV: ready(nil)
         case .sender:
@@ -151,6 +179,7 @@ final class HelperService: @unchecked Sendable {
                 queue.async { [self] in
                     guard !stopping else { return }
                     guard let status else { fail(error ?? "NDI startup failed"); return }
+                    if let peer { audioInput.install(sender, peer: peer) }
                     ready(status)
                     let timer = DispatchSource.makeTimerSource(queue: queue)
                     timer.schedule(deadline: .now() + .milliseconds(250), repeating: .milliseconds(250))
@@ -168,7 +197,7 @@ final class HelperService: @unchecked Sendable {
             worker.async { [self] in
                 do {
                     let runtime = try NDIRuntime()
-                    guard eucaly_ndi_create_probe(runtime.handle, configuration.sourceName) else {
+                    guard eucaly_ndi_create_probe(runtime.handle, configuration.sourceName, configuration.purpose == .audioProbe) else {
                         throw NDIRuntime.RuntimeError.message("Loopback receiver could not start")
                     }
                     probe = runtime
@@ -180,6 +209,16 @@ final class HelperService: @unchecked Sendable {
             fail("Test receiver is disabled")
             #endif
         }
+    }
+
+    private func endLiveActivity() {
+        guard let activity = liveActivity else { return }
+        liveActivity = nil
+        ProcessInfo.processInfo.endActivity(activity)
+    }
+
+    deinit {
+        if let liveActivity { ProcessInfo.processInfo.endActivity(liveActivity) }
     }
     private func ready(_ status: NDIHelperStatus?) {
         guard let peer, NDIMachMailbox.send(.init(kind: .ready, generation: generation, status: status), to: peer.first) else { _exit(70) }
@@ -309,9 +348,12 @@ final class HelperService: @unchecked Sendable {
             for _ in 0..<40 {
                 var result = eucaly_ndi_audio_observation()
                 let status = eucaly_ndi_probe_audio(probe.handle, &result)
+                let receivedAt = DispatchTime.now().uptimeNanoseconds
                 if status > 0 {
                     let observation = NDIAudioObservation(samples: Int(result.samples), sampleRate: Int(result.sample_rate),
-                        timecode: result.timecode, left: result.left, right: result.right)
+                        timecode: result.timecode, receivedAtNanoseconds: receivedAt, left: result.left, right: result.right,
+                        leftRMS: result.left_rms, rightRMS: result.right_rms,
+                        droppedFrames: result.dropped_frames, queuedFrames: Int(result.queued_frames))
                     queue.async { [self] in
                         busy = false
                         guard let peer, NDIMachMailbox.send(.init(kind: .audioFrame, generation: generation, revision: revision,
@@ -351,6 +393,12 @@ final class HelperService: @unchecked Sendable {
     }
     #endif
 
+    private func acknowledgeRoute(_ epoch: UInt64) {
+        guard !stopping, contentEpoch == epoch else { return }
+        guard let peer, NDIMachMailbox.send(.init(kind: .routeAccepted, generation: generation,
+            contentEpoch: epoch), to: peer.first) else { fail("Ownership acknowledgement failed"); return }
+    }
+
     private func pong(_ token: UUID?) {
         guard let peer, let token else { return }
         if !NDIMachMailbox.send(.init(kind: .pong, generation: generation, token: token), to: peer.first) { _exit(70) }
@@ -358,6 +406,7 @@ final class HelperService: @unchecked Sendable {
     private func fail(_ detail: String) {
         guard !stopping else { return }
         if let peer { _ = NDIMachMailbox.send(.init(kind: .failure, generation: generation, detail: detail), to: peer.first) }
+        endLiveActivity()
         _exit(70)
     }
 }

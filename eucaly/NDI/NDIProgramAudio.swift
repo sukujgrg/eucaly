@@ -70,6 +70,7 @@ final class NDIProgramAudio {
     private weak var runtime: OutputMediaRuntime?
     private weak var session: PresentationSession?
     private var timer: Timer?
+    private var timingActivity: NSObjectProtocol?
     init(musicRoute: NDIMusicRoute? = nil,
          makeBus: @escaping (@escaping ProgramAudioBus.StemDelivery) -> ProgramAudioBus = { ProgramAudioBus(deliverStems: $0) }) {
         distribution = NDIAudioDistribution(musicRoute: musicRoute); self.makeBus = makeBus
@@ -80,6 +81,12 @@ final class NDIProgramAudio {
         self.session = music != nil ? session : nil
         guard !targets.isEmpty || preparing else { stop(); return }
         if bus == nil {
+            // This process owns the PCM clock; the separate helper's activity
+            // cannot describe its deadlines. Keep the latency hint scoped to
+            // live NDI audio. The output coordinator still owns sleep policy.
+            timingActivity = ProcessInfo.processInfo.beginActivity(
+                options: [.userInitiatedAllowingIdleSystemSleep, .latencyCritical],
+                reason: "Producing live NDI audio")
             let distribution = distribution
             let bus = makeBus { distribution.deliver(program: $0, background: $1, time: $2) }
             self.bus = bus; bus.start(at: CMClockGetTime(CMClockGetHostTimeClock()))
@@ -94,11 +101,15 @@ final class NDIProgramAudio {
     private func refresh() {
         guard let bus else { return }
         if let player = runtime?.program {
-            if videoTap?.matches(player) != true { videoTap?.stop(); videoTap = PlayerAudioTap(player: player, mixer: bus) }
+            if videoTap?.matches(player) != true {
+                videoTap?.stop(); videoTap = PlayerAudioTap(player: player, mixer: bus, programGain: runtime?.programAudioGain)
+            }
             videoTap?.refresh()
         } else { videoTap?.stop(); videoTap = nil }
         if let player = session?.programBackgroundAudioPlayer {
-            if musicTap?.matches(player) != true { musicTap?.stop(); musicTap = PlayerAudioTap(player: player, mixer: bus, background: true) }
+            if musicTap?.matches(player) != true {
+                musicTap?.stop(); musicTap = PlayerAudioTap(player: player, mixer: bus, background: true, programGain: session?.backgroundAudioGain)
+            }
             musicTap?.refresh()
         } else { musicTap?.stop(); musicTap = nil }
     }
@@ -108,9 +119,14 @@ final class NDIProgramAudio {
         timer?.invalidate(); timer = nil
         videoTap?.stop(); musicTap?.stop(); videoTap = nil; musicTap = nil
         bus?.stop(); bus = nil; runtime = nil; session = nil
+        if let timingActivity {
+            self.timingActivity = nil
+            ProcessInfo.processInfo.endActivity(timingActivity)
+        }
     }
     deinit {
         timer?.invalidate(); bus?.stop()
+        if let timingActivity { ProcessInfo.processInfo.endActivity(timingActivity) }
         let video = videoTap, music = musicTap
         DispatchQueue.main.async { video?.stop(); music?.stop() }
     }

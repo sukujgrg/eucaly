@@ -355,9 +355,16 @@ final class NDISDKIntegrationTests: XCTestCase {
         let audio = try XCTUnwrap(probeLog.state.audio)
         XCTAssertEqual(audio.sampleRate, 48000); XCTAssertEqual(audio.samples, 960)
         XCTAssertEqual(audio.left, 0.125, accuracy: 0.001); XCTAssertEqual(audio.right, -0.25, accuracy: 0.001)
+        XCTAssertEqual(audio.leftRMS, 0.125, accuracy: 0.001); XCTAssertEqual(audio.rightRMS, 0.25, accuracy: 0.001)
         probe.render(request(probeID, revision: 2))
         try await until("audio clock advances") { (probeLog.state.audio?.timecode ?? 0) > audio.timecode }
         XCTAssertNil(senderLog.state.failure)
+        try await until("audio submission timing reported") { (senderLog.state.status?.audioBlocks ?? 0) > 0 }
+        let timing = try XCTUnwrap(senderLog.state.status)
+        XCTAssertTrue(timing.validMetrics)
+        XCTAssertGreaterThan(timing.audioSubmissionMilliseconds, 0)
+        XCTAssertGreaterThanOrEqual(timing.maximumAudioSubmissionMilliseconds, timing.audioSubmissionMilliseconds)
+        XCTAssertGreaterThanOrEqual(timing.maximumAudioSubmissionAgeMilliseconds, timing.audioSubmissionAgeMilliseconds)
         producer.cancel(); await producer.value
         sender.sendAudio(.init(sampleTime: sampleTime + 500 * 960, pcm: data), generation: id)
         try await until("audio gap retires source") { senderLog.state.exited }
@@ -568,6 +575,12 @@ final class NDISDKIntegrationTests: XCTestCase {
         XCTAssertTrue(sawRed && sawBlue, "Receiver must see moving video, not a repeated placeholder")
         let sourceName = try XCTUnwrap(router.statistics[destination.id]?.sourceName)
         var receiveRevision: UInt64 = 100
+        func requireRunningSources() throws {
+            for id in [destination.id, companion.id] where !router.state(id).active {
+                XCTFail("Shared-video source retired unexpectedly: \(String(describing: router.state(id)))")
+                throw NDIHelperWire.Failure.unavailable
+            }
+        }
         func receive(after boundary: Int64, matching matches: (NDIEventLog.Picture) -> Bool) async throws {
             for _ in 0..<30 {
                 receiveRevision += 1
@@ -583,6 +596,7 @@ final class NDISDKIntegrationTests: XCTestCase {
             var boundary = Int64(DispatchTime.now().uptimeNanoseconds / 100)
             XCTAssertTrue(outputs.moveOutput(destination.id, to: peer))
             try await receive(after: boundary) { $0.hasGlyph && $0.corner.3 == 0 }
+            try requireRunningSources()
             XCTAssertEqual(outputs.media(for: companion.id)?.ndiVideoFrames.sourceCount, 1)
             XCTAssertTrue(outputs.media(for: companion.id)?.program === player)
             XCTAssertEqual(player.currentItem?.outputs.filter { $0 is AVPlayerItemVideoOutput }.count, 1)
@@ -728,6 +742,112 @@ final class NDISDKIntegrationTests: XCTestCase {
         other.stop()
         XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - stopStarted, 0.1)
         try await until("healthy helper stopped", timeout: 2) { otherLog.state.exited }
+    }
+
+    func testOwnershipFenceWaitsForAcceptedAudioWithoutBlockingControlOrStop() async throws {
+        try requireRuntime()
+        let log = NDIEventLog(), generation = UUID()
+        let sender = NDIHelperSupervisor(event: log.record)
+        defer { sender.stop() }
+        sender.start(generation: generation, configuration: .init(purpose: .sender,
+            sourceName: "eucaly audio handoff barrier \(generation)"))
+        try await until("handoff sender ready") { log.state.ready }
+        sender.render(request(generation, revision: 1))
+        try await until("initial owner picture accepted") { log.state.renderedRevision == 1 }
+        let installed = expectation(description: "audio call fault installed")
+        sender.injectFault("audio-stall") { installed.fulfill() }
+        await fulfillment(of: [installed], timeout: 1)
+        let samples = [Float](repeating: 0.01, count: NDIAudioBlock.samples * 2)
+        let pcm = samples.withUnsafeBufferPointer { Data(buffer: $0) }
+        let sample = Int64(DispatchTime.now().uptimeNanoseconds / 1_000_000_000) * 48000
+        sender.sendAudio(.init(sampleTime: sample, pcm: pcm), generation: generation)
+        try await until("old owner audio call accepted") { log.state.status?.audioCallInProgress == true }
+        sender.selectContent(epoch: 1)
+        sender.renderMedia(.init(request: .init(generation: generation, revision: 2, contentEpoch: 1,
+            colour: .chromaGreen), foreground: nil, background: nil))
+        let responsive = expectation(description: "handoff control remains live")
+        sender.ping { responsive.fulfill() }
+        await fulfillment(of: [responsive], timeout: 1)
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(log.state.renderedRevision, 1,
+            "A new owner must not pass its fence while an old owner's admitted SDK audio call is unfinished")
+        XCTAssertNil(log.state.failure)
+        let began = ProcessInfo.processInfo.systemUptime
+        await sender.stopAndWait()
+        XCTAssertTrue(log.state.exited)
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - began, 2)
+        XCTAssertNil(log.state.failure, "Explicit Stop must remain independent of a stalled handoff")
+    }
+
+    func testVideoSDKStallDoesNotHoldTheNewOwnersAudioFence() async throws {
+        try requireRuntime()
+        let log = NDIEventLog(), generation = UUID()
+        let sender = NDIHelperSupervisor(event: log.record)
+        defer { sender.stop() }
+        sender.start(generation: generation, configuration: .init(purpose: .sender,
+            sourceName: "eucaly independent audio fence \(generation)"))
+        try await until("independent audio sender ready") { log.state.ready }
+        sender.render(request(generation, revision: 1))
+        try await until("initial video submitted") { (log.state.status?.submittedFrames ?? 0) > 1 }
+        let installed = expectation(description: "video SDK call fault installed")
+        sender.injectFault("sdk-stall") { installed.fulfill() }
+        await fulfillment(of: [installed], timeout: 1)
+        try await until("old video call accepted") { log.state.status?.videoCallInProgress == true }
+        sender.selectContent(epoch: 1)
+        let samples = [Float](repeating: 0.01, count: NDIAudioBlock.samples * 2)
+        let pcm = samples.withUnsafeBufferPointer { Data(buffer: $0) }
+        let sample = Int64(DispatchTime.now().uptimeNanoseconds / 1_000_000_000) * 48000
+        sender.sendAudio(.init(sampleTime: sample, pcm: pcm), generation: generation, contentEpoch: 1)
+        try await until("new owner audio passes the stalled video lane", timeout: 1.5) {
+            (log.state.status?.audioBlocks ?? 0) > 0
+        }
+        XCTAssertNil(log.state.failure)
+        let began = ProcessInfo.processInfo.systemUptime
+        await sender.stopAndWait()
+        XCTAssertTrue(log.state.exited)
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - began, 2)
+        XCTAssertNil(log.state.failure)
+    }
+
+    func testBlockedAudioKeepsControlLiveAndRetiresOnlyItsSourceAtThePCMBound() async throws {
+        try requireRuntime()
+        let log = NDIEventLog(), otherLog = NDIEventLog(), id = UUID(), otherID = UUID()
+        let sender = NDIHelperSupervisor(event: log.record), other = NDIHelperSupervisor(event: otherLog.record)
+        defer { sender.stop(); other.stop() }
+        sender.start(generation: id, configuration: .init(purpose: .sender, sourceName: "eucaly audio bound \(id)"))
+        other.start(generation: otherID, configuration: .init(purpose: .sender, sourceName: "eucaly audio companion \(otherID)"))
+        try await until("audio-bound senders ready") { log.state.ready && otherLog.state.ready }
+        sender.render(request(id, revision: 1)); other.render(request(otherID, revision: 1))
+        try await until("both video workers submitting") {
+            (log.state.status?.submittedFrames ?? 0) > 1 && (otherLog.state.status?.submittedFrames ?? 0) > 1
+        }
+        let injected = expectation(description: "audio worker stalled")
+        sender.injectFault("audio-stall") { injected.fulfill() }
+        await fulfillment(of: [injected], timeout: 1)
+        let samples = [Float](repeating: 0.01, count: NDIAudioBlock.samples * 2)
+        let pcm = samples.withUnsafeBufferPointer { Data(buffer: $0) }
+        let start = Int64(DispatchTime.now().uptimeNanoseconds / 1_000_000_000) * 48000
+        for index in 0..<NDIHelperWire.maximumAudioBlocks {
+            sender.sendAudio(.init(sampleTime: start + Int64(index * NDIAudioBlock.samples), pcm: pcm), generation: id)
+        }
+        // The SDK audio worker cannot acknowledge any block. Video and control
+        // must continue while all eight admitted blocks remain bounded.
+        try await Task.sleep(for: .milliseconds(150))
+        let ping = expectation(description: "control responds with a full audio pipeline")
+        sender.ping { ping.fulfill() }
+        await fulfillment(of: [ping], timeout: 1)
+        XCTAssertNil(log.state.failure)
+        let previousVideo = log.state.status?.submittedFrames ?? 0
+        try await until("video continues with audio blocked") { (log.state.status?.submittedFrames ?? 0) > previousVideo }
+        XCTAssertEqual(log.state.status?.audioBlocks, 0)
+        let before = otherLog.state.status?.submittedFrames ?? 0
+        sender.sendAudio(.init(sampleTime: start + Int64(NDIHelperWire.maximumAudioBlocks * NDIAudioBlock.samples), pcm: pcm), generation: id)
+        try await until("overflowing source retires", timeout: 2) { log.state.exited }
+        XCTAssertTrue(log.state.failure?.contains("audio queue overran") == true)
+        XCTAssertNil(otherLog.state.failure)
+        XCTAssertGreaterThan(otherLog.state.status?.submittedFrames ?? 0, before)
+        await other.stopAndWait()
+        XCTAssertTrue(otherLog.state.exited)
     }
 }
 

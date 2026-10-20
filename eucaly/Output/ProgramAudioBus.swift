@@ -1,8 +1,20 @@
 @preconcurrency import AVFoundation
 import MediaToolbox
 
+/// The programme level sent to outputs, independently of AVPlayer's local
+/// playback volume. The audio callback reads this snapshot off the main actor.
+nonisolated final class ProgramAudioGain: @unchecked Sendable {
+    private let lock = NSLock()
+    private var level: Float = 1
+    var value: Float { lock.lock(); defer { lock.unlock() }; return level }
+    func set(_ value: Float) {
+        lock.lock(); level = value.isFinite ? min(1, max(0, value)) : 0; lock.unlock()
+    }
+}
+
 /// Taps only explicitly selected live program players. Preview playback and other apps can
-/// never enter this bus. The tap leaves the player's local audio untouched.
+/// never enter this bus. AVPlayer's local output level is applied after the tap;
+/// managed players supply their separate programme gain to the output bus.
 nonisolated final class ProgramAudioBus: @unchecked Sendable {
     typealias StemDelivery = @Sendable (AVAudioPCMBuffer, AVAudioPCMBuffer, AVAudioTime) -> Void
     fileprivate static let maximumBufferedBytes = 8 * 1024 * 1024
@@ -19,7 +31,7 @@ nonisolated final class ProgramAudioBus: @unchecked Sendable {
             .init(start: begin, buffer: buffer, offset: offset + Int(begin - start), count: Int(end - begin))
         }
     }
-    private let queue = DispatchQueue(label: "eucaly.program-audio")
+    private let queue = DispatchQueue(label: "eucaly.program-audio", qos: .userInitiated)
     private let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)!
     private var segments: [UUID: [Segment]] = [:]
     private var gains: [UUID: Float] = [:]
@@ -93,10 +105,11 @@ nonisolated final class ProgramAudioBus: @unchecked Sendable {
         }
     }
     func remove(_ id: UUID) { queue.async { [self] in segments[id] = nil; gains[id] = nil; clocks[id] = nil; silenced.remove(id); converters[id] = nil; convertedEnd[id] = nil; inputEnd[id] = nil; backgroundInputs.remove(id) } }
-    func append(_ inputs: [(AVAudioPCMBuffer, CMTime)], id: UUID) {
-        guard !inputs.isEmpty else { return }
+    @discardableResult
+    func append(_ inputs: [(AVAudioPCMBuffer, CMTime)], id: UUID) -> Bool {
+        guard !inputs.isEmpty else { return true }
         pendingLock.lock()
-        guard pendingSubmissions < 8 else { pendingLock.unlock(); return }
+        guard pendingSubmissions < 8 else { pendingLock.unlock(); return false }
         pendingSubmissions += 1; pendingLock.unlock()
         queue.async { [self] in
             defer { pendingLock.lock(); pendingSubmissions -= 1; pendingLock.unlock() }
@@ -105,6 +118,7 @@ nonisolated final class ProgramAudioBus: @unchecked Sendable {
             // the bounded batch once rather than dropping its tail as a burst.
             for (input, time) in inputs { convert(input, at: time, id: id) }
         }
+        return true
     }
     // Runs only on the mixer queue.
     private func convert(_ input: AVAudioPCMBuffer, at time: CMTime, id: UUID) {
@@ -162,10 +176,20 @@ nonisolated final class ProgramAudioBus: @unchecked Sendable {
         guard active, var sample = nextSample else { return }
         let now = Int64(CMClockGetTime(CMClockGetHostTimeClock()).seconds * 48000)
         if sample < now - 24000 { sample = (now / 960 - 1) * 960 }
+        // Dispatch timers coalesce delayed callbacks. Producing only one block
+        // per callback accumulates audio timestamp lag until a discontinuity.
+        // Recover due blocks against the host clock, with a bounded burst below
+        // the NDI admission queue's eight-block limit.
+        for _ in 0..<4 {
+            guard sample + 960 <= now, renderBlock(at: sample) else { return }
+            sample += 960; nextSample = sample
+        }
+    }
+    private func renderBlock(at sample: Int64) -> Bool {
         // Always produce silence too: consumers need a continuous audio clock for
         // static slides, muted video and pauses.
-        guard sample + 960 <= now, let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 960),
-              let channels = output.floatChannelData else { return }
+        guard let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 960),
+              let channels = output.floatChannelData else { return false }
         output.frameLength = 960
         for channel in 0..<2 { channels[channel].initialize(repeating: 0, count: 960) }
         let background = deliverStems == nil ? nil : AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 960)
@@ -202,7 +226,7 @@ nonisolated final class ProgramAudioBus: @unchecked Sendable {
             if let bg = background.floatChannelData { for channel in 0..<2 { for i in 0..<960 { bg[channel][i] = min(1, max(-1, bg[channel][i])) } } }
             deliverStems(output, background, time)
         } else { deliver?(output, time) }
-        nextSample = sample + 960
+        return true
     }
     func stop() {
         queue.async { [self] in
@@ -215,52 +239,75 @@ nonisolated final class ProgramAudioBus: @unchecked Sendable {
 
 nonisolated private final class PlayerAudioTapContext: @unchecked Sendable {
     let id = UUID()
-    private struct PendingAudio { let buffer: AVAudioPCMBuffer; let time: CMTime; let byteCount: Int }
-    private final class Client { weak var mixer: ProgramAudioBus?; init(_ mixer: ProgramAudioBus) { self.mixer = mixer } }
+    private struct RetainedAudio {
+        let sequence: UInt64
+        let buffer: AVAudioPCMBuffer
+        let time: CMTime
+        let byteCount: Int
+        var end: CMTime { time + CMTime(seconds: Double(buffer.frameLength) / buffer.format.sampleRate, preferredTimescale: 48000) }
+    }
+    private final class Client {
+        weak var mixer: ProgramAudioBus?
+        var deliveredThrough: UInt64?
+        init(_ mixer: ProgramAudioBus) { self.mixer = mixer }
+    }
     private var clients: [ObjectIdentifier: Client] = [:]
     private let lock = NSLock()
     private var timebase: CMTimebase?
     private var format: AVAudioFormat?
-    private var pending: [PendingAudio] = []
-    private var pendingBytes = 0
-    private let maximumPendingBytes = ProgramAudioBus.maximumBufferedBytes
-    private let maximumPendingBuffers = 256
+    // Keep unplayed preroll for clients joining the existing tap. Per-client
+    // cursors prevent replaying those buffers into a mixer that already has them.
+    private var retained: [RetainedAudio] = []
+    private var retainedBytes = 0
+    private var nextSequence: UInt64 = 0
+    private let maximumRetainedBytes = ProgramAudioBus.maximumBufferedBytes
+    private let maximumRetainedBuffers = 256
     func add(_ mixer: ProgramAudioBus) { lock.lock(); clients[ObjectIdentifier(mixer)] = Client(mixer); lock.unlock() }
     func remove(_ mixer: ProgramAudioBus) {
         lock.lock(); clients[ObjectIdentifier(mixer)] = nil
-        if clients.isEmpty { discardPending() }
+        if clients.isEmpty { discardRetained() }
         lock.unlock(); mixer.remove(id)
     }
-    func updatePlayback(from player: AVPlayer, item: AVPlayerItem) {
+    func updatePlayback(from player: AVPlayer, item: AVPlayerItem, programGain: ProgramAudioGain? = nil) {
         let current = player.currentItem === item
         let timebase = current ? item.timebase : nil
-        let gain = current && !player.isMuted && player.rate != 0 ? player.volume : 0
+        let gain = current && player.rate != 0 ? (programGain?.value ?? (player.isMuted ? 0 : player.volume)) : 0
         lock.lock(); defer { lock.unlock() }
         self.timebase = timebase
         let mixers = clients.values.compactMap(\.mixer)
         // Snapshot clock and gain before prerendered samples, including when playback
         // starts without another processing callback to deliver them.
         mixers.forEach { $0.setPlaybackClock(timebase, gain: gain, id: id) }
-        flushPending(to: mixers)
+        flushRetained()
     }
     // Called with the context lock held so gain, clock and sample submission
     // stay ordered across the playback and audio processing queues.
-    private func flushPending(to mixers: [ProgramAudioBus]) {
+    private func flushRetained() {
         guard let timebase, CMTimebaseGetEffectiveRate(timebase) > 0 else { return }
-        var inputs: [(AVAudioPCMBuffer, CMTime)] = []
-        pending.removeAll { packet in
-            inputs.append((packet.buffer, packet.time))
-            pendingBytes -= packet.byteCount
-            return true
+        // Retain one mixer block behind the running media clock, plus future
+        // preroll. Old decoded history must not turn a new join into a large
+        // conversion job on that destination's audio queue.
+        let cutoff = CMTimebaseGetTime(timebase) - CMTime(value: 960, timescale: 48000)
+        if cutoff.isNumeric {
+            retained.removeAll { packet in
+                guard packet.end < cutoff else { return false }
+                retainedBytes -= packet.byteCount; return true
+            }
         }
-        mixers.forEach { $0.append(inputs, id: id) }
+        guard let last = retained.last else { return }
+        for client in clients.values {
+            guard let mixer = client.mixer else { continue }
+            let inputs = retained.filter { packet in client.deliveredThrough.map { packet.sequence > $0 } ?? true }
+                .map { ($0.buffer, $0.time) }
+            if mixer.append(inputs, id: id) { client.deliveredThrough = last.sequence }
+        }
     }
-    private func discardPending() { pending.removeAll(); pendingBytes = 0 }
+    private func discardRetained() { retained.removeAll(); retainedBytes = 0 }
     func prepare(_ description: AudioStreamBasicDescription) {
         var value = description
         lock.lock()
         let next = AVAudioFormat(streamDescription: &value)
-        if format != next { discardPending() }
+        if format != next { discardRetained() }
         format = next; lock.unlock()
     }
     func process(_ tap: MTAudioProcessingTap, frames: CMItemCount, buffers: UnsafeMutablePointer<AudioBufferList>,
@@ -285,12 +332,14 @@ nonisolated private final class PlayerAudioTapContext: @unchecked Sendable {
         // timebase runs. A tap never receives that source audio a second time.
         // Keep media timestamps until they can be mapped to the playback clock.
         let byteCount = target.reduce(0) { $0 + Int($1.mDataByteSize) }
-        guard byteCount <= maximumPendingBytes else { return }
-        while !pending.isEmpty && (pending.count >= maximumPendingBuffers || pendingBytes + byteCount > maximumPendingBytes) {
-            pendingBytes -= pending.removeFirst().byteCount
+        guard byteCount <= maximumRetainedBytes else { return }
+        if let last = retained.last, range.start < last.time { discardRetained() }
+        while !retained.isEmpty && (retained.count >= maximumRetainedBuffers || retainedBytes + byteCount > maximumRetainedBytes) {
+            retainedBytes -= retained.removeFirst().byteCount
         }
-        pending.append(.init(buffer: copy, time: range.start, byteCount: byteCount)); pendingBytes += byteCount
-        flushPending(to: clients.values.compactMap(\.mixer))
+        retained.append(.init(sequence: nextSequence, buffer: copy, time: range.start, byteCount: byteCount))
+        nextSequence &+= 1; retainedBytes += byteCount
+        flushRetained()
     }
 }
 
@@ -306,23 +355,25 @@ private final class SharedPlayerAudioTap {
     private var playbackObservations: [NSKeyValueObservation] = []
     private var observedTimebase: CMTimebase?
     private var timebaseObservers: [NSObjectProtocol] = []
-    init(player: AVPlayer) {
+    let programGain: ProgramAudioGain?
+    init(player: AVPlayer, programGain: ProgramAudioGain?) {
+        self.programGain = programGain
         self.player = player
         let item = player.currentItem; self.item = item
         playbackObservations = [
             player.observe(\.rate) { [weak player, weak item, context] _, _ in
-                if let player, let item { context.updatePlayback(from: player, item: item) }
+                if let player, let item { context.updatePlayback(from: player, item: item, programGain: programGain) }
             },
             player.observe(\.isMuted) { [weak player, weak item, context] _, _ in
-                if let player, let item { context.updatePlayback(from: player, item: item) }
+                if let player, let item { context.updatePlayback(from: player, item: item, programGain: programGain) }
             },
             player.observe(\.volume) { [weak player, weak item, context] _, _ in
-                if let player, let item { context.updatePlayback(from: player, item: item) }
+                if let player, let item { context.updatePlayback(from: player, item: item, programGain: programGain) }
             }
         ]
         if let item {
             playbackObservations.append(item.observe(\.status) { [weak self, weak player, weak item, context] _, _ in
-                if let player, let item { context.updatePlayback(from: player, item: item) }
+                if let player, let item { context.updatePlayback(from: player, item: item, programGain: programGain) }
                 Task { @MainActor [weak self] in self?.refresh() }
             })
         }
@@ -364,13 +415,13 @@ private final class SharedPlayerAudioTap {
             observedTimebase = timebase
             timebaseObservers = timebase.map { clock in
                 [kCMTimebaseNotification_EffectiveRateChanged, kCMTimebaseNotification_TimeJumped].map { name in
-                    NotificationCenter.default.addObserver(forName: .init(name as String), object: clock, queue: nil) { [weak player, weak item, context] _ in
-                        if let player, let item { context.updatePlayback(from: player, item: item) }
+                    NotificationCenter.default.addObserver(forName: .init(name as String), object: clock, queue: nil) { [weak player, weak item, context, programGain] _ in
+                        if let player, let item { context.updatePlayback(from: player, item: item, programGain: programGain) }
                     }
                 }
             } ?? []
         }
-        context.updatePlayback(from: player, item: item)
+        context.updatePlayback(from: player, item: item, programGain: programGain)
     }
     func stop() {
         preparation?.cancel(); preparation = nil
@@ -391,10 +442,12 @@ final class PlayerAudioTap {
     private let shared: SharedPlayerAudioTap
     private let mixer: ProgramAudioBus
     private var stopped = false
-    init(player: AVPlayer, mixer: ProgramAudioBus, background: Bool = false) {
+    init(player: AVPlayer, mixer: ProgramAudioBus, background: Bool = false, programGain: ProgramAudioGain? = nil) {
         key = ObjectIdentifier(player); self.mixer = mixer
-        if let existing = Self.sources[key], existing.matches(player) { shared = existing }
-        else { shared = SharedPlayerAudioTap(player: player); Self.sources[key] = shared }
+        if let existing = Self.sources[key], existing.matches(player) {
+            precondition(existing.programGain === programGain, "A shared player must have one programme audio level")
+            shared = existing
+        } else { shared = SharedPlayerAudioTap(player: player, programGain: programGain); Self.sources[key] = shared }
         shared.users += 1; mixer.setBackground(background, id: shared.context.id); shared.context.add(mixer); shared.refresh()
     }
     func matches(_ player: AVPlayer) -> Bool { !stopped && shared.matches(player) }

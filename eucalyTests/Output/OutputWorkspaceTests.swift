@@ -129,6 +129,31 @@ final class OutputWorkspaceTests: XCTestCase {
         XCTAssertTrue(hub.outputs.commandSession(for: window) === hub.session)
     }
 
+    func testStaleNativeKeyCallbackCannotReplaceTheCurrentWorkspace() throws {
+        let suite = "WorkspaceWindowsTests." + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let hub = LocalOutputHarness(), focus = WorkspaceFocus()
+        let windows = makeWorkspaceWindows(outputs: hub.outputs, defaults: defaults, keyWindow: { focus.window })
+        defer { for window in windows.windows.values { window.close() } }
+        let primary = hub.session.outputSourceID
+        let second = try XCTUnwrap(hub.outputs.profiles.addWorkspace())
+        _ = try XCTUnwrap(windows.restoreWindow(identifier: OutputWorkspaceWindows.identifier(for: primary)))
+        let secondWindow = try XCTUnwrap(windows.restoreWindow(identifier: OutputWorkspaceWindows.identifier(for: second)))
+        focus.window = secondWindow
+        try XCTUnwrap(windows.controllers[second]).windowDidBecomeKey(
+            Notification(name: NSWindow.didBecomeKeyNotification, object: secondWindow))
+        XCTAssertEqual(hub.outputs.focusedWorkspaceID, second)
+        let old = try XCTUnwrap(windows.controllers[primary])
+        old.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: old.window))
+        XCTAssertEqual(hub.outputs.focusedWorkspaceID, second,
+            "A callback from a window that is no longer key cannot replace the controls owner")
+        for window in windows.windows.values { window.close() }
+        focus.window = nil
+        windows.reopen()
+        XCTAssertEqual(Set(windows.controllers.keys), [second], "Stale focus must not overwrite the saved Dock reopen identity")
+    }
+
     func testDockReopenRemembersSavedWorkspaceWithoutCreatingAnotherRecord() async throws {
         let suite = "WorkspaceWindowsTests." + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))

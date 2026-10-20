@@ -62,6 +62,21 @@ physical receiver, network, audio synchronization or a sustained session.
    explicit local music owner and this route survive output moves. Video audio
    follows the owning workspace; transfer never substitutes another music selection.
    Stopping the selected destination leaves the route inactive without moving it.
+6. **Workspace → Monitor Audio Locally**, also in the workspace toolbar menu,
+   controls local listening for that workspace's video and background music.
+   It defaults to **off**, including for existing workspaces. NDI-only playback
+   is silent on the sending Mac; enabling monitoring plays the same audio locally
+   without changing NDI gain, the selected music destination or playback position.
+   The choice is saved per workspace and survives tab changes and output restarts.
+   Native projection retains normal local audio while open. Intentional standalone
+   music playback without an NDI assignment/route remains available; losing,
+   stopping or moving an NDI output never creates a standalone playback request.
+
+Programme mute and music volume still apply to both local and NDI audio. Local
+monitoring uses AVPlayer's output volume, downstream of the processing tap; NDI
+uses a separate programme-gain snapshot. The local level is set before playback
+starts, so asynchronous tap preparation cannot produce a local startup burst.
+Monitoring edits neither replace the shared player nor restart the NDI helper.
 
 The output's **Appearance** picker lists reusable profiles and its current custom
 appearance. Profiles style text/backgrounds for every supported media type; choosing
@@ -125,8 +140,59 @@ qualification. Images/PDF pages prepare off the UI thread; video uses the owning
 workspace’s existing player, without window/screen capture. Geometry preserves
 rotation/mirroring, clean aperture and pixel aspect. PDF vectors rasterize at the
 output canvas size. Tapped audio retains media timestamps and bounded clock history
-across mute, pause/resume and preroll. NDI prevents idle system sleep while allowing
+across mute, pause/resume and preroll. The shared tap retains still-unplayed PCM
+within its existing memory bound and tracks delivery per mixer, so a new or
+restarted destination can join ongoing playback without losing already-decoded
+audio or duplicating it into existing consumers. NDI prevents idle system sleep while allowing
 display sleep. These engineering checks do not qualify physical receiver delivery.
+
+The mixer clocks against host time and recovers coalesced timer callbacks with
+at most four due blocks per callback. It preserves contiguous sample timestamps;
+the existing severe-stall discontinuity guard still retires a source. Helper
+statistics retain current/maximum audio submission age and SDK call duration to
+distinguish upstream lateness from time spent inside NDI.
+
+Private Mach mailboxes use dedicated blocking reader threads. Idle input holds
+no GCD worker and does not retain the mailbox wrapper. Closing cancels admission
+immediately and sends a nonblocking wake; the reader releases its receive right
+after any active callback finishes. Per-message autorelease pools release decoder
+temporaries. Timed-out sends release Mach's returned copied rights, including
+surface capabilities. This does not change authentication, bounds or SDK leases.
+The constructor applies `MPO_QLIMIT` explicitly, and a regression checks the
+kernel's actual four-message limit.
+
+Before live sender work (or an explicit Debug probe), the helper selects the public default
+application task category. Its windowless AppKit role otherwise caps even
+user-initiated queues at default priority. This classification belongs only to
+the owned child, permits its explicit QoS requests, and claims no foreground or
+real-time priority. Scoped latency activities remain responsible for live-work
+timing hints; the app's output coordinator owns sleep policy.
+
+Audio uses a separate private helper port and a three-block submission pipeline.
+The eight-block limit covers staged and unacknowledged PCM together, across both
+processes. Its acknowledgements share the four-slot frame reply port with at
+most one render acknowledgement. Ownership, status and shutdown keep the control
+ports free of PCM traffic. The audio reader validates, submits and acknowledges
+serially, avoiding control/worker dispatch hops. Stop closes admission and waits
+asynchronously for accepted audio SDK calls before destroying the sender. A
+blocked audio reader cannot prevent control, video or another source from
+progressing; an overrun retires its exact helper.
+Ownership fences immediately close old-owner admission and acknowledge after
+admitted old-owner audio calls finish. Audio fencing stays independent of video
+SDK synchronization. The SDK video queue coalesces fences to the latest owner;
+old pending/current pictures are discarded there, and an old SDK borrow remains
+leased through the next async send or shutdown flush. A blocked video lane
+cannot hold new-owner PCM or fill its admission queue. Control/Stop and exact-
+child retirement remain independent. Fences coalesce to the latest admitted epoch;
+new-owner picture/audio submission waits for that fence. Queued drains recheck
+the actual admission epoch before taking work.
+Readers serialize each delivery on the owner's queue without accumulating
+pending closures. Live PCM/control/IPC, offscreen render and video-submission
+workers use user-initiated priority. The app PCM clock and each helper own scoped
+latency activities; helper activities end after normal SDK cleanup.
+
+For sender/receiver/Wi-Fi isolation, CSV capture commands and the opt-in sustained
+test, see [NDI audio diagnostics](ndi-audio-diagnostics.md).
 
 ### Performance monitoring
 

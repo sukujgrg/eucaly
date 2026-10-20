@@ -10,6 +10,21 @@ nonisolated struct OutputWorkspaceRecord: Codable, Equatable, Identifiable, Send
     static let primary = Self(id: primaryID, name: "Home")
     var id: UUID
     var name: String
+    var monitorAudioLocally = false
+
+    init(id: UUID, name: String, monitorAudioLocally: Bool = false) {
+        self.id = id; self.name = name; self.monitorAudioLocally = monitorAudioLocally
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, name, monitorAudioLocally }
+    init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        // Existing workspaces must adopt the same quiet NDI-only default as
+        // newly created workspaces without changing their saved identities.
+        monitorAudioLocally = try c.decodeIfPresent(Bool.self, forKey: .monitorAudioLocally) ?? false
+    }
 }
 
 /// Lives with the app, independently of native tab visibility and controls windows.
@@ -103,6 +118,12 @@ struct OutputWorkspaceView: View {
                         .disabled(store.document.defaultWorkspaceID == session.outputSourceID || store.recoveryNotice != nil)
                     Button("Rename Workspace…") { draftName = store.workspaceName(session.outputSourceID); renaming = true }
                     Button("Move Tab to New Window", action: detach)
+                    Divider()
+                    Toggle("Monitor Audio Locally", isOn: Binding(
+                        get: { session.outputCoordinator.monitorAudioLocally(workspace: session.outputSourceID) },
+                        set: { session.outputCoordinator.setMonitorAudioLocally($0, workspace: session.outputSourceID) }))
+                        .disabled(store.recoveryNotice != nil)
+                        .help("Play this workspace’s video and background music on this Mac when it has only NDI outputs. NDI audio is unchanged. Native projection keeps its normal audio.")
                     Divider()
                     ForEach(store.document.workspaces) { record in
                         Button("Open " + record.name) { openWorkspace(record.id) }

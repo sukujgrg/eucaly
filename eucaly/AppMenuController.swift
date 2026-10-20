@@ -12,6 +12,7 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         case settings, updates, notices, support, newWorkspace, openWorkspace, detach, manageWorkspaces, defaultWorkspace
         case newLyrics, quickOpen, refresh, save, stop, stopAll, slides, background, audio
         case clearBackground, clearAudio, clearAll
+        case monitorAudioLocally
     }
 
     init(app: AppDelegate) {
@@ -120,6 +121,10 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         makeDefault.state = app.workspaceWindows.activeWorkspaceID == app.outputProfiles.document.defaultWorkspaceID ? .on : .off
         add("Move Tab to New Window", to: workspaceMenu, command: .detach)
         workspaceMenu.addItem(.separator())
+        let monitor = add("Monitor Audio Locally", to: workspaceMenu, command: .monitorAudioLocally)
+        monitor.toolTip = "Play this workspace’s video and background music on this Mac when it has only NDI outputs. NDI audio is unchanged. Native projection keeps its normal audio."
+        _ = validateMenuItem(monitor)
+        workspaceMenu.addItem(.separator())
         for record in app.outputProfiles.document.workspaces {
             let item = add("Open " + record.name, to: workspaceMenu, command: .openWorkspace)
             item.representedObject = record.id
@@ -137,6 +142,14 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
                 $0 != app.outputProfiles.document.defaultWorkspaceID
             } == true
         case .detach: return app.workspaceWindows.activeWorkspaceID != nil
+        case .monitorAudioLocally:
+            guard let session = app.outputs.commandSession,
+                  app.outputProfiles.document.workspaces.contains(where: { $0.id == session.outputSourceID }) else {
+                menuItem.state = .off
+                return false
+            }
+            menuItem.state = app.outputs.monitorAudioLocally(workspace: session.outputSourceID) ? .on : .off
+            return app.outputProfiles.recoveryNotice == nil
         case .newLyrics, .quickOpen, .refresh, .save: return app.workspaceWindows.activeWorkspaceID != nil
         case .stop, .slides, .background, .audio, .clearBackground, .clearAudio, .clearAll:
             return app.outputs.commandSession != nil
@@ -163,6 +176,11 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
             if let id = sender.representedObject as? UUID { app.workspaceWindows.open(id, beside: app.workspaceWindows.activeWorkspaceID) }
         case .detach:
             if let id = app.workspaceWindows.activeWorkspaceID { app.workspaceWindows.detach(id) }
+        case .monitorAudioLocally:
+            if let session = app.outputs.commandSession {
+                let id = session.outputSourceID
+                app.outputs.setMonitorAudioLocally(!app.outputs.monitorAudioLocally(workspace: id), workspace: id)
+            }
         case .newLyrics: post(.newLyrics)
         case .quickOpen: post(.showLibrarySearch)
         case .refresh: post(.refreshLibrary)

@@ -212,9 +212,10 @@ final class OutputWorkspaceWindowController: NSWindowController, NSWindowDelegat
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
-        guard !closed else { return }
+        guard !closed, commands.isActive else { return }
         // Native key events are already outside SwiftUI evaluation. Record the
-        // controls owner before a toolbar action can hand key focus to Settings.
+        // current controls owner before a toolbar action can hand key focus to
+        // Settings. A stale callback cannot overwrite a newer workspace's focus.
         session.outputCoordinator.workspaceWindowReady(session)
         didBecomeKey()
     }

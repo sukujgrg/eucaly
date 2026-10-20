@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 struct eucaly_ndi {
     void *library;
@@ -85,14 +86,14 @@ void eucaly_ndi_close(eucaly_ndi *ndi) {
     ndi->api->destroy(); dlclose(ndi->library); free(ndi);
 }
 #if DEBUG
-bool eucaly_ndi_create_probe(eucaly_ndi *ndi, const char *source) {
+bool eucaly_ndi_create_probe(eucaly_ndi *ndi, const char *source, bool audio_only) {
     NDIlib_find_create_t find_settings = {0};
     find_settings.show_local_sources = true;
     NDIlib_find_instance_t finder = ndi->api->find_create_v2(&find_settings);
     if (!finder) return false;
     NDIlib_recv_create_v3_t settings = {0};
     settings.color_format = NDIlib_recv_color_format_BGRX_BGRA;
-    settings.bandwidth = NDIlib_recv_bandwidth_highest;
+    settings.bandwidth = audio_only ? NDIlib_recv_bandwidth_audio_only : NDIlib_recv_bandwidth_highest;
     settings.allow_video_fields = false;
     settings.p_ndi_recv_name = "eucaly development loopback";
     // Exercise actual SDK source discovery, rather than connecting to a name
@@ -143,10 +144,19 @@ int eucaly_ndi_probe_audio(eucaly_ndi *ndi, eucaly_ndi_audio_observation *observ
     if (valid) {
         const float *left = (const float *)frame.p_data;
         const float *right = (const float *)(frame.p_data + frame.channel_stride_in_bytes);
-        double a = 0, b = 0;
-        for (int i = 0; i < frame.no_samples; ++i) { a += left[i]; b += right[i]; }
+        double a = 0, b = 0, aa = 0, bb = 0;
+        for (int i = 0; i < frame.no_samples; ++i) {
+            a += left[i]; b += right[i];
+            aa += (double)left[i] * left[i]; bb += (double)right[i] * right[i];
+        }
         observation->samples = frame.no_samples; observation->sample_rate = frame.sample_rate; observation->timecode = frame.timecode;
         observation->left = a / frame.no_samples; observation->right = b / frame.no_samples;
+        observation->left_rms = sqrt(aa / frame.no_samples); observation->right_rms = sqrt(bb / frame.no_samples);
+        NDIlib_recv_performance_t dropped = {0};
+        NDIlib_recv_queue_t queued = {0};
+        ndi->api->recv_get_performance(ndi->receiver, NULL, &dropped);
+        ndi->api->recv_get_queue(ndi->receiver, &queued);
+        observation->dropped_frames = dropped.audio_frames; observation->queued_frames = queued.audio_frames;
     }
     ndi->api->recv_free_audio_v3(ndi->receiver, &frame);
     return valid ? 1 : -1;

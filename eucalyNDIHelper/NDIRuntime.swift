@@ -44,7 +44,10 @@ final class NDIRuntime {
 /// NDI blocks. Neither SDK calls nor its cleanup run on the control/UI queues.
 final class NDISubmissionWorker: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.suku.eucaly.ndi.sdk-submission", qos: .userInitiated)
-    private let audioQueue = DispatchQueue(label: "com.suku.eucaly.ndi.sdk-audio", qos: .userInitiated)
+    private let fences = DispatchQueue(label: "com.suku.eucaly.ndi.audio-fences", qos: .userInitiated)
+    private let audioCalls = DispatchGroup()
+    private var audioInProgress = false // protected by lock
+    private var lastAudioSample: Int64? // protected by lock; reset only by ownership fences
     private let lock = NSLock()
     private var contentEpoch: UInt64 = 0
     private var currentEpoch: UInt64 = 0
@@ -59,6 +62,10 @@ final class NDISubmissionWorker: @unchecked Sendable {
     private var lastTick: UInt64 = 0
     private var metrics = NDISubmissionMetrics()
     private var stopping = false // protected by lock; blocks late GPU/audio handoffs
+    private var videoFenceScheduled = false // protected by lock; latest epoch only
+    #if DEBUG
+    private var videoInProgress = false // protected by lock
+    #endif
 
     func start(name: String, completion: @escaping @Sendable (NDIHelperStatus?, String?) -> Void) {
         queue.async { [self] in
@@ -80,8 +87,28 @@ final class NDISubmissionWorker: @unchecked Sendable {
             } catch { completion(nil, error.localizedDescription) }
         }
     }
-    func selectContent(epoch: UInt64) {
-        lock.lock(); contentEpoch = epoch; pending = nil; lock.unlock()
+    func selectContent(epoch: UInt64, completion: @escaping @Sendable () -> Void) {
+        lock.lock()
+        if contentEpoch != epoch { lastAudioSample = nil }
+        contentEpoch = epoch; pending = nil
+        let scheduleVideoFence = !videoFenceScheduled
+        videoFenceScheduled = true
+        lock.unlock()
+        // Audio's continuous clock cannot wait behind a codec/async-video
+        // synchronization. Finish only admitted old-owner audio before ACK.
+        // Video is serialized on its SDK queue and coalesces to the latest
+        // owner while blocked. Its old SDK borrow remains leased until the next
+        // async video send (or shutdown flush), which synchronizes that borrow.
+        audioCalls.notify(queue: fences, execute: completion)
+        if scheduleVideoFence {
+            queue.async { [self] in
+                let epoch = lock.withLock {
+                    videoFenceScheduled = false
+                    return contentEpoch
+                }
+                if currentEpoch != epoch { current = nil; currentEpoch = epoch }
+            }
+        }
     }
     func offer(_ surface: NDIGPUFrame, epoch: UInt64 = 0) {
         lock.lock()
@@ -95,7 +122,12 @@ final class NDISubmissionWorker: @unchecked Sendable {
         lock.unlock()
     }
     func status() -> NDIHelperStatus {
-        lock.lock(); var value = report; lock.unlock()
+        lock.lock(); var value = report
+        #if DEBUG
+        value.audioCallInProgress = audioInProgress
+        value.videoCallInProgress = videoInProgress
+        #endif
+        lock.unlock()
         #if DEBUG
         var usage = rusage()
         if getrusage(RUSAGE_SELF, &usage) == 0 {
@@ -105,21 +137,46 @@ final class NDISubmissionWorker: @unchecked Sendable {
         #endif
         return value
     }
-    func sendAudio(_ block: NDIAudioBlock, epoch: UInt64 = 0, completion: @escaping @Sendable () -> Void) {
+    enum AudioResult { case submitted, superseded, discontinuity }
+    /// Called serially by the private audio mailbox's dedicated reader. SDK
+    /// work never runs on the control queue or parks a GCD worker for input.
+    func sendAudio(_ block: NDIAudioBlock, epoch: UInt64) -> AudioResult {
         lock.lock()
-        guard !stopping, let runtime else { lock.unlock(); return }
-        // One request is admitted by the service. This strong runtime reference
-        // keeps the sender alive if the video worker concurrently starts cleanup.
-        audioQueue.async { [self, runtime] in
-            lock.lock(); let accepted = contentEpoch == epoch; lock.unlock()
-            guard accepted else { completion(); return }
-            block.pcm.withUnsafeBytes { eucaly_ndi_send_audio(runtime.handle, $0.baseAddress!, block.sampleTime) }
-            lock.lock(); report.audioBlocks &+= 1; report.lastAudioSample = block.sampleTime; lock.unlock()
-            completion()
+        guard !stopping, contentEpoch == epoch, let runtime else { lock.unlock(); return .superseded }
+        guard !audioInProgress, lastAudioSample.map({ block.sampleTime == $0 + Int64(NDIAudioBlock.samples) }) ?? true else {
+            lock.unlock(); return .discontinuity
         }
-        // Enqueue under the lock so Stop's audio barrier cannot overtake a
-        // handoff that has already acquired the runtime.
+        audioInProgress = true; lastAudioSample = block.sampleTime
+        // Enter under the same lock as Stop's admission fence. The strong
+        // runtime reference and group keep destruction behind accepted SDK work.
+        audioCalls.enter()
+        let fault = self.fault
         lock.unlock()
+        defer {
+            lock.lock(); audioInProgress = false; lock.unlock()
+            audioCalls.leave()
+        }
+        #if DEBUG
+        if fault == "audio-stall" { DispatchSemaphore(value: 0).wait() }
+        #endif
+        let started = DispatchTime.now().uptimeNanoseconds
+        let age = max(0, Double(started) / 1_000_000 - Double(block.sampleTime) * 1000 / 48000)
+        #if DEBUG
+        NDIAudioTrace.record("sdk-enter", sample: block.sampleTime)
+        #endif
+        block.pcm.withUnsafeBytes { eucaly_ndi_send_audio(runtime.handle, $0.baseAddress!, block.sampleTime) }
+        let duration = Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000
+        #if DEBUG
+        NDIAudioTrace.record("sdk-return", sample: block.sampleTime)
+        #endif
+        lock.lock()
+        report.audioBlocks &+= 1; report.lastAudioSample = block.sampleTime
+        report.audioSubmissionAgeMilliseconds = age
+        report.maximumAudioSubmissionAgeMilliseconds = max(report.maximumAudioSubmissionAgeMilliseconds, age)
+        report.audioSubmissionMilliseconds = duration
+        report.maximumAudioSubmissionMilliseconds = max(report.maximumAudioSubmissionMilliseconds, duration)
+        lock.unlock()
+        return .submitted
     }
     #if DEBUG
     func injectFault(_ value: String) { lock.lock(); fault = value; lock.unlock() }
@@ -132,6 +189,8 @@ final class NDISubmissionWorker: @unchecked Sendable {
         if let next { current = next }
         guard let current, let runtime else { return }
         #if DEBUG
+        lock.withLock { videoInProgress = true }
+        defer { lock.withLock { videoInProgress = false } }
         if fault == "sdk-stall" { DispatchSemaphore(value: 0).wait() }
         if fault == "sdk-crash" { _exit(72) }
         #endif
@@ -168,18 +227,16 @@ final class NDISubmissionWorker: @unchecked Sendable {
             lock.unlock()
             // Finish admitted audio before destroying the shared sender. Both
             // workers remain isolated from control and the parent's UI thread.
-            audioQueue.async { [self] in
-                queue.async { [self] in
-                    var report = NDIHelperShutdown(terminalPixelBGRA: nil)
-                    if let retiring {
-                        report = sendTerminalPicture(colour, runtime: retiring)
-                        borrowed = nil; current = nil
-                        // Explicitly destroy BEFORE completion exits the process.
-                        // A local strong reference otherwise postpones deinit forever.
-                        retiring.close()
-                    }
-                    completion(report)
+            audioCalls.notify(queue: queue) { [self] in
+                var report = NDIHelperShutdown(terminalPixelBGRA: nil)
+                if let retiring {
+                    report = sendTerminalPicture(colour, runtime: retiring)
+                    borrowed = nil; current = nil
+                    // Explicitly destroy BEFORE completion exits the process.
+                    // A local strong reference otherwise postpones deinit forever.
+                    retiring.close()
                 }
+                completion(report)
             }
         }
     }
@@ -208,5 +265,48 @@ final class NDISubmissionWorker: @unchecked Sendable {
             eucaly_ndi_flush(runtime.handle)
         }
         return .init(terminalPixelBGRA: pixel, videoFormat: format, terminalUYVY: pair, terminalAlpha: UInt8(byte(colour.alpha)))
+    }
+}
+
+/// The private audio reader handles one PCM block through SDK completion and
+/// acknowledgement, with no dispatch handoff between those stages. Installation
+/// and closing share only a short admission lock with the control queue.
+final class NDIAudioInput: @unchecked Sendable {
+    private struct Target {
+        let sender: NDISubmissionWorker
+        let peer: NDIMachMessage
+    }
+    private let lock = NSLock()
+    private var target: Target?
+    private var closed = false
+    func install(_ sender: NDISubmissionWorker, peer: NDIMachMessage) {
+        lock.withLock { if !closed { target = .init(sender: sender, peer: peer) } }
+    }
+    func close() { lock.withLock { closed = true; target = nil } }
+    func receive(_ message: NDIMachMessage, generation: UUID, parentPID: Int32,
+                 failed: @Sendable (String) -> Void) {
+        guard message.senderPID == parentPID, message.packet.generation == generation else { return }
+        guard let target = lock.withLock({ closed ? nil : target }) else { return }
+        let packet = message.packet
+        guard packet.version == NDIHelperWire.version, packet.build == NDIHelperWire.build,
+              packet.kind == .audio, message.first == 0, message.second == 0,
+              let block = packet.audio, block.isValid else {
+            close(); failed("Invalid audio block"); return
+        }
+        #if DEBUG
+        NDIAudioTrace.record("ipc-receive", sample: block.sampleTime, generation: generation)
+        #endif
+        switch target.sender.sendAudio(block, epoch: packet.contentEpoch) {
+        case .submitted, .superseded: break
+        case .discontinuity:
+            close(); failed("NDI audio discontinuity. Choose Retry to restart this source."); return
+        }
+        #if DEBUG
+        NDIAudioTrace.record("ack-send", sample: block.sampleTime, generation: generation)
+        #endif
+        guard NDIMachMailbox.send(.init(kind: .audioAccepted, generation: generation,
+            revision: UInt64(block.sampleTime)), to: target.peer.second) else {
+            close(); failed("Audio acknowledgement failed"); return
+        }
     }
 }

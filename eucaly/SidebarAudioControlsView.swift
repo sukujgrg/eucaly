@@ -196,6 +196,7 @@ struct SidebarAudioControlsView: View {
 
             Slider(value: $backgroundAudioVolumeDraft, in: 0.0...1.0, step: 0.01)
                 .controlSize(.small)
+                .help("Background music volume for NDI and local playback. For an NDI-only workspace, enable local listening in Workspace → Monitor Audio Locally.")
                 .disabled(session.backgroundAudioURL == nil)
                 .onChange(of: backgroundAudioVolumeDraft) { _, newValue in
                     onApplyBackgroundAudioVolume(newValue)

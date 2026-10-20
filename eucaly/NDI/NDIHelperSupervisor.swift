@@ -11,7 +11,7 @@ nonisolated final class NDIHelperSupervisor: @unchecked Sendable {
         case audio(UUID, NDIAudioObservation)
         case shutdown(UUID, NDIHelperShutdown)
     }
-    private let queue = DispatchQueue(label: "com.suku.eucaly.ndi.supervisor")
+    private let queue = DispatchQueue(label: "com.suku.eucaly.ndi.supervisor", qos: .userInitiated)
     private let event: @Sendable (Event) -> Void
     private let progressDeadline: TimeInterval
     private var process: Process?
@@ -43,15 +43,18 @@ nonisolated final class NDIHelperSupervisor: @unchecked Sendable {
     #endif
     private let admission = NSLock()
     private var contentEpoch: UInt64 = 0
+    private var routedEpoch: UInt64?
+    private var routeInFlight: UInt64?
+    private var routeStartedAt: TimeInterval?
     private var admittedContentEpoch: UInt64 = 0
     private var admittedGeneration: UUID?
     private var staged: RenderJob?
     private var drainScheduled = false
     private var stagedAudio: [NDIAudioBlock] = []
+    private var admittedAudioCount = 0 // Staged plus unacknowledged; protected by admission.
     private var audioOverflow = false
     private var audioDrainScheduled = false
-    private var audioInFlight: Int64?
-    private var audioStartedAt: TimeInterval?
+    private var audioInFlight: [Int64: TimeInterval] = [:]
     private static var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
 
     init(progressDeadline: TimeInterval = 5, event: @escaping @Sendable (Event) -> Void) {
@@ -66,22 +69,21 @@ nonisolated final class NDIHelperSupervisor: @unchecked Sendable {
             guard process == nil else { event(.failed(generation, "Previous helper has not retired")); return }
             guard configuration.isValid else { event(.failed(generation, "Invalid output helper configuration")); return }
             self.generation = generation; contentEpoch = 0; stopping = false; readyState = false
+            routedEpoch = nil; routeInFlight = nil; routeStartedAt = nil
             self.configuration = configuration; submissionProgressAt = nil; submittedFrames = 0
             // A content fence can arrive while asynchronous launch is pending.
             // Its admission epoch must survive startup until the queued fence runs.
-            admission.lock(); admittedGeneration = generation; staged = nil; stagedAudio.removeAll(); audioOverflow = false; admission.unlock()
-            audioInFlight = nil; audioStartedAt = nil
+            admission.lock(); admittedGeneration = generation; staged = nil; stagedAudio.removeAll(); admittedAudioCount = 0; audioOverflow = false; admission.unlock()
+            audioInFlight.removeAll()
             latestRevision = 0; pending = nil; inFlight = nil; workStartedAt = nil
             startedAt = Self.now
             do {
                 try Self.verifyHelper(executable)
-                control = try NDIMachMailbox(label: "com.suku.eucaly.ndi.control") { [weak self] message in
-                    guard let self else { return }
-                    self.queue.sync { self.receiveControl(message) }
+                control = try NDIMachMailbox(label: "com.suku.eucaly.ndi.control", queue: queue) { [weak self] message in
+                    self?.receiveControl(message)
                 }
-                frames = try NDIMachMailbox(label: "com.suku.eucaly.ndi.frames") { [weak self] message in
-                    guard let self else { return }
-                    self.queue.sync { self.receiveFrame(message) }
+                frames = try NDIMachMailbox(label: "com.suku.eucaly.ndi.frames", queue: queue) { [weak self] message in
+                    self?.receiveFrame(message)
                 }
                 let process = Process(), input = Pipe()
                 process.executableURL = executable; process.standardInput = input
@@ -154,7 +156,7 @@ nonisolated final class NDIHelperSupervisor: @unchecked Sendable {
         }
         switch packet.kind {
         case .hello:
-            guard peer == nil, message.first != 0, message.second == 0, let control, let frames else {
+            guard peer == nil, message.first != 0, message.second != 0, let control, let frames else {
                 fail("Output helper handshake failed"); return
             }
             peer = message // Retain the transferred send right through exit.
@@ -164,7 +166,7 @@ nonisolated final class NDIHelperSupervisor: @unchecked Sendable {
             }
         case .ready:
             guard peer != nil, !readyState, message.first == 0, message.second == 0 else { fail("Invalid helper readiness"); return }
-            readyState = true; sendContentFence()
+            readyState = true; advanceContentSelection()
             if let status = packet.status { event(.status(generation, status)) }
             event(.ready(generation)); sendPending()
         case .status:
@@ -176,11 +178,14 @@ nonisolated final class NDIHelperSupervisor: @unchecked Sendable {
             event(.status(generation, status))
         case .failure:
             fail("Output helper failed: \((packet.detail ?? "unknown error").prefix(240))")
-        case .audioAccepted:
-            guard message.first == 0, message.second == 0, let sample = audioInFlight, packet.revision == UInt64(sample) else {
-                fail("Invalid audio acknowledgement"); return
+        case .routeAccepted:
+            guard readyState, message.first == 0, message.second == 0, packet.contentEpoch == routeInFlight else {
+                fail("Invalid ownership acknowledgement"); return
             }
-            audioInFlight = nil; audioStartedAt = nil; sendNextAudio()
+            routedEpoch = packet.contentEpoch; routeInFlight = nil; routeStartedAt = nil
+            // Only one fence occupies IPC at a time. Rapid switches retain the
+            // latest requested owner, rather than flooding the kernel mailbox.
+            advanceContentSelection(); sendPending(); sendNextAudio()
         case .pong:
             #if DEBUG
             if let token = packet.token { replies.removeValue(forKey: token)?() }
@@ -196,17 +201,24 @@ nonisolated final class NDIHelperSupervisor: @unchecked Sendable {
         // leases remain retained until acknowledged, even when superseded.
         admission.lock()
         guard epoch > admittedContentEpoch else { admission.unlock(); return }
-        admittedContentEpoch = epoch; staged = nil; stagedAudio.removeAll(); audioOverflow = false; admission.unlock()
-        queue.async { [self] in
-            guard epoch > contentEpoch else { return }
-            contentEpoch = epoch; pending = nil
-            // Admission may already belong to a still newer queued owner.
-            // Advancing helper control must never move that boundary backwards.
-            sendContentFence()
+        admittedContentEpoch = epoch; staged = nil
+        admittedAudioCount -= stagedAudio.count; stagedAudio.removeAll(); audioOverflow = false; admission.unlock()
+        queue.async { [self] in advanceContentSelection() }
+    }
+    private func advanceContentSelection() {
+        guard !stopping else { return }
+        admission.lock(); let latest = admittedContentEpoch; admission.unlock()
+        if latest > contentEpoch {
+            contentEpoch = latest
+            if pending?.contentEpoch != latest { pending = nil }
         }
+        // A queued frame/audio drain can precede the closure for a newer owner.
+        // Resolve the actual admission epoch before consuming its staged work.
+        sendContentFence()
     }
     private func sendContentFence() {
-        guard readyState, let peer else { return }
+        guard readyState, !stopping, routeInFlight == nil, routedEpoch != contentEpoch, let peer else { return }
+        routeInFlight = contentEpoch; routeStartedAt = Self.now
         if !NDIMachMailbox.send(.init(kind: .route, generation: generation, contentEpoch: contentEpoch), to: peer.first) {
             fail("NDI ownership handoff failed")
         }
@@ -215,7 +227,12 @@ nonisolated final class NDIHelperSupervisor: @unchecked Sendable {
         guard block.isValid else { return }
         admission.lock()
         guard admittedGeneration == generation, admittedContentEpoch == contentEpoch else { admission.unlock(); return }
-        if stagedAudio.count < 8 { stagedAudio.append(block) } else { audioOverflow = true }
+        if admittedAudioCount < NDIHelperWire.maximumAudioBlocks {
+            stagedAudio.append(block); admittedAudioCount += 1
+        } else { audioOverflow = true }
+        #if DEBUG
+        NDIAudioTrace.record(audioOverflow ? "admission-overrun" : "admit", sample: block.sampleTime, queued: stagedAudio.count, generation: generation)
+        #endif
         guard !audioDrainScheduled else { admission.unlock(); return }
         audioDrainScheduled = true; admission.unlock()
         queue.async { [self] in
@@ -224,14 +241,29 @@ nonisolated final class NDIHelperSupervisor: @unchecked Sendable {
         }
     }
     private func sendNextAudio() {
-        guard readyState, !stopping, configuration.purpose == .sender, let peer else { return }
-        admission.lock()
-        if audioOverflow { admission.unlock(); fail("NDI audio queue overran. Choose Retry to restart this source."); return }
-        guard audioInFlight == nil, !stagedAudio.isEmpty else { admission.unlock(); return }
-        let block = stagedAudio.removeFirst(); admission.unlock()
-        audioInFlight = block.sampleTime; audioStartedAt = Self.now
-        guard NDIMachMailbox.send(.init(kind: .audio, generation: generation, contentEpoch: contentEpoch, audio: block), to: peer.first) else {
-            fail("NDI audio handoff failed. Choose Retry to restart this source."); return
+        advanceContentSelection()
+        guard readyState, !stopping, routedEpoch == contentEpoch, routeInFlight == nil,
+              configuration.purpose == .sender, let peer else { return }
+        admission.lock(); let overran = audioOverflow; admission.unlock()
+        if overran { fail("NDI audio queue overran. Choose Retry to restart this source."); return }
+        // Pipeline three blocks on the private audio port without enlarging
+        // the eight-block total across both processes. Replies reserve their
+        // fourth kernel slot for the one outstanding render acknowledgement.
+        // Ownership and Stop retain their independent control-mailbox capacity.
+        while audioInFlight.count < NDIHelperWire.maximumInFlightAudioBlocks {
+            admission.lock()
+            guard admittedGeneration == generation, admittedContentEpoch == contentEpoch else { admission.unlock(); return }
+            if audioOverflow { admission.unlock(); fail("NDI audio queue overran. Choose Retry to restart this source."); return }
+            guard !stagedAudio.isEmpty else { admission.unlock(); return }
+            let block = stagedAudio.removeFirst(); admission.unlock()
+            guard audioInFlight[block.sampleTime] == nil else { fail("Invalid duplicate audio block"); return }
+            audioInFlight[block.sampleTime] = Self.now
+            #if DEBUG
+            NDIAudioTrace.record("ipc-send", sample: block.sampleTime, generation: generation)
+            #endif
+            guard NDIMachMailbox.send(.init(kind: .audio, generation: generation, contentEpoch: contentEpoch, audio: block), to: peer.second) else {
+                fail("NDI audio handoff failed. Choose Retry to restart this source."); return
+            }
         }
     }
     private func offer(_ request: RenderJob) {
@@ -245,6 +277,7 @@ nonisolated final class NDIHelperSupervisor: @unchecked Sendable {
         queue.async { [self] in
             admission.lock(); let value = staged; staged = nil; drainScheduled = false; admission.unlock()
             guard let request = value else { return }
+            advanceContentSelection()
             guard request.generation == generation, request.contentEpoch == contentEpoch, !stopping, process != nil,
                   request.revision >= latestRevision, request.isValid else { return }
             latestRevision = request.revision; pending = request
@@ -252,9 +285,15 @@ nonisolated final class NDIHelperSupervisor: @unchecked Sendable {
         }
     }
     private func sendPending() {
-        guard readyState, !stopping, inFlight == nil, let request = pending, let peer else { return }
-        pending = nil
-        inFlight = request; workStartedAt = Self.now
+        advanceContentSelection()
+        guard readyState, !stopping, routedEpoch == contentEpoch, routeInFlight == nil,
+              inFlight == nil, let request = pending, let peer else { return }
+        admission.lock()
+        let accepted = admittedGeneration == generation && admittedContentEpoch == request.contentEpoch
+            && request.contentEpoch == contentEpoch
+        if accepted { pending = nil; inFlight = request; workStartedAt = Self.now }
+        admission.unlock()
+        guard accepted else { return }
         let packet: NDIHelperPacket
         var first: mach_port_t = 0, second: mach_port_t = 0
         defer { eucaly_mach_send_release(first); eucaly_mach_send_release(second) }
@@ -275,8 +314,21 @@ nonisolated final class NDIHelperSupervisor: @unchecked Sendable {
     private func receiveFrame(_ message: NDIMachMessage) {
         guard accepts(message) else { return }
         let packet = message.packet
-        guard readyState, packet.version == NDIHelperWire.version, packet.build == NDIHelperWire.build,
-              packet.revision == inFlight?.revision, message.second == 0 else {
+        guard readyState, packet.version == NDIHelperWire.version, packet.build == NDIHelperWire.build else {
+            fail("Output helper returned an invalid frame"); return
+        }
+        if packet.kind == .audioAccepted {
+            guard message.first == 0, message.second == 0, let sample = Int64(exactly: packet.revision),
+                  audioInFlight.removeValue(forKey: sample) != nil else {
+                fail("Invalid audio acknowledgement"); return
+            }
+            #if DEBUG
+            NDIAudioTrace.record("ack-receive", sample: sample, generation: generation)
+            #endif
+            admission.lock(); admittedAudioCount -= 1; admission.unlock()
+            sendNextAudio(); return
+        }
+        guard packet.revision == inFlight?.revision, message.second == 0 else {
             fail("Output helper returned an invalid frame"); return
         }
         if configuration.purpose == .sender {
@@ -313,10 +365,14 @@ nonisolated final class NDIHelperSupervisor: @unchecked Sendable {
         if !readyState && Self.now - startedAt > progressDeadline { fail("Output helper startup timed out") }
         if let due = workStartedAt, Self.now - due > progressDeadline { fail("Output helper made no rendering/submission progress") }
         if let due = submissionProgressAt, Self.now - due > progressDeadline { fail("NDI helper made no submission progress") }
-        if let due = audioStartedAt, Self.now - due > progressDeadline { fail("NDI helper made no audio submission progress") }
+        if let due = audioInFlight.values.min(), Self.now - due > progressDeadline { fail("NDI helper made no audio submission progress") }
+        if let due = routeStartedAt, Self.now - due > progressDeadline { fail("NDI helper made no ownership handoff progress") }
         // No work due (including a source with no receivers) is not a stall.
     }
-    private func fail(_ reason: String) { event(.failed(generation, reason)); retire() }
+    private func fail(_ reason: String) {
+        guard !stopping else { return }
+        event(.failed(generation, reason)); retire()
+    }
     func stop() { queue.async { [self] in retire() } }
     /// Used by app termination. Suspension never waits for SDK work on the UI
     /// thread, and completion means the exact owned child has actually exited.
@@ -331,9 +387,13 @@ nonisolated final class NDIHelperSupervisor: @unchecked Sendable {
     }
     private func retire() {
         guard !stopping, let owned = process else { return }
+        #if DEBUG
+        NDIAudioTrace.flush()
+        #endif
         stopping = true; pending = nil; workStartedAt = nil; submissionProgressAt = nil; timer?.cancel(); timer = nil
-        admission.lock(); admittedGeneration = nil; staged = nil; stagedAudio.removeAll(); admission.unlock()
-        audioInFlight = nil; audioStartedAt = nil
+        admission.lock(); admittedGeneration = nil; staged = nil; stagedAudio.removeAll(); admittedAudioCount = 0; admission.unlock()
+        audioInFlight.removeAll()
+        routeInFlight = nil; routeStartedAt = nil
         let requestedStop = peer.map { NDIMachMailbox.send(.init(kind: .stop, generation: generation), to: $0.first) } ?? false
         // Let the helper flush an empty/key picture and destroy its sender.
         // SIGTERM here would preempt that cleanup and leave cached program on receivers.
@@ -353,8 +413,9 @@ nonisolated final class NDIHelperSupervisor: @unchecked Sendable {
         #if DEBUG
         replies.removeAll()
         #endif
-        admission.lock(); admittedGeneration = nil; admittedContentEpoch = 0; staged = nil; stagedAudio.removeAll(); admission.unlock()
-        audioInFlight = nil; audioStartedAt = nil
+        admission.lock(); admittedGeneration = nil; admittedContentEpoch = 0; staged = nil; stagedAudio.removeAll(); admittedAudioCount = 0; admission.unlock()
+        audioInFlight.removeAll()
+        routedEpoch = nil; routeInFlight = nil; routeStartedAt = nil
         let waiters = exitWaiters; exitWaiters.removeAll()
         for waiter in waiters { waiter.resume() }
     }

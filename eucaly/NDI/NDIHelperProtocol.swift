@@ -5,9 +5,13 @@ import CoreVideo
 /// No SDK types, AVPlayer, bookmarks, file paths or observable state cross IPC.
 /// The schema is shared by the app and its separately linked helper executable.
 nonisolated enum NDIHelperWire {
-    static let version = 9
-    static let build = "ndi-media-2"
+    static let version = 15
+    static let build = "ndi-independent-fences-1"
     static let maximumMessageBytes = 65_536
+    static let maximumAudioBlocks = 8
+    // Audio acknowledgements share the four-slot reply port with one render
+    // acknowledgement; ownership/status/shutdown use the control port.
+    static let maximumInFlightAudioBlocks = 3
     static let width = 1920
     static let height = 1080
     static let maximumSurfaceBytes = width * height * 4
@@ -183,6 +187,10 @@ nonisolated struct NDIHelperStatus: Codable, Sendable {
     var replacedFrames: UInt64 = 0
     var audioBlocks: UInt64 = 0
     var lastAudioSample: Int64 = 0
+    var audioSubmissionAgeMilliseconds: Double = 0
+    var maximumAudioSubmissionAgeMilliseconds: Double = 0
+    var audioSubmissionMilliseconds: Double = 0
+    var maximumAudioSubmissionMilliseconds: Double = 0
     var gpuMilliseconds: Double = 0
     var maximumGPUMilliseconds: Double = 0
     var surfacePoolHighWaterMark: Int = 0
@@ -192,9 +200,15 @@ nonisolated struct NDIHelperStatus: Codable, Sendable {
     var slowCadence = false
     var videoFormat: NDIVideoPixelFormat? = nil
     var processCPUSeconds: Double? = nil // Debug qualification; not a codec-only measurement.
+    #if DEBUG
+    var audioCallInProgress: Bool? = nil
+    var videoCallInProgress: Bool? = nil
+    #endif
 
     var validMetrics: Bool {
-        [effectiveFramesPerSecond, frameAgeMilliseconds, submissionMilliseconds].compactMap { $0 }
+        [effectiveFramesPerSecond, frameAgeMilliseconds, submissionMilliseconds,
+         audioSubmissionAgeMilliseconds, maximumAudioSubmissionAgeMilliseconds,
+         audioSubmissionMilliseconds, maximumAudioSubmissionMilliseconds].compactMap { $0 }
             .allSatisfy { $0.isFinite && $0 >= 0 && $0 <= 1_000_000_000 }
     }
     var performanceNotice: String? {
@@ -260,7 +274,7 @@ nonisolated struct NDITextRenderRequest: Codable, Equatable, Sendable {
 }
 
 nonisolated struct NDIHelperPacket: Codable, Sendable {
-    enum Kind: String, Codable, Sendable { case hello, accepted, ready, status, route, render, media, audio, audioAccepted, audioFrame, rendered, frame, failure, ping, pong, fault, stop, shutdownComplete, shutdownAccepted }
+    enum Kind: String, Codable, Sendable { case hello, accepted, ready, status, route, routeAccepted, render, media, audio, audioAccepted, audioFrame, rendered, frame, failure, ping, pong, fault, stop, shutdownComplete, shutdownAccepted }
     let kind: Kind
     let generation: UUID
     var revision: UInt64 = 0
@@ -291,9 +305,18 @@ nonisolated struct NDIAudioObservation: Codable, Sendable {
     let samples: Int
     let sampleRate: Int
     let timecode: Int64
+    let receivedAtNanoseconds: UInt64 // Helper's SDK capture boundary, before reply/UI scheduling.
     let left: Double
     let right: Double
-    var isValid: Bool { (1...8192).contains(samples) && sampleRate == 48000 && timecode >= 0 && left.isFinite && right.isFinite }
+    var leftRMS: Double = 0
+    var rightRMS: Double = 0
+    var droppedFrames: Int64 = 0
+    var queuedFrames: Int = 0
+    var isValid: Bool {
+        (1...8192).contains(samples) && sampleRate == 48000 && timecode >= 0 && receivedAtNanoseconds > 0
+            && [left, right, leftRMS, rightRMS].allSatisfy(\.isFinite)
+            && leftRMS >= 0 && rightRMS >= 0 && droppedFrames >= 0 && queuedFrames >= 0
+    }
 }
 
 nonisolated struct NDIAudioBlock: Codable, Sendable {
