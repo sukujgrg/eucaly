@@ -8,6 +8,8 @@ final class CacheManagerTests: XCTestCase {
         let directoryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("eucaly-cache-tests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        let cache = CacheManager(diskCacheURL: directoryURL.appendingPathComponent("Cache", isDirectory: true))
+        await cache.waitForDiskIOForTests()
         defer { try? FileManager.default.removeItem(at: directoryURL) }
 
         let fileURL = directoryURL.appendingPathComponent("slide.png")
@@ -16,7 +18,7 @@ final class CacheManagerTests: XCTestCase {
 
         let image = try XCTUnwrap(NSImage(data: originalPNG))
         let size = CGSize(width: 48, height: 27)
-        CacheManager.shared.cacheThumbnail(
+        cache.cacheThumbnail(
             image,
             pngData: originalPNG,
             for: fileURL,
@@ -24,7 +26,7 @@ final class CacheManagerTests: XCTestCase {
             size: size
         )
 
-        let cached = await CacheManager.shared.getCachedThumbnailAsync(
+        let cached = await cache.getCachedThumbnailAsync(
             for: fileURL,
             type: .image,
             size: size
@@ -38,7 +40,7 @@ final class CacheManagerTests: XCTestCase {
             ofItemAtPath: fileURL.path
         )
 
-        let afterReplace = await CacheManager.shared.getCachedThumbnailAsync(
+        let afterReplace = await cache.getCachedThumbnailAsync(
             for: fileURL,
             type: .image,
             size: size
@@ -50,8 +52,10 @@ final class CacheManagerTests: XCTestCase {
         let directoryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("eucaly-cache-unverifiable-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        let cache = CacheManager(diskCacheURL: directoryURL.appendingPathComponent("Cache", isDirectory: true))
+        await cache.waitForDiskIOForTests()
         defer {
-            CacheManager.shared.treatFreshnessAsUnverifiableForTests = false
+            cache.treatFreshnessAsUnverifiableForTests = false
             try? FileManager.default.removeItem(at: directoryURL)
         }
 
@@ -61,7 +65,7 @@ final class CacheManagerTests: XCTestCase {
 
         let image = try XCTUnwrap(NSImage(data: originalPNG))
         let size = CGSize(width: 40, height: 22)
-        CacheManager.shared.cacheThumbnail(
+        cache.cacheThumbnail(
             image,
             pngData: originalPNG,
             for: fileURL,
@@ -69,16 +73,16 @@ final class CacheManagerTests: XCTestCase {
             size: size
         )
 
-        CacheManager.shared.treatFreshnessAsUnverifiableForTests = true
-        let unverifiableMiss = await CacheManager.shared.getCachedThumbnailAsync(
+        cache.treatFreshnessAsUnverifiableForTests = true
+        let unverifiableMiss = await cache.getCachedThumbnailAsync(
             for: fileURL,
             type: .image,
             size: size
         )
         XCTAssertNil(unverifiableMiss)
 
-        CacheManager.shared.treatFreshnessAsUnverifiableForTests = false
-        let restored = await CacheManager.shared.getCachedThumbnailAsync(
+        cache.treatFreshnessAsUnverifiableForTests = false
+        let restored = await cache.getCachedThumbnailAsync(
             for: fileURL,
             type: .image,
             size: size
@@ -90,6 +94,8 @@ final class CacheManagerTests: XCTestCase {
         let directoryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("eucaly-cache-source-date-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        let cache = CacheManager(diskCacheURL: directoryURL.appendingPathComponent("Cache", isDirectory: true))
+        await cache.waitForDiskIOForTests()
         defer { try? FileManager.default.removeItem(at: directoryURL) }
 
         let fileURL = directoryURL.appendingPathComponent("slide.png")
@@ -105,7 +111,7 @@ final class CacheManagerTests: XCTestCase {
         let image = try XCTUnwrap(NSImage(data: originalPNG))
         let size = CGSize(width: 36, height: 20)
         let capturedDate = laterDate.addingTimeInterval(-60)
-        CacheManager.shared.cacheThumbnail(
+        cache.cacheThumbnail(
             image,
             pngData: originalPNG,
             for: fileURL,
@@ -114,7 +120,7 @@ final class CacheManagerTests: XCTestCase {
             sourceModificationDate: capturedDate
         )
 
-        let cached = await CacheManager.shared.getCachedThumbnailAsync(
+        let cached = await cache.getCachedThumbnailAsync(
             for: fileURL,
             type: .image,
             size: size
@@ -126,6 +132,8 @@ final class CacheManagerTests: XCTestCase {
         let directoryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("eucaly-cache-date-precision-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        let cache = CacheManager(diskCacheURL: directoryURL.appendingPathComponent("Cache", isDirectory: true))
+        await cache.waitForDiskIOForTests()
         defer { try? FileManager.default.removeItem(at: directoryURL) }
 
         let fileURL = directoryURL.appendingPathComponent("slide.png")
@@ -144,7 +152,7 @@ final class CacheManagerTests: XCTestCase {
         let image = try XCTUnwrap(NSImage(data: originalPNG))
         let size = CGSize(width: 32, height: 18)
 
-        CacheManager.shared.cacheThumbnail(
+        cache.cacheThumbnail(
             image,
             pngData: originalPNG,
             for: fileURL,
@@ -153,7 +161,7 @@ final class CacheManagerTests: XCTestCase {
             sourceModificationDate: filesystemDate
         )
 
-        let cached = await CacheManager.shared.getCachedThumbnailAsync(
+        let cached = await cache.getCachedThumbnailAsync(
             for: fileURL,
             type: .image,
             size: size
@@ -163,8 +171,8 @@ final class CacheManagerTests: XCTestCase {
         let rounded = Date(timeIntervalSince1970: filesystemDate.timeIntervalSince1970)
         guard filesystemDate > rounded else { return }
 
-        CacheManager.shared.invalidateThumbnail(for: fileURL, type: .image, size: size)
-        CacheManager.shared.cacheThumbnail(
+        cache.invalidateThumbnail(for: fileURL, type: .image, size: size)
+        cache.cacheThumbnail(
             image,
             pngData: originalPNG,
             for: fileURL,
@@ -173,12 +181,104 @@ final class CacheManagerTests: XCTestCase {
             sourceModificationDate: rounded
         )
 
-        let stale = await CacheManager.shared.getCachedThumbnailAsync(
+        let stale = await cache.getCachedThumbnailAsync(
             for: fileURL,
             type: .image,
             size: size
         )
         XCTAssertNil(stale)
+    }
+
+    func testClearWhileFreshnessReadIsQueuedCompletesWithoutInvalidatingTheNewCache() async throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("eucaly-cache-clear-read-\(UUID().uuidString)", isDirectory: true)
+        let cacheURL = directoryURL.appendingPathComponent("Cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let queue = OperationQueue()
+        let cache = CacheManager(diskCacheURL: cacheURL, diskIOQueue: queue)
+        await cache.waitForDiskIOForTests()
+
+        let fileURL = directoryURL.appendingPathComponent("slide.png")
+        let pngData = try makePNGData(color: .red)
+        try pngData.write(to: fileURL)
+        let image = try XCTUnwrap(NSImage(data: pngData))
+        cache.cacheThumbnail(image, pngData: pngData, for: fileURL, type: .image)
+        await cache.waitForDiskIOForTests()
+
+        queue.isSuspended = true
+        defer { queue.isSuspended = false }
+        let readQueued = expectation(description: "Freshness read queued behind suspended I/O")
+        let readCompleted = expectation(description: "Queued read resumes after clear")
+        cache.didEnqueueDiskReadForTests = { readQueued.fulfill() }
+        let readTask = Task { @MainActor in
+            let result = await cache.getCachedThumbnailAsync(for: fileURL, type: .image)
+            XCTAssertNil(result, "A read started before clear must not restore the old thumbnail")
+            readCompleted.fulfill()
+        }
+        defer { readTask.cancel() }
+        await fulfillment(of: [readQueued], timeout: 2)
+        cache.didEnqueueDiskReadForTests = nil
+
+        cache.clearAllCaches()
+        let replacementData = try makePNGData(color: .blue)
+        try replacementData.write(to: fileURL)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(120)],
+            ofItemAtPath: fileURL.path
+        )
+        cache.cacheThumbnail(
+            try XCTUnwrap(NSImage(data: replacementData)),
+            pngData: replacementData,
+            for: fileURL,
+            type: .image
+        )
+        queue.isSuspended = false
+        await fulfillment(of: [readCompleted], timeout: 2)
+        await cache.waitForDiskIOForTests()
+
+        XCTAssertEqual(cache.getCacheStats().memoryThumbnails, 1)
+        let replacement = await cache.getCachedThumbnailAsync(for: fileURL, type: .image)
+        XCTAssertNotNil(replacement, "The old freshness result must not invalidate a thumbnail requested after clear")
+        let thumbnails = try FileManager.default.contentsOfDirectory(at: cacheURL, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "png" }
+        XCTAssertEqual(thumbnails.count, 1)
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(thumbnails.first)), replacementData)
+    }
+
+    func testClearRemovesQueuedOldWritesAndKeepsWritesRequestedAfterClear() async throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("eucaly-cache-clear-write-\(UUID().uuidString)", isDirectory: true)
+        let cacheURL = directoryURL.appendingPathComponent("Cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let queue = OperationQueue()
+        let cache = CacheManager(diskCacheURL: cacheURL, diskIOQueue: queue)
+        await cache.waitForDiskIOForTests()
+
+        let oldSource = directoryURL.appendingPathComponent("old.png")
+        let newSource = directoryURL.appendingPathComponent("new.png")
+        let oldData = try makePNGData(color: .red)
+        let newData = try makePNGData(color: .blue)
+        try oldData.write(to: oldSource)
+        try newData.write(to: newSource)
+
+        queue.isSuspended = true
+        defer { queue.isSuspended = false }
+        cache.cacheThumbnail(try XCTUnwrap(NSImage(data: oldData)), pngData: oldData, for: oldSource, type: .image)
+        cache.clearAllCaches()
+        cache.cacheThumbnail(try XCTUnwrap(NSImage(data: newData)), pngData: newData, for: newSource, type: .image)
+        queue.isSuspended = false
+        await cache.waitForDiskIOForTests()
+
+        let thumbnails = try FileManager.default.contentsOfDirectory(at: cacheURL, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "png" }
+        XCTAssertEqual(thumbnails.count, 1)
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(thumbnails.first)), newData)
+        let oldThumbnail = await cache.getCachedThumbnailAsync(for: oldSource, type: .image)
+        let newThumbnail = await cache.getCachedThumbnailAsync(for: newSource, type: .image)
+        XCTAssertNil(oldThumbnail)
+        XCTAssertNotNil(newThumbnail)
     }
 
     private static func dateThatRoundsDownThroughUnixEpoch() -> Date? {

@@ -14,6 +14,8 @@ private struct PlaylistDocument: Codable {
 
 @MainActor
 final class PlaylistStore: ObservableObject {
+    static let shared = PlaylistStore()
+
     @Published private(set) var entries: [PlaylistEntry] = []
 
     private var rootURL: URL?
@@ -40,19 +42,7 @@ final class PlaylistStore: ObservableObject {
             try? fileManager.createDirectory(at: playlistDirectory, withIntermediateDirectories: true)
         }
 
-        guard let playlistDocumentURL else {
-            entries = []
-            return
-        }
-        guard let data = try? Data(contentsOf: playlistDocumentURL) else {
-            entries = []
-            return
-        }
-        guard let decoded = try? JSONDecoder().decode(PlaylistDocument.self, from: data) else {
-            entries = []
-            return
-        }
-        entries = decoded.entries
+        entries = (try? readEntries()) ?? []
     }
 
     @discardableResult
@@ -61,35 +51,39 @@ final class PlaylistStore: ObservableObject {
         guard let relativePath = makeRelativePath(for: url, fromRoot: root) else { return nil }
 
         let newEntry = PlaylistEntry(id: UUID(), relativePath: relativePath, addedAt: Date())
-        if let anchorID, let anchorIndex = entries.firstIndex(where: { $0.id == anchorID }) {
-            entries.insert(newEntry, at: anchorIndex + 1)
-        } else {
-            entries.append(newEntry)
+        let saved = updateEntries { entries in
+            if let anchorID, let anchorIndex = entries.firstIndex(where: { $0.id == anchorID }) {
+                entries.insert(newEntry, at: anchorIndex + 1)
+            } else {
+                entries.append(newEntry)
+            }
         }
-        persist()
-        return newEntry.id
+        return saved ? newEntry.id : nil
     }
 
     func remove(ids: Set<UUID>) {
         guard !ids.isEmpty else { return }
-        entries.removeAll { ids.contains($0.id) }
-        persist()
+        updateEntries { $0.removeAll { ids.contains($0.id) } }
     }
 
     func moveUp(ids: Set<UUID>) {
-        guard entries.count > 1, !ids.isEmpty else { return }
-        for index in 1..<entries.count where ids.contains(entries[index].id) && !ids.contains(entries[index - 1].id) {
-            entries.swapAt(index, index - 1)
+        guard !ids.isEmpty else { return }
+        updateEntries { entries in
+            guard entries.count > 1 else { return }
+            for index in 1..<entries.count where ids.contains(entries[index].id) && !ids.contains(entries[index - 1].id) {
+                entries.swapAt(index, index - 1)
+            }
         }
-        persist()
     }
 
     func moveDown(ids: Set<UUID>) {
-        guard entries.count > 1, !ids.isEmpty else { return }
-        for index in stride(from: entries.count - 2, through: 0, by: -1) where ids.contains(entries[index].id) && !ids.contains(entries[index + 1].id) {
-            entries.swapAt(index, index + 1)
+        guard !ids.isEmpty else { return }
+        updateEntries { entries in
+            guard entries.count > 1 else { return }
+            for index in stride(from: entries.count - 2, through: 0, by: -1) where ids.contains(entries[index].id) && !ids.contains(entries[index + 1].id) {
+                entries.swapAt(index, index + 1)
+            }
         }
-        persist()
     }
 
     func resolvedURL(for entry: PlaylistEntry) -> URL? {
@@ -103,11 +97,32 @@ final class PlaylistStore: ObservableObject {
         return resolvedURL(for: entry)
     }
 
-    private func persist() {
-        guard let playlistDocumentURL else { return }
-        let document = PlaylistDocument(version: 1, entries: entries)
-        guard let data = try? JSONEncoder().encode(document) else { return }
-        try? data.write(to: playlistDocumentURL, options: .atomic)
+    private func readEntries() throws -> [PlaylistEntry] {
+        guard let playlistDocumentURL else { return [] }
+        do {
+            let data = try Data(contentsOf: playlistDocumentURL)
+            return try JSONDecoder().decode(PlaylistDocument.self, from: data).entries
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            return []
+        }
+    }
+
+    /// Mutations use the latest saved order, even for separately constructed stores.
+    /// An unreadable document must not be replaced by an empty fallback snapshot.
+    @discardableResult
+    private func updateEntries(_ update: (inout [PlaylistEntry]) -> Void) -> Bool {
+        guard let playlistDirectoryURL, let playlistDocumentURL else { return false }
+        do {
+            var latestEntries = try readEntries()
+            update(&latestEntries)
+            let data = try JSONEncoder().encode(PlaylistDocument(version: 1, entries: latestEntries))
+            try fileManager.createDirectory(at: playlistDirectoryURL, withIntermediateDirectories: true)
+            try data.write(to: playlistDocumentURL, options: .atomic)
+            entries = latestEntries
+            return true
+        } catch {
+            return false
+        }
     }
 
     private func makeRelativePath(for url: URL, fromRoot root: URL) -> String? {

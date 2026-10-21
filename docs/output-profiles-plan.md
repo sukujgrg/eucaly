@@ -23,7 +23,7 @@ connection survive workspace/content-type changes. Transparent surrounds and
 actual empty/key replacement frames reveal cameras when independent opaque
 backgrounds are absent. Clear Current leaves backgrounds/music intact. The explicit
 local music owner and saved network music route are never silently replaced on move.
-Webpages and window capture retain their native-only limits.
+Window capture retains its native-only limit.
 
 Version 6 migrates existing rows to Home, preserves both legacy NDI sources
 as generic destinations with their names/identities/appearance/music, resolves

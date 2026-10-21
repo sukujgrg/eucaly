@@ -1067,37 +1067,6 @@ final class OutputSettingsTests: XCTestCase {
         XCTAssertFalse(fixture.outputs.isRunning, "Correcting settings prepares the output; Show remains explicit")
     }
 
-    func testWebpageNoticeRevalidatesWithoutReplacingAnotherWorkspacesLiveLyrics() throws {
-        let fixture = OutputSettingsFixture(monitors: true)
-        defer { fixture.close() }
-        let live = PresentationSession(projectionDisplays: fixture.displays, outputCoordinator: fixture.outputs)
-        live.setSlides(LyricsParser.parseDocument("Verse\nLive Current").slides); live.showSlides()
-        let owner = fixture.outputs.ownership.source, current = live.currentSlideID, snapshot = fixture.outputs.snapshot.current
-        let prepared = PresentationSession(projectionDisplays: fixture.displays, outputCoordinator: fixture.outputs)
-        let extra = OutputDestinationConfiguration(name: "Extra Audience", profileID: OutputProfile.audienceID, monitor: nil, workspaceID: prepared.outputSourceID)
-        let primary = OutputDestinationConfiguration(name: "Prepared Audience", profileID: OutputProfile.audienceID, monitor: nil, workspaceID: prepared.outputSourceID)
-        fixture.store.edit { $0.destinations += [primary, extra] }
-        prepared.setSlides([.init(index: 1, lines: [], label: "Web", videoURL: nil, pdfURL: nil, pdfPageIndex: nil,
-                                 imageURL: nil, webpageURL: URL(string: "https://example.invalid"))])
-        let preparedCurrent = prepared.currentSlideID
-        prepared.showSlides()
-        XCTAssertTrue(try XCTUnwrap(prepared.projectionDisplayIssue).contains("one Audience"))
-        fixture.store.edit { $0.profiles[0].alignment = "left" }
-        XCTAssertTrue(try XCTUnwrap(prepared.projectionDisplayIssue).contains("one Audience"))
-        let monitor = try XCTUnwrap(fixture.store.document.destinations[0].monitor)
-        XCTAssertFalse(fixture.outputs.assignMonitor(monitor, to: extra.id))
-        XCTAssertTrue(fixture.outputs.assignMonitor(nil, to: extra.id))
-        XCTAssertTrue(try XCTUnwrap(prepared.projectionDisplayIssue).contains("one Audience"), "An unrelated corrected assignment must not clear the webpage constraint")
-        XCTAssertNil(fixture.store.setEnabled(false, for: extra.id))
-        XCTAssertNil(fixture.outputs.issue)
-        XCTAssertTrue(try XCTUnwrap(prepared.projectionDisplayIssue).contains("available monitor"), "A workspace without a usable assigned monitor retains its own preflight notice")
-        XCTAssertEqual(fixture.outputs.ownership.source, owner)
-        XCTAssertEqual(live.currentSlideID, current)
-        XCTAssertEqual(prepared.currentSlideID, preparedCurrent)
-        XCTAssertEqual(fixture.outputs.snapshot.current, snapshot)
-        XCTAssertTrue(fixture.outputs.isOpen(fixture.store.document.destinations[0].id))
-    }
-
     func testDisconnectedNoticeSurvivesStyleEditsAndReconnectUntilExplicitShow() throws {
         let monitor = ProjectionMonitor(id: 1, identity: UUID().uuidString, name: "Audience display", frame: .init(x: 0, y: 0, width: 1920, height: 1080))
         let inventory = OutputSettingsMonitorInventory([monitor])

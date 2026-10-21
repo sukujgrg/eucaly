@@ -4,7 +4,6 @@ import AVKit
 import AVFoundation
 import Combine
 import PDFKit
-import WebKit
 
 @MainActor
 final class PlaybackProgressStore: ObservableObject {
@@ -68,8 +67,6 @@ final class PresentationSession: NSObject, ObservableObject {
     @Published var currentSlideID: Slide.ID? { didSet { scheduleOutputChange() } }
     @Published var isPresenting = false { didSet { scheduleOutputChange() } }
     @Published var videoMuted = false { didSet { outputCoordinator.refreshMedia() } }
-    // Current and projection webpage mute state; Preview keeps a separate local mute state.
-    @Published var webpageMuted = false
     @Published var videoPaused = false { didSet { outputCoordinator.refreshMedia() } }
     @Published var videoLoop = false { didSet { outputCoordinator.refreshMedia() } }
     @Published var videoFill = false { didSet { outputCoordinator.refreshMedia() } }
@@ -111,6 +108,10 @@ final class PresentationSession: NSObject, ObservableObject {
     @Published var projectionDisplayIssue: String?
     private var currentThumbnailColumnCount: Int = 1
     private var currentDocumentRevision: UInt64 = 0
+    // A page's stable slide ID does not change when its source is reloaded.
+    // Native PDF views also need this workspace's explicit-load identity.
+    var pdfDocumentRevision: UInt64 { currentDocumentRevision }
+    let pdfDocumentCache = PDFDocumentCache()
     private var pendingNavigationCount = 0
     private var navigationActionOrder: UInt64?
     private var navigationGeneration = UUID()
@@ -247,6 +248,7 @@ final class PresentationSession: NSObject, ObservableObject {
         preferredSelectionIndex: Int? = nil
     ) {
         currentDocumentRevision &+= 1
+        pdfDocumentCache.clear()
         let preservedSelection = preferredSelection ?? currentSlideID
         pdfSlideSource = nil
         currentLyricsSourceURL = slides.isEmpty ? nil : lyricsSourceURL
@@ -261,7 +263,6 @@ final class PresentationSession: NSObject, ObservableObject {
             currentSlideID = slides.first?.id
         }
         resetVideoPlaybackProgress()
-        syncPDFDocumentCache()
     }
 
     func setPDFSlideSource(
@@ -270,6 +271,7 @@ final class PresentationSession: NSObject, ObservableObject {
         preferredSelectionIndex: Int? = nil
     ) {
         currentDocumentRevision &+= 1
+        pdfDocumentCache.clear()
         slides = []
         currentLyricsSourceURL = nil
         pdfSlideSource = source
@@ -284,33 +286,19 @@ final class PresentationSession: NSObject, ObservableObject {
             currentSlideID = PDFSlideCatalog.slide(url: source.url, pageIndex: 0).id
         }
         resetVideoPlaybackProgress()
-        syncPDFDocumentCache()
     }
 
     func clearSlides() {
         cancelPendingProjection()
         outputCoordinator.clear(for: self)
         currentDocumentRevision &+= 1
+        pdfDocumentCache.clear()
         slides = []
         currentLyricsSourceURL = nil
         pdfSlideSource = nil
         currentSlideID = nil
         setCurrentResourceScope(nil)
         resetVideoPlaybackProgress()
-        syncPDFDocumentCache()
-    }
-
-    private func syncPDFDocumentCache() {
-        var retainedURLs = Set<URL>()
-        if let pdfSlideSource {
-            retainedURLs.insert(pdfSlideSource.url)
-        }
-        for slide in slides {
-            if let pdfURL = slide.pdfURL {
-                retainedURLs.insert(pdfURL)
-            }
-        }
-        PDFDocumentCache.shared.releaseDocuments(notIn: retainedURLs)
     }
 
     func stopPresentation() {
@@ -650,47 +638,74 @@ struct PresentationView: View {
 struct PDFSlideView: NSViewRepresentable {
     let url: URL
     let pageIndex: Int
+    let documentRevision: UInt64
+    let documentCache: PDFDocumentCache
 
-    func makeNSView(context: Context) -> PDFView {
-        let view = PDFView()
-        view.autoScales = true
-        view.displayMode = .singlePage
-        view.displayDirection = .vertical
-        view.backgroundColor = .clear
-        view.displaysPageBreaks = false
-        view.pageBreakMargins = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
-        view.displaysAsBook = false
-        if let document = PDFDocumentCache.shared.document(for: url),
-           let page = document.page(at: pageIndex) {
-            view.document = document
-            view.go(to: page)
-        }
+    func makeNSView(context: Context) -> PDFSlideNSView {
+        let view = PDFSlideNSView(frame: .zero)
+        update(view)
         return view
     }
 
-    func updateNSView(_ nsView: PDFView, context: Context) {
-        if nsView.document?.documentURL != url {
-            nsView.document = PDFDocumentCache.shared.document(for: url)
-        }
-        nsView.backgroundColor = .clear
-        nsView.displaysPageBreaks = false
-        nsView.pageBreakMargins = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
-        nsView.displaysAsBook = false
-        if let document = nsView.document, let page = document.page(at: pageIndex) {
-            nsView.go(to: page)
-        }
+    func updateNSView(_ nsView: PDFSlideNSView, context: Context) {
+        update(nsView)
+    }
+
+    private func update(_ view: PDFSlideNSView) {
+        view.display(url: url, pageIndex: pageIndex, revision: documentRevision, cache: documentCache)
     }
 }
 
+/// A page change reuses its accepted document. An explicit Current load changes
+/// the revision, even when its URL and page-derived slide identity are unchanged.
+final class PDFSlideNSView: PDFView {
+    private struct Source: Equatable {
+        let url: URL
+        let revision: UInt64
+    }
+    private var displayedSource: Source?
+    private weak var displayedCache: PDFDocumentCache?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        configure()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configure()
+    }
+
+    private func configure() {
+        autoScales = true
+        displayMode = .singlePage
+        displayDirection = .vertical
+        backgroundColor = .clear
+        displaysPageBreaks = false
+        pageBreakMargins = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+        displaysAsBook = false
+    }
+
+    func display(url: URL, pageIndex: Int, revision: UInt64, cache: PDFDocumentCache) {
+        let source = Source(url: url.standardizedFileURL, revision: revision)
+        if displayedSource != source || displayedCache !== cache {
+            document = cache.document(for: url)
+            displayedSource = source
+            displayedCache = cache
+        }
+        if let page = document?.page(at: pageIndex) { go(to: page) }
+    }
+}
+
+/// Each prepared workspace retains at most three native documents. Reloading or
+/// clearing its Current cannot invalidate another workspace's accepted PDF.
 @MainActor
 final class PDFDocumentCache {
-    static let shared = PDFDocumentCache()
-
     private let maxCachedDocuments = 3
     private var documents: [URL: PDFDocument] = [:]
     private var accessOrder: [URL] = []
 
-    private init() {}
+    init() {}
 
     func document(for url: URL) -> PDFDocument? {
         let key = url.standardizedFileURL
@@ -710,20 +725,6 @@ final class PDFDocumentCache {
         return document
     }
 
-    func releaseDocument(for url: URL) {
-        let key = url.standardizedFileURL
-        documents.removeValue(forKey: key)
-        accessOrder.removeAll { $0 == key }
-    }
-
-    func releaseDocuments(notIn retainedURLs: Set<URL>) {
-        let retained = Set(retainedURLs.map(\.standardizedFileURL))
-        for url in Array(documents.keys) where !retained.contains(url) {
-            documents.removeValue(forKey: url)
-            accessOrder.removeAll { $0 == url }
-        }
-    }
-
     func clear() {
         documents.removeAll()
         accessOrder.removeAll()
@@ -732,602 +733,6 @@ final class PDFDocumentCache {
     private func touch(_ url: URL) {
         accessOrder.removeAll { $0 == url }
         accessOrder.append(url)
-    }
-}
-
-struct WebpageSlideView: View {
-    let url: URL
-    let navigationRevision: Int
-    let isMuted: Bool
-
-    var body: some View {
-        WebpageViewRepresentable(
-            url: url,
-            isMuted: isMuted
-        )
-            .id(WebpageSlideCatalog.viewIdentity(url: url, navigationRevision: navigationRevision))
-            .background(Color.white)
-    }
-}
-
-private let webpageMuteBootstrapScript = """
-(function() {
-  window.__eucalyAudioContexts = window.__eucalyAudioContexts || [];
-
-  const mediaState = new WeakMap();
-
-  const applyMuteToMediaElement = function(element, muted) {
-    if (!mediaState.has(element)) {
-      mediaState.set(element, {
-        volume: typeof element.volume === 'number' ? element.volume : 1
-      });
-    }
-
-    const state = mediaState.get(element);
-
-    if (muted && typeof element.volume === 'number') {
-      state.volume = element.volume;
-    }
-
-    element.defaultMuted = muted;
-    element.muted = muted;
-
-    if (typeof element.volume === 'number') {
-      element.volume = muted ? 0 : state.volume;
-    }
-  };
-
-  const applyMuteToMediaTree = function(root, muted) {
-    if (!root || !root.querySelectorAll) {
-      return;
-    }
-
-    root.querySelectorAll('audio,video').forEach(function(element) {
-      applyMuteToMediaElement(element, muted);
-    });
-  };
-
-  const wrapAudioContextConstructor = function(name) {
-    const Original = window[name];
-    if (!Original || Original.__eucalyWrapped) {
-      return;
-    }
-
-    const Wrapped = function(...args) {
-      const context = new Original(...args);
-      window.__eucalyAudioContexts.push(context);
-
-      if (window.__eucalyMuted) {
-        try {
-          context.suspend();
-        } catch (error) {}
-      }
-
-      return context;
-    };
-
-    Wrapped.prototype = Original.prototype;
-    Object.setPrototypeOf(Wrapped, Original);
-    Wrapped.__eucalyWrapped = true;
-    window[name] = Wrapped;
-  };
-
-  wrapAudioContextConstructor('AudioContext');
-  wrapAudioContextConstructor('webkitAudioContext');
-
-  if (!window.__eucalyMediaPlayPatched && window.HTMLMediaElement) {
-    const originalPlay = window.HTMLMediaElement.prototype.play;
-
-    window.HTMLMediaElement.prototype.play = function(...args) {
-      applyMuteToMediaElement(this, !!window.__eucalyMuted);
-      return originalPlay.apply(this, args);
-    };
-
-    window.__eucalyMediaPlayPatched = true;
-  }
-
-  window.__eucalyApplyMute = function(muted) {
-    window.__eucalyMuted = muted;
-    applyMuteToMediaTree(document, muted);
-    window.__eucalyAudioContexts.forEach(function(context) {
-      try {
-        if (muted) {
-          context.suspend();
-        } else {
-          context.resume();
-        }
-      } catch (error) {}
-    });
-
-    if (!window.__eucalyMuteObserver) {
-      window.__eucalyMuteObserver = new MutationObserver(function() {
-        applyMuteToMediaTree(document, !!window.__eucalyMuted);
-      });
-
-      const target = document.documentElement || document.body;
-      if (target) {
-        window.__eucalyMuteObserver.observe(target, {
-          childList: true,
-          subtree: true
-        });
-      }
-    }
-  };
-})();
-"""
-
-private let webpageNavigationBridgeScript = """
-(function() {
-  if (window.__eucalyNavigationBridgeInstalled) {
-    return;
-  }
-  window.__eucalyNavigationBridgeInstalled = true;
-
-  const postNavigation = function() {
-    try {
-      window.webkit.messageHandlers.eucalyNavigation.postMessage(window.location.href);
-    } catch (_) {
-    }
-  };
-
-  const schedulePostNavigation = function() {
-    setTimeout(postNavigation, 0);
-  };
-
-  const wrapHistoryMethod = function(name) {
-    const original = window.history && window.history[name];
-    if (typeof original !== 'function') {
-      return;
-    }
-
-    window.history[name] = function() {
-      const result = original.apply(this, arguments);
-      schedulePostNavigation();
-      return result;
-    };
-  };
-
-  wrapHistoryMethod('pushState');
-  wrapHistoryMethod('replaceState');
-  window.addEventListener('popstate', schedulePostNavigation);
-  window.addEventListener('hashchange', schedulePostNavigation);
-})();
-"""
-
-final class WebpageContainerNSView: NSView {
-    let webView: WKWebView
-
-    private let overlayView = WebpageOverlayView()
-
-    init(webView: WKWebView) {
-        self.webView = webView
-        super.init(frame: .zero)
-
-        translatesAutoresizingMaskIntoConstraints = false
-        wantsLayer = true
-
-        webView.translatesAutoresizingMaskIntoConstraints = false
-        overlayView.translatesAutoresizingMaskIntoConstraints = false
-
-        addSubview(webView)
-        addSubview(overlayView)
-
-        NSLayoutConstraint.activate([
-            webView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            webView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            webView.topAnchor.constraint(equalTo: topAnchor),
-            webView.bottomAnchor.constraint(equalTo: bottomAnchor),
-            overlayView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            overlayView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            overlayView.topAnchor.constraint(equalTo: topAnchor),
-            overlayView.bottomAnchor.constraint(equalTo: bottomAnchor)
-        ])
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        nil
-    }
-
-    func showLoading(for url: URL?) {
-        overlayView.showLoading(for: url)
-    }
-
-    func showFailure(for url: URL, message: String, retryTarget: AnyObject, action: Selector) {
-        overlayView.showFailure(
-            for: url,
-            message: message,
-            retryTarget: retryTarget,
-            action: action
-        )
-    }
-
-    func hideStatusOverlay() {
-        overlayView.isHidden = true
-    }
-}
-
-final class WebpageOverlayView: NSVisualEffectView {
-    private let statusIconView = NSImageView()
-
-    private let statusSpinner = NSProgressIndicator()
-
-    private let titleField = NSTextField(labelWithString: "")
-
-    private let subtitleField = NSTextField(wrappingLabelWithString: "")
-
-    private let retryButton = NSButton(title: "Retry", target: nil, action: nil)
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-
-        material = .hudWindow
-        blendingMode = .withinWindow
-        state = .active
-        wantsLayer = true
-        layer?.cornerRadius = 16
-        layer?.masksToBounds = true
-
-        statusIconView.translatesAutoresizingMaskIntoConstraints = false
-        statusIconView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 28, weight: .medium)
-        statusIconView.contentTintColor = .secondaryLabelColor
-
-        statusSpinner.translatesAutoresizingMaskIntoConstraints = false
-        statusSpinner.style = .spinning
-        statusSpinner.controlSize = .regular
-        statusSpinner.isDisplayedWhenStopped = false
-
-        titleField.translatesAutoresizingMaskIntoConstraints = false
-        titleField.font = .preferredFont(forTextStyle: .title3)
-        titleField.alignment = .center
-        titleField.textColor = .labelColor
-
-        subtitleField.translatesAutoresizingMaskIntoConstraints = false
-        subtitleField.font = .preferredFont(forTextStyle: .body)
-        subtitleField.alignment = .center
-        subtitleField.lineBreakMode = .byWordWrapping
-        subtitleField.maximumNumberOfLines = 4
-        subtitleField.textColor = .secondaryLabelColor
-
-        retryButton.translatesAutoresizingMaskIntoConstraints = false
-        retryButton.bezelStyle = .rounded
-        retryButton.controlSize = .large
-        retryButton.isHidden = true
-
-        let stackView = NSStackView(views: [
-            statusIconView,
-            statusSpinner,
-            titleField,
-            subtitleField,
-            retryButton
-        ])
-        stackView.translatesAutoresizingMaskIntoConstraints = false
-        stackView.orientation = .vertical
-        stackView.alignment = .centerX
-        stackView.spacing = 12
-
-        addSubview(stackView)
-
-        NSLayoutConstraint.activate([
-            stackView.centerXAnchor.constraint(equalTo: centerXAnchor),
-            stackView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            stackView.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 28),
-            stackView.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -28),
-            stackView.widthAnchor.constraint(lessThanOrEqualToConstant: 520)
-        ])
-
-        isHidden = true
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        nil
-    }
-
-    func showLoading(for url: URL?) {
-        let host = url?.host(percentEncoded: false) ?? url?.absoluteString ?? ""
-
-        isHidden = false
-        retryButton.isHidden = true
-        retryButton.target = nil
-        retryButton.action = nil
-
-        statusIconView.image = NSImage(systemSymbolName: "globe", accessibilityDescription: nil)
-        statusIconView.isHidden = false
-        statusSpinner.startAnimation(nil)
-
-        titleField.stringValue = "Loading webpage"
-        subtitleField.stringValue = host
-    }
-
-    func showFailure(for url: URL, message: String, retryTarget: AnyObject, action: Selector) {
-        let host = url.host(percentEncoded: false) ?? url.absoluteString
-
-        isHidden = false
-        statusSpinner.stopAnimation(nil)
-        retryButton.isHidden = false
-        retryButton.target = retryTarget
-        retryButton.action = action
-
-        statusIconView.image = NSImage(systemSymbolName: "wifi.exclamationmark", accessibilityDescription: nil)
-        statusIconView.isHidden = false
-
-        titleField.stringValue = "Unable to load webpage"
-        subtitleField.stringValue = "\(host)\n\(message)"
-    }
-}
-
-struct WebpageViewRepresentable: NSViewRepresentable {
-    private static let navigationMessageName = "eucalyNavigation"
-
-    let url: URL
-    var isMuted: Bool = false
-    var onURLChange: ((_ newURL: URL, _ previousURL: URL) -> Void)? = nil
-    var onTitleChange: ((String, URL) -> Void)? = nil
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(onURLChange: onURLChange, onTitleChange: onTitleChange)
-    }
-
-    func makeNSView(context: Context) -> WebpageContainerNSView {
-        let configuration = WKWebViewConfiguration()
-        let userContentController = WKUserContentController()
-        configuration.defaultWebpagePreferences.allowsContentJavaScript = true
-        configuration.websiteDataStore = .default()
-        userContentController.addUserScript(
-            WKUserScript(
-                source: webpageMuteBootstrapScript,
-                injectionTime: .atDocumentStart,
-                forMainFrameOnly: false
-            )
-        )
-        userContentController.addUserScript(
-            WKUserScript(
-                source: webpageNavigationBridgeScript,
-                injectionTime: .atDocumentStart,
-                forMainFrameOnly: false
-            )
-        )
-        userContentController.add(context.coordinator, name: Self.navigationMessageName)
-        configuration.userContentController = userContentController
-        let webView = WKWebView(frame: .zero, configuration: configuration)
-        webView.allowsMagnification = false
-        webView.allowsBackForwardNavigationGestures = false
-        webView.underPageBackgroundColor = .windowBackgroundColor
-        webView.navigationDelegate = context.coordinator
-        webView.uiDelegate = context.coordinator
-        let containerView = WebpageContainerNSView(webView: webView)
-        context.coordinator.setMute(isMuted, in: containerView)
-        context.coordinator.load(url: url, in: containerView)
-        return containerView
-    }
-
-    func updateNSView(_ nsView: WebpageContainerNSView, context: Context) {
-        context.coordinator.updateCallbacks(onURLChange: onURLChange, onTitleChange: onTitleChange)
-        context.coordinator.setMute(isMuted, in: nsView)
-        context.coordinator.load(url: url, in: nsView)
-    }
-
-    static func dismantleNSView(_ nsView: WebpageContainerNSView, coordinator: Coordinator) {
-        coordinator.teardown(nsView)
-    }
-
-    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
-        private var requestedURL: URL?
-        private var lastReportedURL: URL?
-        private var isShowingFailure = false
-        private var isMuted = false
-        private var onURLChange: ((_ newURL: URL, _ previousURL: URL) -> Void)?
-        private var onTitleChange: ((String, URL) -> Void)?
-        private var urlObservation: NSKeyValueObservation?
-        private var titleObservation: NSKeyValueObservation?
-        private weak var currentContainerView: WebpageContainerNSView?
-
-        init(
-            onURLChange: ((_ newURL: URL, _ previousURL: URL) -> Void)? = nil,
-            onTitleChange: ((String, URL) -> Void)? = nil
-        ) {
-            self.onURLChange = onURLChange
-            self.onTitleChange = onTitleChange
-        }
-
-        func updateCallbacks(
-            onURLChange: ((_ newURL: URL, _ previousURL: URL) -> Void)?,
-            onTitleChange: ((String, URL) -> Void)?
-        ) {
-            self.onURLChange = onURLChange
-            self.onTitleChange = onTitleChange
-        }
-
-        func load(url: URL, in containerView: WebpageContainerNSView) {
-            currentContainerView = containerView
-            attachObservers(to: containerView.webView)
-            let webView = containerView.webView
-
-            if requestedURL == url && !isShowingFailure {
-                containerView.hideStatusOverlay()
-                return
-            }
-
-            if !isShowingFailure,
-               !webView.isLoading,
-               let settledURL = webView.url,
-               WebpageURLMatcher.isSupported(settledURL),
-               WebpageURLMatcher.representSamePage(settledURL, url) {
-                requestedURL = url
-                if !WebpageURLMatcher.representSamePage(lastReportedURL, settledURL) {
-                    reportSettledURL(from: webView)
-                } else {
-                    containerView.hideStatusOverlay()
-                }
-                return
-            }
-
-            containerView.showLoading(for: url)
-            requestedURL = url
-            lastReportedURL = nil
-            isShowingFailure = false
-            webView.load(URLRequest(url: url))
-        }
-
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            isShowingFailure = false
-            currentContainerView?.hideStatusOverlay()
-            applyMute(in: webView)
-            reportSettledURL(from: webView)
-        }
-
-        func webView(
-            _ webView: WKWebView,
-            decidePolicyFor navigationAction: WKNavigationAction,
-            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
-        ) {
-            if navigationAction.targetFrame == nil {
-                webView.load(navigationAction.request)
-                decisionHandler(.cancel)
-                return
-            }
-            decisionHandler(.allow)
-        }
-
-        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            guard !shouldIgnoreFailure(error) else { return }
-            showFailure(error, in: webView)
-        }
-
-        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-            guard !shouldIgnoreFailure(error) else { return }
-            showFailure(error, in: webView)
-        }
-
-        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-            guard let requestedURL, let currentContainerView else { return }
-            isShowingFailure = false
-            lastReportedURL = nil
-            currentContainerView.showLoading(for: requestedURL)
-            webView.load(URLRequest(url: requestedURL))
-        }
-
-        func webView(
-            _ webView: WKWebView,
-            runOpenPanelWith parameters: WKOpenPanelParameters,
-            initiatedByFrame frame: WKFrameInfo,
-            completionHandler: @escaping @MainActor ([URL]?) -> Void
-        ) {
-            let panel = NSOpenPanel()
-            panel.canChooseFiles = true
-            panel.canChooseDirectories = parameters.allowsDirectories
-            panel.allowsMultipleSelection = parameters.allowsMultipleSelection
-            panel.canCreateDirectories = false
-            panel.resolvesAliases = true
-
-            if let window = webView.window {
-                panel.beginSheetModal(for: window) { response in
-                    completionHandler(response == .OK ? panel.urls : nil)
-                }
-            } else {
-                let response = panel.runModal()
-                completionHandler(response == .OK ? panel.urls : nil)
-            }
-        }
-
-        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-            guard message.name == WebpageViewRepresentable.navigationMessageName,
-                  let rawURL = message.body as? String,
-                  let url = URL(string: rawURL),
-                  WebpageURLMatcher.isSupported(url),
-                  !WebpageURLMatcher.representSamePage(lastReportedURL, url) else {
-                return
-            }
-
-            let previousURL = lastReportedURL ?? requestedURL ?? url
-            requestedURL = url
-            lastReportedURL = url
-            onURLChange?(url, previousURL)
-        }
-
-        func teardown(_ containerView: WebpageContainerNSView) {
-            requestedURL = nil
-            lastReportedURL = nil
-            isShowingFailure = false
-            isMuted = false
-            currentContainerView = nil
-            urlObservation?.invalidate()
-            titleObservation?.invalidate()
-            urlObservation = nil
-            titleObservation = nil
-            containerView.webView.stopLoading()
-            containerView.webView.navigationDelegate = nil
-            containerView.webView.uiDelegate = nil
-            containerView.webView.configuration.userContentController.removeScriptMessageHandler(
-                forName: WebpageViewRepresentable.navigationMessageName
-            )
-            containerView.webView.load(URLRequest(url: URL(string: "about:blank")!))
-        }
-
-        func setMute(_ isMuted: Bool, in containerView: WebpageContainerNSView) {
-            self.isMuted = isMuted
-            applyMute(in: containerView.webView)
-        }
-
-        private func attachObservers(to webView: WKWebView) {
-            guard urlObservation == nil, titleObservation == nil else { return }
-
-            urlObservation = webView.observe(\.url, options: [.initial, .new]) { [weak self] webView, _ in
-                guard let self, let currentURL = webView.url, WebpageURLMatcher.isSupported(currentURL) else { return }
-                guard !webView.isLoading else { return }
-                self.reportSettledURL(from: webView)
-            }
-
-            titleObservation = webView.observe(\.title, options: [.new]) { [weak self] webView, _ in
-                guard let self,
-                      let currentURL = webView.url,
-                      WebpageURLMatcher.isSupported(currentURL),
-                      let title = webView.title?.trimmingCharacters(in: .whitespacesAndNewlines),
-                      !title.isEmpty else { return }
-                self.onTitleChange?(title, currentURL)
-            }
-        }
-
-        private func reportSettledURL(from webView: WKWebView) {
-            guard let currentURL = webView.url, WebpageURLMatcher.isSupported(currentURL) else { return }
-            guard !WebpageURLMatcher.representSamePage(lastReportedURL, currentURL) else { return }
-            let previousURL = lastReportedURL ?? requestedURL ?? currentURL
-            requestedURL = currentURL
-            lastReportedURL = currentURL
-            onURLChange?(currentURL, previousURL)
-        }
-
-        private func applyMute(in webView: WKWebView) {
-            webView.evaluateJavaScript(
-                "window.__eucalyApplyMute && window.__eucalyApplyMute(\(isMuted ? "true" : "false"));"
-            )
-        }
-
-        @objc
-        private func retryRequested() {
-            guard let requestedURL, let currentContainerView else { return }
-            load(url: requestedURL, in: currentContainerView)
-        }
-
-        private func shouldIgnoreFailure(_ error: Error) -> Bool {
-            let nsError = error as NSError
-            return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
-        }
-
-        private func showFailure(_ error: Error, in webView: WKWebView) {
-            guard let requestedURL else { return }
-            isShowingFailure = true
-            let message = (error as NSError).localizedDescription
-
-            currentContainerView?.showFailure(
-                for: requestedURL,
-                message: message,
-                retryTarget: self,
-                action: #selector(retryRequested)
-            )
-            webView.stopLoading()
-        }
     }
 }
 

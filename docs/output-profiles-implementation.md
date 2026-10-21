@@ -61,8 +61,7 @@ app-owned session and Preview flow while live output continues. Native Settings
 remain one app-owned window. Quick Open and Refresh Library target only the active
 controls window, and native Edit-menu actions retain the macOS responder chain.
 Preview source identity belongs to its retained flow, and Current's lyrics file URL
-belongs to its session, so reopening retains webpage navigation and Edit Current
-support. Closing cancels private pending Preview loads before releasing controls.
+belongs to its session, so reopening retains Preview and Edit Current support. Closing cancels private pending Preview loads before releasing controls.
 The native close callback owns controls cleanup; hiding a tab does not release its
 library access or cancel its private preparation. Initial view setup runs once per
 controls window.
@@ -183,12 +182,14 @@ the selected music player's access outlive inactive tabs. ScreenCaptureManager
 continues to own one system-picker-approved stream with reference-counted consumers.
 Picker results retain the requesting workspace through focus changes, and newer
 requests or cancellation invalidate older asynchronous selection work.
+Clearing one pane releases a picked window only after every workspace's Preview,
+Current and accepted snapshot has released it and its last capture consumer has
+detached. Pending picker requests remain intact, and old teardown work cannot
+retire a newer selection or stream.
 Every native layer receives the same explicit full-canvas geometry.
 
 Images, PDFs, video and picked windows use the existing native media boundary in
-all appearance profiles. Live webpages require one available native Audience output
-within their workspace; companions show a webpage status instead of creating another
-WebKit player. Unsupported NDI-only content cannot replace an accepted live program.
+all appearance profiles. Unsupported NDI-only content cannot replace an accepted live program.
 With native companions it can present locally while NDI submits replacement empty/key
 frames. A transfer to unsupported Current is rejected before ownership changes.
 
@@ -281,7 +282,7 @@ Delivery retargeting is queued behind source removal on the mixer queue, so an
 in-flight old-owner PCM block
 cannot acquire the new owner's epoch. This retains the bus and its sample clock.
 Video follows the owning
-workspace's playback/mute state; preview, microphone, webpages and system audio are
+workspace's playback/mute state; preview, microphone and system audio are
 excluded. The existing single explicit local music owner and saved
 `backgroundAudioDestinationID` remain independent of workspace transfer. Moving an
 output never substitutes the target workspace's music or silently changes the route.

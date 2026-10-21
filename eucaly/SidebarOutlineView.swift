@@ -14,7 +14,6 @@ nonisolated enum SidebarOutlineItemID: Hashable, Sendable {
     case library(URL)
     case playlist(UUID)
     case audio(URL)
-    case web(URL)
     case window(CGWindowID)
 }
 
@@ -22,7 +21,6 @@ nonisolated enum SidebarOutlineAction: Hashable, Sendable {
     case addToPlaylist
     case remove
     case revealInFinder
-    case copyURL
 
     var title: String {
         switch self {
@@ -32,8 +30,6 @@ nonisolated enum SidebarOutlineAction: Hashable, Sendable {
             "Remove"
         case .revealInFinder:
             "Reveal in Finder"
-        case .copyURL:
-            "Copy URL"
         }
     }
 
@@ -45,8 +41,6 @@ nonisolated enum SidebarOutlineAction: Hashable, Sendable {
             "minus"
         case .revealInFinder:
             "folder"
-        case .copyURL:
-            "doc.on.doc"
         }
     }
 }
@@ -167,7 +161,6 @@ nonisolated enum SidebarOutlineNavigationSection: Int, CaseIterable, Hashable, S
     // part of the primary source-selection traversal.
     case library
     case playlist
-    case web
     case window
 }
 

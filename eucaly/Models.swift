@@ -172,8 +172,6 @@ nonisolated struct Slide: Identifiable {
     let pdfURL: URL?
     let pdfPageIndex: Int?
     let imageURL: URL?
-    let webpageURL: URL?
-    let webpageNavigationRevision: Int
     let captureWindowID: CGWindowID?
 
     var title: String { label ?? "Slide \(index)" }
@@ -187,8 +185,6 @@ nonisolated struct Slide: Identifiable {
         pdfURL: URL?,
         pdfPageIndex: Int?,
         imageURL: URL?,
-        webpageURL: URL? = nil,
-        webpageNavigationRevision: Int = 0,
         captureWindowID: CGWindowID? = nil
     ) {
         self.id = id
@@ -199,8 +195,6 @@ nonisolated struct Slide: Identifiable {
         self.pdfURL = pdfURL
         self.pdfPageIndex = pdfPageIndex
         self.imageURL = imageURL
-        self.webpageURL = webpageURL
-        self.webpageNavigationRevision = webpageNavigationRevision
         self.captureWindowID = captureWindowID
     }
 }

@@ -88,6 +88,65 @@ final class NDIVideoInputTests: XCTestCase {
         XCTAssertTrue(request.hasOpaqueCanvas(foreground: nil, background: bgra), "Dimming an opaque background changes RGB, not alpha")
     }
 
+    func testGeometryRetainsCleanAperturePixelAspectAndRightAngleRotation() throws {
+        let frame = try nv12(matrix: .rec709, fullRange: false)
+        let buffer = try XCTUnwrap(frame.pixelBuffer)
+        CVBufferSetAttachment(buffer, kCVImageBufferCleanApertureKey, [
+            kCVImageBufferCleanApertureWidthKey: 160,
+            kCVImageBufferCleanApertureHeightKey: 90,
+            kCVImageBufferCleanApertureHorizontalOffsetKey: 0,
+            kCVImageBufferCleanApertureVerticalOffsetKey: 0
+        ] as CFDictionary, .shouldPropagate)
+        CVBufferSetAttachment(buffer, kCVImageBufferPixelAspectRatioKey, [
+            kCVImageBufferPixelAspectRatioHorizontalSpacingKey: 2,
+            kCVImageBufferPixelAspectRatioVerticalSpacingKey: 1
+        ] as CFDictionary, .shouldPropagate)
+        let rotation = CGAffineTransform(a: 0, b: 1, c: -1, d: 0, tx: 0, ty: 0)
+        let geometry = NDIMediaGeometry(pixelBuffer: buffer, transform: rotation)
+        XCTAssertTrue(geometry.isValid)
+        XCTAssertEqual(geometry.width, 90, accuracy: 0.000001)
+        XCTAssertEqual(geometry.height, 320, accuracy: 0.000001)
+        XCTAssertEqual(geometry.cropMinX, 0.25); XCTAssertEqual(geometry.cropMinY, 0.25)
+        XCTAssertEqual(geometry.cropMaxX, 0.75); XCTAssertEqual(geometry.cropMaxY, 0.75)
+        XCTAssertEqual(geometry.a, 0); XCTAssertEqual(geometry.b, -0.5)
+        XCTAssertEqual(geometry.c, 0.5); XCTAssertEqual(geometry.d, 0)
+        XCTAssertEqual(geometry.tx, 0.25); XCTAssertEqual(geometry.ty, 0.75)
+        XCTAssertFalse(geometry.coversCanvas(fill: false), "Portrait fit must retain gutters")
+        XCTAssertTrue(geometry.coversCanvas(fill: true), "A cropped, anamorphic 90-degree movie still covers a filled canvas")
+        XCTAssertEqual(try JSONDecoder().decode(NDIMediaGeometry.self, from: JSONEncoder().encode(geometry)), geometry)
+        var invalid = geometry
+        invalid.cropMinX = invalid.cropMaxX
+        XCTAssertFalse(invalid.isValid, "An empty aperture cannot enter the helper")
+        invalid = geometry; invalid.cropMaxY = 1.01
+        XCTAssertFalse(invalid.isValid, "The aperture must stay inside the backing texture")
+    }
+
+    func testOpacityProofRejectsHolesInsideARotatedBoundingBox() throws {
+        let frame = try nv12(matrix: .rec709, fullRange: false)
+        let buffer = try XCTUnwrap(frame.pixelBuffer)
+        let geometry = NDIMediaGeometry(pixelBuffer: buffer, transform: .init(rotationAngle: .pi / 4))
+        XCTAssertTrue(geometry.isValid)
+        var request = NDIMediaRenderRequest(generation: UUID(), revision: 1, foreground: true,
+            foregroundFill: true, colour: .init(alpha: 0), foregroundGeometry: geometry, foregroundInput: frame.input)
+        XCTAssertFalse(request.hasOpaqueCanvas(foreground: frame.surface, background: nil),
+            "Filling a rotated bounding box does not make its empty corners opaque")
+        request.foregroundFill = false
+        XCTAssertFalse(request.hasOpaqueCanvas(foreground: frame.surface, background: nil))
+        request.foreground = false; request.foregroundInput = .init(); request.foregroundGeometry = nil
+        request.background = true; request.backgroundFill = true
+        request.backgroundGeometry = geometry; request.backgroundInput = frame.input
+        XCTAssertFalse(request.hasOpaqueCanvas(foreground: nil, background: frame.surface),
+            "A rotated background has the same aperture holes as a foreground")
+        request.colour = .chromaGreen
+        XCTAssertTrue(request.hasOpaqueCanvas(foreground: nil, background: frame.surface),
+            "An explicit opaque key colour covers the transformed holes")
+        let rightAngle = NDIMediaGeometry(pixelBuffer: buffer,
+            transform: .init(a: 0, b: 1, c: -1, d: 0, tx: 0, ty: 0))
+        XCTAssertTrue(rightAngle.coversCanvas(fill: true))
+        XCTAssertTrue(NDIMediaGeometry(width: 320, height: 180).coversCanvas(fill: false))
+        XCTAssertFalse(NDIMediaGeometry(width: 320, height: 180.001).coversCanvas(fill: false))
+    }
+
     func testNativeVideoSelectionPreservesAlphaHDRAndCompositionConversion() throws {
         func format(_ codec: CMVideoCodecType, _ extensions: [String: Any] = [:]) throws -> CMVideoFormatDescription {
             var description: CMVideoFormatDescription?

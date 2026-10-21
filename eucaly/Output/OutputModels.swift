@@ -98,7 +98,7 @@ nonisolated enum OutputProfileMigration {
 }
 
 nonisolated struct OutputContentSnapshot {
-    enum Kind { case empty, lyrics, text, video, pdf, image, webpage, capturedWindow }
+    enum Kind { case empty, lyrics, text, video, pdf, image, capturedWindow }
     // Origin workspace of the accepted snapshot, including a privately retained
     // snapshot after output loss. OutputOwnership separately gates publication.
     var source: UUID?

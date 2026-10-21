@@ -28,8 +28,12 @@ final class NDIOutputTests: XCTestCase {
         other.setSlides(LyricsParser.parseDocument("Verse\nPrivate").slides)
         fixture.outputs.passiveLocal(other)
         XCTAssertEqual(fixture.outputs.text.components.first?.text, "Live")
-        let slide = Slide(index: 0, lines: [], label: "Web", videoURL: nil, pdfURL: nil, pdfPageIndex: nil, imageURL: nil, webpageURL: URL(string: "https://example.com"))
-        fixture.session.setSlides([slide]); fixture.session.showSlides()
+        let slide = Slide(index: 0, lines: [], label: "Picked Window", videoURL: nil, pdfURL: nil, pdfPageIndex: nil, imageURL: nil, captureWindowID: 42)
+        fixture.session.setSlides([slide])
+        fixture.outputs.passiveLocal(fixture.session)
+        await Task.yield()
+        XCTAssertEqual(fixture.outputs.text.components.first?.text, "Live", "A deferred refresh must preserve the accepted NDI program")
+        fixture.session.showSlides()
         XCTAssertEqual(fixture.outputs.text.components.first?.text, "Live")
         XCTAssertNotNil(fixture.session.projectionDisplayIssue)
         other.showSlides()
@@ -66,11 +70,11 @@ final class NDIOutputTests: XCTestCase {
         fixture.store.setEnabled(false, for: fixture.lyrics)
         XCTAssertTrue(fixture.ndi.activeIDs.isEmpty)
     }
-    func testNativeWebpageCountsExcludeNDIAudienceProfilesAndNativeCloseKeepsNDI() throws {
+    func testPickedWindowUsesNativeOutputAndNativeCloseKeepsNDI() throws {
         let fixture = Fixture(); defer { fixture.outputs.stop() }
         fixture.store.edit { doc in let native = doc.destinations.removeFirst(); doc.destinations.append(native) }
         fixture.store.setEnabled(true, for: fixture.native)
-        let slide = Slide(index: 0, lines: [], label: "Web", videoURL: nil, pdfURL: nil, pdfPageIndex: nil, imageURL: nil, webpageURL: URL(string: "https://example.com"))
+        let slide = Slide(index: 0, lines: [], label: "Picked Window", videoURL: nil, pdfURL: nil, pdfPageIndex: nil, imageURL: nil, captureWindowID: 42)
         fixture.session.setSlides([slide]); fixture.session.showSlides()
         XCTAssertNil(fixture.session.projectionDisplayIssue)
         XCTAssertEqual(fixture.nativeOpens, 1); XCTAssertEqual(fixture.ndi.activeIDs.count, 2)

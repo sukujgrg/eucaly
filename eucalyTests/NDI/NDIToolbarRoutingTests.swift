@@ -81,8 +81,8 @@ final class NDIToolbarRoutingTests: XCTestCase {
         let f = Fixture(); defer { f.outputs.stopAllOutputs() }
         f.a.setSlides(lyrics("House live")); f.a.showSlides()
         let online = f.outputs.session(workspace: f.online)
-        online.setSlides([.init(index: 0, lines: [], label: "Web", videoURL: nil, pdfURL: nil, pdfPageIndex: nil,
-                               imageURL: nil, webpageURL: URL(string: "https://example.com"))])
+        online.setSlides([.init(index: 0, lines: [], label: "Picked Window", videoURL: nil, pdfURL: nil, pdfPageIndex: nil,
+                               imageURL: nil, captureWindowID: 42)])
         let controls = OutputQuickControlsController(outputs: f.outputs, workspaceID: f.house, manageOutputs: {})
         let action = try item("Move to Online", in: controls.ndiButton.menu)
         let original = f.outputs.destination(f.network), current = f.outputs.snapshot(for: f.network).current

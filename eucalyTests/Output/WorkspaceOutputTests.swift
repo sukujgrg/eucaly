@@ -75,7 +75,7 @@ final class WorkspaceOutputTests: XCTestCase {
     func testTransferPreflightIsAtomicAndCancelsStaleNavigationOnlyOnSuccess() async throws {
         let f = Fixture(); defer { f.outputs.stopAllOutputs() }
         f.load(f.a, "First\n\nChorus\nSecond"); f.a.showSlides()
-        f.b.setSlides([webpage()])
+        f.b.setSlides([pickedWindow()])
         let original = f.outputs.destination(f.network)
         let order = f.a.outputActionClock.current
         XCTAssertFalse(f.outputs.moveOutput(f.network, to: f.b))
@@ -349,8 +349,8 @@ final class WorkspaceOutputTests: XCTestCase {
     private func video(_ name: String) -> Slide {
         Slide(index: 0, lines: [], label: name, videoURL: URL(fileURLWithPath: "/tmp/workspace-\(name).mov"), pdfURL: nil, pdfPageIndex: nil, imageURL: nil)
     }
-    private func webpage() -> Slide {
-        Slide(index: 0, lines: [], label: "Web", videoURL: nil, pdfURL: nil, pdfPageIndex: nil, imageURL: nil, webpageURL: URL(string: "https://example.com"))
+    private func pickedWindow() -> Slide {
+        Slide(index: 0, lines: [], label: "Picked Window", videoURL: nil, pdfURL: nil, pdfPageIndex: nil, imageURL: nil, captureWindowID: 42)
     }
     @MainActor private final class Fixture {
         let store: OutputProfileStore

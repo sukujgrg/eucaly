@@ -128,7 +128,7 @@ final class NDIOutputSettingsEditor: NSViewController, NSTextFieldDelegate {
         }
         var notices = [coordinator.ndi.performanceNotice(destinationID)].compactMap { $0 }
         if state.active, coordinator.snapshot(for: destinationID).visible, let slide = coordinator.snapshot(for: destinationID).localMedia, !OutputContentClassifier.supportsNDI(slide) {
-            notices.append("Webpages and picked windows use native monitors. This source is blank.")
+            notices.append("Picked windows use native monitors. This source is blank.")
         }
         if let route = store.document.backgroundAudioDestinationID, !coordinator.ndi.activeIDs.contains(route) {
             let name = store.document.destinations.first { $0.id == route }?.name ?? "selected output"

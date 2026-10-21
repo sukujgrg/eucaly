@@ -1,5 +1,8 @@
 # Finding NDI audio gaps while sending video
 
+The app and helper now require macOS 26 or later. Historical runs below retain
+the deployment settings and protocol versions measured at the time.
+
 Use the same video and output configuration throughout a comparison. Record the
 receiver app/version, sender and receiver connections (Ethernet or Wi-Fi), exact
 source name, and the wall-clock times of audible gaps. A local NDI loopback test

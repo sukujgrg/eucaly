@@ -1,6 +1,7 @@
 import XCTest
 import AppKit
 import IOSurface
+import CoreVideo
 @testable import eucaly
 
 /// Inspect the actual bytes produced by the production Metal kernel without
@@ -84,6 +85,63 @@ final class NDIPackedVideoTests: XCTestCase {
         XCTAssertEqual(q[3840 * 1080 + 800 * 1920 + 201], 0)
     }
 
+    func testRotatedAperturesClipToAlphaChromaAndBackgroundInTheActualCompositor() async throws {
+        let packed = PackedVideoEvents(), raw = PackedVideoEvents(), id = UUID(), rawID = UUID()
+        let helper = NDIHelperSupervisor(event: packed.record), baseline = NDIHelperSupervisor(event: raw.record)
+        defer { helper.stop(); baseline.stop() }
+        helper.start(generation: id, configuration: .init(purpose: .renderYUV))
+        baseline.start(generation: rawID)
+        try await until { (packed.ready && raw.ready) || packed.failure != nil || raw.failure != nil }
+        XCTAssertNil(packed.failure); XCTAssertNil(raw.failure)
+        let backgroundSurface = try XCTUnwrap(IOSurface(properties: [.width: 16, .height: 9,
+            .bytesPerElement: 4, .bytesPerRow: 64, .allocSize: 64 * 9, .pixelFormat: kCVPixelFormatType_32BGRA]))
+        backgroundSurface.baseAddress.initializeMemory(as: UInt32.self, repeating: 0xff0000ff, count: 16 * 9)
+        let background = NDIFrameResource(surface: backgroundSurface, opaque: true)
+        var revision: UInt64 = 0
+        for cropped in [false, true] {
+            let frame = try rotatedResource(cropped: cropped)
+            let geometry = try XCTUnwrap(frame.geometry)
+            // Fill the bounding box deliberately: its corners are still outside
+            // the rotated picture. In the cropped case they land in real blue
+            // backing pixels, which must also be excluded by the clean aperture.
+            revision += 1
+            var request = NDIMediaRenderRequest(generation: id, revision: revision, foreground: true,
+                foregroundFill: true, colour: .init(alpha: 0), foregroundGeometry: geometry, foregroundInput: frame.input)
+            helper.renderMedia(.init(request: request, foreground: frame))
+            try await until { packed.revision == revision || packed.failure != nil }
+            XCTAssertNil(packed.failure)
+            let alpha = try XCTUnwrap(packed.surface)
+            assertPackedPixel(alpha, x: 10, y: 10, rgb: [0, 0, 0], alpha: 0)
+            assertPackedPixel(alpha, x: 960, y: 540, rgb: [1, 0, 0], alpha: 255)
+
+            let rawRequest = NDIMediaRenderRequest(generation: rawID, revision: revision, foreground: true,
+                foregroundFill: true, colour: .init(alpha: 0), foregroundGeometry: geometry, foregroundInput: frame.input)
+            baseline.renderMedia(.init(request: rawRequest, foreground: frame))
+            try await until { raw.revision == revision || raw.failure != nil }
+            XCTAssertNil(raw.failure)
+            let bgra = try XCTUnwrap(raw.surface), bytes = bgra.baseAddress.assumingMemoryBound(to: UInt8.self)
+            XCTAssertEqual(Array(UnsafeBufferPointer(start: bytes + 10 * bgra.bytesPerRow + 10 * 4, count: 4)), [0, 0, 0, 0])
+            XCTAssertEqual(Array(UnsafeBufferPointer(start: bytes + 540 * bgra.bytesPerRow + 960 * 4, count: 4)), [0, 0, 255, 255])
+
+            revision += 1; request.revision = revision; request.colour = .chromaGreen; request.dimming = 0.8
+            helper.renderMedia(.init(request: request, foreground: frame))
+            try await until { packed.revision == revision || packed.failure != nil }
+            XCTAssertNil(packed.failure)
+            let chroma = try XCTUnwrap(packed.surface)
+            assertPackedPixel(chroma, x: 10, y: 10, rgb: [0, 1, 0])
+            assertPackedPixel(chroma, x: 960, y: 540, rgb: [1, 0, 0])
+
+            revision += 1; request.revision = revision; request.colour = .init(alpha: 0)
+            request.background = true; request.backgroundFill = true; request.backgroundInput = background.input; request.dimming = 0.25
+            helper.renderMedia(.init(request: request, foreground: frame, background: background))
+            try await until { packed.revision == revision || packed.failure != nil }
+            XCTAssertNil(packed.failure)
+            let composed = try XCTUnwrap(packed.surface)
+            assertPackedPixel(composed, x: 10, y: 10, rgb: [0, 0, 0.75])
+            assertPackedPixel(composed, x: 960, y: 540, rgb: [1, 0, 0])
+        }
+    }
+
     func testMultilingualGlyphAlphaMatchesTheBGRAReference() async throws {
         let raw = PackedVideoEvents(), referenceLog = PackedVideoEvents(), id = UUID(), otherID = UUID()
         let helper = NDIHelperSupervisor(event: raw.record), baseline = NDIHelperSupervisor(event: referenceLog.record)
@@ -116,6 +174,45 @@ final class NDIPackedVideoTests: XCTestCase {
         let y = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
         return (Int((16 + 219 * y).rounded()), Int((128 + 224 * (rgb[2] - y) / 1.8556).rounded()),
                 Int((128 + 224 * (rgb[0] - y) / 1.5748).rounded()))
+    }
+    private func rotatedResource(cropped: Bool) throws -> NDIFrameResource {
+        var pixel: CVPixelBuffer?
+        XCTAssertEqual(CVPixelBufferCreate(nil, 320, 320, kCVPixelFormatType_32BGRA,
+            [kCVPixelBufferIOSurfacePropertiesKey: [:], kCVPixelBufferMetalCompatibilityKey: true] as CFDictionary, &pixel), kCVReturnSuccess)
+        let buffer = try XCTUnwrap(pixel)
+        if cropped {
+            CVBufferSetAttachment(buffer, kCVImageBufferCleanApertureKey, [
+                kCVImageBufferCleanApertureWidthKey: 160,
+                kCVImageBufferCleanApertureHeightKey: 160,
+                kCVImageBufferCleanApertureHorizontalOffsetKey: 0,
+                kCVImageBufferCleanApertureVerticalOffsetKey: 0
+            ] as CFDictionary, .shouldPropagate)
+        }
+        XCTAssertEqual(CVPixelBufferLockBaseAddress(buffer, []), kCVReturnSuccess)
+        let bytes = try XCTUnwrap(CVPixelBufferGetBaseAddress(buffer)).assumingMemoryBound(to: UInt8.self)
+        for y in 0..<320 { for x in 0..<320 {
+            let offset = y * CVPixelBufferGetBytesPerRow(buffer) + x * 4
+            let red = !cropped || ((80..<240).contains(x) && (80..<240).contains(y))
+            bytes[offset] = red ? 0 : 255; bytes[offset + 1] = 0
+            bytes[offset + 2] = red ? 255 : 0; bytes[offset + 3] = 255
+        } }
+        XCTAssertEqual(CVPixelBufferUnlockBaseAddress(buffer, []), kCVReturnSuccess)
+        return try XCTUnwrap(NDIFrameResource(pixelBuffer: buffer, transform: .init(rotationAngle: .pi / 4), provenOpaque: true))
+    }
+    private func assertPackedPixel(_ surface: IOSurface, x: Int, y: Int, rgb: [Double], alpha: UInt8? = nil,
+                                   file: StaticString = #filePath, line: UInt = #line) {
+        let expectedFormat: NDIVideoPixelFormat = alpha == nil ? .uyvy : .uyva
+        guard surface.pixelFormat == expectedFormat.rawValue else {
+            XCTFail("Expected \(expectedFormat.name) for transformed aperture coverage", file: file, line: line); return
+        }
+        let expected = reference(rgb), bytes = surface.baseAddress.assumingMemoryBound(to: UInt8.self)
+        let offset = y * surface.bytesPerRow + x * 2
+        for (channel, value) in [expected.1, expected.0, expected.2, expected.0].enumerated() {
+            XCTAssertEqual(Int(bytes[offset + channel]), value, accuracy: 1, file: file, line: line)
+        }
+        if let alpha {
+            XCTAssertEqual(bytes[3840 * 1080 + y * 1920 + x], alpha, file: file, line: line)
+        }
     }
     private func surface() throws -> IOSurface {
         try XCTUnwrap(IOSurface(properties: [.width: 1920, .height: 1080, .bytesPerElement: 4,

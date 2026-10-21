@@ -15,7 +15,7 @@ Use the current runtime from [NDI](https://ndi.video/); see its
 
 The initial tested package is `com.newtek.NDI.SDK` version `6.3.2.0.260413`.
 Its runtime contains arm64 and x86_64, with macOS 13 as its minimum; eucaly still
-requires macOS 14 and builds arm64 only. The installed runtime is signed by
+requires macOS 26 and builds arm64 only. The installed runtime is signed by
 NewTek, Inc., team `W8U66ET244`, identifier `libndi`. Checksums and header provenance
 are in [Vendor/NDI/provenance.json](../Vendor/NDI/provenance.json).
 
@@ -119,7 +119,7 @@ Tabs and window focus never route output. Multiple generic sources can run with
 unique enabled names. Disabled assignments may overlap. Ordinary Show/Hide, Clear,
 playback and Stop affect their workspace; **Stop All Outputs** is explicitly global.
 
-Webpages and picked windows remain native-only. An NDI-only attempt retains the
+Picked windows remain native-only. An NDI-only attempt retains the
 last valid live snapshot and shows a notice. An unsupported transfer leaves the
 owner unchanged. With native companions, the workspace can present locally while
 NDI sends an actual empty/key picture. Hide and Clear send replacement pictures;

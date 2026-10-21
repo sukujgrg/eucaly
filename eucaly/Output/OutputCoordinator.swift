@@ -132,6 +132,19 @@ final class OutputCoordinator: ObservableObject {
     }
     func preparedSession(workspace id: UUID) -> PresentationSession? { programs[id]?.session }
     func preparedMedia(workspace id: UUID) -> OutputMediaRuntime? { programs[id]?.media }
+    /// Capture is app-shared, so one pane cannot decide that the picked source
+    /// is unused. Inspect retained state only; never prepare sessions or outputs.
+    func retainsCapturedWindow(_ windowID: CGWindowID) -> Bool {
+        programs.values.contains { state in
+            state.flow.previewSlides.contains { $0.captureWindowID == windowID }
+                || state.session?.slides.contains { $0.captureWindowID == windowID } == true
+                || state.snapshot.localMedia?.captureWindowID == windowID
+        }
+    }
+    func releaseUnusedWindowCaptureSelection(using captureManager: ScreenCaptureManager? = nil) {
+        let captureManager = captureManager ?? .shared
+        captureManager.releaseUnusedWindowSelection { [weak self] in self?.retainsCapturedWindow($0) == true }
+    }
     func isPlaybackRunning(workspace id: UUID) -> Bool {
         let session = programs[id]?.session
         let audio = session?.programBackgroundAudioPlayer
@@ -347,7 +360,7 @@ final class OutputCoordinator: ObservableObject {
         if activate { let order = state.ownership.beginAction(); _ = state.ownership.take(state.id, action: order) }
         let slide = session.currentSlide
         let kind: OutputContentSnapshot.Kind = slide.map {
-            $0.videoURL != nil ? .video : $0.pdfURL != nil ? .pdf : $0.imageURL != nil ? .image : $0.webpageURL != nil ? .webpage : $0.captureWindowID != nil ? .capturedWindow : .lyrics
+            $0.videoURL != nil ? .video : $0.pdfURL != nil ? .pdf : $0.imageURL != nil ? .image : $0.captureWindowID != nil ? .capturedWindow : .lyrics
         } ?? .empty
         state.snapshot = .init(source: state.id, kind: kind, current: OutputContentAdapter.text(for: slide),
             next: session.currentSlideID.flatMap { session.slideIndex(for: $0) }.flatMap { session.slide(at: $0 + 1) }.map { OutputContentAdapter.text(for: $0) },
@@ -355,13 +368,8 @@ final class OutputCoordinator: ObservableObject {
     }
     private func presentationProblem(for slide: Slide?, rows: [OutputDestinationConfiguration]) -> String? {
         let available = availableDestinations(rows)
-        if slide?.webpageURL != nil {
-            let audience = rows.filter { $0.enabled && $0.isMonitorDestination && profiles.profile($0.profileID)?.kind == .audience }
-            if audience.count > 1 { return "Live webpages support one Audience output. Disable the extra Audience output or use a companion profile." }
-            if !audience.contains(where: { $0.monitor.flatMap { displays.resolve($0) } != nil }) { return "Live webpages need an enabled Audience output with an available monitor." }
-        }
         if let slide, !OutputContentClassifier.supportsNDI(slide), !available.contains(where: { $0.isMonitorDestination }) {
-            return "NDI supports lyrics, PDFs, images and video files. Use a native monitor for webpages and picked windows."
+            return "NDI supports lyrics, PDFs, images and video files. Use a native monitor for picked windows."
         }
         return nil
     }

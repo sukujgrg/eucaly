@@ -5,9 +5,9 @@ nonisolated enum OutputContentClassifier {
     enum Mode { case lyrics, media }
     static func mode(for slide: Slide) -> Mode {
         slide.videoURL != nil || slide.pdfURL != nil || slide.imageURL != nil
-            || slide.webpageURL != nil || slide.captureWindowID != nil ? .media : .lyrics
+            || slide.captureWindowID != nil ? .media : .lyrics
     }
     static func supportsNDI(_ slide: Slide) -> Bool {
-        slide.webpageURL == nil && slide.captureWindowID == nil
+        slide.captureWindowID == nil
     }
 }

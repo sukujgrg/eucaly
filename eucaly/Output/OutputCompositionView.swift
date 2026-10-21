@@ -43,26 +43,15 @@ struct OutputCompositionView: View {
     /// Media uses the whole output canvas in every profile. Confidence's text
     /// columns and playback status must not reduce the native playback frame.
     private func media(_ slide: Slide, profile: OutputProfile, session: PresentationSession, size: CGSize) -> some View {
-        Group {
-            if slide.webpageURL != nil && profile.kind != .audience {
-                OutputWebpageCompanionView()
-            } else {
-                OutputMediaSlideView(slide: slide, session: session, runtime: coordinator.program(session.outputSourceID).media,
-                                     showsBackground: profile.background.whenMediaShown).id(slide.id)
-            }
-        }.frame(width: size.width, height: size.height)
+        OutputMediaSlideView(slide: slide, session: session, runtime: coordinator.program(session.outputSourceID).media,
+                             showsBackground: profile.background.whenMediaShown).id(slide.id)
+            .frame(width: size.width, height: size.height)
             .overlay(alignment: .bottomLeading) {
                 if profile.kind == .confidence && slide.videoURL != nil {
                     OutputConfidencePlaybackStatus(session: session, progress: session.playbackProgress,
                                                    typography: profile.typography(for: .footer), size: size)
                 }
             }.clipped()
-    }
-}
-
-struct OutputWebpageCompanionView: View {
-    var body: some View {
-        ContentUnavailableView("Webpage on Audience", systemImage: "globe", description: Text("Live webpages play on the Audience output."))
     }
 }
 
@@ -99,8 +88,10 @@ struct OutputMediaSlideView: View {
             if !showsBackground { Color.black }
             if let windowID = slide.captureWindowID { WindowCaptureSlideView(windowID: windowID) }
             else if slide.videoURL != nil { AVPlayerViewRepresentable(player: runtime.program, isMuted: session.videoMuted, isFill: session.videoFill) }
-            else if let url = slide.pdfURL, let page = slide.pdfPageIndex { PDFSlideView(url: url, pageIndex: page) }
-            else if let url = slide.webpageURL { WebpageSlideView(url: url, navigationRevision: slide.webpageNavigationRevision, isMuted: session.webpageMuted) }
+            else if let url = slide.pdfURL, let page = slide.pdfPageIndex {
+                PDFSlideView(url: url, pageIndex: page, documentRevision: session.pdfDocumentRevision,
+                             documentCache: session.pdfDocumentCache)
+            }
             else if let url = slide.imageURL { ImageSlideView(url: url, backgroundColour: showsBackground ? .clear : .black) }
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
     }

@@ -22,7 +22,7 @@ There is no Follow House/Independent switch and no second Current inside a works
 Add NDI Output creates a disabled source with default name `eucaly`. Each generic
 source supports lyrics, PDF/image and video with its permitted soundtrack. There
 are no transport roles. Multiple sources use distinct enabled names across all
-workspaces. Webpages and picked windows require native output; preflight rejects an
+workspaces. Picked windows require native output; preflight rejects an
 unsupported transfer, and native companions can render while NDI explicitly blanks.
 
 An app-owned destination retains its source UUID/name, supervisor and exact helper

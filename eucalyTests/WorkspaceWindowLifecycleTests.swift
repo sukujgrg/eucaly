@@ -117,7 +117,7 @@ final class WorkspaceWindowLifecycleTests: XCTestCase {
         defer { for window in windows.windows.values { window.close() } }
         let id = OutputWorkspaceRecord.primaryID
         let lyricsURL = URL(fileURLWithPath: "/tmp/workspace-current.txt")
-        let webpageURL = try XCTUnwrap(URL(string: "https://example.com/preview"))
+        let imageURL = URL(fileURLWithPath: "/tmp/workspace-preview.png")
         weak var oldController: OutputWorkspaceWindowController?
         weak var retainedSession: PresentationSession?
         try autoreleasepool {
@@ -126,9 +126,9 @@ final class WorkspaceWindowLifecycleTests: XCTestCase {
             let flow = outputs.program(id).flow
             flow.setCurrentSlides(LyricsParser.parseDocument("Verse\nRetained Current").slides,
                                   in: controller.session, lyricsSourceURL: lyricsURL)
-            flow.setPreviewSlides([Slide(index: 0, lines: [], label: "Web", videoURL: nil, pdfURL: nil,
-                                        pdfPageIndex: nil, imageURL: nil, webpageURL: webpageURL)])
-            flow.previewSource = .web(webpageURL)
+            flow.setPreviewSlides([Slide(index: 0, lines: [], label: "Image", videoURL: nil, pdfURL: nil,
+                                        pdfPageIndex: nil, imageURL: imageURL)])
+            flow.previewSource = .file(imageURL)
             controller.window?.performClose(nil)
         }
         try await Task.sleep(for: .milliseconds(50))
@@ -138,8 +138,8 @@ final class WorkspaceWindowLifecycleTests: XCTestCase {
         XCTAssertTrue(reopened.session === retainedSession)
         XCTAssertEqual(reopened.session.currentLyricsSourceURL, lyricsURL)
         let flow = outputs.program(id).flow
-        XCTAssertEqual(flow.previewSource, .web(webpageURL))
-        XCTAssertEqual(flow.previewSlides.first?.webpageURL, webpageURL)
+        XCTAssertEqual(flow.previewSource, .file(imageURL))
+        XCTAssertEqual(flow.previewSlides.first?.imageURL, imageURL)
         flow.clearPreviewDocument()
         XCTAssertEqual(flow.previewSource, .none)
         XCTAssertEqual(reopened.session.currentLyricsSourceURL, lyricsURL)

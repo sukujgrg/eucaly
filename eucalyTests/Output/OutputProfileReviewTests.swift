@@ -200,18 +200,6 @@ final class OutputProfileReviewTests: XCTestCase {
         }
     }
 
-    func testUnsupportedWebpageCannotEnterOutputThroughADeferredCurrentRefresh() async throws {
-        let (outputs, session, _) = setup(.confidence); defer { outputs.stop() }
-        session.setSlides(LyricsParser.parseDocument("Verse\nPrevious live lyrics").slides); session.showSlides()
-        let previous = try XCTUnwrap(outputs.liveSlide)
-        session.setSlides([.init(index: 1, lines: [], label: "Web", videoURL: nil, pdfURL: nil, pdfPageIndex: nil, imageURL: nil, webpageURL: URL(string: "https://example.invalid"))])
-        session.showSlides(); await settle()
-        XCTAssertEqual(outputs.liveSlide?.id, previous.id)
-        XCTAssertEqual(outputs.text.components.first?.text, "Previous live lyrics")
-        XCTAssertEqual(outputs.snapshot.localMedia?.id, previous.id, "All outputs describe the actual presented slide")
-        XCTAssertNotNil(outputs.issue)
-    }
-
     func testIdleConfidenceClockIsIndependentOfEmptySlideCommandsAndSurvivesClearAndHide() async throws {
         let (outputs, session, destination) = setup(.confidence); defer { outputs.stop() }
         let profile = try XCTUnwrap(outputs.profiles.profile(outputs.profiles.document.destinations[0].profileID))

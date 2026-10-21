@@ -126,16 +126,11 @@ struct PreviewPaneContainerView: View {
     @ObservedObject var flow: PresentationFlowController
     let isEditorPreviewAreaCollapsed: Bool
     let hasEditorPane: Bool
-    @Binding var isWebpageMuted: Bool
     let canEditSelection: Bool
     let canLoadToCurrent: Bool
     let loadToCurrentHelp: String
     let loadError: String?
     let thumbnailScale: Double
-    let titleForWebpage: (URL) -> String
-    let savedWebpageEntryURL: URL?
-    let onWebpageNavigationChange: (URL, URL) -> Void
-    let onWebpageTitleChange: (String, URL) -> Void
     let onEdit: () -> Void
     let onLoadToCurrent: () -> Void
     let onToggleEditorPreviewArea: () -> Void
@@ -143,8 +138,6 @@ struct PreviewPaneContainerView: View {
     @FocusState private var isEditorPreviewAreaToggleFocused: Bool
 
     var body: some View {
-        let slides = flow.previewSlides
-        let selectedWebpageURL = previewWebpageURL(from: slides)
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Button(action: toggleEditorPreviewArea) {
@@ -223,58 +216,6 @@ struct PreviewPaneContainerView: View {
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .padding()
-                    } else if let selectedWebpageURL {
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack(spacing: 8) {
-                                Label(
-                                    titleForWebpage(selectedWebpageURL),
-                                    systemImage: "globe"
-                                )
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-
-                                Spacer()
-
-                                Button {
-                                    isWebpageMuted.toggle()
-                                } label: {
-                                    Label(
-                                        isWebpageMuted ? "Unmute" : "Mute",
-                                        systemImage: isWebpageMuted ? "speaker.wave.2.fill" : "speaker.slash.fill"
-                                    )
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                            }
-                            .padding(.horizontal, 10)
-
-                            if let savedWebpageEntryURL,
-                               !WebpageURLMatcher.representSamePage(savedWebpageEntryURL, selectedWebpageURL) {
-                                Text("Showing a navigated page, not the saved sidebar URL.")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                    .padding(.horizontal, 10)
-                            }
-
-                            WebpageViewRepresentable(
-                                url: selectedWebpageURL,
-                                isMuted: isWebpageMuted,
-                                onURLChange: onWebpageNavigationChange,
-                                onTitleChange: { title, currentURL in
-                                    onWebpageTitleChange(title, currentURL)
-                                }
-                            )
-                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                        .stroke(.separator, lineWidth: 1)
-                                )
-                                .padding(.horizontal, 10)
-                                .padding(.bottom, 4)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        }
                     } else {
                         PreviewThumbnailGrid(
                             flow: flow,
@@ -325,21 +266,5 @@ struct PreviewPaneContainerView: View {
     private var previewStatusText: String {
         if loadError != nil { return "(Load failed)" }
         return "(Selected file)"
-    }
-
-    private func previewWebpageURL(from slides: [Slide]) -> URL? {
-        guard flow.previewPDFSource == nil else { return nil }
-
-        if let selectionID = flow.previewSelectionID,
-           let selectedSlide = slides.first(where: { $0.id == selectionID }),
-           let webpageURL = selectedSlide.webpageURL {
-            return webpageURL
-        }
-
-        if slides.count == 1 {
-            return slides.first?.webpageURL
-        }
-
-        return nil
     }
 }

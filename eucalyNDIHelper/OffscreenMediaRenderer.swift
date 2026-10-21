@@ -27,6 +27,10 @@ final class OffscreenMediaRenderer: @unchecked Sendable {
             float2 coord = (uv * canvas - (canvas - source * scale) * 0.5) / (source * scale);
             if (any(coord < 0.0) || any(coord > 1.0)) return float4(0.0);
             coord = float2(g[2] * coord.x + g[4] * coord.y + g[6], g[3] * coord.x + g[5] * coord.y + g[7]);
+            // Fit/fill covers the transformed bounding rectangle. Clip again
+            // in source coordinates so rotation/shear cannot stretch texture
+            // edges, or reveal pixels excluded by the source's clean aperture.
+            if (any(coord < float2(g[8], g[9])) || any(coord > float2(g[10], g[11]))) return float4(0.0);
             constexpr sampler s(coord::normalized, address::clamp_to_edge, filter::linear);
             if (input[0] == 0.0) return image.sample(s, coord);
             // Read the decoder's two planes directly. Colour conversion is
@@ -50,7 +54,7 @@ final class OffscreenMediaRenderer: @unchecked Sendable {
             float3 colour = float3(u[0], u[1], u[2]) * u[3];
             float alpha = u[3];
             if (u[8] > 0.0) {
-                float4 bg = layer(background, backgroundChroma, uv, u[5] > 0.0, u + 20, u + 36);
+                float4 bg = layer(background, backgroundChroma, uv, u[5] > 0.0, u + 24, u + 44);
                 // Dimming belongs to the visual texture. The saved key colour
                 // must remain exact in empty frames and fitted-image gutters.
                 bg.rgb *= (1.0 - u[6]);
@@ -58,7 +62,7 @@ final class OffscreenMediaRenderer: @unchecked Sendable {
                 alpha = bg.a + alpha * (1.0 - bg.a);
             }
             if (u[7] > 0.0 || u[9] > 0.0) {
-                float4 fg = layer(foreground, foregroundChroma, uv, u[4] > 0.0, u + 12, u + 28);
+                float4 fg = layer(foreground, foregroundChroma, uv, u[4] > 0.0, u + 12, u + 36);
                 if (u[9] > 0.0) fg.rgb *= fg.a;
                 colour = fg.rgb + colour * (1.0 - fg.a);
                 alpha = fg.a + alpha * (1.0 - fg.a);

@@ -20,7 +20,7 @@ the draft as latest. There is no manual tagging step.
 
 `VERSION` is the only marketing-version source, including ordinary Xcode builds.
 Build numbers are automatic UTC timestamps, raised above every previous signed
-feed entry when necessary. The app requires Apple Silicon (arm64) and macOS 14+.
+feed entry when necessary. The app requires Apple Silicon (arm64) and macOS 26+.
 Code signatures, signing team, hardened runtime, and the absence of debugging
 entitlements are checked for arm64, including Sparkle helpers. The appcast
 requires Apple Silicon. The app retains its existing unsandboxed file access.
@@ -79,7 +79,7 @@ each app's requirements:
 | --- | --- | --- |
 | Project, bundle ID, signing account | eucaly / `com.suku.eucaly` | ViewTheWord / `suku.ViewTheWord` |
 | Release branch | `main` | `master` |
-| Minimum macOS | 14 | 26 |
+| Minimum macOS | 26 | 26 |
 | App Sandbox | Disabled | Enabled, with Sparkle XPC configuration |
 | Version format | `X.Y` or `X.Y.Z` | `X.Y.Z` |
 | First feed | Can bootstrap after the known legacy `v1.32` release | Requires the previous published release's signed feed |

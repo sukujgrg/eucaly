@@ -37,12 +37,9 @@ class CacheManager: ObservableObject {
     private var memoryCacheKeys = Set<String>()
 
     // Disk cache directory
-    private let diskIOQueue = OperationQueue()
-
-    private nonisolated var diskCacheURL: URL {
-        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        return caches.appendingPathComponent("eucaly/Thumbnails", isDirectory: true)
-    }
+    private let diskIOQueue: OperationQueue
+    private nonisolated let diskCacheURL: URL
+    private var cacheGeneration: UInt64 = 0
 
     // File modification tracking
     private var fileModificationDates: [String: Date] = [:]
@@ -51,7 +48,10 @@ class CacheManager: ObservableObject {
 
     // MARK: - Initialization
 
-    private init() {
+    init(diskCacheURL: URL? = nil, diskIOQueue: OperationQueue = OperationQueue()) {
+        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        self.diskCacheURL = diskCacheURL ?? caches.appendingPathComponent("eucaly/Thumbnails", isDirectory: true)
+        self.diskIOQueue = diskIOQueue
         memoryImageCache.countLimit = maxMemoryCacheSize
         memoryImageCache.totalCostLimit = 96 * 1024 * 1024
         diskIOQueue.name = "eucaly.thumbnail-disk-io"
@@ -72,8 +72,11 @@ class CacheManager: ObservableObject {
     /// Async variant that avoids disk decode work on the main actor.
     func getCachedThumbnailAsync(for url: URL, type: ThumbnailType, pageIndex: Int? = nil, size: CGSize? = nil) async -> NSImage? {
         let cacheKey = makeCacheKey(url: url, type: type, pageIndex: pageIndex, size: size)
+        let generation = cacheGeneration
+        let freshness = await thumbnailFreshness(url: url, cacheKey: cacheKey)
+        guard generation == cacheGeneration else { return nil }
 
-        switch await thumbnailFreshness(url: url, cacheKey: cacheKey) {
+        switch freshness {
         case .modified:
             invalidateThumbnail(for: url, type: type, pageIndex: pageIndex, size: size)
             return nil
@@ -96,6 +99,7 @@ class CacheManager: ObservableObject {
             guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
             return NSImage(contentsOf: fileURL)
         }
+        guard generation == cacheGeneration else { return nil }
 
         if let diskImage {
             cacheInMemory(image: diskImage, key: cacheKey)
@@ -214,6 +218,14 @@ class CacheManager: ObservableObject {
 
 #if DEBUG
     var treatFreshnessAsUnverifiableForTests = false
+    var didEnqueueDiskReadForTests: (() -> Void)?
+
+    func waitForDiskIOForTests() async {
+        await cleanupTask?.value
+        await withCheckedContinuation { continuation in
+            diskIOQueue.addBarrierBlock { continuation.resume() }
+        }
+    }
 #endif
 
     private func loadFileModificationDates() {
@@ -229,10 +241,11 @@ class CacheManager: ObservableObject {
         modificationDatesSaveTask?.cancel()
         let snapshot = fileModificationDates
         let outputURL = diskCacheURL.appendingPathComponent("modification_dates.json")
+        let generation = cacheGeneration
 
         modificationDatesSaveTask = Task {
             try? await Task.sleep(nanoseconds: 300_000_000) // debounce bursts
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, generation == cacheGeneration else { return }
             diskIOQueue.addOperation {
                 guard let data = try? JSONEncoder().encode(snapshot) else { return }
                 try? data.write(to: outputURL, options: .atomic)
@@ -252,12 +265,14 @@ class CacheManager: ObservableObject {
         let days = cacheValidityDays
         let maxMB = maxDiskCacheSizeMB
         let maxFiles = maxDiskCacheSize
+        let generation = cacheGeneration
 
         cleanupTask = Task {
             if debounce {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 guard !Task.isCancelled else { return }
             }
+            guard !Task.isCancelled, generation == cacheGeneration else { return }
 
             let remainingCacheKeys: Set<String>? = if diskIOQueue.operationCount < maxQueuedDiskIOCount {
                 await performOnDiskIOQueue {
@@ -267,7 +282,7 @@ class CacheManager: ObservableObject {
                 nil
             }
 
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, generation == cacheGeneration else { return }
 
             if let remainingCacheKeys {
                 pruneModificationDates(keeping: remainingCacheKeys)
@@ -375,16 +390,20 @@ class CacheManager: ObservableObject {
             diskIOQueue.addOperation {
                 continuation.resume(returning: work())
             }
+#if DEBUG
+            didEnqueueDiskReadForTests?()
+#endif
         }
     }
 
     /// Manually clear all caches
     func clearAllCaches() {
         ProjectionImageLoader.shared.clearCache()
+        cacheGeneration &+= 1
         modificationDatesSaveTask?.cancel()
+        modificationDatesSaveTask = nil
         cleanupTask?.cancel()
         cleanupTask = nil
-        diskIOQueue.cancelAllOperations()
         // Clear memory
         memoryImageCache.removeAllObjects()
         memoryCacheKeys.removeAll()
@@ -392,7 +411,9 @@ class CacheManager: ObservableObject {
 
         // Clear disk
         let diskURL = diskCacheURL
-        diskIOQueue.addOperation {
+        // Pending reads own checked continuations, so let them finish. The barrier
+        // drains old writes before deletion and keeps new writes behind the clear.
+        diskIOQueue.addBarrierBlock {
             try? FileManager.default.removeItem(at: diskURL)
             try? FileManager.default.createDirectory(at: diskURL, withIntermediateDirectories: true)
         }

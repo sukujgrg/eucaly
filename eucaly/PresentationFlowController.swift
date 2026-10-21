@@ -13,7 +13,6 @@ final class PresentationFlowController: ObservableObject {
     nonisolated enum PreviewSource: Equatable {
         case none
         case file(URL)
-        case web(URL)
         case window(CGWindowID)
         case lyrics
     }

@@ -5,8 +5,8 @@ import CoreVideo
 /// No SDK types, AVPlayer, bookmarks, file paths or observable state cross IPC.
 /// The schema is shared by the app and its separately linked helper executable.
 nonisolated enum NDIHelperWire {
-    static let version = 15
-    static let build = "ndi-independent-fences-1"
+    static let version = 16
+    static let build = "ndi-transformed-aperture-1"
     static let maximumMessageBytes = 65_536
     static let maximumAudioBlocks = 8
     // Audio acknowledgements share the four-slot reply port with one render
@@ -361,10 +361,8 @@ nonisolated struct NDIMediaRenderRequest: Codable, Equatable, Sendable {
     func hasOpaqueCanvas(foreground: IOSurface?, background: IOSurface?) -> Bool {
         func covers(_ surface: IOSurface?, _ geometry: NDIMediaGeometry?, _ fill: Bool, _ input: NDIMediaInput) -> Bool {
             guard let surface, input.isOpaque, input.matches(surface) else { return false }
-            let width = geometry?.width ?? Double(surface.width), height = geometry?.height ?? Double(surface.height)
-            // Equal aspect ratios or explicit fill prove coverage. Do not use a
-            // tolerance that could erase a real, narrow transparent fit gutter.
-            return fill || width * Double(NDIHelperWire.height) == height * Double(NDIHelperWire.width)
+            let geometry = geometry ?? NDIMediaGeometry(width: Double(surface.width), height: Double(surface.height))
+            return geometry.coversCanvas(fill: fill)
         }
         return colour.alpha == 1
             || (self.foreground && covers(foreground, foregroundGeometry, foregroundFill, foregroundInput))
@@ -383,10 +381,18 @@ nonisolated struct NDIMediaGeometry: Codable, Equatable, Sendable {
     var d: Double = 1
     var tx: Double = 0
     var ty: Double = 0
+    // The valid aperture is expressed in the original texture's normalized
+    // coordinates. Rotated bounding boxes contain points outside this crop.
+    var cropMinX: Double = 0
+    var cropMinY: Double = 0
+    var cropMaxX: Double = 1
+    var cropMaxY: Double = 1
     var isValid: Bool {
         width.isFinite && height.isFinite && (0.01...65536).contains(width) && (0.01...65536).contains(height)
             && [a, b, c, d, tx, ty].allSatisfy { $0.isFinite && abs($0) <= 8192 }
             && abs(a * d - b * c) > 0.00000001
+            && [cropMinX, cropMinY, cropMaxX, cropMaxY].allSatisfy { $0.isFinite && (0...1).contains($0) }
+            && cropMinX < cropMaxX && cropMinY < cropMaxY
     }
     init(width: Double, height: Double) { self.width = width; self.height = height }
     init(pixelBuffer: CVPixelBuffer, transform: CGAffineTransform) {
@@ -406,8 +412,26 @@ nonisolated struct NDIMediaGeometry: Codable, Equatable, Sendable {
         d = inverse.d * bounds.height / full.height
         tx = (inverse.a * bounds.minX + inverse.c * bounds.minY + inverse.tx) / full.width
         ty = (inverse.b * bounds.minX + inverse.d * bounds.minY + inverse.ty) / full.height
+        cropMinX = crop.minX / full.width; cropMinY = crop.minY / full.height
+        cropMaxX = crop.maxX / full.width; cropMaxY = crop.maxY / full.height
     }
-    var uniforms: [Float] { [width, height, a, b, c, d, tx, ty].map(Float.init) }
+    func coversCanvas(fill: Bool) -> Bool {
+        guard isValid else { return false }
+        let canvasWidth = Double(NDIHelperWire.width), canvasHeight = Double(NDIHelperWire.height)
+        // No tolerance: an almost-matching fit can still have transparent gutters.
+        guard fill || width * canvasHeight == height * canvasWidth else { return false }
+        let scale = fill ? max(canvasWidth / width, canvasHeight / height) : min(canvasWidth / width, canvasHeight / height)
+        let left = (width * scale - canvasWidth) / (2 * width * scale)
+        let top = (height * scale - canvasHeight) / (2 * height * scale)
+        // The inverse map is affine and the crop is convex, so all four canvas
+        // corners must be inside the real aperture to prove opaque coverage.
+        // Merely filling the transformed bounding box does not establish this.
+        return [(left, top), (1 - left, top), (left, 1 - top), (1 - left, 1 - top)].allSatisfy { x, y in
+            let u = a * x + c * y + tx, v = b * x + d * y + ty
+            return (cropMinX...cropMaxX).contains(u) && (cropMinY...cropMaxY).contains(v)
+        }
+    }
+    var uniforms: [Float] { [width, height, a, b, c, d, tx, ty, cropMinX, cropMinY, cropMaxX, cropMaxY].map(Float.init) }
 }
 
 /// Retain the CVPixelBuffer, not just its IOSurface: a decoder pool may reuse a

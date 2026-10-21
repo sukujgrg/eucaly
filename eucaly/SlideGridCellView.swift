@@ -69,7 +69,6 @@ struct SlideGridCellView: View {
         let contentSize: CGSize = {
             if slide.captureWindowID != nil { return imageSize }
             if slide.pdfURL != nil { return pdfSize }
-            if slide.webpageURL != nil { return imageSize }
             if slide.imageURL != nil { return imageSize }
             if slide.videoURL != nil { return imageSize }
             return lyricsSize
@@ -83,8 +82,6 @@ struct SlideGridCellView: View {
                 } else {
                     PDFPagePlaceholderView(pageIndex: pageIndex, size: pdfSize)
                 }
-            } else if let webpageURL = slide.webpageURL {
-                WebpageThumbnailView(url: webpageURL, title: slide.label)
             } else if let imageURL = slide.imageURL {
                 ImageThumbnailView(url: imageURL, size: imageSize)
             } else if let videoURL = slide.videoURL {
@@ -127,53 +124,6 @@ private struct WindowCaptureThumbnailView: View {
                     Label("Unavailable", systemImage: "exclamationmark.triangle")
                         .font(.caption2)
                         .foregroundStyle(.yellow)
-                }
-            }
-        }
-    }
-}
-
-private struct WebpageThumbnailView: View {
-    let url: URL
-    let title: String?
-
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            Color(nsColor: .windowBackgroundColor),
-                            Color(nsColor: .controlBackgroundColor)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .strokeBorder(.separator, lineWidth: 1)
-                )
-
-            VStack(spacing: 8) {
-                Image(systemName: "globe")
-                    .font(.system(size: 30, weight: .semibold))
-                    .foregroundStyle(.secondary)
-
-                Text(title ?? (url.host(percentEncoded: false) ?? "Webpage"))
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 8)
-
-                if let host = url.host(percentEncoded: false) {
-                    Text(host)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .padding(.horizontal, 8)
                 }
             }
         }
