@@ -37,12 +37,12 @@ provides its current unsaved-change decision without replacing the window delega
 There is no SwiftUI window scene, `openWindow` action, hidden bootstrap window,
 window-discovery view or replacement-window polling.
 
-New Workspace Tab (`Cmd+T` and the title-bar plus button) creates an empty
-workspace with no outputs. The plus button is hidden at the four-workspace saved
-limit, including closed controls; deleting an unused workspace restores it. Creation
-uses an app-owned native title-bar accessory because AppKit caches its tab-bar plus
-button when a group is created. Workspace menus open saved workspaces and detach tabs.
-Detach moves the same native window and retains the editor, Preview and Current.
+New Workspace Tab in the File and Workspace menus (`Cmd+T`) creates an empty
+workspace with no outputs. The command is disabled at the four-workspace saved
+limit, including closed controls; deleting an unused workspace enables it again.
+The toolbar's Workspace menu offers the same command; no separate plus button is
+shown in the title bar or native tab bar. Workspace menus also open saved workspaces
+and detach tabs. Detach moves the same native window and retains the editor, Preview and Current.
 Tab titles include output count and Live/Hidden/Standby/Stopped or failure status.
 Each workspace has a coloured shape in its native tab title, workspace toolbar,
 and beside its name in the toolbar menu's workspace list. A native checkmark marks

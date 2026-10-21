@@ -156,7 +156,7 @@ final class OutputWorkspaceWindows: ObservableObject {
             didClose: { [weak self] closed in
                 guard self?.controllers[id] === closed else { return }
                 self?.controllers[id] = nil
-            }, newWorkspace: { [weak self] in self?.newWorkspace(beside: id) })
+            })
         controllers[id] = controller
         return controller
     }
@@ -174,7 +174,6 @@ final class OutputWorkspaceWindowController: NSWindowController, NSWindowDelegat
     let commands: OutputWorkspaceCommands
     let badge: OutputWorkspaceTabBadge
     let renamer: OutputWorkspaceRenamer
-    private let creationAccessory: OutputWorkspaceCreationAccessory
     private let didBecomeKey: () -> Void
     private let didClose: (OutputWorkspaceWindowController) -> Void
     private let registrationID = UUID()
@@ -194,12 +193,10 @@ final class OutputWorkspaceWindowController: NSWindowController, NSWindowDelegat
 
     init(session: PresentationSession, commands: OutputWorkspaceCommands, content: NSViewController, badge: OutputWorkspaceTabBadge,
          autosavesFrame: Bool,
-         didBecomeKey: @escaping () -> Void, didClose: @escaping (OutputWorkspaceWindowController) -> Void,
-         newWorkspace: @escaping () -> Void) {
+         didBecomeKey: @escaping () -> Void, didClose: @escaping (OutputWorkspaceWindowController) -> Void) {
         self.session = session; self.commands = commands
         self.badge = badge
         renamer = OutputWorkspaceRenamer(profiles: session.outputCoordinator.profiles)
-        creationAccessory = OutputWorkspaceCreationAccessory(newWorkspace: newWorkspace)
         self.didBecomeKey = didBecomeKey; self.didClose = didClose
         let window = OutputWorkspaceWindow(contentRect: .init(x: 0, y: 0, width: 1280, height: 800),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -269,7 +266,6 @@ final class OutputWorkspaceWindowController: NSWindowController, NSWindowDelegat
         commands.controlsWillClose()
         ApplicationTerminationCoordinator.shared.unregister(id: registrationID)
         titleObservation = nil
-        creationAccessory.invalidate()
         commands.window = nil
         if let window = window as? OutputWorkspaceWindow {
             window.workspaceSession = nil
@@ -286,13 +282,6 @@ final class OutputWorkspaceWindowController: NSWindowController, NSWindowDelegat
         window?.tab.title = window?.title ?? name
         window?.tab.attributedTitle = badge.title(window?.title ?? name)
         window?.tab.toolTip = window?.title ?? name
-        guard let window else { return }
-        let index = window.titlebarAccessoryViewControllers.firstIndex { $0 === creationAccessory }
-        if outputs.profiles.canAddWorkspace {
-            if index == nil { window.addTitlebarAccessoryViewController(creationAccessory) }
-        } else if let index {
-            window.removeTitlebarAccessoryViewController(at: index)
-        }
     }
 
     static func restoreWindow(withIdentifier identifier: NSUserInterfaceItemIdentifier, state: NSCoder,
@@ -302,36 +291,4 @@ final class OutputWorkspaceWindowController: NSWindowController, NSWindowDelegat
         }
         completionHandler(app.workspaceWindows.restoreWindow(identifier: identifier), nil)
     }
-}
-
-/// An app-owned add control can be removed as the saved count changes. AppKit's
-/// built-in tab-bar button caches action availability for the tab group's life.
-@MainActor
-final class OutputWorkspaceCreationAccessory: NSTitlebarAccessoryViewController {
-    let button = NSButton()
-    private var newWorkspace: (() -> Void)?
-
-    init(newWorkspace: @escaping () -> Void) {
-        self.newWorkspace = newWorkspace
-        super.init(nibName: nil, bundle: nil)
-        layoutAttribute = .trailing
-    }
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    override func loadView() {
-        view = NSView(frame: .init(x: 0, y: 0, width: 44, height: 32))
-        button.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "New Workspace Tab")
-        button.bezelStyle = .texturedRounded; button.imagePosition = .imageOnly
-        button.setAccessibilityLabel("New Workspace Tab")
-        button.toolTip = "New Workspace Tab (⌘T)"
-        button.target = self; button.action = #selector(createWorkspace(_:))
-        button.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(button)
-        NSLayoutConstraint.activate([
-            button.widthAnchor.constraint(equalToConstant: 28), button.heightAnchor.constraint(equalToConstant: 28),
-            button.centerXAnchor.constraint(equalTo: view.centerXAnchor), button.centerYAnchor.constraint(equalTo: view.centerYAnchor)
-        ])
-    }
-    func invalidate() { newWorkspace = nil; button.isEnabled = false }
-    @objc private func createWorkspace(_ sender: Any?) { newWorkspace?() }
 }
