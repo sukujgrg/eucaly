@@ -9,11 +9,16 @@ final class OutputDefaultTests: XCTestCase {
         let suite = "DefaultOutputs.\(UUID())", defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let store = OutputProfileStore(defaults: defaults)
+        defer { store.flush() }
         let first = try XCTUnwrap(store.defaultDestination)
         let second = OutputDestinationConfiguration(name: "Disabled stage", profileID: OutputProfile.confidenceID, monitor: nil, enabled: false)
         store.edit { $0.destinations.append(second) }
         store.setDefaultDestination(second.id); store.flush()
-        XCTAssertEqual(OutputProfileStore(defaults: defaults).defaultDestination, second)
+        let restored = OutputProfileStore(defaults: defaults)
+        XCTAssertEqual(restored.defaultDestination, second)
+        // Restoration queues a normalized snapshot. Finish it before replacing
+        // the saved document directly with the missing-key migration fixture.
+        restored.flush()
         XCTAssertFalse(try XCTUnwrap(store.defaultDestination).enabled)
         XCTAssertNil(store.quickEditTarget)
         // Simulate an old document without default selection, preserving the old

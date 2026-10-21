@@ -350,6 +350,9 @@ final class HelperService: @unchecked Sendable {
                 let status = eucaly_ndi_probe_audio(probe.handle, &result)
                 let receivedAt = DispatchTime.now().uptimeNanoseconds
                 if status > 0 {
+                    NDIAudioTrace.record("recv-energy", sample: result.timecode * 48000 / 10000000,
+                        frames: Int(result.samples), sampleRate: Double(result.sample_rate),
+                        leftRMS: result.left_rms, rightRMS: result.right_rms)
                     let observation = NDIAudioObservation(samples: Int(result.samples), sampleRate: Int(result.sample_rate),
                         timecode: result.timecode, receivedAtNanoseconds: receivedAt, left: result.left, right: result.right,
                         leftRMS: result.left_rms, rightRMS: result.right_rms,

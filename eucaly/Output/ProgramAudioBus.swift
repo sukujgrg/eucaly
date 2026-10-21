@@ -161,6 +161,9 @@ nonisolated final class ProgramAudioBus: @unchecked Sendable {
                     packets.append(replacement); packets.sort { $0.start < $1.start }
                 } else { packets.append(replacement) }
                 convertedEnd[id] = start + Int64(output.frameLength)
+                #if DEBUG
+                Self.tracePCM("convert-output", buffer: output, source: id, mediaSample: start)
+                #endif
             }
         } while conversion == .haveData
         // PCM packet sizes vary. Bound storage by memory, while retaining a
@@ -196,6 +199,10 @@ nonisolated final class ProgramAudioBus: @unchecked Sendable {
         background?.frameLength = 960
         if let bg = background?.floatChannelData { for channel in 0..<2 { bg[channel].initialize(repeating: 0, count: 960) } }
         for (id, packets) in segments {
+            #if DEBUG
+            var requested = 0, covered = 0
+            var firstMediaSample: Int64?
+            #endif
             let history = clocks[id] ?? [.init(start: .min, hostAnchor: 0, mediaAnchor: 0, rate: 1, gain: gains[id] ?? 0)]
             let destination = backgroundInputs.contains(id) ? (background?.floatChannelData ?? channels) : channels
             var consumedUntil: Int64?
@@ -206,22 +213,40 @@ nonisolated final class ProgramAudioBus: @unchecked Sendable {
                 for position in begin..<end {
                     let sourceSample = clock.mediaSample(position)
                     consumedUntil = sourceSample + 1
+                    #if DEBUG
+                    if clock.gain > 0, !silenced.contains(id) {
+                        requested += 1
+                        if firstMediaSample == nil { firstMediaSample = sourceSample }
+                    }
+                    #endif
                     while packetIndex < packets.count && packets[packetIndex].end <= sourceSample { packetIndex += 1 }
                     guard clock.gain > 0, !silenced.contains(id), packetIndex < packets.count else { continue }
                     let packet = packets[packetIndex]
                     guard sourceSample >= packet.start, let source = packet.buffer.floatChannelData else { continue }
+                    #if DEBUG
+                    covered += 1
+                    #endif
                     for channel in 0..<2 {
                         destination[channel][Int(position - sample)] += source[channel][packet.offset + Int(sourceSample - packet.start)] * clock.gain
                     }
                 }
             }
             if let consumedUntil { segments[id] = packets.filter { $0.end > consumedUntil } }
+            #if DEBUG
+            if requested > 0 {
+                NDIAudioTrace.record("mixer-coverage", sample: sample, source: id,
+                    mediaSample: firstMediaSample, frames: requested, covered: covered, sampleRate: format.sampleRate)
+            }
+            #endif
             if let last = history.lastIndex(where: { $0.start < sample + 960 }), clocks[id] != nil {
                 clocks[id] = Array(history.suffix(from: last))
             }
         }
         for channel in 0..<2 { for i in 0..<960 { channels[channel][i] = min(1, max(-1, channels[channel][i])) } }
         let time = AVAudioTime(sampleTime: sample, atRate: 48000)
+        #if DEBUG
+        Self.tracePCM("mix-output", buffer: output, sample: sample)
+        #endif
         if let background, let deliverStems {
             if let bg = background.floatChannelData { for channel in 0..<2 { for i in 0..<960 { bg[channel][i] = min(1, max(-1, bg[channel][i])) } } }
             deliverStems(output, background, time)
@@ -235,6 +260,18 @@ nonisolated final class ProgramAudioBus: @unchecked Sendable {
             converters.removeAll(); convertedEnd.removeAll(); inputEnd.removeAll()
         }
     }
+    #if DEBUG
+    fileprivate static func tracePCM(_ event: String, buffer: AVAudioPCMBuffer, sample: Int64 = 0,
+                                     source: UUID? = nil, mediaSample: Int64? = nil) {
+        guard NDIAudioTrace.isEnabled, let data = buffer.floatChannelData else { return }
+        let frames = Int(buffer.frameLength), stride = buffer.format.isInterleaved ? Int(buffer.format.channelCount) : 1
+        let right = buffer.format.channelCount > 1 ? (buffer.format.isInterleaved ? data[0] + 1 : data[1]) : data[0]
+        NDIAudioTrace.record(event, sample: sample, source: source, mediaSample: mediaSample,
+            frames: frames, sampleRate: buffer.format.sampleRate,
+            leftRMS: NDIAudioTrace.rms(data[0], frames: frames, stride: stride),
+            rightRMS: NDIAudioTrace.rms(right, frames: frames, stride: stride))
+    }
+    #endif
 }
 
 nonisolated private final class PlayerAudioTapContext: @unchecked Sendable {
@@ -338,6 +375,10 @@ nonisolated private final class PlayerAudioTapContext: @unchecked Sendable {
             retainedBytes -= retained.removeFirst().byteCount
         }
         retained.append(.init(sequence: nextSequence, buffer: copy, time: range.start, byteCount: byteCount))
+        #if DEBUG
+        ProgramAudioBus.tracePCM("tap-source", buffer: copy, source: id,
+            mediaSample: range.start.convertScale(48000, method: .roundHalfAwayFromZero).value)
+        #endif
         nextSequence &+= 1; retainedBytes += byteCount
         flushRetained()
     }

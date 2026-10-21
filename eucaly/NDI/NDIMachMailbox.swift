@@ -114,8 +114,19 @@ nonisolated final class NDIMachMailbox: @unchecked Sendable {
 /// content is recorded. Normal Debug runs and Release builds do no trace I/O.
 nonisolated enum NDIAudioTrace {
     private static let sink = Sink()
-    static func record(_ event: String, sample: Int64 = 0, queued: Int = 0, generation: UUID? = nil) {
-        sink?.record(event, sample: sample, queued: queued, generation: generation)
+    static var isEnabled: Bool { sink != nil }
+    static func rms(_ samples: UnsafePointer<Float>, frames: Int, stride: Int = 1) -> Double {
+        guard frames > 0 else { return 0 }
+        var power = 0.0
+        for index in 0..<frames { let value = Double(samples[index * stride]); power += value * value }
+        return (power / Double(frames)).squareRoot()
+    }
+    static func record(_ event: String, sample: Int64 = 0, queued: Int = 0, generation: UUID? = nil,
+                       source: UUID? = nil, mediaSample: Int64? = nil, frames: Int? = nil,
+                       covered: Int? = nil, sampleRate: Double? = nil, leftRMS: Double? = nil, rightRMS: Double? = nil) {
+        sink?.record(event, sample: sample, queued: queued, generation: generation,
+            source: source, mediaSample: mediaSample, frames: frames, covered: covered,
+            sampleRate: sampleRate, leftRMS: leftRMS, rightRMS: rightRMS)
     }
     static func flush() { sink?.flush() }
     private final class Sink: @unchecked Sendable {
@@ -125,6 +136,13 @@ nonisolated enum NDIAudioTrace {
             let sample: Int64
             let queued: Int
             let generation: UUID?
+            let source: UUID?
+            let mediaSample: Int64?
+            let frames: Int?
+            let covered: Int?
+            let sampleRate: Double?
+            let leftRMS: Double?
+            let rightRMS: Double?
         }
         private let lock = NSLock()
         private let queue = DispatchQueue(label: "com.suku.eucaly.ndi.audio-trace", qos: .utility)
@@ -135,7 +153,7 @@ nonisolated enum NDIAudioTrace {
         init?() {
             guard let path = ProcessInfo.processInfo.environment["EUCALY_NDI_AUDIO_TRACE_DIRECTORY"] else { return nil }
             let url = URL(fileURLWithPath: path).appendingPathComponent("audio-trace-\(getpid()).csv")
-            guard FileManager.default.createFile(atPath: url.path, contents: Data("host_nanoseconds,event,sample,queued,generation\n".utf8)),
+            guard FileManager.default.createFile(atPath: url.path, contents: Data("host_nanoseconds,event,sample,queued,generation,source,media_sample,frames,covered,sample_rate,left_rms,right_rms\n".utf8)),
                   let file = try? FileHandle(forWritingTo: url) else { return nil }
             guard (try? file.seekToEnd()) != nil else { try? file.close(); return nil }
             self.file = file
@@ -144,8 +162,11 @@ nonisolated enum NDIAudioTrace {
             timer.setEventHandler { [weak self] in self?.writePending() }
             self.timer = timer; timer.resume()
         }
-        func record(_ event: String, sample: Int64, queued: Int, generation: UUID?) {
-            let record = Record(now: DispatchTime.now().uptimeNanoseconds, event: event, sample: sample, queued: queued, generation: generation)
+        func record(_ event: String, sample: Int64, queued: Int, generation: UUID?, source: UUID?,
+                    mediaSample: Int64?, frames: Int?, covered: Int?, sampleRate: Double?, leftRMS: Double?, rightRMS: Double?) {
+            let record = Record(now: DispatchTime.now().uptimeNanoseconds, event: event, sample: sample,
+                queued: queued, generation: generation, source: source, mediaSample: mediaSample,
+                frames: frames, covered: covered, sampleRate: sampleRate, leftRMS: leftRMS, rightRMS: rightRMS)
             lock.withLock {
                 if pending.count < 8192 { pending.append(record) }
                 else { dropped += 1 }
@@ -159,8 +180,13 @@ nonisolated enum NDIAudioTrace {
                 return (batch, lost)
             }
             guard !batch.isEmpty || lost > 0 else { return }
-            var text = batch.map { "\($0.now),\($0.event),\($0.sample),\($0.queued),\($0.generation?.uuidString ?? "")\n" }.joined()
-            if lost > 0 { text += "\(DispatchTime.now().uptimeNanoseconds),trace-overflow,0,\(lost),\n" }
+            var text = batch.map { row in
+                [String(row.now), row.event, String(row.sample), String(row.queued), row.generation?.uuidString ?? "",
+                 row.source?.uuidString ?? "", row.mediaSample.map(String.init) ?? "", row.frames.map(String.init) ?? "",
+                 row.covered.map(String.init) ?? "", row.sampleRate.map { String($0) } ?? "",
+                 row.leftRMS.map { String($0) } ?? "", row.rightRMS.map { String($0) } ?? ""].joined(separator: ",") + "\n"
+            }.joined()
+            if lost > 0 { text += "\(DispatchTime.now().uptimeNanoseconds),trace-overflow,0,\(lost),,,,,,,,\n" }
             try? file.write(contentsOf: Data(text.utf8))
         }
         deinit { timer?.cancel(); try? file.close() }

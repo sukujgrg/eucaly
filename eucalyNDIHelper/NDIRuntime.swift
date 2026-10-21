@@ -163,6 +163,16 @@ final class NDISubmissionWorker: @unchecked Sendable {
         let age = max(0, Double(started) / 1_000_000 - Double(block.sampleTime) * 1000 / 48000)
         #if DEBUG
         NDIAudioTrace.record("sdk-enter", sample: block.sampleTime)
+        if NDIAudioTrace.isEnabled {
+            block.pcm.withUnsafeBytes { bytes in
+                let samples = bytes.bindMemory(to: Float.self)
+                if let first = samples.baseAddress, samples.count >= 1920 {
+                    NDIAudioTrace.record("sdk-energy", sample: block.sampleTime, frames: 960, sampleRate: 48000,
+                        leftRMS: NDIAudioTrace.rms(first, frames: 960),
+                        rightRMS: NDIAudioTrace.rms(first + 960, frames: 960))
+                }
+            }
+        }
         #endif
         block.pcm.withUnsafeBytes { eucaly_ndi_send_audio(runtime.handle, $0.baseAddress!, block.sampleTime) }
         let duration = Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000

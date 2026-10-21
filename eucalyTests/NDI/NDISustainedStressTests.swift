@@ -19,9 +19,33 @@ final class NDISustainedStressTests: XCTestCase {
         let report = URL(fileURLWithPath: try XCTUnwrap(env["EUCALY_NDI_STRESS_REPORT"]))
         try String(ProcessInfo.processInfo.processIdentifier).write(
             to: report.deletingLastPathComponent().appendingPathComponent("test-host.pid"), atomically: true, encoding: .utf8)
-        // One long movie avoids AVPlayer's end-of-file seek during measurement.
-        let fixture = try await Task.detached { try await Self.makeFixture(duration: seconds + 10, toneAmplitude: 0.05) }.value
-        defer { try? FileManager.default.removeItem(at: fixture) }
+        // An operator-supplied movie is read in place and is never deleted or
+        // rewritten. Only the synthetic movie belongs to this test's cleanup.
+        let externalMedia = env["EUCALY_NDI_STRESS_MEDIA_PATH"].map { URL(fileURLWithPath: $0) }
+        let observationOnly = env["EUCALY_NDI_STRESS_OBSERVE_ONLY"] == "1"
+        guard !observationOnly || externalMedia != nil else {
+            XCTFail("Observation-only mode requires an explicit diagnostic movie.")
+            throw NDIHelperWire.Failure.unavailable
+        }
+        let fixture: URL
+        if let externalMedia {
+            guard FileManager.default.isReadableFile(atPath: externalMedia.path) else {
+                XCTFail("Cannot read diagnostic movie: \(externalMedia.path)")
+                throw NDIHelperWire.Failure.unavailable
+            }
+            fixture = externalMedia
+        } else {
+            // One long movie avoids end-of-file seeking during measurement.
+            fixture = try await Task.detached { try await Self.makeFixture(duration: seconds + 10, toneAmplitude: 0.05) }.value
+        }
+        defer { if externalMedia == nil { try? FileManager.default.removeItem(at: fixture) } }
+        let mediaDuration = try await AVURLAsset(url: fixture).load(.duration).seconds
+        if externalMedia != nil {
+            guard mediaDuration.isFinite, mediaDuration >= seconds + 5 else {
+                XCTFail("Use --seconds shorter than the diagnostic movie (\(mediaDuration) s), allowing at least five seconds for setup. The movie is not looped.")
+                throw NDIHelperWire.Failure.unavailable
+            }
+        }
         let sender = NDIStressEvents()
         let router = NDIOutputRouter(senderFactory: { receive in
             NDIHelperSupervisor { sender.record($0); receive($0) }
@@ -33,10 +57,11 @@ final class NDISustainedStressTests: XCTestCase {
         let outputs = OutputCoordinator(profiles: store, displays: ProjectionDisplayManager(displays: { [] }),
             retainsPreparedSessions: true, ndi: router)
         let home = outputs.session(workspace: OutputWorkspaceRecord.primaryID)
-        home.setSlides([.init(index: 0, lines: [], label: "Continuous stereo tone and video", videoURL: fixture,
+        home.setSlides([.init(index: 0, lines: [], label: externalMedia?.lastPathComponent ?? "Continuous stereo tone and video", videoURL: fixture,
             pdfURL: nil, pdfPageIndex: nil, imageURL: nil)])
         home.showSlides()
         defer { outputs.stopAllOutputs() }
+        let player = try XCTUnwrap(outputs.media.program)
         try await until("steady diagnostic sender ready") { (router.statistics[row.id]?.submittedFrames ?? 0) > 3 }
         let source = try XCTUnwrap(router.statistics[row.id]?.sourceName)
         try source.write(to: report.deletingLastPathComponent().appendingPathComponent("source.txt"), atomically: true, encoding: .utf8)
@@ -45,30 +70,49 @@ final class NDISustainedStressTests: XCTestCase {
         defer { audio.cancel(); video.cancel() }
         try await audio.start(); try await video.start()
         try await until("steady local audio and video ready") {
-            (audio.events.state.audio?.leftRMS ?? 0) > 0.01
+            if externalMedia != nil {
+                // Real music may start quietly; its picture need not resemble
+                // the generated red/blue checkerboard. Require actual arrivals.
+                return audio.events.state.audioFrames > 0
+                    && video.events.state.revision > 0 && video.events.state.lastVideoTimecode > 0
+            }
+            return (audio.events.state.audio?.leftRMS ?? 0) > 0.01
                 && (audio.events.state.audio?.rightRMS ?? 0) > 0.01 && video.events.state.isVideo
         }
         let initialSilent = audio.events.state.silentFrames
         let start = ProcessInfo.processInfo.systemUptime
         let journal = try NDIStressJournal(url: report)
+        var previousAudioFrames = 0, previousVideoFrames: UInt64 = 0
         func checkpoint(_ phase: String) throws {
             let sending = sender.state, sound = audio.events.state, picture = video.events.state
             let status = router.statistics[row.id]
+            let mediaTime = player.currentTime().seconds
             let audioAge = Double(Int64((sound.audio?.receivedAtNanoseconds ?? 0) / 100) - (sound.audio?.timecode ?? 0)) / 10000
             let notificationAge = Double(Int64(sound.audioReceivedAt) - (sound.audio?.timecode ?? 0)) / 10000
             let row: [String: Any] = [
                 "phase": phase, "source": source, "elapsed": ProcessInfo.processInfo.systemUptime - start,
+                "generatedFixture": externalMedia == nil,
+                "observationOnly": observationOnly,
+                "sourceMediaPath": externalMedia?.path ?? "generated fixture",
+                "mediaDurationSeconds": mediaDuration.isFinite ? mediaDuration : 0,
+                "mediaTimeSeconds": mediaTime.isFinite ? mediaTime : 0,
+                "playerRate": Double(player.rate), "localPlayerVolume": Double(player.volume),
+                "playerTimeControlStatus": player.timeControlStatus.rawValue,
+                "playerItemStatus": player.currentItem?.status.rawValue ?? -1,
+                "playerError": player.currentItem?.error?.localizedDescription ?? "",
                 "observedAtUTC": Date().ISO8601Format(), "senderExited": sending.exited,
                 "senderFailure": sending.failure ?? "", "audioProbeFailure": sound.failure ?? "",
                 "videoProbeFailure": picture.failure ?? "",
                 "audioFrames": sound.audioFrames, "silentFrames": sound.silentFrames,
+                "audioSilenceRuns": sound.quiet.map { ["start": $0.start, "end": $0.end] },
                 "audioTimecodeGaps": sound.audioGaps, "receiverDrops": sound.audio?.droppedFrames ?? 0,
+                "maximumAudioGapMilliseconds": sound.maximumAudioGap,
                 "receiverQueuedFrames": sound.audio?.queuedFrames ?? 0,
                 "leftRMS": sound.audio?.leftRMS ?? 0, "rightRMS": sound.audio?.rightRMS ?? 0,
                 "audioTimecode": sound.audio?.timecode ?? 0,
                 "audioAgeMilliseconds": audioAge,
                 "audioNotificationAgeMilliseconds": notificationAge,
-                "videoTimecode": video.events.state.lastVideoTimecode,
+                "videoTimecode": picture.lastVideoTimecode, "videoFrames": picture.revision,
                 "videoColourChanges": video.events.state.colourChanges,
                 "frames": status?.submittedFrames ?? 0, "audioBlocks": status?.audioBlocks ?? 0,
                 "audioSubmissionAgeMilliseconds": status?.audioSubmissionAgeMilliseconds ?? 0,
@@ -83,10 +127,23 @@ final class NDISustainedStressTests: XCTestCase {
             // Retain the failing measurement before fail-fast XCTest cleanup
             // retires the source. A stale last-success row is misleading.
             XCTAssertNil(sending.failure); XCTAssertNil(sound.failure); XCTAssertNil(picture.failure)
-            XCTAssertEqual(sound.audioGaps, 0)
-            XCTAssertEqual(sound.audio?.droppedFrames, 0)
-            XCTAssertEqual(sound.silentFrames, initialSilent, "Steady local audio must not acquire silent blocks")
-            XCTAssertLessThan(audioAge, 200, "The local audio clock must not drift progressively behind the sender")
+            if !observationOnly {
+                XCTAssertEqual(sound.audioGaps, 0)
+                XCTAssertEqual(sound.audio?.droppedFrames, 0)
+            }
+            if externalMedia == nil {
+                XCTAssertEqual(sound.silentFrames, initialSilent, "Steady local audio must not acquire silent blocks")
+                XCTAssertLessThan(audioAge, 200, "The local audio clock must not drift progressively behind the sender")
+            } else if phase != "complete" {
+                // Natural silence and arrival-age spikes are diagnostic data,
+                // not proof of dropped source audio. Persist them above; still
+                // require live receivers and a healthy, advancing media player.
+                XCTAssertGreaterThan(sound.audioFrames, previousAudioFrames)
+                XCTAssertGreaterThan(picture.revision, previousVideoFrames)
+                XCTAssertGreaterThan(player.rate, 0)
+                XCTAssertNil(player.currentItem?.error)
+                previousAudioFrames = sound.audioFrames; previousVideoFrames = picture.revision
+            }
             XCTAssertLessThanOrEqual(status?.surfacePoolHighWaterMark ?? 0, 4)
         }
         try checkpoint("started")

@@ -30,14 +30,32 @@ final class ProgramAudioBusTests: XCTestCase {
         }
         let ready = await player.preroll(atRate: 1)
         XCTAssertTrue(ready)
-        bus.start(at: CMClockGetTime(CMClockGetHostTimeClock())); player.play()
+        func mark(_ event: String, phase: Int = 0) {
+            #if DEBUG
+            NDIAudioTrace.record(event,
+                sample: CMClockGetTime(CMClockGetHostTimeClock()).convertScale(48000, method: .roundHalfAwayFromZero).value,
+                queued: phase,
+                mediaSample: player.currentTime().convertScale(48000, method: .roundHalfAwayFromZero).value)
+            #endif
+        }
+        let startedAt = CMClockGetTime(CMClockGetHostTimeClock())
+        mark("test-monitor-start")
+        bus.start(at: startedAt); player.play()
         try await Task.sleep(for: .milliseconds(300)); _ = received.drain()
+        let measuredAt = CMClockGetTime(CMClockGetHostTimeClock()).convertScale(48000, method: .roundHalfAwayFromZero).value
+        mark("test-monitor-measure-start")
         var lastSample: Int64?
-        for localVolume: Float in [0, 0.001, 0, 0.001, 0] {
+        for (phase, localVolume) in ([Float(0), 0.001, 0, 0.001, 0]).enumerated() {
+            mark("test-monitor-volume-before", phase: phase)
             player.volume = localVolume; tap.refresh()
+            mark("test-monitor-volume-after", phase: phase)
             try await Task.sleep(for: .milliseconds(200))
             let blocks = received.drain().compactMap { sample -> (AVAudioPCMBuffer, AVAudioTime)? in
-                guard case .audio(let pcm, let time) = sample else { return nil }; return (pcm, time)
+                // A startup render can arrive after the warmup drain. Qualify
+                // its PCM timestamp once; every subsequent monitor transition
+                // remains inside the uninterrupted sample-clock measurement.
+                guard case .audio(let pcm, let time) = sample, time.sampleTime >= measuredAt else { return nil }
+                return (pcm, time)
             }
             XCTAssertGreaterThan(blocks.count, 4)
             for (pcm, time) in blocks {
@@ -45,10 +63,20 @@ final class ProgramAudioBusTests: XCTestCase {
                 lastSample = time.sampleTime
                 let samples = UnsafeBufferPointer(start: try XCTUnwrap(pcm.floatChannelData?[0]), count: Int(pcm.frameLength))
                 let rms = sqrt(samples.reduce(0.0) { $0 + Double($1 * $1) } / Double(samples.count))
+                #if DEBUG
+                NDIAudioTrace.record("test-monitor-measured", sample: time.sampleTime, queued: phase,
+                    frames: Int(pcm.frameLength), sampleRate: time.sampleRate, leftRMS: rms)
+                #endif
+                if abs(rms - 0.05 * 0.25 / sqrt(2)) > 0.0003 {
+                    let firstAudible = samples.firstIndex(where: { abs($0) >= 0.0000001 })
+                    let lastAudible = samples.lastIndex(where: { abs($0) >= 0.0000001 })
+                    print("Monitor RMS mismatch: phase=\(phase), localVolume=\(localVolume), sample=\(time.sampleTime), frames=\(pcm.frameLength), measurementCutoff=\(measuredAt), rms=\(rms), firstAudible=\(String(describing: firstAudible)), lastAudible=\(String(describing: lastAudible))")
+                }
                 XCTAssertEqual(rms, 0.05 * 0.25 / sqrt(2), accuracy: 0.0003,
                     "Local output gain must not scale or interrupt the transmitted programme")
             }
         }
+        mark("test-monitor-program-mute")
         gain.set(0); tap.refresh()
         try await Task.sleep(for: .milliseconds(100)); _ = received.drain()
         try await Task.sleep(for: .milliseconds(100))
@@ -56,6 +84,7 @@ final class ProgramAudioBusTests: XCTestCase {
             guard case .audio(let pcm, _) = sample else { continue }
             XCTAssertTrue((0..<Int(pcm.frameLength)).allSatisfy { pcm.floatChannelData![0][$0] == 0 })
         }
+        mark("test-monitor-program-unmute")
         gain.set(0.25); tap.refresh()
         try await Task.sleep(for: .milliseconds(100)); _ = received.drain()
         try await Task.sleep(for: .milliseconds(100))
@@ -63,6 +92,7 @@ final class ProgramAudioBusTests: XCTestCase {
             guard case .audio(let pcm, _) = sample else { return false }
             return (0..<Int(pcm.frameLength)).contains { abs(pcm.floatChannelData![0][$0]) > 0.01 }
         }, "Programme unmute must restore NDI audio while the Mac remains silent")
+        mark("test-monitor-end")
         XCTAssertEqual(player.volume, 0)
     }
 
@@ -126,28 +156,60 @@ final class ProgramAudioBusTests: XCTestCase {
         filler.frameLength = 1
         for channel in 0..<2 { filler.floatChannelData![channel][0] = 0 }
         let silentInput = UUID()
-        for _ in 0..<8 { b.append([(filler, .zero)], id: silentInput) }
+        for _ in 0..<8 { XCTAssertTrue(b.append([(filler, .zero)], id: silentInput)) }
+        XCTAssertFalse(b.append([(filler, .zero)], id: silentInput), "The initial replay must encounter a full admission queue")
         let joined = PlayerAudioTap(player: player, mixer: b)
         defer { joined.stop() }
-        b.start(at: CMClockGetTime(CMClockGetHostTimeClock()))
+        let joinedAt = CMClockGetTime(CMClockGetHostTimeClock())
+        #if DEBUG
+        NDIAudioTrace.record("test-join-start", sample: joinedAt.convertScale(48000, method: .roundHalfAwayFromZero).value)
+        #endif
+        b.start(at: joinedAt)
+        let setupDrained = expectation(description: "Joining mixer has reopened admission")
+        b.updateDelivery { setupDrained.fulfill() }
         resume.signal()
-        try await Task.sleep(for: .milliseconds(80)); _ = joinedAudio.drain()
-        var total = 0, silent = 0
+        await fulfillment(of: [setupDrained], timeout: 2)
+        joined.refresh()
+        let replayed = expectation(description: "Retried retained PCM has finished conversion")
+        b.updateDelivery { replayed.fulfill() }
+        await fulfillment(of: [replayed], timeout: 2)
+        // A timer render from the deliberately blocked setup can be delivered
+        // after a drain. Measure complete PCM blocks after admission/conversion
+        // has finished, using their sample clock rather than callback arrival.
+        let readySample = CMClockGetTime(CMClockGetHostTimeClock()).convertScale(48000, method: .roundHalfAwayFromZero).value
+        let measuredAt = (readySample + 959) / 960 * 960
+        #if DEBUG
+        NDIAudioTrace.record("test-join-measure-start", sample: measuredAt)
+        #endif
+        var total = 0, silent = 0, run = 0, maximumSilentRun = 0
+        var previousSample: Int64?
         for _ in 0..<20 {
             first.refresh(); joined.refresh()
             try await Task.sleep(for: .milliseconds(20))
             for sample in joinedAudio.drain() {
-                guard case .audio(let pcm, _) = sample, let channel = pcm.floatChannelData?[0] else { continue }
+                guard case .audio(let pcm, let when) = sample, when.sampleTime >= measuredAt,
+                      let channel = pcm.floatChannelData?[0] else { continue }
+                XCTAssertEqual(pcm.frameLength, 960)
+                if let previousSample { XCTAssertEqual(when.sampleTime - previousSample, 960) }
+                previousSample = when.sampleTime
+                var blockSilent = 0
                 for i in 0..<Int(pcm.frameLength) {
                     total += 1
-                    if abs(channel[i]) < 0.0000001 { silent += 1 }
+                    if abs(channel[i]) < 0.0000001 {
+                        silent += 1; blockSilent += 1; run += 1
+                        maximumSilentRun = max(maximumSilentRun, run)
+                    } else { run = 0 }
                 }
+                #if DEBUG
+                NDIAudioTrace.record("test-join-measured", sample: when.sampleTime, frames: Int(pcm.frameLength), covered: Int(pcm.frameLength) - blockSilent)
+                #endif
             }
         }
-        print("Late audio join: total=\(total), silent=\(silent)")
+        print("Late audio join: total=\(total), silent=\(silent), longest=\(maximumSilentRun)")
         XCTAssertGreaterThan(total, 12000)
         XCTAssertLessThan(Double(silent) / Double(max(1, total)), 0.02,
             "A new output must receive still-unplayed PCM already decoded for the existing output")
+        XCTAssertLessThan(maximumSilentRun, 48, "Retried shared preroll must not contain a gap longer than 1 ms")
     }
 
     func testLiveFileAudioTapReachesTwoMediaOutputsAndRetiresCleanly() async throws {

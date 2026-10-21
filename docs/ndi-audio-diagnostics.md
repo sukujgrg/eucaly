@@ -499,3 +499,257 @@ the sustained measurements. The rebuilt app is in `~/Applications/eucaly.app`.
 Commit preparation subsequently removed one redundant blank EOF line in the
 stress-test harness; `commit-preparation.json` records both hashes. No executable
 code changed after qualification.
+
+## Measuring a specific movie
+
+The steady diagnostic can read an operator-supplied movie instead of generating
+the checkerboard/tone fixture. Use a stable copy that will not be overwritten
+during playback. The test never rewrites or removes an external movie, and its
+duration must exceed the requested measurement by at least five seconds.
+
+```sh
+python3 scripts/test-ndi-stress.py --mode steady --seconds 180 \
+  --media /tmp/ndi/stable-copy.mp4 --trace-audio --observe-only \
+  --source-name 'eucaly movie diagnostic'
+```
+
+`--observe-only` is permitted only with an explicit movie in steady mode. It
+records audio timecode gaps and SDK dequeue drops through the full observation
+instead of stopping at the first such event. Helper health, receiver/player
+liveness, exact-child shutdown and the four-surface limit remain checked. A
+successful observation is **not** an audio qualification pass. Ordinary steady
+and workspace-switch qualification retain their strict assertions.
+
+Actual-media checkpoints include the movie path, media time, player state,
+local volume, audio/video arrivals, silence intervals and receiver counters.
+Unlike the generated continuous-tone fixture, real movies can contain intended
+silence and arbitrary colours. Compare them with an independent audio decode
+before classifying any silent block as a fault.
+
+The opt-in Debug trace records channel RMS at the copied source tap, converter
+output, mixed programme PCM, SDK audio entry and raw SDK receiver, plus mixer
+coverage. It retains no PCM content. Join SDK/receiver records by source sample
+time, and join mixer coverage to tap/converter records by media sample ranges.
+Audio levels alone cannot detect every waveform discontinuity. Trace collection
+is bounded, and normal runs and Release builds perform no trace I/O.
+
+The 313-second `worship-countdown-5min-4k.mp4` case used a 3,840 × 2,160 H.264
+30 fps movie with stereo 48 kHz AAC (SHA-256
+`7a60db1cd500b9b92063395c8e042b4979accad36175fa4cfcde49cd89bb2a35`).
+Both FFmpeg and Apple's audio-only AVAssetReader decode found continuous audio
+between the startup and ending silence, including the implicated 128–130 second
+section.
+
+An initial actual-media run failed near 291 seconds on a local receiver
+timestamp gap of 620 ms. Sender admission and SDK-entry sample clocks remained
+continuous, so that observation does not locate the missing delivery upstream
+of the SDK. A separate 280 ms zero-valued run near media time 128.7 seconds is
+confounded: the diagnostic movie's filesystem modification/change times were
+23:36:22 UTC, immediately before the added-silence checkpoints at 23:36:23–24.
+This temporal match does not prove how the file was replaced or that the write
+caused silence. Preserve this failed run rather than count it as a pass.
+Evidence: `build/ndi-stress/countdown-original-20261021/`.
+
+A subsequent 180.43-second observation used a separate stable copy. No stage
+acquired zero-valued audio after startup; there were no mixer coverage losses,
+receiver timestamp gaps or SDK dequeue drops. Across 8,935 matched blocks,
+mixer and SDK-entry channel RMS agreed exactly; maximum SDK-to-receiver RMS
+difference was 0.000017. This did not reproduce the earlier failures and does
+not establish uninterrupted playback across the whole movie or on the M1.
+Evidence: `build/ndi-stress/countdown-energy-20261021/analysis.json`.
+
+### M1 receiver timing comparisons
+
+The affected receiver was an Apple M1 running macOS 27.0.1 and NDI Video Monitor
+6.3.2. Wi-Fi was off. Its Apple USB Ethernet adapter negotiated full-duplex
+100baseTX and reported only 10/100 media support. This does not meet NDI's
+[Gigabit network guidance](https://docs.ndi.video/all/getting-started/white-paper/network-layout),
+but the comparisons below do not establish link capacity as the cause.
+
+A silent diagnostic measured raw and SDK-frame-synchronized audio on separate
+connections while Video Monitor received the normal moving countdown. In the
+180-second comparison, 8,820 overlapping raw blocks had identical channel RMS,
+silence classifications and sender SDK timestamps on the Mini and M1. Neither
+raw receiver lost sample timecodes or reported SDK dequeue drops. Matching RMS
+does not establish per-sample byte identity because PCM content was not recorded.
+
+The M1's synchronized output contained 34.82 seconds of silence versus 3.94
+seconds locally; 3.36 seconds also existed in raw audio at the natural movie
+loop boundary. After conservatively excluding that boundary and two seconds
+around every probe wake delay over 5 ms, the M1 still had 15.44 seconds of
+additional silence in 271 complete events, while the corresponding qualified
+local observation had none. The largest raw SDK submission interval was
+44.79 ms on both machines, but raw capture arrival intervals exceeded 60 ms
+333 times on the M1 and ten times locally. These measurements are before any
+speaker device and do not identify which downstream component delayed delivery.
+Evidence:
+`build/ndi-stress/countdown-receiver-20261021/countdown-mini-m1-comparison-20261021.json`.
+
+Video Monitor was then closed for three controlled 120-second comparisons.
+One raw A/V receiver and two audio-only connections ran in each case. The same
+movie section was replayed. Video was decoded by the SDK and freed immediately,
+without rendering or speaker playback. Network figures below are approximate
+application byte rates, including the two constant audio-only connections;
+they exclude link overhead. Startup audio was excluded from the silence totals.
+
+| Receiver mode | Actual video | Mean combined traffic | Raw A/V silence / sample gaps | SDK synchronized silence |
+| --- | --- | --- | --- | --- |
+| Default transport, high bandwidth | 1920 × 1080 UYVA, 30 fps | 73 Mb/s | 0 / 0 | 21.94 s |
+| Default transport, low bandwidth | 640 × 360 UYVA, 30 fps | 20 Mb/s | 0 / 0 | 23.46 s |
+| RUDP disabled for these processes | 1920 × 1080 UYVA, 30 fps | 72 Mb/s | 0 / 0 | 21.46 s |
+
+The last case used only the documented receiver-side
+`ndi.rudp.recv.enable=false` override in a temporary `NDI_CONFIG_DIR`.
+Connection-level byte counters verified that multi-connection TCP carried the
+media, with only small UDP discovery traffic. Saved settings were untouched,
+and Video Monitor was reopened normally afterward. Lower video traffic and
+verified TCP did not resolve the measured synchronization gaps. Neither an
+adapter-only conclusion nor forcing TCP in eucaly is justified by these tests.
+Separate connections and successive captures remain important limitations.
+
+Evidence is retained under `build/ndi-stress/countdown-receiver-20261021/`,
+including `m1-countdown-results-20261021/`, `m1-av-high-20261021/`,
+`m1-av-low-20261021/` and `m1-av-rudp-off-20261021/`. Its `manifest.json`
+records original locations, byte counts and verified SHA-256 hashes; copied
+analysis files retain their original input paths. The accompanying README
+records the measurement limitations. SDK capture-return timing alone cannot
+distinguish network arrival delay from delay within the receiver SDK or its
+scheduling.
+
+Two bounded packet-header captures measured the next boundary. The operator
+confirmed that the M1 was connected directly to a Netgear Nighthawk R7000P,
+without mesh; the Mini sender remained on Wi-Fi. After startup, raw audio was
+nonzero with continuous sample timecodes throughout each qualified overlap.
+
+| Capture | Qualified overlap | Packet gaps over 60 ms (range; median) | Raw pauses overlapping packet gaps | Separate FrameSync silence |
+| --- | --- | --- | --- | --- |
+| First | 17.693 s | 33; 71.308–100.463 ms; 89.413 ms | 33 of 34 | 4.00 s in 67 events |
+| Idle repeat | 17.675 s | 33; 72.906–121.279 ms; 89.084 ms | 33 of 36 | 3.56 s in 65 events |
+
+The packet-gap starts recurred at median intervals of 528.1 ms and 528.8 ms,
+respectively. The first capture, at 00:40:43–00:41:03 UTC, overlapped offline
+Python/Git release regressions on the sender; Xcode audio/video tests started
+afterward. The 00:45:22–00:45:42 UTC repeat ran without builds or tests, after
+the earlier low-rate pings had finished. The packet-boundary pattern therefore
+reproduced without concurrent tests. All captured headers parsed successfully,
+with zero reported kernel capture drops.
+
+Most raw SDK pauses coincide with gaps already visible in the receiver's
+kernel packet-capture timestamps, so those delays are not confined to SDK
+dequeue timing. The responsible component remains unproven. Capture timestamps
+include NIC/driver/kernel behavior; ports and rates do not identify individual
+SDK connections, and the raw and FrameSync connections remain separate.
+FrameSync silence was not an immediate, one-to-one match to the packet gaps.
+These results establish neither an adapter-only nor a Wi-Fi-only cause.
+Evidence and independent parser/alignment reviews are retained under
+`build/ndi-stress/countdown-receiver-20261021/packet-first/` and `packet-idle/`,
+each with a SHA-256 provenance manifest.
+
+A subsequent control stopped only the Online NDI output, verified its helper
+had exited, and retained the other workspace's live output. All 80 low-rate
+ICMP requests on each path returned in both conditions:
+
+| Path | NDI live: mean / maximum RTT | Online NDI stopped: mean / maximum RTT |
+| --- | --- | --- |
+| Mini → gateway | 13.727 / 96.009 ms | 13.642 / 93.988 ms |
+| Mini → M1 | 53.430 / 129.786 ms | 13.150 / 91.612 ms |
+| Wired M1 → gateway | 34.706 / 97.852 ms | 0.753 / 6.138 ms |
+
+The sender-to-gateway path still had latency spikes with this NDI source off;
+the other paths improved in this comparison. ICMP and router reply priorities
+differ from forwarded media, and these sequential logs cannot locate individual
+NDI gaps. Online was restored afterward. The original logs and context are
+retained in `build/ndi-stress/countdown-receiver-20261021/ping-controls/`.
+A comparison with both Macs on Ethernet was unavailable because the sender
+could not be reached with an available cable. The latency evidence supports
+investigating the sender's Wi-Fi path, without establishing that it explains
+every NDI audio observation.
+
+The operator then set AirDrop receiving to No One and Handoff Off on the Mini,
+and requested that both remain Off. The same installed app/source continued;
+the movie was sought to its beginning before a separate 60-second observation.
+After excluding each probe's first two seconds, observed FrameSync silence
+fell from 5.32 seconds in 1,399 blocks in the earlier idle comparison to 1.14
+seconds in 2,900 blocks, approximately 19.0% to 2.0% of requested audio samples.
+The common 57.950-second Off interval contained 18 silence events and 17 raw
+arrival pauses over 60 ms; its largest raw pause was still 219.549 ms. Raw
+samples stayed nonzero, with continuous source timecodes and no SDK dequeue
+drops. The earlier regular arrival-pause pattern did not persist throughout
+this short comparison, but residual gaps remained.
+
+The consumer's wake-delay distribution also changed: its Off maximum was
+9.961 ms, and 1,679 of 2,897 common observation blocks woke over 5 ms late.
+Applying the earlier strict 5 ms cutoff with two-second guards excludes every
+Off observation. Strict wake-qualified evidence is therefore **unavailable**,
+not a zero-silence result or an audio qualification pass. The ordinary observed
+silence counts above remain useful, with that scheduling limitation.
+
+Both 300-request Off ICMP comparisons returned every reply. Mini-to-gateway
+mean RTT was 4.622 ms, with a 6.461 ms 95th percentile and 96.718 ms maximum;
+Mini-to-M1 mean RTT was 13.961 ms, with a 36.575 ms 95th percentile and 85.401 ms
+maximum. These distributions improved against the earlier 80-request live
+comparisons, while occasional spikes remained. Both settings changed together,
+the runs were sequential, and their durations and movie sections differed;
+the user requested no reversal. This observation does not settle the complete
+cause or establish a remedy. The longer Off observation and actual Video Monitor
+listening were evaluated separately. Evidence, event distributions and the explicit
+unavailable qualification are retained in
+`build/ndi-stress/countdown-receiver-20261021/peer-features-off/`.
+
+A subsequent 360-second observation retained the Mini's settings Off throughout.
+After startup, raw audio contained 3.12 seconds of natural movie-loop silence,
+while FrameSync contained 8.64 seconds of silence. Excluding the raw quiet
+windows with one-second guards left 5.48 seconds in 352.40 seconds of requested
+audio; half-second guards gave 5.50 seconds. Applying the prior 5 ms wake cutoff
+and two-second guards left 2.82 seconds in 258.32 seconds, **1.09% residual
+instrumented silence**, so this was not a clean audio qualification pass.
+Raw source timecodes stayed continuous and SDK dequeue drops stayed zero.
+Sender SDK submission intervals were 15.322–25.878 ms despite raw receiver
+arrival pauses up to 245.280 ms.
+
+This run mixed receiver conditions. Only M1 AirPlay Receiver was newly turned
+Off during it, reported around 00:59:32 UTC; M1 AirDrop No One was preexisting,
+as the corrected operator journal records. With twenty-second guards around
+that approximate report and one-second natural-silence guards, observed
+pre/post silence was 1.89% and 1.04%. After the strict wake exclusions it was
+0.92% and 0.98%, which does not establish an additional AirPlay Receiver benefit.
+Ten-second action guards and half-second natural guards are retained as
+sensitivity checks. Cross-Mac action timing was not precisely calibrated, and
+movie complexity changed over time. Before the M1 AirPlay Receiver change, the
+operator described Video Monitor as noticeably better and continuous after
+the Mini changes. That subjective report does not establish uninterrupted
+listening throughout the six-minute measurement. Residual instrumented silence
+and the earlier local-only NDI gaps remain separate limits. All settings were left
+as requested. The mixed-run evidence, corrected journal, clock alignment and
+segmented analysis are retained in
+`build/ndi-stress/countdown-receiver-20261021/peer-features-off-sustained/`.
+
+### Opaque video bandwidth reduction
+
+This movie requires AVFoundation's BGRA colour conversion because its source
+matrix is unmarked and its transfer function is sRGB. Colour conversion and
+opacity are independent: a proven opaque local H.264 track can keep that
+conversion while omitting an unnecessary transmitted alpha plane. The sampler
+now marks those frames opaque only for one uncomposed track with consistent
+negative alpha metadata. Unknown metadata, other codecs and compositions retain
+the alpha path. Item replacement creates a separate sampler and cannot inherit
+the previous item's proof.
+
+Full-canvas opaque frames can use UYVY. Transparent fit gutters, text, unknown
+BGRA inputs and Hide/Clear still use UYVA. Focused tests exercise actual H.264
+BGRA decoding, packing changes, retained surfaces and replacement by a
+composition. This is a bandwidth optimization, not an established audio-gap
+fix: the 20 Mb/s low-bandwidth receiver comparison above still contained gaps.
+
+Validation on 21 October passed 582 XCTest cases with four opt-in skips, one
+Swift Testing case and 108 offline release/feed regressions. The focused video
+input/packing checks passed 21 cases. Separate real-player AAC observations at
+44.1 and 48 kHz each passed 30 seconds, alongside irregular-buffer resampling
+coverage. Startup measurement races in the late-join and local-monitor tests
+were corrected using queue completion and PCM sample clocks; each corrected
+test passed ten repetitions without relaxing its audio thresholds. Evidence is
+retained under the receiver archive's `validation/` and `test-fixtures/` folders.
+
+The physical receiver comparisons used the previously installed
+`3b0f4cbe` build throughout. The opaque-video optimization was not active in
+those comparisons and must not receive credit for their network improvement.

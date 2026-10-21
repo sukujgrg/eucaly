@@ -64,6 +64,23 @@ final class NDIVideoFrameLease {
 /// Select the format before attaching an output. Unknown codecs, alpha, wide
 /// colour and compositions keep AVFoundation's established BGRA conversion.
 nonisolated enum NDIVideoInputPolicy {
+    /// Colour conversion and opacity are independent decisions. A plain local
+    /// H.264 track cannot add transparency, even when AVFoundation must perform
+    /// its colour conversion into BGRA. Unknown codecs/metadata retain alpha.
+    static func provesOpaqueBGRA(_ formats: [CMFormatDescription], localFile: Bool,
+                                 composed: Bool, trackContainsAlpha: Bool?) -> Bool {
+        guard localFile, !composed, trackContainsAlpha == false, !formats.isEmpty else { return false }
+        return formats.allSatisfy { format in
+            guard CMFormatDescriptionGetMediaType(format) == kCMMediaType_Video,
+                  CMFormatDescriptionGetMediaSubType(format) == kCMVideoCodecType_H264,
+                  CMFormatDescriptionGetExtension(format, extensionKey: kCMFormatDescriptionExtension_AlphaChannelMode) == nil else { return false }
+            if let alpha = CMFormatDescriptionGetExtension(format, extensionKey: kCMFormatDescriptionExtension_ContainsAlphaChannel) {
+                guard let containsAlpha = alpha as? Bool, !containsAlpha else { return false }
+            }
+            return true
+        }
+    }
+
     static func prefersNV12(_ formats: [CMFormatDescription], composed: Bool) -> Bool {
         !composed && !formats.isEmpty && formats.allSatisfy { format in
             let codec = CMFormatDescriptionGetMediaSubType(format)
@@ -101,6 +118,7 @@ nonisolated final class NDIVideoFrameSource: @unchecked Sendable {
     private var previousTime: CMTime = .invalid
     private var lastFrame = ProcessInfo.processInfo.systemUptime
     private var transform: CGAffineTransform?
+    private var provenOpaque = false
     private var preparationFailed = false
     private var stopped = false
     @MainActor private var preparation: Task<Void, Never>?
@@ -122,20 +140,28 @@ nonisolated final class NDIVideoFrameSource: @unchecked Sendable {
                 guard let track = tracks.first else { throw Failure.format }
                 let transform = try await track.load(.preferredTransform)
                 let formats = try await track.load(.formatDescriptions)
+                // Failure to establish opacity keeps the existing alpha path;
+                // it must not turn an optional optimization into decode failure.
+                let characteristics = try? await track.load(.mediaCharacteristics)
                 guard !Task.isCancelled, let self else { return }
-                let nv12 = NDIVideoInputPolicy.prefersNV12(formats, composed: item.videoComposition != nil || tracks.count != 1)
+                let composed = item.asset is AVComposition || item.videoComposition != nil || tracks.count != 1
+                let nv12 = characteristics?.contains(.containsAlphaChannel) != true
+                    && NDIVideoInputPolicy.prefersNV12(formats, composed: composed)
+                let opaque = NDIVideoInputPolicy.provesOpaqueBGRA(formats,
+                    localFile: (item.asset as? AVURLAsset)?.url.isFileURL == true,
+                    composed: composed, trackContainsAlpha: characteristics?.contains(.containsAlphaChannel))
                 let output = makeOutput(nv12 ? kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange : kCVPixelFormatType_32BGRA)
                 output.suppressesPlayerRendering = false
-                self.install(output, transform: transform)
+                self.install(output, transform: transform, provenOpaque: opaque)
             } catch { if !Task.isCancelled { self?.markPreparationFailed() } }
         }
     }
-    @MainActor private func install(_ output: AVPlayerItemVideoOutput, transform: CGAffineTransform) {
+    @MainActor private func install(_ output: AVPlayerItemVideoOutput, transform: CGAffineTransform, provenOpaque: Bool) {
         guard lock.withLock({ !stopped }), player.currentItem === item else { return }
         item?.add(output); output.requestNotificationOfMediaDataChange(withAdvanceInterval: 0.03)
         let accepted = lock.withLock {
             guard !stopped else { return false }
-            self.output = output; self.transform = transform; return true
+            self.output = output; self.transform = transform; self.provenOpaque = provenOpaque; return true
         }
         if !accepted { item?.remove(output) }
     }
@@ -166,7 +192,7 @@ nonisolated final class NDIVideoFrameSource: @unchecked Sendable {
         }
     }
     private func sample() throws -> NDIFrameResource? {
-        let state = lock.withLock { (stopped: stopped, failed: preparationFailed, output: output, transform: transform) }
+        let state = lock.withLock { (stopped: stopped, failed: preparationFailed, output: output, transform: transform, provenOpaque: provenOpaque) }
         guard !state.stopped, player.currentItem === item else { cached = nil; return nil }
         if state.failed { throw Failure.format }
         guard let output = state.output, let transform = state.transform else {
@@ -178,7 +204,7 @@ nonisolated final class NDIVideoFrameSource: @unchecked Sendable {
         if previousTime.isNumeric && time.isNumeric && time < previousTime { cached = nil }
         previousTime = time
         if time.isNumeric, output.hasNewPixelBuffer(forItemTime: time), let buffer = output.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: nil) {
-            guard let frame = NDIFrameResource(pixelBuffer: buffer, transform: transform) else { throw Failure.format }
+            guard let frame = NDIFrameResource(pixelBuffer: buffer, transform: transform, provenOpaque: state.provenOpaque) else { throw Failure.format }
             cached = frame; lastFrame = ProcessInfo.processInfo.systemUptime
         } else if player.rate != 0 && ProcessInfo.processInfo.systemUptime - lastFrame > 5 { throw Failure.decoder }
         else if player.rate == 0 { lastFrame = ProcessInfo.processInfo.systemUptime }

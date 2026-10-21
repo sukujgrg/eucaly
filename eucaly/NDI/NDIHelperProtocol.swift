@@ -82,8 +82,8 @@ nonisolated struct NDIMediaInput: Codable, Equatable, Sendable {
     var format: Format = .bgra
     var matrix: Matrix = .rec709
     var chromaLocation: ChromaLocation = .center
-    // BGRA opacity comes only from a non-alpha image or the opaque PDF raster.
-    // An arbitrary BGRA surface never implies opaque pixels.
+    // BGRA opacity requires a non-alpha image, opaque PDF raster or a proven
+    // uncomposed opaque video track. Arbitrary BGRA pixels imply no such proof.
     var opaque = false
     var isOpaque: Bool { opaque || format != .bgra }
     func matches(_ surface: IOSurface) -> Bool {
@@ -420,9 +420,10 @@ nonisolated final class NDIFrameResource: @unchecked Sendable {
     init(surface: IOSurface, opaque: Bool = false) {
         self.surface = surface; pixelBuffer = nil; geometry = nil; input = .init(opaque: opaque)
     }
-    init?(pixelBuffer: CVPixelBuffer, transform: CGAffineTransform = .identity) {
+    init?(pixelBuffer: CVPixelBuffer, transform: CGAffineTransform = .identity, provenOpaque: Bool = false) {
         guard let surface = CVPixelBufferGetIOSurface(pixelBuffer)?.takeUnretainedValue(),
-              let input = NDIMediaInput(pixelBuffer: pixelBuffer), input.matches(surface) else { return nil }
+              var input = NDIMediaInput(pixelBuffer: pixelBuffer), input.matches(surface) else { return nil }
+        if input.format == .bgra { input.opaque = provenOpaque }
         let geometry = NDIMediaGeometry(pixelBuffer: pixelBuffer, transform: transform)
         guard geometry.isValid else { return nil }
         self.surface = surface; self.pixelBuffer = pixelBuffer; self.geometry = geometry; self.input = input
