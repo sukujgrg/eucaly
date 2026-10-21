@@ -753,3 +753,336 @@ retained under the receiver archive's `validation/` and `test-fixtures/` folders
 The physical receiver comparisons used the previously installed
 `3b0f4cbe` build throughout. The opaque-video optimization was not active in
 those comparisons and must not receive credit for their network improvement.
+
+### Independent app audio-path audit after 1d48273
+
+Four app-side defects were reproduced before correction. Synthetic source ranges
+with a 10 ms gap or overlap failed exact sample-position checks: the converter
+treated any jump within 50 ms as continuous and placed the next PCM at its old
+output end. The gap disappeared or the overlap moved forward, including an
+incorrect tail. Discontinuities now re-anchor at the supplied media timestamp;
+overlap replacement still preserves samples outside the replaced range.
+
+Continuity must be decided from the tap's actual asset ranges. In a measured
+real-player fixture, successive 4,474-frame, 48 kHz PCM buffers represented
+contiguous asset ranges of 4,464 samples. Tightening the old frame-count-based
+threshold alone reset valid converter history and failed the existing continuity
+and local-monitor tests. That intermediate attempt was rejected. The final path
+retains each supplied range and
+[stream-start flag](https://developer.apple.com/documentation/mediatoolbox/kmtaudioprocessingtapflag_startofstream)
+through preroll and retries, compares adjacent asset endpoints with one 48 kHz
+sample of rounding tolerance, and keeps a continuous output clock between genuine
+discontinuities. It does not assume PCM frame duration equals asset duration.
+The Debug-only trace also records `tap-range-end` and `tap-stream-start` events.
+`playback-clock` records accepted host/media anchors, rate and gain.
+
+Paused taps also returned thousands of PCM frames with zero-duration asset
+ranges, including wholly silent padding and nonzero processing tails. These
+frames provide no new asset-time anchor. A direct regression showed that admitting
+one silent padding buffer overwrote 960 samples of already-retained valid audio.
+The final path discards only all-zero unmapped padding in known signed/float PCM
+formats. It keeps nonzero tails and unknown formats conservatively, leaves the
+native callback intact, and prevents paused padding from displacing bounded
+unplayed preroll. Debug traces retain `tap-unmapped-padding` counters.
+
+An initial blanket empty-range rejection was rejected after steady-playback
+controls showed worse resumed PCM: empty ranges can contain valid processing-tail
+audio. Conversion state now explicitly distinguishes its last asset endpoint,
+continuous PCM output endpoint and processing-tail phase. Nonzero tails continue
+the existing output clock; the next mapped input re-anchors at its asset timestamp.
+Tests verify retained prefixes, tail placement, replacement by newly mapped audio,
+and valid timestamped silence. No source waveform is synthesized or replayed to
+conceal missing media.
+
+A separate real AVPlayer composition used simultaneous stereo tracks at 48 kHz
+and 44.1 kHz, carrying a left-only 440 Hz tone and right-only 660 Hz tone. All
+track processors previously shared one tap context, format and converter clock.
+The left channel's measured RMS was 0.000212 instead of 0.035355, with 40 fully
+silent blocks in one second. Independent track contexts restored both channels
+to approximately 0.035355 RMS without silent blocks. The shared player still
+uses one AVAudioMix, while each track owns bounded preroll and per-mixer delivery
+cursors. The 8 MiB / 256-buffer retention bound applies per track; sender PCM
+admission remains eight blocks total with three in flight.
+
+A subsequent 300.53-second strict local countdown run had continuous receiver
+timecodes and zero SDK dequeue drops, but deeper PCM traces did not qualify the
+app audio path. In the 299.92-second common receiver window after source startup,
+78 mixer blocks lacked 29,783 requested PCM sample frames, including two wholly silent
+20 ms blocks around media times 294.4 and 297.2 seconds. Mixer and SDK RMS agreed
+exactly; receiver RMS differed by at most 0.0000174. Tap asset ranges stayed
+continuous within one sample. Preserve this result under `countdown-current/`:
+successful SDK transport does not prove complete source PCM.
+
+An independent converter fixture reproduced unnecessary buffering for identical
+stereo 48 kHz Float32 formats: a 4,474-frame input initially yielded only 4,096
+frames, retaining the final 378 until another callback. The exact mixer regression
+failed on those 378 samples before correction. Mixer-format PCM now retains the
+immutable copied buffer directly; actual format/rate conversions keep their
+streaming converter. This removes unnecessary conversion batching without adding
+latency, changing clocks or increasing any retention/admission bound. The complete
+input must remain available even when no later callback arrives.
+
+The approved repeat with direct PCM retention ran 300.54 seconds. SDK transport
+again had zero timestamp gaps/dequeue drops, and no whole 20 ms block was silent
+after startup. Nevertheless, 106 partially covered blocks lacked 32,945 of
+14,399,040 requested stereo PCM sample frames in the 299.98-second common window.
+This is not a clean audio pass or evidence of reduced total missing PCM compared
+with the prior run. Every input and converted buffer contained 4,474 frames;
+the unnecessary converter batching was removed. Coverage losses still began
+around media time 263 seconds. Some copied inputs had not yet reached the mixer
+when it rendered; others arrived after the required block. The complete cause
+and correct delivery/clock treatment at this boundary remain open. Preserve
+`countdown-direct-pcm/` and `direct-pcm-countdown-comparison.json` alongside the
+earlier failed PCM result. No latency offset, extra buffer or replacement audio
+was introduced to conceal these losses.
+
+The operator then identified concurrent normal-app NDI playback as a possible
+confound and stopped it manually. With the same tested source and movie, a
+300.54-second comparison verified no normal-app NDI helper before, during the
+sampled control and after capture. The 300.04-second common trace window lacked
+5,738 of 14,401,920 requested stereo PCM sample frames across 35 partial blocks,
+versus 32,945 frames / 106 blocks with the normal sender active (about 82.6% less
+missing PCM). There were no wholly silent blocks after startup, raw timestamp
+gaps, SDK dequeue drops or trace overflows. This supports a concurrent-workload
+contribution, but the remaining loss shows the main sender is not required to
+trigger this failure. This is still not gapless PCM qualification.
+
+Normal-app conditions had changed from the initial handoff: before this control,
+Online showed a short looping video with background audio playing, and House was
+already stopped. After the operator's action, the normal process identity changed
+and only House's stopped controls were open. The agent did not change that
+content, stop outputs or restart the normal app. The comparison reduces the
+operator workload as a whole; it does not isolate encoder CPU, video decoding,
+audio-device scheduling or network competition individually. Treat earlier runs
+with the normal sender active as concurrent-load observations, not isolated
+benchmarks. Evidence: `countdown-main-ndi-stopped/`,
+`main-ndi-stopped-process-samples.jsonl` and `concurrent-load-comparison.json`.
+
+A separate known linear PCM ramp, measured before the direct-PCM correction,
+checked source position independently of the mixer's packet bookkeeping. The post-effects path lagged the AVPlayer asset
+clock by approximately 549 samples (11.4 ms) throughout ten measured seconds;
+this was a fixed offset, **not accumulating drift**. A separate pre-effects
+control stayed within about one sample. A diagnostic XCTest reproduced that
+offset (maximum amplitude error 0.000054903 against a four-sample 0.0000004 limit).
+Switching to the supported pre-effects stage improved that position measurement,
+but the full suite then failed 11 assertions across pause/startup, late-joining
+preroll, local monitoring and simultaneous tracks. The stage change was rejected;
+the final code retains the post-effects tap. The candidate source, position test
+and failing full-suite log are preserved as diagnostic evidence rather than
+weakening the existing assertions. The fixed offset remains an open finding,
+not a demonstrated cause of synchronized-receiver underruns.
+
+Repeating pre-effects with direct PCM still failed 11 assertions. A subsequent
+unchanged-fixture trace showed all six monitor failures at negative asset time
+(-117 to -17 ms), and the observed late-join missing prefix also preceded asset
+time zero. Those are fixture readiness races, not proof of missing positive-time
+programme samples. The simultaneous-track fixture additionally retained no first
+44.1 kHz source buffer before media sample 4,935 (102.8 ms), with uncovered
+positive-time PCM. A readiness-only fixture change would not qualify lossless
+startup. No assertions or setup waits were changed; pre-effects remains an
+unaccepted experiment, and the fully tested post-effects source was restored.
+The additional candidate sources, failing traces and startup analysis are under
+`pre-effects-direct-experiment/`.
+
+These corrections do not establish the complete cause of the countdown's
+residual synchronized-receiver silence. The timestamp/track defects were
+independently reproduced; the movie has one audio track and its steady tap ranges
+remain continuous. The later countdown trace additionally locates app-side PCM
+coverage loss and the converter fixture demonstrates unnecessary batching.
+Neither finding alone proves physical synchronized-receiver delivery. SDK clocking,
+timecodes, transport, queue capacities and system/network settings were not changed.
+Original captures remain under `countdown-receiver-20261021/`; audit reproductions,
+source snapshots, rejected intermediate results and validation are retained under
+`build/ndi-stress/audio-path-audit-20261021/`.
+
+The first full audit suite exposed a separate pause/resume failure in the existing
+callback-count assertion. An isolated harness using the committed source reproduced
+actual silent ranges in resumed PCM; measuring callback totals over a wall-clock
+sleep sometimes passed despite those gaps and sometimes failed after only four
+blocks arrived. A stronger diagnostic waited for media time 0.5 seconds before
+pausing and inspected a complete one-second resumed sample window. All ten
+committed-baseline iterations contained gaps, with longest near-zero runs of
+2,130–6,138 samples (44.4–127.9 ms). This is an explicit playback-transition
+finding, separate from uninterrupted receiver playback.
+
+A diagnostic-only pre-effects tap appeared clean in the short window but failed
+all ten full-second comparisons, each with a 3,450-sample gap. It was rejected
+as a pause-gap fix: it moved that gap instead of resolving it. Its later
+source-position experiment also failed broader regression checks, as recorded
+above. The pause/resume assertions remain unchanged, and no guessed clock offset,
+synthetic replacement audio or extra jitter buffer was introduced. The trace
+shows asset-range jumps around the transition; their complete cause and a proper
+transition fix remain open. These results must accompany any later passing
+callback-count test rather than being discarded as an ordinary clean pass.
+
+With the final direct-PCM path, `make test` passed 591 XCTest cases with two
+opt-in sustained-NDI skips, one Swift Testing case and 108 offline checks. Both
+enabled 30-second AAC cases (44.1/48 kHz encoded sources) passed with no silent
+blocks, timestamp gaps or non-finite samples. The archived result bundle is under
+`validation-direct-pcm/`, with matching production-source SHA-256 before/after.
+The same long pause diagnostic still found near-zero runs of 2,323–3,997 samples
+(48.4–83.3 ms) in all ten iterations, although every short callback-count check
+passed. Direct PCM retention does not establish gapless pause/resume.
+
+A strict 30.12-second generated-video/tone run of the final code passed with
+no silence, receiver timestamp gaps or SDK drops. Its 29.80-second common trace
+window covered all 1,430,400 requested PCM samples, with exact mixer/SDK RMS and
+maximum SDK/receiver RMS difference 0.000000695. There was no trace overflow;
+surface high-water stayed at four and all isolated helpers exited. Evidence is
+under `generated-direct-pcm/`. This short generated run does not qualify the
+five-minute movie or physical M1 playback after the direct-PCM correction.
+
+The independent 180-second normal-source capture at 01:48:53–01:51:55 UTC used
+the unchanged installed `3b0f4cbe` app and a reviewed statistics-only probe. Across
+8,912 overlapping raw blocks (8,555,520 stereo sample frames; 178.24 seconds),
+SHA-256 over the left then right Float32 channel bytes matched exactly on the
+Mini and M1. SDK submission timestamps also matched. Both raw receivers retained
+continuous sample timecodes, zero SDK dequeue drops and 3.12 seconds of movie-loop
+quiet. Sender SDK submission intervals were 14.045–26.941 ms; raw receiver arrival
+intervals reached 102.215 ms locally and 180.289 ms on the M1.
+
+The separate frame-sync connections recorded 3.22 seconds of silence locally
+and 3.70 seconds on the M1 after startup. Excluding raw quiet with one-second
+arrival-time guards left 0.16 / 171.18 seconds locally and 0.62 / 171.20 seconds
+on the M1. Applying the established 5 ms wake cutoff with two-second guards left
+67.24 seconds locally with no silence, but **no qualified M1 interval**. M1 strict
+qualification is unavailable, not zero silence or a pass. The hashes prove identity
+between those raw connections, not with the source tap, separate frame-sync
+connection, Video Monitor or speakers. Four audio-only diagnostic connections
+added traffic while Video Monitor stayed connected; no extra video connection,
+build or test ran during capture. All settings and playback remained untouched.
+Capture source, provenance, CSVs and analysis are retained under the audit's
+`hash-probe/` and `hash-receivers/` folders. The temporary probes exited; the normal
+app/helper and Video Monitor remained running.
+
+
+## Asset-clock audio decoding and retained history
+
+The earlier tap/converter results above are retained historical measurements;
+they do not describe the current source implementation. Further generated-ramp
+measurements identified a source omission before the bus: a pre-effects tap
+returned asset samples through 44,739 before pause and restarted at 48,190,
+omitting 3,450 real samples (71.875 ms). Sample values independently identified
+their positions, so this was not just a mislabeled range. Changing the tap flag
+could not recover those omitted samples. Post-effects taps additionally inherited
+local audio-queue processing delay and supplied some steady PCM after its mixer
+deadline.
+
+`PlayerProgramAudioSource` now shares an asset decoder per real player/item.
+`AVAssetReaderAudioMixOutput` mixes the enabled asset tracks into timestamped
+stereo 48 kHz Float32 PCM, preserving the native item's audio mix. Its worker reads
+one second ahead of the existing AVPlayer timebase. It creates no additional
+player or audio device and introduces no output-clock offset. Actual decoded
+source samples supply programme audio; silence is not replaced by synthesis,
+waveform repetition or a receiver jitter-buffer setting. The existing 8 MiB /
+256-source-buffer and 8 MiB / 512-mixer-segment bounds remain.
+
+The ten-iteration standalone pause diagnostic then inspected 48,000 frames in
+every resumed one-second window, with only single-sample sine zero crossings.
+Exact ramp regressions check source position, complete resumed seconds and
+forward/backward seeks. Existing audio assertions and durations are retained;
+fixture readiness now observes the real decoder's `isPrepared` instead of the
+removed tap's installation in `item.audioMix`. The mixed-track case still requires
+two prepared tracks. A full initial decoder validation passed 594 XCTest cases
+(two opt-in sustained-NDI skips), one Swift Testing case and 108 offline checks,
+including both enabled 30-second encoded-AAC cases. This initial full-suite result
+precedes the subsequent history correction described below.
+
+The first strict 300.56-second reader countdown still failed deeper PCM
+qualification despite a successful stress-run exit code: two partial blocks
+lacked 644 requested stereo sample frames. AVPlayer's clock briefly stopped and
+re-anchored backward by approximately 153 ms during recovery. Both source and
+mixer had already discarded the needed rendered history, and re-decoding could
+not finish before the corrected clock's first block. A deterministic regression
+reproduced the missing source values before correction. Source and mixer now
+retain rendered history until their existing byte/packet bounds require eviction;
+late joins continue using per-mixer delivery cursors. The same exact-sample
+rewind regression passes without changing the clock mapping or delaying output.
+The earlier run also contains 0.20 seconds of actual stopped-player-clock silence;
+those blocks must not be mistaken for decoder coverage loss.
+
+That first reader countdown's paired raw receivers matched all 13,440 common
+blocks (12,902,400 stereo sample frames, 268.8 seconds) byte for byte, with
+identical SDK submission timestamps, continuous raw timecodes and zero SDK dequeue
+drops. The separate M1 FrameSync connection still inserted silence: 6.02 seconds
+in 121.30 seconds remaining after the previously established source-quiet and
+wake-delay exclusions. The raw M1 arrival interval reached 194.31 ms. This
+identifies a remaining delivery/playout boundary; it neither qualifies M1 speakers
+nor establishes that receiver silence was caused by missing app PCM. No system,
+network, receiver, saved output or SDK clock setting was changed. Source/history
+snapshots, the failed first countdown, raw hashes, exact-sample regressions and
+thread-stack diagnostics are preserved under `asset-clock-decoder/` and
+`countdown-asset-reader/` in the audit evidence directory.
+
+The retained-history repeat completed 300.53 seconds with unchanged strict test
+assertions. Its 299.34-second steady common mixer/SDK/receiver window covered all
+14,368,320 requested stereo sample frames: zero missing frames, zero partial
+blocks and zero whole silent blocks. Mixer and SDK RMS matched exactly; receiver
+RMS differed by at most 0.000017582. Raw timecodes remained continuous with no
+SDK dequeue drops or trace overflow. Source-cache high-water was exactly 8 MiB
+and 208 buffers, within the unchanged bounds; output-surface high-water was four,
+local player volume stayed zero and all owned helpers exited. The 40 silent
+blocks in the complete checkpoint count were confined to startup, before the
+qualified media-time window. Evidence is under `countdown-asset-reader-history/`.
+
+The matching repeat on the Mini and M1 retained 10,938 common raw blocks
+(10,500,480 stereo sample frames, 218.76 seconds) with zero PCM-hash or SDK
+submission-timestamp mismatches. Raw audio had no quiet blocks or timecode gaps
+after diagnostic startup, and no SDK dequeue drops. M1's separate FrameSync
+connection contained 0.52 seconds of silence during 217.48 seconds inside the raw
+sender lifetime. After the original five-millisecond wake cutoff and two-second
+wake guards, M1 had **no qualified interval**; this is neither a clean playout pass
+nor proof that all receiver silence was caused by scheduling. Mini retained
+168.40 qualified seconds with no FrameSync silence. Complete CSVs, including
+post-shutdown observations, remain preserved. Clocked analysis ends at each host's
+last raw arrival to avoid counting intentionally disconnected-source teardown as
+live playback. These results qualify app PCM and two raw SDK paths; physical M1
+speaker delivery remains unqualified.
+
+A subsequent focused run reproduced the unchanged cold-start/pause regression
+although the preceding 597-case suite had passed. Ten traced repetitions exposed
+an additional startup defect: while AVPlayer mapped host time before asset zero,
+the decoder reset and re-read the same initial packet 13–14 times per player,
+producing 831 buffers across the ten short cases. Clamping only the decoder's
+asset cursor to zero removed those redundant reads (81 buffers, one initial
+packet per player); the real mixer clock and output timestamps were not clamped.
+The cold first 400 ms callback assertion still failed in the first traced case,
+before the scheduled native player reached its first emitted positive-time block.
+The source now also awaits real native preroll when the existing player is paused
+before reporting readiness. This neither starts playback nor seeks or changes
+output gain. Stop cancels only its owned pending preroll for the same player/item
+and closes decoded admission immediately. All ten traced repetitions then passed
+the original startup and resumed-audio assertions, with no duration or threshold
+change. Earlier passing full-suite results alone must not erase those retained
+failures. Snapshots and comparisons are under `pause-repetition-before/`,
+`pause-repetition-after/`, `pause-native-preroll/` and
+`negative-preroll-comparison.json` in the reader audit directory.
+
+The final startup implementation also passed the strict 30.14-second generated
+NDI video/tone case: all 1,422,720 requested PCM frames in its 29.64-second common
+window were covered, with no partial/whole silence, timestamp gaps, SDK drops or
+trace overflow. Mixer and SDK RMS matched; maximum SDK/receiver RMS difference
+was 0.000000704. It retained four output surfaces, local volume zero and exact
+helper exit. The full five-minute retained-history movie measurement above
+predates these startup-only corrections; its positive-time PCM path is unchanged.
+The final generated evidence is under `generated-asset-reader-final/`.
+
+The final source then passed `make test` with both 30-second AAC checks enabled:
+597 XCTest cases (two opt-in sustained-NDI skips), one Swift Testing case and
+108 offline feed/release checks, with zero failures. Production source hashes
+match the archived `FinalPrerollFullSuite.xcresult` snapshot. Each AAC check
+covered 1,440,000 requested frames without silent gaps, timestamp discontinuities
+or non-finite samples. `final-preroll-validation.json` records the result, while
+`test-assertion-preservation.json` verifies that all 117 baseline assertion lines
+in the affected existing suites remain unchanged. The tests' original durations,
+coverage thresholds, clock mappings and PCM bounds were retained.
+
+After the operator manually quit the normal app for installation, `make build`
+archived and exported the fixed app to `/Users/suku/Applications/eucaly.app`.
+Strict signature checks passed for the installed app and helper; both are arm64,
+the main app links no NDI library, and the library-validation exception remains
+helper-only. Product hashes still match the final tested source. The complete
+previous app bundle is backed up in the audit directory, and the agent did not
+relaunch the app. `installation-verification.json` records the installed binary
+hashes and checks. Installation does not change the M1 playout qualification
+limits described above.

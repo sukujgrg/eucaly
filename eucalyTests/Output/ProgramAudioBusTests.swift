@@ -21,10 +21,10 @@ final class ProgramAudioBusTests: XCTestCase {
         let player = AVPlayer(url: url), gain = ProgramAudioGain()
         gain.set(0.25)
         player.volume = 0 // Quiet before first playback, even while the tap prepares.
-        let tap = PlayerAudioTap(player: player, mixer: bus, programGain: gain)
+        let tap = PlayerProgramAudioSource(player: player, mixer: bus, programGain: gain)
         defer { tap.stop(); player.pause(); bus.stop(); received.finish() }
         let deadline = ProcessInfo.processInfo.systemUptime + 5
-        while player.currentItem?.audioMix == nil || player.status != .readyToPlay {
+        while !tap.isPrepared || player.status != .readyToPlay {
             guard ProcessInfo.processInfo.systemUptime < deadline else { return XCTFail("Monitoring fixture did not become ready") }
             try await Task.sleep(for: .milliseconds(10))
         }
@@ -116,6 +116,126 @@ final class ProgramAudioBusTests: XCTestCase {
         XCTAssertLessThan(lag, 0.06, "Coalesced callbacks must not leave the audio clock progressively behind video")
     }
 
+    func testShortSourceTimestampGapRetainsItsMediaPosition() async throws {
+        try await assertShortTimestampDiscontinuity(secondStart: 2400)
+    }
+
+    func testShortSourceTimestampOverlapReplacesOnlyItsMediaRange() async throws {
+        try await assertShortTimestampDiscontinuity(secondStart: 1440)
+    }
+
+    func testEmptyAssetRangeCannotReplaceRetainedProgramPCM() async throws {
+        try await assertShortTimestampDiscontinuity(secondStart: 1920, includingEmptyRange: true)
+    }
+
+    func testUnmappedProcessingTailContinuesTheExistingPCMClock() async throws {
+        try await assertShortTimestampDiscontinuity(secondStart: 2880, includingProcessingTail: true)
+    }
+
+    func testMappedAudioReplacesAnUnplayedProcessingTailAtItsAssetPosition() async throws {
+        try await assertShortTimestampDiscontinuity(secondStart: 1920, includingProcessingTail: true)
+    }
+
+    func testTimestampedSilenceReplacesExistingProgramAudio() async throws {
+        try await assertShortTimestampDiscontinuity(secondStart: 1440, secondLevel: 0)
+    }
+
+    func testMixerFormatPCMIsAvailableWithoutWaitingForAnotherInput() async throws {
+        let recorded = RecordedProgramAudio(), id = UUID()
+        let bus = ProgramAudioBus { recorded.offer(.audio($0, $1)) }
+        defer { bus.stop(); recorded.finish() }
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2))
+        // A real post-effects movie callback contains 4,474 frames. The streaming
+        // converter returns only 4,096 initially even when formats are identical,
+        // keeping already-decoded PCM until a later callback.
+        let pcm = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4474))
+        pcm.frameLength = 4474
+        for channel in 0..<2 { for frame in 0..<4474 {
+            pcm.floatChannelData![channel][frame] = Float(frame + channel * 4474) / 20000
+        } }
+        let now = CMClockGetTime(CMClockGetHostTimeClock()).convertScale(48000, method: .roundHalfAwayFromZero).value
+        let first = (now / 960 + 8) * 960
+        bus.setGain(1, id: id)
+        XCTAssertTrue(bus.append([.init(pcm, at: CMTime(value: first, timescale: 48000))], id: id))
+        bus.start(at: CMTime(value: first, timescale: 48000))
+        var inspected = 0, mismatches = 0, complete = false
+        let deadline = ProcessInfo.processInfo.systemUptime + 3
+        while !complete {
+            guard ProcessInfo.processInfo.systemUptime < deadline else { return XCTFail("Immediate PCM fixture did not finish") }
+            try await Task.sleep(for: .milliseconds(10))
+            for sample in recorded.drain() {
+                guard case .audio(let output, let time) = sample else { continue }
+                for frame in 0..<Int(output.frameLength) {
+                    let position = time.sampleTime + Int64(frame) - first
+                    guard position >= 0, position < 4474 else { continue }
+                    inspected += 1
+                    if (0..<2).contains(where: { output.floatChannelData![$0][frame] != pcm.floatChannelData![$0][Int(position)] }) {
+                        mismatches += 1
+                    }
+                }
+                complete = complete || time.sampleTime + Int64(output.frameLength) >= first + 4474
+            }
+        }
+        XCTAssertEqual(inspected, 4474)
+        XCTAssertEqual(mismatches, 0, "Already-decoded mixer-format PCM must be available in full without another source callback")
+    }
+
+    private func assertShortTimestampDiscontinuity(secondStart: Int64, includingEmptyRange: Bool = false,
+                                                    includingProcessingTail: Bool = false, secondLevel: Float = 0.5) async throws {
+        let received = RecordedProgramAudio(), id = UUID()
+        let bus = ProgramAudioBus { received.offer(.audio($0, $1)) }
+        defer { bus.stop(); received.finish() }
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2))
+        let now = CMClockGetTime(CMClockGetHostTimeClock()).convertScale(48000, method: .roundHalfAwayFromZero).value
+        let first = (now / 960 + 8) * 960
+        func packet(_ level: Float, frames: AVAudioFrameCount = 1920) throws -> AVAudioPCMBuffer {
+            let pcm = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames))
+            pcm.frameLength = frames
+            for channel in 0..<2 { pcm.floatChannelData![channel].initialize(repeating: level, count: Int(frames)) }
+            return pcm
+        }
+        bus.setGain(1, id: id)
+        var inputs: [ProgramAudioBus.Input] = [.init(try packet(0.25), at: CMTime(value: first, timescale: 48000))]
+        if includingEmptyRange {
+            // AVPlayer can continue returning PCM padding with an empty asset
+            // range while paused. It represents no programme media samples.
+            inputs.append(.init(try packet(0), at: CMTime(value: first + 960, timescale: 48000), duration: .zero))
+        }
+        if includingProcessingTail {
+            inputs.append(.init(try packet(0.75, frames: 960), at: CMTime(value: first + 960, timescale: 48000), duration: .zero))
+        }
+        inputs.append(.init(try packet(secondLevel), at: CMTime(value: first + secondStart, timescale: 48000)))
+        XCTAssertTrue(bus.append(inputs, id: id))
+        bus.start(at: CMTime(value: first, timescale: 48000))
+        // Include the tail after the second input. Moving that input to the
+        // preceding converter's end can otherwise hide a missing/extra range.
+        let finish = first + secondStart + 1920 + 960
+        var packets: [(AVAudioPCMBuffer, AVAudioTime)] = []
+        let deadline = ProcessInfo.processInfo.systemUptime + 3
+        while packets.last.map({ $0.1.sampleTime + Int64($0.0.frameLength) < finish }) ?? true {
+            guard ProcessInfo.processInfo.systemUptime < deadline else { return XCTFail("Timestamp fixture did not finish") }
+            try await Task.sleep(for: .milliseconds(10))
+            packets.append(contentsOf: received.drain().map { sample in
+                switch sample { case .audio(let pcm, let time): return (pcm, time) }
+            })
+        }
+        var inspected = 0, mismatches = 0
+        for (pcm, time) in packets {
+            for frame in 0..<Int(pcm.frameLength) {
+                let offset = time.sampleTime + Int64(frame) - first
+                guard offset >= 0, offset < finish - first else { continue }
+                let expected: Float
+                if offset >= secondStart && offset < secondStart + 1920 { expected = secondLevel }
+                else if includingProcessingTail && offset >= 1920 && offset < 2880 { expected = 0.75 }
+                else { expected = offset < 1920 ? 0.25 : 0 }
+                inspected += 1
+                if (0..<2).contains(where: { pcm.floatChannelData![$0][frame] != expected }) { mismatches += 1 }
+            }
+        }
+        XCTAssertEqual(inspected, Int(finish - first), "The complete source range and tail must be inspected")
+        XCTAssertEqual(mismatches, 0, "A short discontinuity must preserve source timestamps, including overlap replacement and silence outside supplied ranges")
+    }
+
     func testLateJoiningOutputReceivesAudioAlreadyDecodedByTheSharedTap() async throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("program-audio-late-join-\(UUID()).caf")
         defer { try? FileManager.default.removeItem(at: url) }
@@ -133,10 +253,10 @@ final class ProgramAudioBusTests: XCTestCase {
         let a = ProgramAudioBus { firstAudio.offer(.audio($0, $1)) }
         let b = ProgramAudioBus { joinedAudio.offer(.audio($0, $1)) }
         let player = AVPlayer(url: url); player.volume = 0.001
-        let first = PlayerAudioTap(player: player, mixer: a)
+        let first = PlayerProgramAudioSource(player: player, mixer: a)
         defer { first.stop(); player.pause(); a.stop(); b.stop(); firstAudio.finish(); joinedAudio.finish() }
         let deadline = ProcessInfo.processInfo.systemUptime + 5
-        while player.currentItem?.audioMix == nil || player.status != .readyToPlay {
+        while !first.isPrepared || player.status != .readyToPlay {
             guard ProcessInfo.processInfo.systemUptime < deadline else { return XCTFail("Audio fixture did not become ready") }
             try await Task.sleep(for: .milliseconds(10))
         }
@@ -156,9 +276,9 @@ final class ProgramAudioBusTests: XCTestCase {
         filler.frameLength = 1
         for channel in 0..<2 { filler.floatChannelData![channel][0] = 0 }
         let silentInput = UUID()
-        for _ in 0..<8 { XCTAssertTrue(b.append([(filler, .zero)], id: silentInput)) }
-        XCTAssertFalse(b.append([(filler, .zero)], id: silentInput), "The initial replay must encounter a full admission queue")
-        let joined = PlayerAudioTap(player: player, mixer: b)
+        for _ in 0..<8 { XCTAssertTrue(b.append([.init(filler, at: .zero)], id: silentInput)) }
+        XCTAssertFalse(b.append([.init(filler, at: .zero)], id: silentInput), "The initial replay must encounter a full admission queue")
+        let joined = PlayerProgramAudioSource(player: player, mixer: b)
         defer { joined.stop() }
         let joinedAt = CMClockGetTime(CMClockGetHostTimeClock())
         #if DEBUG
@@ -225,7 +345,7 @@ final class ProgramAudioBusTests: XCTestCase {
         let one = RecordedProgramAudio(), two = RecordedProgramAudio()
         let a = ProgramAudioBus { one.offer(.audio($0, $1)) }, b = ProgramAudioBus { two.offer(.audio($0, $1)) }
         let player = AVPlayer(url: url); player.volume = 0.001
-        let first = PlayerAudioTap(player: player, mixer: a), second = PlayerAudioTap(player: player, mixer: b)
+        let first = PlayerProgramAudioSource(player: player, mixer: a), second = PlayerProgramAudioSource(player: player, mixer: b)
         defer { first.stop(); second.stop(); player.pause(); a.stop(); b.stop(); one.finish(); two.finish() }
         let now = CMClockGetTime(CMClockGetHostTimeClock()); a.start(at: now); b.start(at: now); player.play()
         var heardA = false, heardB = false
@@ -271,7 +391,7 @@ final class ProgramAudioBusTests: XCTestCase {
         }
         let ingest = RecordedProgramAudio(), audio = ProgramAudioBus { ingest.offer(.audio($0, $1)) }
         let player = AVPlayer(url: url); player.volume = 0.001
-        let tap = PlayerAudioTap(player: player, mixer: audio)
+        let tap = PlayerProgramAudioSource(player: player, mixer: audio)
         defer { tap.stop(); player.pause(); audio.stop(); ingest.finish() }
         audio.start(at: CMClockGetTime(CMClockGetHostTimeClock())); player.play()
         var total = 0, silent = 0, emptyChunks = 0, maxSilent = 0, run = 0
@@ -326,13 +446,13 @@ final class ProgramAudioBusTests: XCTestCase {
         let player = AVPlayer(url: url); player.volume = 0.001
         defer { player.pause() }
         let ingest = RecordedProgramAudio(), audio = ProgramAudioBus { ingest.offer(.audio($0, $1)) }
-        let tap = PlayerAudioTap(player: player, mixer: audio)
+        let tap = PlayerProgramAudioSource(player: player, mixer: audio)
         defer { tap.stop(); audio.stop(); ingest.finish() }
         for _ in 0..<100 {
-            if player.status == .readyToPlay && player.currentItem?.audioMix != nil { break }
+            if player.status == .readyToPlay && tap.isPrepared { break }
             try await Task.sleep(for: .milliseconds(10))
         }
-        guard player.status == .readyToPlay, player.currentItem?.audioMix != nil else {
+        guard player.status == .readyToPlay, tap.isPrepared else {
             return XCTFail("The preroll fixture must be ready with its audio tap installed")
         }
         let prerolled = await player.preroll(atRate: 1)
@@ -356,11 +476,11 @@ final class ProgramAudioBusTests: XCTestCase {
         defer { audio.stop(); ingest.finish() }
         let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2))
         let firstSample = Int64((CMClockGetTime(CMClockGetHostTimeClock()).seconds + 0.1) * 48000)
-        var inputs: [(AVAudioPCMBuffer, CMTime)] = []
+        var inputs: [ProgramAudioBus.Input] = []
         for index in 0..<96 {
             let pcm = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 960)); pcm.frameLength = 960
             for channel in 0..<2 { pcm.floatChannelData![channel].initialize(repeating: Float(index + 1) / 100, count: 960) }
-            inputs.append((pcm, CMTime(value: firstSample + Int64(index * 960), timescale: 48000)))
+            inputs.append(.init(pcm, at: CMTime(value: firstSample + Int64(index * 960), timescale: 48000)))
         }
         audio.setGain(1, id: id)
         audio.append(inputs, id: id)

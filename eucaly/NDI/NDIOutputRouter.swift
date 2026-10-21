@@ -94,6 +94,10 @@ final class NDIOutputRouter: ObservableObject, NDIOutputDriving {
             Task { @MainActor [weak self] in self?.receive(event, id: id) }
         }
         let entry = Entry(settings: settings, supervisor: supervisor, musicRoute: musicRoute)
+        entry.audio.sourceFailed = { [weak self, weak entry] reason in
+            guard let self, let entry, self.entries[id] === entry, !entry.retiring else { return }
+            self.fail(id, reason)
+        }
         entries[id] = entry; statistics[id] = nil; setState(.starting, for: id)
         supervisor.startSender(generation: entry.generation, configuration: .init(purpose: .sender, sourceName: settings.sourceName))
         return true
@@ -142,6 +146,8 @@ final class NDIOutputRouter: ObservableObject, NDIOutputDriving {
             })] : []
             entry.audio.update(targets: targets, music: document.backgroundAudioDestinationID, preparing: true,
                 wantsVideo: snapshot.visible && snapshot.kind == .video, runtime: media, session: audioSession)
+            // A retained decoder failure can retire this entry synchronously.
+            guard entries[id] === entry, !entry.retiring else { continue }
             if entry.media == nil {
                 entry.media = OutputMediaFrameBroker(generation: generation, deliver: { submission in
                     route.admit(submission, epoch: epoch, deliver: supervisor.renderMedia)

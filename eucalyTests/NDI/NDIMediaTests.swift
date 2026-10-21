@@ -6,6 +6,31 @@ import IOSurface
 
 @MainActor
 final class NDIMediaTests: XCTestCase {
+    func testUnroutedMusicFailureCannotRetireAnotherOutputAndReportsWhenSelected() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("ndi-unreadable-music-\(UUID()).caf")
+        try Data("Invalid audio fixture".utf8).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let session = PresentationSession(projectionDisplays: ProjectionDisplayManager(displays: { [] }))
+        let runtime = OutputMediaRuntime(), audio = NDIProgramAudio()
+        var failures: [String] = []
+        audio.sourceFailed = { failures.append($0) }
+        defer { audio.stop(); session.clearBackgroundAudio() }
+        session.setBackgroundAudio(url: url, autoplay: true)
+        let selected = UUID(), other = UUID()
+        audio.update(targets: [.init(id: other, send: { _ in })], music: selected,
+                     preparing: true, wantsVideo: false, runtime: runtime, session: session)
+        try await until { session.programBackgroundAudioPlayer?.currentItem?.status == .failed }
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertTrue(failures.isEmpty, "Music assigned to another output must not retire this destination")
+        audio.update(targets: [.init(id: selected, send: { _ in })], music: selected,
+                     preparing: true, wantsVideo: false, runtime: runtime, session: session)
+        try await until { failures.count == 1 }
+        audio.update(targets: [.init(id: selected, send: { _ in })], music: selected,
+                     preparing: true, wantsVideo: false, runtime: runtime, session: session)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(failures.count, 1, "A retained decoder failure is reported once to the affected output")
+    }
+
     func testWorkspaceAudioHandoffDoesNotRelabelAnInFlightOldProgramBlock() async throws {
         let route = NDIContentRoute(), record = AudioEvents(), source = UUID(), destination = UUID()
         let old = route.select(UUID())
@@ -33,10 +58,10 @@ final class NDIMediaTests: XCTestCase {
         for channel in 0..<2 { pcm.floatChannelData![channel].initialize(repeating: 0.5, count: 48000) }
         let sample = CMClockGetTime(CMClockGetHostTimeClock()).convertScale(48000, method: .roundHalfAwayFromZero).value / 960 * 960
         bus.setGain(1, id: source)
-        bus.append([(pcm, CMTime(value: sample, timescale: 48000))], id: source)
+        bus.append([.init(pcm, at: CMTime(value: sample, timescale: 48000))], id: source)
         await fulfillment(of: [entered], timeout: 2)
         let new = route.select(UUID())
-        // PlayerAudioTap.stop enqueues removal on this same mixer queue.
+        // PlayerProgramAudioSource.stop enqueues removal on this same mixer queue.
         bus.remove(source)
         audio.update(targets: [.init(id: destination, send: { block in route.admitAudio(block, epoch: new.epoch) { record.add($0, id: destination) } })],
                      music: nil, preparing: true, wantsVideo: false, runtime: runtime, session: nil)

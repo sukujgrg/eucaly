@@ -123,10 +123,11 @@ nonisolated enum NDIAudioTrace {
     }
     static func record(_ event: String, sample: Int64 = 0, queued: Int = 0, generation: UUID? = nil,
                        source: UUID? = nil, mediaSample: Int64? = nil, frames: Int? = nil,
-                       covered: Int? = nil, sampleRate: Double? = nil, leftRMS: Double? = nil, rightRMS: Double? = nil) {
+                       covered: Int? = nil, sampleRate: Double? = nil, leftRMS: Double? = nil, rightRMS: Double? = nil,
+                       rate: Double? = nil, gain: Float? = nil) {
         sink?.record(event, sample: sample, queued: queued, generation: generation,
             source: source, mediaSample: mediaSample, frames: frames, covered: covered,
-            sampleRate: sampleRate, leftRMS: leftRMS, rightRMS: rightRMS)
+            sampleRate: sampleRate, leftRMS: leftRMS, rightRMS: rightRMS, rate: rate, gain: gain)
     }
     static func flush() { sink?.flush() }
     private final class Sink: @unchecked Sendable {
@@ -143,6 +144,8 @@ nonisolated enum NDIAudioTrace {
             let sampleRate: Double?
             let leftRMS: Double?
             let rightRMS: Double?
+            let rate: Double?
+            let gain: Float?
         }
         private let lock = NSLock()
         private let queue = DispatchQueue(label: "com.suku.eucaly.ndi.audio-trace", qos: .utility)
@@ -153,7 +156,7 @@ nonisolated enum NDIAudioTrace {
         init?() {
             guard let path = ProcessInfo.processInfo.environment["EUCALY_NDI_AUDIO_TRACE_DIRECTORY"] else { return nil }
             let url = URL(fileURLWithPath: path).appendingPathComponent("audio-trace-\(getpid()).csv")
-            guard FileManager.default.createFile(atPath: url.path, contents: Data("host_nanoseconds,event,sample,queued,generation,source,media_sample,frames,covered,sample_rate,left_rms,right_rms\n".utf8)),
+            guard FileManager.default.createFile(atPath: url.path, contents: Data("host_nanoseconds,event,sample,queued,generation,source,media_sample,frames,covered,sample_rate,left_rms,right_rms,rate,gain\n".utf8)),
                   let file = try? FileHandle(forWritingTo: url) else { return nil }
             guard (try? file.seekToEnd()) != nil else { try? file.close(); return nil }
             self.file = file
@@ -163,10 +166,12 @@ nonisolated enum NDIAudioTrace {
             self.timer = timer; timer.resume()
         }
         func record(_ event: String, sample: Int64, queued: Int, generation: UUID?, source: UUID?,
-                    mediaSample: Int64?, frames: Int?, covered: Int?, sampleRate: Double?, leftRMS: Double?, rightRMS: Double?) {
+                    mediaSample: Int64?, frames: Int?, covered: Int?, sampleRate: Double?, leftRMS: Double?, rightRMS: Double?,
+                    rate: Double?, gain: Float?) {
             let record = Record(now: DispatchTime.now().uptimeNanoseconds, event: event, sample: sample,
                 queued: queued, generation: generation, source: source, mediaSample: mediaSample,
-                frames: frames, covered: covered, sampleRate: sampleRate, leftRMS: leftRMS, rightRMS: rightRMS)
+                frames: frames, covered: covered, sampleRate: sampleRate, leftRMS: leftRMS, rightRMS: rightRMS,
+                rate: rate, gain: gain)
             lock.withLock {
                 if pending.count < 8192 { pending.append(record) }
                 else { dropped += 1 }
@@ -184,9 +189,10 @@ nonisolated enum NDIAudioTrace {
                 [String(row.now), row.event, String(row.sample), String(row.queued), row.generation?.uuidString ?? "",
                  row.source?.uuidString ?? "", row.mediaSample.map(String.init) ?? "", row.frames.map(String.init) ?? "",
                  row.covered.map(String.init) ?? "", row.sampleRate.map { String($0) } ?? "",
-                 row.leftRMS.map { String($0) } ?? "", row.rightRMS.map { String($0) } ?? ""].joined(separator: ",") + "\n"
+                 row.leftRMS.map { String($0) } ?? "", row.rightRMS.map { String($0) } ?? "",
+                 row.rate.map { String($0) } ?? "", row.gain.map { String($0) } ?? ""].joined(separator: ",") + "\n"
             }.joined()
-            if lost > 0 { text += "\(DispatchTime.now().uptimeNanoseconds),trace-overflow,0,\(lost),,,,,,,,\n" }
+            if lost > 0 { text += "\(DispatchTime.now().uptimeNanoseconds),trace-overflow,0,\(lost),,,,,,,,,,\n" }
             try? file.write(contentsOf: Data(text.utf8))
         }
         deinit { timer?.cancel(); try? file.close() }

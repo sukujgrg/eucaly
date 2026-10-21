@@ -51,9 +51,9 @@ final class NDIRegressionTests: XCTestCase {
         }
         let heard = NDIRegressionAudio(), bus = ProgramAudioBus { buffer, _ in heard.record(buffer) }
         let player = AVPlayer(url: url); player.volume = 0.001
-        let tap = PlayerAudioTap(player: player, mixer: bus)
+        let tap = PlayerProgramAudioSource(player: player, mixer: bus)
         defer { tap.stop(); player.pause(); bus.stop() }
-        try await until { player.currentItem?.audioMix != nil && player.status == .readyToPlay }
+        try await until { tap.isPrepared && player.status == .readyToPlay }
         let prerolled = await player.preroll(atRate: 1)
         XCTAssertTrue(prerolled)
         bus.start(at: CMClockGetTime(CMClockGetHostTimeClock())); player.play()

@@ -62,15 +62,18 @@ nonisolated final class NDIAudioDistribution: @unchecked Sendable {
 
 @MainActor
 final class NDIProgramAudio {
+    var sourceFailed: ((String) -> Void)?
     private let distribution: NDIAudioDistribution
     private let makeBus: (@escaping ProgramAudioBus.StemDelivery) -> ProgramAudioBus
     private var bus: ProgramAudioBus?
-    private var videoTap: PlayerAudioTap?
-    private var musicTap: PlayerAudioTap?
+    private var videoSource: PlayerProgramAudioSource?
+    private var musicSource: PlayerProgramAudioSource?
     private weak var runtime: OutputMediaRuntime?
     private weak var session: PresentationSession?
     private var timer: Timer?
     private var timingActivity: NSObjectProtocol?
+    private var receivesMusic = false
+    private var reportedFailures: Set<UUID> = []
     init(musicRoute: NDIMusicRoute? = nil,
          makeBus: @escaping (@escaping ProgramAudioBus.StemDelivery) -> ProgramAudioBus = { ProgramAudioBus(deliverStems: $0) }) {
         distribution = NDIAudioDistribution(musicRoute: musicRoute); self.makeBus = makeBus
@@ -79,6 +82,7 @@ final class NDIProgramAudio {
                 runtime: OutputMediaRuntime, session: PresentationSession?) {
         self.runtime = wantsVideo ? runtime : nil
         self.session = music != nil ? session : nil
+        receivesMusic = music.map { selected in targets.contains { $0.id == selected } } ?? false
         guard !targets.isEmpty || preparing else { stop(); return }
         if bus == nil {
             // This process owns the PCM clock; the separate helper's activity
@@ -89,6 +93,11 @@ final class NDIProgramAudio {
                 reason: "Producing live NDI audio")
             let distribution = distribution
             let bus = makeBus { distribution.deliver(program: $0, background: $1, time: $2) }
+            bus.setSourceFailureHandler { [weak self] id, reason in
+                Task { @MainActor [weak self] in
+                    self?.reportFailure(id, reason: reason)
+                }
+            }
             self.bus = bus; bus.start(at: CMClockGetTime(CMClockGetHostTimeClock()))
             timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.refresh() }
@@ -101,23 +110,32 @@ final class NDIProgramAudio {
     private func refresh() {
         guard let bus else { return }
         if let player = runtime?.program {
-            if videoTap?.matches(player) != true {
-                videoTap?.stop(); videoTap = PlayerAudioTap(player: player, mixer: bus, programGain: runtime?.programAudioGain)
+            if videoSource?.matches(player) != true {
+                videoSource?.stop(); videoSource = PlayerProgramAudioSource(player: player, mixer: bus, programGain: runtime?.programAudioGain)
             }
-            videoTap?.refresh()
-        } else { videoTap?.stop(); videoTap = nil }
+            videoSource?.refresh()
+        } else { videoSource?.stop(); videoSource = nil }
         if let player = session?.programBackgroundAudioPlayer {
-            if musicTap?.matches(player) != true {
-                musicTap?.stop(); musicTap = PlayerAudioTap(player: player, mixer: bus, background: true, programGain: session?.backgroundAudioGain)
+            if musicSource?.matches(player) != true {
+                musicSource?.stop(); musicSource = PlayerProgramAudioSource(player: player, mixer: bus, background: true, programGain: session?.backgroundAudioGain)
             }
-            musicTap?.refresh()
-        } else { musicTap?.stop(); musicTap = nil }
+            musicSource?.refresh()
+        } else { musicSource?.stop(); musicSource = nil }
+        for source in [videoSource, receivesMusic ? musicSource : nil].compactMap({ $0 }) {
+            if let reason = source.failureReason { reportFailure(source.sourceID, reason: reason) }
+        }
+    }
+    private func reportFailure(_ id: UUID, reason: String) {
+        guard videoSource?.sourceID == id || (receivesMusic && musicSource?.sourceID == id),
+              reportedFailures.insert(id).inserted else { return }
+        sourceFailed?(reason)
     }
     func remove(_ id: UUID) { distribution.remove(id) }
     func stop() {
         distribution.configure([], music: nil)
         timer?.invalidate(); timer = nil
-        videoTap?.stop(); musicTap?.stop(); videoTap = nil; musicTap = nil
+        videoSource?.stop(); musicSource?.stop(); videoSource = nil; musicSource = nil
+        receivesMusic = false; reportedFailures.removeAll()
         bus?.stop(); bus = nil; runtime = nil; session = nil
         if let timingActivity {
             self.timingActivity = nil
@@ -127,7 +145,7 @@ final class NDIProgramAudio {
     deinit {
         timer?.invalidate(); bus?.stop()
         if let timingActivity { ProcessInfo.processInfo.endActivity(timingActivity) }
-        let video = videoTap, music = musicTap
+        let video = videoSource, music = musicSource
         DispatchQueue.main.async { video?.stop(); music?.stop() }
     }
 }

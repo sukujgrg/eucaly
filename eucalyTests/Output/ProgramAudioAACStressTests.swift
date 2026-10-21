@@ -13,6 +13,14 @@ final class ProgramAudioAACStressTests: XCTestCase {
     }
 
     func testIrregular44100InputChunksKeepContinuousResampledAudio() async throws {
+        try await qualifyIrregularInputChunks(assetFrameDifference: 0)
+    }
+
+    func testContiguousAssetRangesPreservePCMDespiteDifferentFrameDurations() async throws {
+        try await qualifyIrregularInputChunks(assetFrameDifference: 10)
+    }
+
+    private func qualifyIrregularInputChunks(assetFrameDifference: Int64) async throws {
         let sourceRate = 44100.0
         let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: sourceRate, channels: 2))
         let id = UUID()
@@ -23,16 +31,19 @@ final class ProgramAudioAACStressTests: XCTestCase {
         let metrics = AACBusMetrics(start: first + 4800, end: first + 48000)
         let bus = ProgramAudioBus { metrics.consume($0, at: $1) }
         defer { bus.stop() }
-        var inputs: [(AVAudioPCMBuffer, CMTime)] = []
+        var inputs: [ProgramAudioBus.Input] = []
         let sizes = [1024, 3072, 4410, 333, 2048]
         var position = 0, chunk = 0
+        var mediaPosition: Int64 = 0
         while position < 88200 {
             let count = min(sizes[chunk % sizes.count], 88200 - position)
             let pcm = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count)))
             pcm.frameLength = AVAudioFrameCount(count)
             fillTone(pcm, firstFrame: position, sampleRate: sourceRate)
-            let time = CMTime(value: first, timescale: 48000) + CMTime(value: Int64(position), timescale: 44100)
-            inputs.append((pcm, time)); position += count; chunk += 1
+            let time = CMTime(value: first, timescale: 48000) + CMTime(value: mediaPosition, timescale: 44100)
+            let mediaCount = Int64(count) - assetFrameDifference
+            inputs.append(.init(pcm, at: time, duration: CMTime(value: mediaCount, timescale: 44100)))
+            position += count; mediaPosition += mediaCount; chunk += 1
         }
         bus.setGain(1, id: id)
         XCTAssertTrue(bus.append(inputs, id: id))
@@ -69,10 +80,10 @@ final class ProgramAudioAACStressTests: XCTestCase {
         player.volume = 0; gain.set(0.25)
         let clock = AACBusMeasurement()
         let bus = ProgramAudioBus { clock.consume($0, at: $1) }
-        let tap = PlayerAudioTap(player: player, mixer: bus, programGain: gain)
+        let tap = PlayerProgramAudioSource(player: player, mixer: bus, programGain: gain)
         defer { tap.stop(); player.pause(); bus.stop() }
         let readyDeadline = ProcessInfo.processInfo.systemUptime + 8
-        while player.currentItem?.audioMix == nil || player.status != .readyToPlay {
+        while !tap.isPrepared || player.status != .readyToPlay {
             guard ProcessInfo.processInfo.systemUptime < readyDeadline,
                   player.status != .failed else {
                 XCTFail("AAC player did not become ready: \(player.error?.localizedDescription ?? "timeout")")

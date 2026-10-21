@@ -73,9 +73,9 @@ physical receiver, network, audio synchronization or a sustained session.
    stopping or moving an NDI output never creates a standalone playback request.
 
 Programme mute and music volume still apply to both local and NDI audio. Local
-monitoring uses AVPlayer's output volume, downstream of the processing tap; NDI
+monitoring uses AVPlayer's output volume, independently of asset PCM decoding; NDI
 uses a separate programme-gain snapshot. The local level is set before playback
-starts, so asynchronous tap preparation cannot produce a local startup burst.
+starts, so asynchronous programme-audio preparation cannot produce a local startup burst.
 Monitoring edits neither replace the shared player nor restart the NDI helper.
 
 The output's **Appearance** picker lists reusable profiles and its current custom
@@ -139,11 +139,30 @@ The format remains SDR 1920 × 1080 at 30/1 fps. Higher rates need separate
 qualification. Images/PDF pages prepare off the UI thread; video uses the owning
 workspace’s existing player, without window/screen capture. Geometry preserves
 rotation/mirroring, clean aperture and pixel aspect. PDF vectors rasterize at the
-output canvas size. Tapped audio retains media timestamps and bounded clock history
-across mute, pause/resume and preroll. The shared tap retains still-unplayed PCM
-within its existing memory bound and tracks delivery per mixer, so a new or
-restarted destination can join ongoing playback without losing already-decoded
-audio or duplicating it into existing consumers. NDI prevents idle system sleep while allowing
+output canvas size. Programme audio uses one shared `PlayerProgramAudioSource` per real player/item.
+An `AVAssetReaderAudioMixOutput` decodes the enabled asset tracks into stereo
+48 kHz Float32 PCM on a user-initiated worker queue, preserving the item's audio
+mix. It reads up to one second ahead of the existing AVPlayer timebase; this is
+decoded lookahead, not an offset or extra delay in the transmitted clock. The
+local audio queue's effects latency, padding and pause/resume omissions cannot
+enter programme PCM. No additional player or audio device is created.
+
+The shared decoder retains still-unplayed PCM within the 8 MiB / 256-buffer bound
+and tracks delivery per mixer. Late or restarted destinations receive retained
+PCM without duplicate submission into existing consumers. Rendered history remains available within those bounds for backward player-clock
+corrections. Pause retains decoded future PCM; seeks outside retained history or
+lookahead reposition the reader using asset timestamps. Stop closes
+admission immediately and cancels decoding asynchronously. Decoder failures retire
+only affected outputs through the existing inline failure/Retry path.
+
+The mixer retains media timestamps and bounded clock history across mute,
+pause/resume and preroll. Discontinuity detection uses actual adjacent asset
+ranges, rather than inferring their duration from PCM frame counts. Adjacent
+ranges preserve converter state; gaps and overlaps re-anchor it at the supplied
+timestamp. PCM already matching the mixer's format retains its immutable copied
+buffer directly, avoiding streaming-converter batching. Actual format/rate
+conversions retain their converter.
+NDI prevents idle system sleep while allowing
 display sleep. These engineering checks do not qualify physical receiver delivery.
 
 The mixer clocks against host time and recovers coalesced timer callbacks with

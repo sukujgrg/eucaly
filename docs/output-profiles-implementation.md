@@ -218,8 +218,13 @@ GPU composition/conversion does not move the NDI codec onto the GPU.
 A continuous ProgramAudioBus per destination preserves its audio clock across moves.
 All buses use the same 960-sample host grid; a shared bounded music-route history
 selects one destination per block even when sender queues drain in different orders.
-PlayerAudioTap shares the tap on each real program player. Delivery retargeting is
-queued behind tap removal on the mixer queue, so an in-flight old-owner PCM block
+PlayerProgramAudioSource shares one bounded asset decoder per real program
+player/item, mixing its enabled audio tracks into timestamped stereo 48 kHz PCM.
+Its one-second decoded lookahead is independent of the player's local audio queue
+and adds no clock offset. Retained PCM and per-mixer delivery cursors preserve
+preroll, pause/resume and late joins; seeks reposition decoding when needed.
+Delivery retargeting is queued behind source removal on the mixer queue, so an
+in-flight old-owner PCM block
 cannot acquire the new owner's epoch. This retains the bus and its sample clock.
 Video follows the owning
 workspace's playback/mute state; preview, microphone, webpages and system audio are
@@ -227,7 +232,7 @@ excluded. The existing single explicit local music owner and saved
 `backgroundAudioDestinationID` remain independent of workspace transfer. Moving an
 output never substitutes the target workspace's music or silently changes the route.
 Stopping the selected destination leaves the route selected and inactive. Block
-routing, ownership epochs, bounded handoffs and tap removal reject old-owner audio.
+routing, ownership epochs, bounded handoffs and source removal reject old-owner audio.
 Audio overflow/gaps retire the affected source rather than accumulating latency.
 
 Only the bundled helper loads the separately installed, signature-checked NDI 6.3
@@ -359,7 +364,7 @@ old-workspace PCM block with the new epoch; retained Output assignment actions c
 construct deleted workspace programs; and Manage Workspaces could miss late player
 state changes used by its deletion guard. Each issue has a regression that failed
 before its fix. The manager now observes player state while open, and audio delivery
-changes are ordered behind tap removal without replacing the continuous mixer clock.
+changes are ordered behind source removal without replacing the continuous mixer clock.
 
 On 20 October 2026, the reviewed changes passed `make test`: 531 XCTest cases, one
 Swift Testing case, seven feed regressions and 101 release regressions, with no skips.
