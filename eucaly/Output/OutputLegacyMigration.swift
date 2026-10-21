@@ -102,6 +102,19 @@ nonisolated enum OutputLegacyMigration {
             }
             root["workspaces"] = workspaces
         }
+        // Retain the historical Home rename without treating the retired launch
+        // preference as live state. Existing operator names remain unchanged.
+        // Current records encode their listening preference, distinguishing an
+        // explicitly chosen old name on subsequent loads after this cleanup.
+        if root["defaultWorkspaceID"] == nil, var records = root["workspaces"] as? [[String: Any]],
+           let index = records.firstIndex(where: {
+               $0["id"] as? String == OutputWorkspaceRecord.primaryID.uuidString && $0["name"] as? String == "Workspace 1"
+                   && $0["monitorAudioLocally"] == nil
+           }) {
+            records[index]["name"] = OutputWorkspaceRecord.primary.name
+            root["workspaces"] = records
+        }
+        root.removeValue(forKey: "defaultWorkspaceID")
         let document = try JSONDecoder().decode(OutputProfileDocument.self, from: JSONSerialization.data(withJSONObject: root))
         guard document.isValid else { throw Failure.invalid }
         return document

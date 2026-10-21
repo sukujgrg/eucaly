@@ -50,12 +50,6 @@ final class OutputWorkspaceProgram {
 }
 
 extension OutputProfileStore {
-    @discardableResult
-    func setDefaultWorkspace(_ id: UUID) -> Bool {
-        guard recoveryNotice == nil, document.workspaces.contains(where: { $0.id == id }) else { return false }
-        edit { $0.defaultWorkspaceID = id }
-        return document.defaultWorkspaceID == id
-    }
     var canAddWorkspace: Bool { recoveryNotice == nil && document.workspaces.count < OutputWorkspaceRecord.creationLimit }
     @discardableResult
     func addWorkspace(name: String? = nil) -> UUID? {

@@ -12,6 +12,7 @@ final class OutputWorkspaceWindows: ObservableObject {
     private let outputs: OutputCoordinator
     private let updates: AppUpdateViewModel
     private let defaults: UserDefaults?
+    private let autosavesWindowFrames: Bool
     private let keyWindow: @MainActor () -> NSWindow?
     private let contentFactory: ((PresentationSession, OutputWorkspaceCommands) -> NSViewController)?
     private let showWorkspaceSettings: () -> Void
@@ -29,10 +30,12 @@ final class OutputWorkspaceWindows: ObservableObject {
     }
 
     init(outputs: OutputCoordinator, updates: AppUpdateViewModel, defaults: UserDefaults? = nil,
+         autosavesWindowFrames: Bool = !AppLaunchContext.isRunningTests,
          keyWindow: @escaping @MainActor () -> NSWindow? = { NSApp.keyWindow },
          manageWorkspaces: @escaping () -> Void = {},
          contentFactory: ((PresentationSession, OutputWorkspaceCommands) -> NSViewController)? = nil) {
         self.outputs = outputs; self.updates = updates; self.defaults = defaults
+        self.autosavesWindowFrames = autosavesWindowFrames
         self.keyWindow = keyWindow; self.contentFactory = contentFactory
         self.showWorkspaceSettings = manageWorkspaces
         tabBadges = OutputWorkspaceTabBadges(workspaces: outputs.profiles.document.workspaces, defaults: defaults)
@@ -81,18 +84,22 @@ final class OutputWorkspaceWindows: ObservableObject {
         return id
     }
 
-    /// Launch selects the saved default, retaining any windows restored by
-    /// AppKit. This preference never assigns destinations or starts NDI.
-    func openDefault() {
-        let beside = activeWorkspaceID ?? outputs.focusedWorkspaceID
-        open(outputs.profiles.document.defaultWorkspaceID, beside: beside)
+    /// Called after native restoration completes. Even minimized windows count
+    /// as restored; leave their geometry, selected tabs and ordering to AppKit.
+    func openInitialWorkspace() {
+        guard controllers.isEmpty else { return }
+        reopen()
     }
 
-    /// A Dock reopen returns to the last controls workspace used this run.
+    /// A Dock reopen returns to existing controls or the last saved workspace.
     func reopen() {
         let saved = defaults?.string(forKey: Self.lastWorkspaceKey).flatMap(UUID.init(uuidString:))
-        let candidates = [activeWorkspaceID, outputs.focusedWorkspaceID, saved,
-                          outputs.profiles.document.defaultWorkspaceID].compactMap { $0 }
+        let focused = outputs.focusedWorkspaceID
+        let openFocused = focused.flatMap { controllers[$0] == nil ? nil : $0 }
+        let openSaved = saved.flatMap { controllers[$0] == nil ? nil : $0 }
+        let firstOpen = outputs.profiles.document.workspaces.first { controllers[$0.id] != nil }?.id
+        let candidates = [activeWorkspaceID, openFocused, openSaved, firstOpen, saved, focused,
+                          outputs.profiles.document.workspaces.first?.id].compactMap { $0 }
         guard let id = candidates.first(where: { candidate in
             outputs.profiles.document.workspaces.contains { $0.id == candidate }
         }) else { return }
@@ -122,6 +129,7 @@ final class OutputWorkspaceWindows: ObservableObject {
         if let problem = outputs.workspaceDeletionProblem(id) { return problem }
         controllers[id]?.window?.close()
         guard outputs.deleteWorkspace(id) else { return outputs.workspaceDeletionProblem(id) ?? "Unable to delete this workspace." }
+        if autosavesWindowFrames { NSWindow.removeFrame(usingName: Self.identifier(for: id).rawValue) }
         if defaults?.string(forKey: Self.lastWorkspaceKey) == id.uuidString {
             defaults?.removeObject(forKey: Self.lastWorkspaceKey)
         }
@@ -143,6 +151,7 @@ final class OutputWorkspaceWindows: ObservableObject {
                 .environmentObject(updates))
         }
         let controller = OutputWorkspaceWindowController(session: session, commands: commands, content: content, badge: badge,
+            autosavesFrame: autosavesWindowFrames,
             didBecomeKey: { [weak self] in self?.defaults?.set(id.uuidString, forKey: Self.lastWorkspaceKey) },
             didClose: { [weak self] closed in
                 guard self?.controllers[id] === closed else { return }
@@ -184,6 +193,7 @@ final class OutputWorkspaceWindowController: NSWindowController, NSWindowDelegat
     }
 
     init(session: PresentationSession, commands: OutputWorkspaceCommands, content: NSViewController, badge: OutputWorkspaceTabBadge,
+         autosavesFrame: Bool,
          didBecomeKey: @escaping () -> Void, didClose: @escaping (OutputWorkspaceWindowController) -> Void,
          newWorkspace: @escaping () -> Void) {
         self.session = session; self.commands = commands
@@ -206,7 +216,11 @@ final class OutputWorkspaceWindowController: NSWindowController, NSWindowDelegat
         window.setContentSize(.init(width: 1280, height: 800))
         window.workspaceSession = session
         window.center()
+        // Native restoration may subsequently supply the full window/tab state.
+        // A stable UUID also remembers geometry after controls were closed.
+        if autosavesFrame { window.setFrameAutosaveName(OutputWorkspaceWindows.identifier(for: session.outputSourceID).rawValue) }
         super.init(window: window)
+        shouldCascadeWindows = false
         window.delegate = self
         commands.window = window
         ApplicationTerminationCoordinator.shared.register(id: registrationID, window: window) { [weak commands] in
@@ -248,6 +262,9 @@ final class OutputWorkspaceWindowController: NSWindowController, NSWindowDelegat
     func windowWillClose(_ notification: Notification) {
         guard !closed else { return }
         closed = true
+        // Release the autosave name before tearing down content. A retained,
+        // closed window must not reserve the name or overwrite a reopened one.
+        window?.setFrameAutosaveName("")
         renamer.cancel()
         commands.controlsWillClose()
         ApplicationTerminationCoordinator.shared.unregister(id: registrationID)

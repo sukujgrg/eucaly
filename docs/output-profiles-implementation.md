@@ -13,9 +13,21 @@ contain reusable appearance settings and have no content ownership.
 AppDelegate owns `OutputWorkspaceWindows`, with one AppKit `NSWindowController` per
 open workspace UUID. The native application entry and menus create, reopen and close
 these windows. `NSWindowRestoration` recreates only saved workspace identities and
-leaves geometry, minimization and tab groups to AppKit; launch opens the saved default
-workspace only after native restoration finishes, keeping restored windows available. Dock reopen selects the existing
-or last controlled workspace without creating another workspace record.
+leaves geometry, minimization, selected tabs and tab groups to AppKit. Launch waits
+for native restoration and opens the saved last-used workspace only when no controls
+window was restored. A removed or invalid saved identity falls back to an existing
+workspace. Dock reopen selects existing controls or the saved last-used workspace
+without creating another workspace record or starting output.
+
+Each native workspace window uses its durable workspace UUID as its frame autosave
+name. AppKit remembers size and position even after closing controls; restored
+window state takes precedence over the initial frame. Window controllers disable
+cascading, so showing an existing or restored window does not offset it. Closing
+releases the autosave name before content teardown, and deleting a workspace removes
+its unused saved frame. Hosted tests disable frame persistence by default; dedicated
+geometry regressions use temporary workspace UUIDs and remove their native defaults.
+The former SwiftUI window scene is gone. Launch removes only its obsolete controls
+and Settings frame keys, retaining native frames, panel geometry and content preferences.
 
 `NSHostingController` hosts the existing SwiftUI controls and uses the public macOS
 14 [toolbar hosting API](https://developer.apple.com/documentation/swiftui/nshostingscenebridgingoptions/toolbars)
@@ -57,7 +69,7 @@ controls window.
 
 **Manage Workspaces…** in the Workspace menu and workspace toolbar opens the
 **Workspaces** toolbar tab in the app's shared native AppKit Settings window.
-The existing AppKit list provides Open, Rename, Make Default and Delete. It shows
+The existing AppKit list provides Open, Rename and Delete. It shows
 each workspace's matching coloured shape and lists each saved UUID's output
 assignments (including disabled destinations), current activity and whether controls
 are open. Opening or browsing the manager never constructs unopened sessions or
@@ -88,14 +100,12 @@ routing, playback position, players or output lifetimes. Settings restoration
 reads on the persistence queue after pending writes; it cannot re-save an older
 snapshot that was read ahead of the latest listening edit.
 
-The initial workspace is **Home**. **Make Default Workspace** in the Workspace menu
-or toolbar, and **Make Default** in Manage Workspaces, save the workspace opened at
-launch. This preference does not change the default output used by appearance controls,
-focus the workspace immediately, assign destinations or start NDI. The default is
-marked in Manage Workspaces. Its UUID survives rename; deleting it selects the first
-remaining saved workspace. Older version-6 documents gain this additive preference
-without changing output assignments. Only the former built-in `Workspace 1` name
-becomes Home; operator names are retained.
+The initial workspace is **Home**. There is no default-workspace preference or
+startup selection action. Existing version-6 documents discard the retired launch
+preference on their next save without changing workspace names, identities, output
+assignments, appearances or music routing. Legacy records still migrate the former
+untouched built-in name `Workspace 1` to Home; explicitly chosen operator names in
+current records survive subsequent saves.
 
 New workspace creation is limited to four through the same guard in the store,
 native menu, toolbar and tab/window entry points. The version-6 document retains its
@@ -434,6 +444,18 @@ with no skips, zero build/analyzer warnings and no saved runtime warnings. The
 normal `make build` Release archive/export also completed without warnings; the
 app and helper are arm64, and the exported app passed strict deep code-signature
 verification.
+
+On 22 October 2026, removal of the default-workspace feature passed `make test`:
+617 XCTest cases with four opt-in NDI/AAC stress checks skipped, one Swift Testing
+case, seven feed regressions and 101 release regressions. The 39 focused workspace
+cases cover native autosave of separate workspace sizes and positions, retained
+closed windows, rename, a fresh window registry, hosted SwiftUI toolbars, removal
+of deleted-workspace frames, restored tab selection and minimization, last-used
+fallback, retirement of the old launch field and targeted SwiftUI frame cleanup.
+`make build` also archived/exported the arm64 app successfully, and the exported
+app passed strict deep code-signature verification. Native autosave is exercised
+against AppKit; an OS-managed quit/relaunch round trip
+of restored tab groups remains a manual verification item.
 
 Physical receivers, real monitor hot-plug, alpha mixing over cameras, A/V drift,
 minimum supported OS/hardware, permission UI, accessibility and two-hour sustained

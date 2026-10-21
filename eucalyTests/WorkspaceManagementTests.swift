@@ -32,59 +32,99 @@ final class WorkspaceManagementTests: XCTestCase {
         XCTAssertEqual(session.backgroundAudioPlaybackState, .stopped)
     }
 
-    func testDefaultWorkspacePersistsWithoutChangingFocusCurrentOrOutputs() throws {
-        let f = Fixture(); defer { f.close() }
-        XCTAssertEqual(f.store.workspaceName(f.session.outputSourceID), "Home")
-        XCTAssertEqual(f.store.document.defaultWorkspaceID, f.session.outputSourceID)
-        let other = try XCTUnwrap(f.store.addWorkspace(name: "Online"))
-        let saved = f.store.document
-        f.session.setSlides(LyricsParser.parseDocument("Verse\nPrepared Current").slides)
-        XCTAssertTrue(f.store.setDefaultWorkspace(other))
-        XCTAssertNil(f.outputs.preparedSession(workspace: other))
-        XCTAssertEqual(f.outputs.focusedWorkspaceID, f.session.outputSourceID)
-        XCTAssertEqual(f.session.currentSlide?.lines.first?.text, "Prepared Current")
-        XCTAssertEqual(f.store.document.destinations, saved.destinations)
-        XCTAssertEqual(f.store.document.profiles, saved.profiles)
-        XCTAssertEqual(f.store.document.defaultDestinationID, saved.defaultDestinationID)
-        XCTAssertTrue(f.ndi.starts.isEmpty)
-        XCTAssertFalse(f.store.setDefaultWorkspace(UUID()))
-        f.store.flush()
-        XCTAssertEqual(OutputProfileStore(defaults: f.defaults).document, f.store.document)
-        XCTAssertTrue(f.store.renameWorkspace(other, name: "Streaming"))
-        XCTAssertEqual(f.store.document.defaultWorkspaceID, other)
-        XCTAssertNil(f.windows.deleteWorkspace(other))
-        XCTAssertEqual(f.store.document.defaultWorkspaceID, f.session.outputSourceID)
-    }
-
-    func testLaunchOpensDefaultInsteadOfLastWorkspaceAndKeepsRestoredWindows() throws {
+    func testLaunchLeavesRestoredNativeTabsGeometryAndSelectionAlone() throws {
         let f = Fixture(); defer { f.close() }
         let other = try XCTUnwrap(f.store.addWorkspace(name: "Online"))
+        let third = try XCTUnwrap(f.store.addWorkspace(name: "Lobby"))
         let restored = try XCTUnwrap(f.windows.restoreWindow(identifier: OutputWorkspaceWindows.identifier(for: other)))
-        f.defaults.set(other.uuidString, forKey: "lastControlsWorkspaceID")
+        let tab = try XCTUnwrap(f.windows.restoreWindow(identifier: OutputWorkspaceWindows.identifier(for: third)))
+        restored.addTabbedWindow(tab, ordered: .above)
+        let group = try XCTUnwrap(restored.tabGroup)
+        group.selectedWindow = tab
+        restored.setContentSize(.init(width: 1140, height: 680))
+        let frame = restored.frame, tabFrame = tab.frame
+        let visible = restored.isVisible, tabVisible = tab.isVisible
+        f.defaults.set(f.session.outputSourceID.uuidString, forKey: "lastControlsWorkspaceID")
         let saved = f.store.document
-        f.windows.openDefault()
-        XCTAssertNotNil(f.windows.controllers[f.session.outputSourceID])
+        f.windows.openInitialWorkspace()
+        XCTAssertEqual(Set(f.windows.controllers.keys), [other, third])
         XCTAssertTrue(f.windows.controllers[other]?.window === restored)
+        XCTAssertTrue(restored.tabGroup === group)
+        XCTAssertTrue(tab.tabGroup === group)
+        XCTAssertTrue(group.selectedWindow === tab)
+        XCTAssertEqual(restored.frame, frame); XCTAssertEqual(tab.frame, tabFrame)
+        XCTAssertEqual(restored.isVisible, visible); XCTAssertEqual(tab.isVisible, tabVisible)
         XCTAssertEqual(f.store.document, saved)
         XCTAssertTrue(f.ndi.starts.isEmpty)
-        XCTAssertTrue(f.store.setDefaultWorkspace(other))
-        for window in f.windows.windows.values { window.close() }
-        f.windows.openDefault()
+    }
+
+    func testLaunchWithoutRestorationOpensLastWorkspaceBeforePreparedFocus() throws {
+        let f = Fixture(); defer { f.close() }
+        let other = try XCTUnwrap(f.store.addWorkspace(name: "Online"))
+        f.defaults.set(other.uuidString, forKey: "lastControlsWorkspaceID")
+        XCTAssertEqual(f.outputs.focusedWorkspaceID, f.session.outputSourceID)
+        let saved = f.store.document
+        f.windows.openInitialWorkspace()
         XCTAssertEqual(Set(f.windows.controllers.keys), [other])
+        let controller = f.windows.controllers[other]
+        f.windows.openInitialWorkspace()
+        XCTAssertTrue(f.windows.controllers[other] === controller)
+        XCTAssertEqual(f.store.document, saved)
+        XCTAssertTrue(f.ndi.starts.isEmpty)
         XCTAssertFalse(f.outputs.isRunning)
     }
 
-    func testManagerCanChooseDefaultWithoutOpeningOrRoutingTheWorkspace() throws {
+    func testLaunchKeepsARestoredWindowMinimized() async throws {
+        let f = Fixture(); defer { f.close() }
+        let window = try XCTUnwrap(f.windows.open(f.session.outputSourceID)?.window)
+        let minimized = expectation(description: "Native minimization finished")
+        let observer = NotificationCenter.default.addObserver(forName: NSWindow.didMiniaturizeNotification, object: window, queue: .main) { _ in
+            minimized.fulfill()
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        window.miniaturize(nil)
+        await fulfillment(of: [minimized], timeout: 3)
+        XCTAssertTrue(window.isMiniaturized)
+        f.windows.openInitialWorkspace()
+        XCTAssertTrue(window.isMiniaturized, "Launch must not reveal controls that AppKit restored minimized")
+        XCTAssertEqual(f.windows.controllers.count, 1)
+    }
+
+    func testLaunchFallsBackToSavedWorkspaceWhenLastIdentityWasRemoved() throws {
+        let f = Fixture(); defer { f.close() }
+        let other = try XCTUnwrap(f.store.addWorkspace(name: "Online"))
+        f.store.edit { $0.workspaces.removeAll { $0.id != other }; $0.destinations = [] }
+        f.defaults.set(UUID().uuidString, forKey: "lastControlsWorkspaceID")
+        f.windows.openInitialWorkspace()
+        XCTAssertEqual(Set(f.windows.controllers.keys), [other])
+        XCTAssertEqual(f.store.document.workspaces.map(\.id), [other])
+        XCTAssertTrue(f.ndi.starts.isEmpty)
+    }
+
+    func testDockReopenPrefersExistingControlsOverAClosedRememberedWorkspace() throws {
+        let f = Fixture(); defer { f.close() }
+        let other = try XCTUnwrap(f.store.addWorkspace(name: "Online"))
+        let restored = try XCTUnwrap(f.windows.restoreWindow(identifier: OutputWorkspaceWindows.identifier(for: other)))
+        f.defaults.set(f.session.outputSourceID.uuidString, forKey: "lastControlsWorkspaceID")
+        XCTAssertEqual(f.outputs.focusedWorkspaceID, f.session.outputSourceID)
+        f.windows.reopen()
+        XCTAssertEqual(Set(f.windows.controllers.keys), [other])
+        XCTAssertTrue(f.windows.windows[other] === restored)
+        XCTAssertTrue(restored.isVisible)
+        XCTAssertTrue(f.ndi.starts.isEmpty)
+    }
+
+    func testWorkspaceManagerOffersOpenRenameAndDeleteWithoutAStartupPreference() throws {
         let f = Fixture(); defer { f.close() }
         let other = try XCTUnwrap(f.store.addWorkspace(name: "Online"))
         let saved = f.store.document
         f.settings.show(pane: .workspaces)
         let manager = f.settings.settings.workspaces
         manager.selectWorkspace(other)
-        XCTAssertTrue(manager.defaultButton.isEnabled)
-        manager.defaultButton.performClick(nil)
-        XCTAssertEqual(f.store.document.defaultWorkspaceID, other)
-        XCTAssertFalse(manager.defaultButton.isEnabled)
+        let actions = try XCTUnwrap(manager.openButton.superview as? NSStackView)
+        XCTAssertEqual(actions.arrangedSubviews.compactMap { ($0 as? NSButton)?.title }, ["Open", "Rename…", "Delete"])
+        let menu = OutputWorkspaceMenuController(workspaces: f.windows)
+        XCTAssertNil(menu.menu.item(withTitle: "Make Default Workspace"))
         XCTAssertNil(f.outputs.preparedSession(workspace: other))
         XCTAssertTrue(f.windows.controllers.isEmpty)
         XCTAssertEqual(f.store.document.destinations, saved.destinations)
@@ -281,7 +321,7 @@ final class WorkspaceManagementTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(50))
             for size in [NSSize(width: 780, height: 580), .init(width: 1020, height: 760)] {
                 window.setContentSize(size); window.layoutIfNeeded(); manager.view.layoutSubtreeIfNeeded()
-                for button in [manager.openButton, manager.renameButton, manager.defaultButton, manager.deleteButton] {
+                for button in [manager.openButton, manager.renameButton, manager.deleteButton] {
                     XCTAssertTrue(manager.view.bounds.contains(manager.view.convert(button.bounds, from: button)))
                 }
                 let column = try XCTUnwrap(manager.table.tableColumns.first { $0.identifier.rawValue == "name" })

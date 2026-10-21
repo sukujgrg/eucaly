@@ -237,9 +237,6 @@ final class OutputProfileStore: ObservableObject {
     func removeObserver(_ id: UUID) { observers.removeValue(forKey: id) }
     func edit(_ action: (inout OutputProfileDocument) -> Void) {
         var next = document; action(&next)
-        if !next.workspaces.contains(where: { $0.id == next.defaultWorkspaceID }), let first = next.workspaces.first {
-            next.defaultWorkspaceID = first.id
-        }
         if !next.destinations.contains(where: { $0.id == next.defaultDestinationID }) { next.defaultDestinationID = nil }
         if !next.destinations.contains(where: { $0.id == next.backgroundAudioDestinationID && $0.ndi != nil }) { next.backgroundAudioDestinationID = nil }
         guard next.isValid, next != document else { return }

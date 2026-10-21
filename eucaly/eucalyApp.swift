@@ -74,7 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func openInitialWorkspaceIfReady() {
         guard finishedLaunching, finishedRestoring else { return }
         restorationFinished = nil
-        workspaceWindows.openDefault()
+        workspaceWindows.openInitialWorkspace()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -125,6 +125,7 @@ enum EucalyApp {
     static func main() {
         if !AppLaunchContext.isRunningTests {
             SandboxPreferencesMigration.migrateIfNeeded()
+            WorkspaceWindowPreferences.removeLegacyFrames(from: .standard)
         }
         let application = NSApplication.shared
         let delegate = AppDelegate()

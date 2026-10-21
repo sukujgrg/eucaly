@@ -10,7 +10,6 @@ final class ManageWorkspacesController: NSViewController, NSTableViewDataSource,
     let table = NSTableView()
     let openButton = NSButton(title: "Open", target: nil, action: nil)
     let renameButton = NSButton(title: "Rename…", target: nil, action: nil)
-    let defaultButton = NSButton(title: "Make Default", target: nil, action: nil)
     let deleteButton = NSButton(title: "Delete", target: nil, action: nil)
     let capacityLabel = outputSettingsLabel(secondary: true)
     let deletionLabel = outputSettingsLabel(secondary: true)
@@ -58,12 +57,12 @@ final class ManageWorkspacesController: NSViewController, NSTableViewDataSource,
         table.target = self; table.doubleAction = #selector(openSelected(_:))
         let list = NSScrollView(); list.documentView = table; list.hasVerticalScroller = true
         list.borderType = .bezelBorder; list.heightAnchor.constraint(greaterThanOrEqualToConstant: 100).isActive = true
-        for (button, action) in [(openButton, #selector(openSelected(_:))), (renameButton, #selector(renameSelected(_:))), (defaultButton, #selector(makeDefault(_:))), (deleteButton, #selector(deleteSelected(_:)))] {
+        for (button, action) in [(openButton, #selector(openSelected(_:))), (renameButton, #selector(renameSelected(_:))), (deleteButton, #selector(deleteSelected(_:)))] {
             button.target = self; button.action = action
         }
-        let actions = outputSettingsActionRow([openButton, renameButton, defaultButton, deleteButton])
+        let actions = outputSettingsActionRow([openButton, renameButton, deleteButton])
         messageLabel.textColor = .systemOrange; messageLabel.isHidden = true
-        let help = outputSettingsLabel("The default workspace opens at launch. Closing a tab keeps its workspace and any live output or background audio running. Delete is separate and keeps library files.", secondary: true)
+        let help = outputSettingsLabel("Windows and tabs reopen where you left them. Closing a tab keeps its workspace and any live output or background audio running. Delete is separate and keeps library files.", secondary: true)
         for label in [capacityLabel, deletionLabel, messageLabel, help] {
             label.maximumNumberOfLines = 2; label.lineBreakMode = .byTruncatingTail
         }
@@ -94,7 +93,7 @@ final class ManageWorkspacesController: NSViewController, NSTableViewDataSource,
             let assigned = outputs.destinations(workspace: record.id)
             let activity = outputs.isRunning(workspace: record.id) ? outputs.tabStatus(workspace: record.id)
                 : outputs.isPlaybackRunning(workspace: record.id) ? "Playback running" : assigned.isEmpty ? "No outputs" : "Stopped"
-            return Row(id: record.id, name: record.name + (record.id == outputs.profiles.document.defaultWorkspaceID ? " · Default" : ""),
+            return Row(id: record.id, name: record.name,
                        badge: workspaces.tabBadges.badge(for: record.id), outputs: assigned.isEmpty ? "None" : assigned.map {
                 outputs.profiles.destinationLabel($0) + ($0.enabled ? "" : " · Disabled")
             }.joined(separator: ", "),
@@ -115,8 +114,6 @@ final class ManageWorkspacesController: NSViewController, NSTableViewDataSource,
         deletionLabel.toolTip = deletionLabel.stringValue
         openButton.isEnabled = selectedID != nil
         renameButton.isEnabled = selectedID != nil && outputs.profiles.recoveryNotice == nil
-        defaultButton.isEnabled = selectedID != nil && selectedID != outputs.profiles.document.defaultWorkspaceID && outputs.profiles.recoveryNotice == nil
-        defaultButton.toolTip = "Open this workspace at launch. Output assignments and playback are independent."
         deleteButton.isEnabled = selectedID != nil && problem == nil
         deleteButton.toolTip = problem ?? "Delete this unused workspace."
         if isPresented {
@@ -177,11 +174,6 @@ final class ManageWorkspacesController: NSViewController, NSTableViewDataSource,
     @objc private func openSelected(_ sender: Any?) {
         guard let id = selectedID else { return }
         workspaces.open(id, beside: workspaces.activeWorkspaceID ?? outputs.focusedWorkspaceID)
-    }
-    @objc private func makeDefault(_ sender: Any?) {
-        guard let id = selectedID else { return }
-        outputs.profiles.setDefaultWorkspace(id)
-        reload()
     }
     @objc private func deleteSelected(_ sender: Any?) {
         guard let id = selectedID else { return }

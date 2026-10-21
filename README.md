@@ -36,7 +36,7 @@ Browsing never silently replaces **Current**.
 - [Named projection monitors](docs/projection-monitors.md) with remembered numbers, physical display identity, and an Identify action
 - Keeps the Mac and displays awake while projection is open, including hidden slides and background-only output
 - Named workspace tabs with independent Currents, detachable windows and exclusive output assignments. Optional [generic NDI outputs](docs/ndi-runtime.md) carry keyed lyrics or full-frame media on the same stable 1080p30 source, with shared playback per workspace and an explicit background-music route, using a separately installed runtime. Physical receiver qualification is still required before production use.
-- **Home** is the initial default workspace. Use **Workspace → Make Default Workspace** or **Manage Workspaces → Make Default** to choose which workspace opens at launch, independently of output routing and appearance defaults.
+- **Home** is the initial workspace. macOS restores your previous windows and tabs, including their sizes. If nothing is restored, eucaly reopens the last-used workspace.
 - Sparkle self-updates with quiet toolbar reminders during presentations
 
 Webpage behavior:

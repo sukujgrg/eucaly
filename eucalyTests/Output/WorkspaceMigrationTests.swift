@@ -3,27 +3,37 @@ import XCTest
 
 @MainActor
 final class WorkspaceMigrationTests: XCTestCase {
-    func testDefaultWorkspaceMigrationPreservesOperatorNamesAndRecoversMissingDefaults() throws {
+    func testWorkspaceMigrationPreservesOperatorNamesAndRemovesRetiredLaunchPreference() throws {
         let store = OutputProfileStore()
         let other = try XCTUnwrap(store.addWorkspace(name: "Online"))
         var root = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(store.document)) as? [String: Any])
-        root.removeValue(forKey: "defaultWorkspaceID")
         root["workspaces"] = [["id": OutputWorkspaceRecord.primaryID.uuidString, "name": "Workspace 1"],
                               ["id": other.uuidString, "name": "Online"]]
         let home = try OutputLegacyMigration.decode(JSONSerialization.data(withJSONObject: root))
         XCTAssertEqual(home.workspaces.first?.name, "Home")
-        XCTAssertEqual(home.defaultWorkspaceID, OutputWorkspaceRecord.primaryID)
         XCTAssertEqual(home.destinations, store.document.destinations)
         root["workspaces"] = [["id": OutputWorkspaceRecord.primaryID.uuidString, "name": "Morning Service"],
                               ["id": other.uuidString, "name": "Online"]]
         let named = try OutputLegacyMigration.decode(JSONSerialization.data(withJSONObject: root))
         XCTAssertEqual(named.workspaces.first?.name, "Morning Service")
+        root["defaultWorkspaceID"] = other.uuidString
+        let migrated = try OutputLegacyMigration.decode(JSONSerialization.data(withJSONObject: root))
+        XCTAssertEqual(migrated, named)
+        let encoded = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(migrated)) as? [String: Any])
+        XCTAssertNil(encoded["defaultWorkspaceID"])
+        XCTAssertEqual(migrated.destinations, store.document.destinations)
+        XCTAssertEqual(migrated.profiles, store.document.profiles)
+        // A primary workspace named while the preference existed is operator
+        // data, including an explicit reuse of the old built-in name.
+        root["workspaces"] = [["id": OutputWorkspaceRecord.primaryID.uuidString, "name": "Workspace 1"]]
+        let operatorNamed = try OutputLegacyMigration.decode(JSONSerialization.data(withJSONObject: root))
+        XCTAssertEqual(operatorNamed.workspaces.first?.name, "Workspace 1")
+        XCTAssertEqual(try OutputLegacyMigration.decode(JSONEncoder().encode(operatorNamed)), operatorNamed)
         root["workspaces"] = [["id": other.uuidString, "name": "Online"]]
         root["destinations"] = []
         root["defaultDestinationID"] = NSNull()
         root["defaultWorkspaceID"] = UUID().uuidString
         let recovered = try OutputLegacyMigration.decode(JSONSerialization.data(withJSONObject: root))
-        XCTAssertEqual(recovered.defaultWorkspaceID, other)
         XCTAssertEqual(recovered.workspaces, [.init(id: other, name: "Online")])
         XCTAssertTrue(recovered.isValid)
     }

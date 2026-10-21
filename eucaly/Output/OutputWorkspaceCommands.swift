@@ -13,11 +13,10 @@ final class OutputWorkspaceMenuController: NSObject, ObservableObject, NSMenuDel
     private weak var workspaces: OutputWorkspaceWindows?
     private let workspaceID: UUID?
     private enum Action: String {
-        case new, makeDefault, rename, detach, open, manage
+        case new, rename, detach, open, manage
         var title: String {
             switch self {
             case .new: "New Workspace Tab"
-            case .makeDefault: "Make Default Workspace"
             case .rename: "Rename Workspace…"
             case .detach: "Move Tab to New Window"
             case .open: ""
@@ -46,7 +45,7 @@ final class OutputWorkspaceMenuController: NSObject, ObservableObject, NSMenuDel
     private func rebuild() {
         menu.removeAllItems()
         if workspaceID != nil { menu.addItem(NSMenuItem(title: "", action: nil, keyEquivalent: "")) }
-        for action in [Action.new, .makeDefault, .rename, .detach] { add(action) }
+        for action in [Action.new, .rename, .detach] { add(action) }
         menu.addItem(.separator())
         for record in profiles.document.workspaces {
             let item = add(.open, title: record.name)
@@ -71,8 +70,6 @@ final class OutputWorkspaceMenuController: NSObject, ObservableObject, NSMenuDel
         let current = currentID.flatMap { id in profiles.document.workspaces.first { $0.id == id } }
         switch action {
         case .new: return workspaces.canCreateWorkspace
-        case .makeDefault:
-            return profiles.recoveryNotice == nil && current.map { $0.id != profiles.document.defaultWorkspaceID } == true
         case .rename:
             guard profiles.recoveryNotice == nil, let current, let window = workspaces.controllers[current.id]?.window else { return false }
             return window.attachedSheet == nil
@@ -100,7 +97,6 @@ final class OutputWorkspaceMenuController: NSObject, ObservableObject, NSMenuDel
         guard validateMenuItem(item), let action = action(for: item), let workspaces else { return }
         switch action {
         case .new: workspaces.newWorkspace(beside: currentID)
-        case .makeDefault: if let id = currentID { profiles.setDefaultWorkspace(id) }
         case .rename: if let id = currentID { workspaces.rename(id) }
         case .detach: if let id = currentID { workspaces.detach(id) }
         case .open:

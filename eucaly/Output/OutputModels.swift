@@ -48,7 +48,6 @@ nonisolated struct OutputDestinationConfiguration: Codable, Equatable, Identifia
 nonisolated struct OutputProfileDocument: Codable, Equatable {
     var version = 6
     var workspaces: [OutputWorkspaceRecord] = [.primary]
-    var defaultWorkspaceID: UUID = OutputWorkspaceRecord.primaryID
     var profiles: [OutputProfile]
     var destinations: [OutputDestinationConfiguration]
     var defaultDestinationID: UUID? = nil
@@ -59,21 +58,11 @@ nonisolated struct OutputProfileDocument: Codable, Equatable {
         self.defaultDestinationID = defaultDestinationID
     }
 
-    private enum CodingKeys: String, CodingKey { case version, workspaces, defaultWorkspaceID, profiles, destinations, defaultDestinationID, backgroundAudioDestinationID }
+    private enum CodingKeys: String, CodingKey { case version, workspaces, profiles, destinations, defaultDestinationID, backgroundAudioDestinationID }
     init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         version = try c.decode(Int.self, forKey: .version)
-        var records = try c.decodeIfPresent([OutputWorkspaceRecord].self, forKey: .workspaces) ?? [.primary]
-        let savedDefault = try c.decodeIfPresent(UUID.self, forKey: .defaultWorkspaceID)
-        defaultWorkspaceID = savedDefault.flatMap { id in records.contains { $0.id == id } ? id : nil }
-            ?? records.first(where: { $0.id == OutputWorkspaceRecord.primaryID })?.id
-            ?? records.first?.id ?? OutputWorkspaceRecord.primaryID
-        // Rename only the former built-in name. Operator names and identities
-        // survive the addition of an explicit launch preference.
-        if !c.contains(.defaultWorkspaceID), let index = records.firstIndex(where: {
-            $0.id == OutputWorkspaceRecord.primaryID && $0.name == "Workspace 1"
-        }) { records[index].name = OutputWorkspaceRecord.primary.name }
-        workspaces = records
+        workspaces = try c.decodeIfPresent([OutputWorkspaceRecord].self, forKey: .workspaces) ?? [.primary]
         profiles = try c.decode([OutputProfile].self, forKey: .profiles)
         destinations = try c.decode([OutputDestinationConfiguration].self, forKey: .destinations)
         // Missing means the old primary output. Explicit null means None and
@@ -85,7 +74,6 @@ nonisolated struct OutputProfileDocument: Codable, Equatable {
     func encode(to encoder: any Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(version, forKey: .version); try c.encode(workspaces, forKey: .workspaces); try c.encode(profiles, forKey: .profiles)
-        try c.encode(defaultWorkspaceID, forKey: .defaultWorkspaceID)
         try c.encode(destinations, forKey: .destinations)
         try c.encode(defaultDestinationID, forKey: .defaultDestinationID)
         try c.encode(backgroundAudioDestinationID, forKey: .backgroundAudioDestinationID)
@@ -129,7 +117,6 @@ nonisolated extension OutputProfileDocument {
         guard ndi.allSatisfy(\.isValid), Set(ndi.map(\.sourceID)).count == ndi.count,
               backgroundAudioDestinationID == nil || destinations.contains(where: { $0.id == backgroundAudioDestinationID && $0.ndi != nil }) else { return false }
         guard version == 6, (1...OutputWorkspaceRecord.legacyPersistenceLimit).contains(workspaces.count),
-              workspaces.contains(where: { $0.id == defaultWorkspaceID }),
               Set(workspaces.map(\.id)).count == workspaces.count,
               workspaces.allSatisfy({ !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.name.utf8.count <= 160 }),
               destinations.allSatisfy({ destination in destination.workspaceID == nil || workspaces.contains(where: { $0.id == destination.workspaceID }) }), (1...128).contains(profiles.count), destinations.count <= 16,
