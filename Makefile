@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help build test test-ndi-stress test-ndi-diagnostics test-release clean release release-check release-notarize release-publish
+.PHONY: help build test test-codex-agents test-ndi-stress test-ndi-diagnostics test-release clean release release-check release-notarize release-publish
 
 NOTARY_PROFILE ?= eucalyNotary
 NOTES_FILE ?=
@@ -15,6 +15,7 @@ help:
 	  'make release-notarize  Produce signed local artifacts without publishing' \
 	  'make release-publish   Publish saved artifacts without building or notarizing' \
 	  'make test              Run app and release regression tests' \
+	  'make test-codex-agents  Validate project agent configuration and references' \
 	  'make test-ndi-stress   Run the opt-in 15-minute real-SDK NDI stress test' \
 	  'make test-ndi-diagnostics  Publish steady video/audio for a remote receiver check' \
 	  'make clean             Remove build caches; preserve saved releases'
@@ -52,6 +53,9 @@ test: test-release
 		-destination 'platform=macOS' -configuration Debug \
 		-derivedDataPath build/DerivedData test \
 		CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM=""
+
+test-codex-agents:
+	python3 scripts/test-codex-agents.py
 
 test-ndi-stress:
 	python3 scripts/test-ndi-stress.py --seconds "$(NDI_STRESS_SECONDS)"

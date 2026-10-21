@@ -18,6 +18,65 @@ Browsing must never silently replace Current. All presentation content follows
 Sidebar -> Preview -> Current. ViewTheWord owns its own projection and styling;
 eucaly does not receive or re-render its scripture.
 
+## Subagent Delegation
+
+Use the project specialists automatically for substantial work when delegation
+improves investigation, implementation or review. The user does not need to ask
+for subagents each time. Use the smallest relevant set; handle simple, local
+fixes and straightforward questions directly.
+
+| Agent | Delegate when the task concerns |
+| --- | --- |
+| [presentation_core](.codex/agents/presentation_core.toml) | Preview/Current flow, workspace state, output ownership and transfers, persistence/migration, native monitor identity and projection/Confidence lifecycle. |
+| [media_engine](.codex/agents/media_engine.toml) | Shared playback, audio clocks/routing, backgrounds, capture, media preparation, rendering and resource lifetimes. |
+| [ndi_transport](.codex/agents/ndi_transport.toml) | NDI helper/SDK integration, Mach IPC, frame/audio admission, ownership fences, packed video and sender continuity. |
+| [library_editing](.codex/agents/library_editing.toml) | Library discovery/import, search/indexing, lyrics parsing/editing, playlists, file access and thumbnail cache invalidation. |
+| [macos_interface](.codex/agents/macos_interface.toml) | Settings, menu bar and top-right toolbar controls, controls windows/tabs, pane/sidebar interaction, accessibility and keyboard UX. |
+| [independent_reviewer](.codex/agents/independent_reviewer.toml) | Independent review of an integrated change for concrete regressions, races, missing validation and contract violations. Does not edit files. |
+
+### Coordinator responsibilities
+- Keep the main agent as the user's contact and integration owner. It scopes the
+  task, assigns work, resolves decisions across domains and verifies the result.
+- Give each handoff a concrete objective, acceptance criteria, relevant user
+  constraints, explicit write ownership (or a read-only scope), and expected
+  validation. Read the role definition before dispatching it.
+- Prefer the named custom agent when the client supports role selection. If its
+  spawn interface cannot select custom roles, include the role's full
+  `developer_instructions` in the delegated task. A task name alone does not load
+  a role. If delegation is unavailable, do the work in the main agent and state
+  that limitation when material.
+- Parallelize independent exploration and review. Parallel implementation needs
+  disjoint write ownership; serialize edits to shared files such as
+  `ContentView.swift`, `eucalyApp.swift`, `PresentationWindowController.swift` and
+  `OutputCoordinator.swift`. A specialist's file map is a starting point, not a
+  permanent lock. Coordinate boundary changes before editing another assignment.
+- Bring in `presentation_core` for output/workspace ownership changes,
+  `media_engine` for shared playback/lifetime changes and `ndi_transport` for
+  sender/IPC changes, even when the visible change begins in a menu or Settings.
+  These consultations may be read-only and can run in phases.
+- Request `independent_reviewer` after integrating substantial behavior changes,
+  concurrency/lifecycle changes, persistence migrations or delegation-policy
+  changes. Provide the objective, changed files/diff and observed validation.
+  Resolve actionable findings and repeat affected checks before completion.
+- Keep one owner for full builds/tests; avoid duplicate concurrent Xcode runs.
+  Use `make build` for local app builds and `make test` for app regressions.
+  For changes confined to agent instructions/configuration, validate TOML,
+  referenced paths and dispatch rules with `make test-codex-agents` instead of
+  building the app. Native discovery/delegation smoke tests also need a current
+  Codex client; use the desktop app's bundled client when the PATH client lags.
+- Respect the active client's concurrency limit and use batches when needed.
+  Specialists execute their assigned task without recursively redispatching it;
+  further subagents require an explicit delegation assignment from the parent.
+- Models, reasoning and permissions inherit from the parent unless the user
+  requests a change. Review-only instructions are a working constraint, not a
+  separate sandbox. Keep durable knowledge in repository docs and tests, and
+  reference existing architecture guidance instead of duplicating it in roles.
+
+All specialists preserve the media-flow, workspace-isolation and explicit-output
+contracts below, and assess UX effects within their task. Release/update work
+stays with the coordinator, using the existing release and self-update guides;
+add specialist assistance only when the task warrants it.
+
 ## Tech Stack
 - SwiftUI (main UI)
 - AppKit (windowing, macOS integration)
