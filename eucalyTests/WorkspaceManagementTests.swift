@@ -13,8 +13,8 @@ final class WorkspaceManagementTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: audio) }
         session.setBackgroundAudio(url: audio, autoplay: false)
         let player = try XCTUnwrap(session.programBackgroundAudioPlayer)
-        f.windows.showManagement()
-        let manager = try XCTUnwrap(f.windows.management?.manager)
+        f.settings.show(pane: .workspaces)
+        let manager = f.settings.settings.workspaces
         manager.selectWorkspace(id)
         XCTAssertTrue(manager.deleteButton.isEnabled)
         player.play()
@@ -78,8 +78,8 @@ final class WorkspaceManagementTests: XCTestCase {
         let f = Fixture(); defer { f.close() }
         let other = try XCTUnwrap(f.store.addWorkspace(name: "Online"))
         let saved = f.store.document
-        f.windows.showManagement()
-        let manager = try XCTUnwrap(f.windows.management?.manager)
+        f.settings.show(pane: .workspaces)
+        let manager = f.settings.settings.workspaces
         manager.selectWorkspace(other)
         XCTAssertTrue(manager.defaultButton.isEnabled)
         manager.defaultButton.performClick(nil)
@@ -252,10 +252,10 @@ final class WorkspaceManagementTests: XCTestCase {
         let f = Fixture(); defer { f.close() }
         let id = try XCTUnwrap(f.store.addWorkspace(name: "Online"))
         let saved = f.store.document
-        f.windows.showManagement()
-        let window = try XCTUnwrap(f.windows.management?.window)
+        f.settings.show(pane: .workspaces)
+        let window = try XCTUnwrap(f.settings.window)
         window.setFrameOrigin(.init(x: -10000, y: -10000))
-        let manager = try XCTUnwrap(f.windows.management?.manager)
+        let manager = f.settings.settings.workspaces
         manager.selectWorkspace(id)
         XCTAssertTrue(manager.deleteButton.isEnabled)
         XCTAssertNil(f.outputs.preparedSession(workspace: id), "Browsing the manager must not construct unopened sessions")
@@ -277,9 +277,26 @@ final class WorkspaceManagementTests: XCTestCase {
         XCTAssertEqual(f.store.document.profiles, saved.profiles)
         for appearance in ["NSAppearanceNameAqua", "NSAppearanceNameDarkAqua"] {
             window.appearance = NSAppearance(named: .init(appearance))
-            window.setContentSize(.init(width: 620, height: 420)); window.layoutIfNeeded(); manager.view.layoutSubtreeIfNeeded()
-            for button in [manager.openButton, manager.renameButton, manager.defaultButton, manager.deleteButton] {
-                XCTAssertTrue(manager.view.bounds.contains(manager.view.convert(button.bounds, from: button)))
+            window.makeKeyAndOrderFront(nil)
+            try await Task.sleep(for: .milliseconds(50))
+            for size in [NSSize(width: 780, height: 580), .init(width: 1020, height: 760)] {
+                window.setContentSize(size); window.layoutIfNeeded(); manager.view.layoutSubtreeIfNeeded()
+                for button in [manager.openButton, manager.renameButton, manager.defaultButton, manager.deleteButton] {
+                    XCTAssertTrue(manager.view.bounds.contains(manager.view.convert(button.bounds, from: button)))
+                }
+                let column = try XCTUnwrap(manager.table.tableColumns.first { $0.identifier.rawValue == "name" })
+                for row in f.store.document.workspaces.indices {
+                    let cell = try XCTUnwrap(manager.tableView(manager.table, viewFor: column, row: row) as? NSTableCellView)
+                    XCTAssertNotNil(cell.imageView?.image)
+                    XCTAssertEqual(cell.imageView?.image?.isTemplate, false, "The badge must retain its workspace colour in selected rows too")
+                }
+                let frame = try XCTUnwrap(window.contentView?.superview)
+                let bitmap = try XCTUnwrap(frame.bitmapImageRepForCachingDisplay(in: frame.bounds))
+                window.effectiveAppearance.performAsCurrentDrawingAppearance {
+                    frame.cacheDisplay(in: frame.bounds, to: bitmap)
+                }
+                try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to:
+                    URL(fileURLWithPath: "/tmp/eucaly-settings-workspaces-\(appearance)-\(Int(size.width)).png"))
             }
         }
         let session = try XCTUnwrap(f.outputs.preparedSession(workspace: id))
@@ -301,8 +318,8 @@ final class WorkspaceManagementTests: XCTestCase {
         XCTAssertFalse(f.store.document.workspaces.contains { $0.id == id })
         XCTAssertEqual(f.store.document.destinations, saved.destinations)
         XCTAssertFalse(manager.deleteButton.isEnabled, "The remaining workspace must be protected")
-        f.windows.showManagement()
-        XCTAssertTrue(f.windows.management?.window === window)
+        f.settings.show(pane: .workspaces)
+        XCTAssertTrue(f.settings.window === window)
     }
 
     private func silentAudio(frameCount: AVAudioFrameCount = 4800) throws -> URL {
@@ -324,15 +341,18 @@ final class WorkspaceManagementTests: XCTestCase {
         let outputs: OutputCoordinator
         let session: PresentationSession
         let windows: OutputWorkspaceWindows
+        let settings: SettingsWindowController
         init() {
             defaults = UserDefaults(suiteName: suite)!
             store = OutputProfileStore(defaults: defaults)
             outputs = OutputCoordinator(profiles: store, displays: ProjectionDisplayManager(displays: { [] }), retainsPreparedSessions: true, ndi: ndi)
             session = PresentationSession(projectionDisplays: outputs.displays, outputCoordinator: outputs)
             windows = makeWorkspaceWindows(outputs: outputs, defaults: defaults)
+            settings = SettingsWindowController(outputs: outputs, workspaces: windows,
+                updates: AppUpdateViewModel(driver: WorkspaceUpdateDriver()), defaults: defaults)
         }
         func close() {
-            windows.management?.window?.close()
+            settings.close()
             for window in windows.windows.values { window.close() }
             for record in store.document.workspaces { outputs.preparedSession(workspace: record.id)?.clearBackgroundAudio() }
             outputs.stopAllOutputs(); store.flush(); defaults.removePersistentDomain(forName: suite)

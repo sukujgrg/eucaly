@@ -32,8 +32,10 @@ uses an app-owned native title-bar accessory because AppKit caches its tab-bar p
 button when a group is created. Workspace menus open saved workspaces and detach tabs.
 Detach moves the same native window and retains the editor, Preview and Current.
 Tab titles include output count and Live/Hidden/Standby/Stopped or failure status.
-Each workspace has a coloured shape in its native tab title and workspace toolbar
-menu. Badges are saved as UI preferences by workspace UUID, retaining their identity
+Each workspace has a coloured shape in its native tab title, workspace toolbar,
+and beside its name in the toolbar menu's workspace list. A native checkmark marks
+the workspace whose controls own that menu, independently of the launch default.
+Badges are saved as UI preferences by workspace UUID, retaining their identity
 through rename, reordering, detachment, closing and relaunch. Remaining workspaces
 keep their badges after deletion; new workspaces reuse available badges. Legacy
 saved workspaces above four remain available and share the four-badge palette.
@@ -48,15 +50,20 @@ The native close callback owns controls cleanup; hiding a tab does not release i
 library access or cancel its private preparation. Initial view setup runs once per
 controls window.
 
-**Manage Workspaces…** in the Workspace menu and workspace toolbar opens one native,
-app-owned manager with Open, Rename, Make Default and Delete. It lists each saved UUID's output
+**Manage Workspaces…** in the Workspace menu and workspace toolbar opens the
+**Workspaces** toolbar tab in the app's shared native AppKit Settings window.
+The existing AppKit list provides Open, Rename, Make Default and Delete. It shows
+each workspace's matching coloured shape and lists each saved UUID's output
 assignments (including disabled destinations), current activity and whether controls
 are open. Opening or browsing the manager never constructs unopened sessions or
 starts output. Rename retains Current, assignments and NDI source identity.
-While open, the manager observes session publications and actual program/audio player
+While its Settings tab is visible, the manager observes session publications and actual program/audio player
 rate and time-control changes. Player replacement rebinds these observations. Late
 AVPlayer pause/readiness changes refresh deletion safety without polling or waiting
-for another workspace command; closing the manager releases the observations.
+for another workspace command. Switching Settings tabs or closing Settings releases
+the playback observations. Reopening retains selection and refreshes current state.
+Rename uses a Settings sheet; it blocks tab changes and requires explicit Rename.
+Closing Settings or quitting cancels an unconfirmed workspace rename.
 
 The initial workspace is **Home**. **Make Default Workspace** in the Workspace menu
 or toolbar, and **Make Default** in Manage Workspaces, save the workspace opened at

@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 
 /// Colour and shape identify controls only; they never describe output state.
 enum OutputWorkspaceTabBadge: String, CaseIterable {
@@ -28,6 +29,15 @@ enum OutputWorkspaceTabBadge: String, CaseIterable {
         case .pink: .systemPink
         }
     }
+    var menuImage: NSImage? {
+        let configuration = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
+            .applying(.init(paletteColors: [colour]))
+        let image = NSImage(systemSymbolName: systemImage, accessibilityDescription: nil)?
+            .withSymbolConfiguration(configuration)
+        // Native menus otherwise render symbol images using the menu text tint.
+        image?.isTemplate = false
+        return image
+    }
     func title(_ title: String) -> NSAttributedString {
         let text = NSMutableAttributedString(string: symbol + "  ", attributes: [.foregroundColor: colour])
         // AppKit supplies the normal title font and colour, including selection
@@ -40,10 +50,10 @@ enum OutputWorkspaceTabBadge: String, CaseIterable {
 /// UI preferences keyed by durable UUID, independently of tab order or names.
 /// Existing badges survive deletion; a new workspace uses the available badge.
 @MainActor
-final class OutputWorkspaceTabBadges {
+final class OutputWorkspaceTabBadges: ObservableObject {
     private static let defaultsKey = "workspaceTabBadges"
     private let defaults: UserDefaults?
-    private(set) var assignments: [UUID: OutputWorkspaceTabBadge] = [:]
+    @Published private(set) var assignments: [UUID: OutputWorkspaceTabBadge] = [:]
 
     init(workspaces: [OutputWorkspaceRecord], defaults: UserDefaults?) {
         self.defaults = defaults
@@ -55,20 +65,19 @@ final class OutputWorkspaceTabBadges {
     }
 
     func synchronize(_ workspaces: [OutputWorkspaceRecord]) {
-        let previous = assignments
         let ids = Set(workspaces.map(\.id))
-        assignments = assignments.filter { ids.contains($0.key) }
-        for workspace in workspaces where assignments[workspace.id] == nil {
+        var next = assignments.filter { ids.contains($0.key) }
+        for workspace in workspaces where next[workspace.id] == nil {
             // Four new workspaces get four distinct badges. Retained legacy
             // records above the limit remain available and share the palette.
-            assignments[workspace.id] = OutputWorkspaceTabBadge.allCases.min { a, b in
-                assignments.values.filter { $0 == a }.count < assignments.values.filter { $0 == b }.count
+            next[workspace.id] = OutputWorkspaceTabBadge.allCases.min { a, b in
+                next.values.filter { $0 == a }.count < next.values.filter { $0 == b }.count
             }
         }
-        if assignments != previous {
-            defaults?.set(Dictionary(uniqueKeysWithValues: assignments.map { ($0.key.uuidString, $0.value.rawValue) }),
-                          forKey: Self.defaultsKey)
-        }
+        guard next != assignments else { return }
+        assignments = next
+        defaults?.set(Dictionary(uniqueKeysWithValues: assignments.map { ($0.key.uuidString, $0.value.rawValue) }),
+                      forKey: Self.defaultsKey)
     }
 
     func badge(for id: UUID) -> OutputWorkspaceTabBadge { assignments[id] ?? .teal }

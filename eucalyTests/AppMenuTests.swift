@@ -44,11 +44,14 @@ final class AppMenuTests: XCTestCase {
     }
 
     func testWorkspaceLimitDisablesCreationButKeepsManagementAvailable() throws {
+        let suite = "WorkspaceSettingsMenu." + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
         let hub = LocalOutputHarness()
-        let app = AppDelegate()
+        let app = AppDelegate(settingsDefaults: defaults)
         app.outputProfiles = hub.outputs.profiles; app.outputs = hub.outputs
         app.workspaceWindows = makeWorkspaceWindows(outputs: hub.outputs)
-        defer { app.workspaceWindows.management?.window?.close(); for window in app.workspaceWindows.windows.values { window.close() } }
+        defer { app.settings?.close(); for window in app.workspaceWindows.windows.values { window.close() } }
         for _ in 1..<4 { XCTAssertNotNil(app.outputProfiles.addWorkspace()) }
         let menus = AppMenuController(app: app)
         let file = try XCTUnwrap(menus.mainMenu.item(withTitle: "File")?.submenu)
@@ -56,8 +59,13 @@ final class AppMenuTests: XCTestCase {
         let manage = try XCTUnwrap(menus.workspaceMenu.item(withTitle: "Manage Workspaces…"))
         XCTAssertTrue(menus.validateMenuItem(manage)); XCTAssertTrue(manage.keyEquivalent.isEmpty)
         let saved = app.outputProfiles.document
+        app.showSettings(pane: .general)
+        let window = try XCTUnwrap(app.settings?.window)
         menus.workspaceMenu.performActionForItem(at: menus.workspaceMenu.index(of: manage))
-        XCTAssertNotNil(app.workspaceWindows.management)
+        XCTAssertTrue(app.settings?.window === window)
+        XCTAssertEqual(app.settings?.settings.selectedPane, .workspaces)
+        XCTAssertEqual(app.settings?.settings.workspaces.isPresented, true)
+        XCTAssertTrue(app.workspaceWindows.controllers.isEmpty)
         XCTAssertEqual(app.outputProfiles.document, saved)
         XCTAssertFalse(hub.outputs.isRunning)
     }

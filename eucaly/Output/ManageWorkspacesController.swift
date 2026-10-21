@@ -2,39 +2,11 @@ import AppKit
 import AVFoundation
 import Combine
 
-/// A single app-owned manager. Opening it never prepares a session or starts an output.
-@MainActor
-final class ManageWorkspacesWindowController: NSWindowController, NSWindowDelegate {
-    let manager: ManageWorkspacesController
-
-    init(outputs: OutputCoordinator, workspaces: OutputWorkspaceWindows) {
-        manager = ManageWorkspacesController(outputs: outputs, workspaces: workspaces)
-        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 720, height: 460),
-                              styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "Manage Workspaces"; window.tabbingMode = .disallowed
-        window.isRestorable = false; window.isReleasedWhenClosed = false
-        window.contentViewController = manager
-        window.setContentSize(.init(width: 720, height: 460)); window.contentMinSize = .init(width: 620, height: 420)
-        window.center()
-        super.init(window: window)
-        window.delegate = self
-    }
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    override func showWindow(_ sender: Any?) {
-        manager.setPresented(true)
-        super.showWindow(sender)
-        window?.makeKeyAndOrderFront(sender)
-    }
-    func windowWillClose(_ notification: Notification) {
-        if let sheet = window?.attachedSheet { window?.endSheet(sheet, returnCode: .alertSecondButtonReturn) }
-        manager.setPresented(false)
-    }
-}
-
+/// Native Settings pane. Browsing it never prepares a session or starts output.
 @MainActor
 final class ManageWorkspacesController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
     let outputs: OutputCoordinator
-    private unowned let workspaces: OutputWorkspaceWindows
+    private let workspaces: OutputWorkspaceWindows
     let table = NSTableView()
     let openButton = NSButton(title: "Open", target: nil, action: nil)
     let renameButton = NSButton(title: "Rename…", target: nil, action: nil)
@@ -47,7 +19,7 @@ final class ManageWorkspacesController: NSViewController, NSTableViewDataSource,
     private(set) var renameField: NSTextField?
     private var renameAlert: NSAlert?
     private var renameWorkspaceID: UUID?
-    private var isPresented = false
+    private(set) var isPresented = false
     private var reloading = false
     private var reloadTask: Task<Void, Never>?
     private var subscriptions = Set<AnyCancellable>()
@@ -58,13 +30,14 @@ final class ManageWorkspacesController: NSViewController, NSTableViewDataSource,
     }
     private struct PlaybackObservation { let identity: PlaybackIdentity; let subscriptions: Set<AnyCancellable> }
     private var playbackSubscriptions: [UUID: PlaybackObservation] = [:]
-    private struct Row: Equatable { let id: UUID; let name: String; let outputs: String; let status: String }
+    private struct Row: Equatable { let id: UUID; let name: String; let badge: OutputWorkspaceTabBadge; let outputs: String; let status: String }
     private var rows: [Row] = []
 
     init(outputs: OutputCoordinator, workspaces: OutputWorkspaceWindows) {
         self.outputs = outputs; self.workspaces = workspaces
         super.init(nibName: nil, bundle: nil)
-        for publisher in [outputs.objectWillChange, outputs.profiles.objectWillChange, workspaces.objectWillChange] {
+        for publisher in [outputs.objectWillChange, outputs.profiles.objectWillChange, workspaces.objectWillChange,
+                          workspaces.tabBadges.objectWillChange] {
             publisher.sink { [weak self] _ in self?.scheduleReload() }.store(in: &subscriptions)
         }
     }
@@ -121,7 +94,8 @@ final class ManageWorkspacesController: NSViewController, NSTableViewDataSource,
             let assigned = outputs.destinations(workspace: record.id)
             let activity = outputs.isRunning(workspace: record.id) ? outputs.tabStatus(workspace: record.id)
                 : outputs.isPlaybackRunning(workspace: record.id) ? "Playback running" : assigned.isEmpty ? "No outputs" : "Stopped"
-            return Row(id: record.id, name: record.name + (record.id == outputs.profiles.document.defaultWorkspaceID ? " · Default" : ""), outputs: assigned.isEmpty ? "None" : assigned.map {
+            return Row(id: record.id, name: record.name + (record.id == outputs.profiles.document.defaultWorkspaceID ? " · Default" : ""),
+                       badge: workspaces.tabBadges.badge(for: record.id), outputs: assigned.isEmpty ? "None" : assigned.map {
                 outputs.profiles.destinationLabel($0) + ($0.enabled ? "" : " · Disabled")
             }.joined(separator: ", "),
                        status: activity + (workspaces.controllers[record.id] == nil ? " · Tab closed" : " · Open"))
@@ -180,7 +154,20 @@ final class ManageWorkspacesController: NSViewController, NSTableViewDataSource,
         let label = outputSettingsLabel(text)
         label.maximumNumberOfLines = 1; label.lineBreakMode = .byTruncatingTail
         let cell = NSTableCellView(); cell.textField = label
-        outputSettingsPin(label, to: cell, inset: 6); cell.toolTip = text
+        if tableColumn?.identifier.rawValue == "name" {
+            let icon = NSImageView(); icon.image = item.badge.menuImage
+            icon.imageScaling = .scaleProportionallyDown; icon.setAccessibilityElement(false)
+            icon.widthAnchor.constraint(equalToConstant: 14).isActive = true
+            icon.heightAnchor.constraint(equalToConstant: 14).isActive = true
+            cell.imageView = icon
+            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            let row = NSStackView(views: [icon, label])
+            row.orientation = .horizontal; row.alignment = .centerY; row.spacing = 8
+            outputSettingsPin(row, to: cell, inset: 6)
+        } else {
+            outputSettingsPin(label, to: cell, inset: 6)
+        }
+        cell.toolTip = text
         return cell
     }
     func tableViewSelectionDidChange(_ notification: Notification) {

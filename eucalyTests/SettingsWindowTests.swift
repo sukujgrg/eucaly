@@ -46,7 +46,7 @@ final class SettingsWindowTests: XCTestCase {
         controller.show(pane: .outputs)
         XCTAssertTrue(window.contentViewController === controller.settings)
         XCTAssertEqual(controller.settings.tabStyle, .toolbar)
-        XCTAssertEqual(controller.settings.tabViewItems.map(\.label), ["General", "Manage Outputs"])
+        XCTAssertEqual(controller.settings.tabViewItems.map(\.label), ["General", "Outputs", "Workspaces"])
         XCTAssertTrue(window.styleMask.contains(.resizable))
         XCTAssertEqual(window.contentMinSize, NSSize(width: 780, height: 580))
         XCTAssertTrue(controller.settings.outputs.isPresented)
@@ -151,6 +151,71 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertTrue(fixture.controller.settings.outputs.isPresented)
     }
 
+    func testWorkspacePaneRestoresAndSharesSettingsWithoutPreparingClosedWorkspaces() throws {
+        let fixture = NativeSettingsFixture(savedPane: "workspaces")
+        defer { fixture.close() }
+        let controller = fixture.controller
+        let window = try XCTUnwrap(controller.window)
+        let manager = controller.settings.workspaces
+        let other = try XCTUnwrap(fixture.store.addWorkspace(name: "Online"))
+        let saved = fixture.store.document
+        XCTAssertEqual(controller.settings.selectedPane, .workspaces)
+        XCTAssertFalse(manager.isPresented)
+        XCTAssertFalse(controller.settings.outputs.isPresented)
+        controller.showWindow(nil)
+        XCTAssertTrue(manager.isPresented)
+        manager.selectWorkspace(other)
+        XCTAssertNil(fixture.outputs.preparedSession(workspace: other))
+        XCTAssertEqual(fixture.store.document, saved)
+        XCTAssertTrue(fixture.workspaces.controllers.isEmpty)
+        controller.show(pane: .outputs)
+        XCTAssertFalse(manager.isPresented)
+        XCTAssertTrue(controller.settings.outputs.isPresented)
+        controller.show(pane: .workspaces)
+        XCTAssertTrue(controller.window === window)
+        XCTAssertTrue(controller.settings.workspaces === manager)
+        XCTAssertEqual(manager.selectedID, other)
+        XCTAssertEqual(fixture.defaults.string(forKey: "settingsTab"), "workspaces")
+        controller.close()
+        XCTAssertFalse(manager.isPresented)
+        controller.showWindow(nil)
+        XCTAssertTrue(manager.isPresented)
+        XCTAssertEqual(manager.selectedID, other)
+        XCTAssertEqual(fixture.store.document, saved)
+        XCTAssertFalse(fixture.outputs.isRunning)
+    }
+
+    func testWorkspaceRenameSheetBlocksPaneChangesAndClosingSettingsCancelsRename() async throws {
+        let fixture = NativeSettingsFixture()
+        defer { fixture.close() }
+        let controller = fixture.controller
+        let other = try XCTUnwrap(fixture.store.addWorkspace(name: "Online"))
+        controller.show(pane: .workspaces)
+        let manager = controller.settings.workspaces
+        manager.selectWorkspace(other)
+        manager.renameButton.performClick(nil)
+        let field = try XCTUnwrap(manager.renameField)
+        if let editor = field.currentEditor() { editor.string = "Unconfirmed name" }
+        else { field.stringValue = "Unconfirmed name" }
+        XCTAssertNotNil(controller.window?.attachedSheet)
+        controller.show(pane: .outputs)
+        XCTAssertEqual(controller.settings.selectedPane, .workspaces)
+        controller.settings.select(.general)
+        XCTAssertEqual(controller.settings.selectedPane, .workspaces)
+        controller.close()
+        for _ in 0..<30 {
+            if manager.renameField == nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertNil(manager.renameField)
+        XCTAssertFalse(manager.isPresented)
+        XCTAssertEqual(fixture.store.workspaceName(other), "Online")
+        controller.show(pane: .workspaces)
+        XCTAssertTrue(manager.isPresented)
+        manager.renameButton.performClick(nil)
+        XCTAssertEqual(manager.renameField?.stringValue, "Online")
+    }
+
     func testClosingSettingsCommitsActiveMonitorNameSheetField() throws {
         let fixture = NativeSettingsFixture()
         defer { fixture.close() }
@@ -241,6 +306,7 @@ private final class NativeSettingsFixture {
     let defaults: UserDefaults
     let store: OutputProfileStore
     let outputs: OutputCoordinator
+    let workspaces: OutputWorkspaceWindows
     let driver = NativeSettingsUpdateDriver()
     let cache = NativeSettingsCache()
     let controller: SettingsWindowController
@@ -249,14 +315,16 @@ private final class NativeSettingsFixture {
         defaults.set(savedPane, forKey: "settingsTab")
         store = OutputProfileStore(defaults: defaults)
         outputs = OutputCoordinator(profiles: store, displays: ProjectionDisplayManager(displays: { [] }), driverFactory: { FakeOutputDriver() })
+        workspaces = makeWorkspaceWindows(outputs: outputs, defaults: defaults)
         let updates = AppUpdateViewModel(driver: driver), cache = self.cache
         let general = GeneralSettingsController(updates: updates, defaults: defaults,
             readCacheStats: { cache.stats }, clearCache: { cache.clears += 1 })
-        controller = SettingsWindowController(outputs: outputs, updates: updates, defaults: defaults, general: general)
+        controller = SettingsWindowController(outputs: outputs, workspaces: workspaces, updates: updates, defaults: defaults, general: general)
         controller.window?.setFrameOrigin(.init(x: -10000, y: -10000))
     }
     func close() {
         controller.close(); outputs.stop(); store.flush()
+        for window in workspaces.windows.values { window.close() }
         defaults.removePersistentDomain(forName: suite)
     }
 }

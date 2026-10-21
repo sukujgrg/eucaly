@@ -91,7 +91,7 @@ extension OutputProfileStore {
 struct OutputWorkspaceView: View {
     let session: PresentationSession
     let commands: OutputWorkspaceCommands
-    let badge: OutputWorkspaceTabBadge
+    @ObservedObject private var badges: OutputWorkspaceTabBadges
     @ObservedObject private var store: OutputProfileStore
     let newWorkspace: () -> Void
     let openWorkspace: (UUID) -> Void
@@ -99,11 +99,11 @@ struct OutputWorkspaceView: View {
     let manageWorkspaces: () -> Void
     @State private var renaming = false
     @State private var draftName = ""
-    init(session: PresentationSession, commands: OutputWorkspaceCommands, badge: OutputWorkspaceTabBadge,
+    init(session: PresentationSession, commands: OutputWorkspaceCommands, badges: OutputWorkspaceTabBadges,
          newWorkspace: @escaping () -> Void, openWorkspace: @escaping (UUID) -> Void,
          detach: @escaping () -> Void, manageWorkspaces: @escaping () -> Void) {
         self.session = session; self.commands = commands
-        self.badge = badge
+        self.badges = badges
         store = session.outputCoordinator.profiles
         self.newWorkspace = newWorkspace; self.openWorkspace = openWorkspace; self.detach = detach
         self.manageWorkspaces = manageWorkspaces
@@ -128,12 +128,23 @@ struct OutputWorkspaceView: View {
                         .help("Play this workspace’s video and background music on this Mac when it has only NDI outputs. NDI audio is unchanged. Native projection keeps its normal audio.")
                     Divider()
                     ForEach(store.document.workspaces) { record in
-                        Button("Open " + record.name) { openWorkspace(record.id) }
+                        Toggle(isOn: Binding(
+                            get: { record.id == session.outputSourceID },
+                            set: { _ in openWorkspace(record.id) })) {
+                            Label {
+                                Text(record.name)
+                            } icon: {
+                                if let image = badges.badge(for: record.id).menuImage {
+                                    Image(nsImage: image).renderingMode(.original)
+                                }
+                            }
+                        }
                     }
                 } label: {
                     Label {
                         Text(store.workspaceName(session.outputSourceID))
                     } icon: {
+                        let badge = badges.badge(for: session.outputSourceID)
                         Image(systemName: badge.systemImage).foregroundStyle(Color(nsColor: badge.colour))
                     }
                 }

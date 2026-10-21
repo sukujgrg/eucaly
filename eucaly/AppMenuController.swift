@@ -170,7 +170,7 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
             if let url = Bundle.main.url(forResource: "ThirdPartyNotices", withExtension: "txt") { NSWorkspace.shared.open(url) }
         case .support: NSWorkspace.shared.open(URL(string: "https://sukujgrg.github.io/eucaly/")!)
         case .newWorkspace: app.workspaceWindows.newWorkspace()
-        case .manageWorkspaces: app.workspaceWindows.showManagement()
+        case .manageWorkspaces: app.showSettings(pane: .workspaces)
         case .defaultWorkspace:
             if let id = app.workspaceWindows.activeWorkspaceID { app.outputProfiles.setDefaultWorkspace(id) }
         case .openWorkspace:

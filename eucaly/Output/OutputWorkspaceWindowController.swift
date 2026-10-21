@@ -14,10 +14,10 @@ final class OutputWorkspaceWindows: ObservableObject {
     private let defaults: UserDefaults?
     private let keyWindow: @MainActor () -> NSWindow?
     private let contentFactory: ((PresentationSession, OutputWorkspaceCommands) -> NSViewController)?
+    private let manageWorkspaces: () -> Void
     let tabBadges: OutputWorkspaceTabBadges
     private var workspaceObservation: AnyCancellable?
     @Published private(set) var controllers: [UUID: OutputWorkspaceWindowController] = [:]
-    private(set) var management: ManageWorkspacesWindowController?
     var windows: [UUID: NSWindow] { controllers.compactMapValues(\.window) }
     var activeWorkspaceID: UUID? {
         guard let window = keyWindow() else { return nil }
@@ -29,9 +29,11 @@ final class OutputWorkspaceWindows: ObservableObject {
 
     init(outputs: OutputCoordinator, updates: AppUpdateViewModel, defaults: UserDefaults? = nil,
          keyWindow: @escaping @MainActor () -> NSWindow? = { NSApp.keyWindow },
+         manageWorkspaces: @escaping () -> Void = {},
          contentFactory: ((PresentationSession, OutputWorkspaceCommands) -> NSViewController)? = nil) {
         self.outputs = outputs; self.updates = updates; self.defaults = defaults
         self.keyWindow = keyWindow; self.contentFactory = contentFactory
+        self.manageWorkspaces = manageWorkspaces
         tabBadges = OutputWorkspaceTabBadges(workspaces: outputs.profiles.document.workspaces, defaults: defaults)
         workspaceObservation = outputs.profiles.$document
             .map(\.workspaces).removeDuplicates()
@@ -98,11 +100,6 @@ final class OutputWorkspaceWindows: ObservableObject {
 
     func detach(_ id: UUID) { controllers[id]?.window?.moveTabToNewWindow(nil) }
 
-    func showManagement() {
-        if management == nil { management = ManageWorkspacesWindowController(outputs: outputs, workspaces: self) }
-        management?.showWindow(nil)
-    }
-
     @discardableResult
     func deleteWorkspace(_ id: UUID) -> String? {
         if let problem = outputs.workspaceDeletionProblem(id) { return problem }
@@ -129,11 +126,11 @@ final class OutputWorkspaceWindows: ObservableObject {
         if let contentFactory {
             content = contentFactory(session, commands)
         } else {
-            content = OutputWorkspaceWindowController.hostingController(rootView: OutputWorkspaceView(session: session, commands: commands, badge: badge,
+            content = OutputWorkspaceWindowController.hostingController(rootView: OutputWorkspaceView(session: session, commands: commands, badges: tabBadges,
                 newWorkspace: { [weak self] in self?.newWorkspace(beside: id) },
                 openWorkspace: { [weak self] in self?.open($0, beside: id) },
                 detach: { [weak self] in self?.detach(id) },
-                manageWorkspaces: { [weak self] in self?.showManagement() })
+                manageWorkspaces: manageWorkspaces)
                 .environmentObject(updates))
         }
         let controller = OutputWorkspaceWindowController(session: session, commands: commands, content: content, badge: badge,

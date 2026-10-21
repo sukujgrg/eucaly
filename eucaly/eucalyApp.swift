@@ -23,16 +23,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     lazy var ndiOutputs = NDIOutputRouter()
     lazy var outputs = OutputCoordinator(profiles: outputProfiles, displays: projectionDisplays, retainsPreparedSessions: true, ndi: ndiOutputs)
     lazy var workspaceWindows = OutputWorkspaceWindows(outputs: outputs, updates: updates,
-        defaults: AppLaunchContext.isRunningTests ? nil : .standard)
-    private var settings: SettingsWindowController?
+        defaults: AppLaunchContext.isRunningTests ? nil : .standard,
+        manageWorkspaces: { [weak self] in self?.showSettings(pane: .workspaces) })
+    private(set) var settings: SettingsWindowController?
+    private let settingsDefaults: UserDefaults
     private var settingsRequest: AnyCancellable?
     private var restorationFinished: AnyCancellable?
     private var menus: AppMenuController?
     private var finishedLaunching = false
     private var finishedRestoring = false
 
+    init(settingsDefaults: UserDefaults = .standard) {
+        self.settingsDefaults = settingsDefaults
+        super.init()
+    }
+
     func showSettings(pane: NativeSettingsController.Pane? = nil) {
-        if settings == nil { settings = SettingsWindowController(outputs: outputs, updates: updates) }
+        if settings == nil {
+            settings = SettingsWindowController(outputs: outputs, workspaces: workspaceWindows, updates: updates, defaults: settingsDefaults)
+        }
         settings?.show(pane: pane)
     }
 
