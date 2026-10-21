@@ -10,9 +10,9 @@ does not exercise the access point or the receiver's sound device.
 1. Play the file locally in eucaly. Check for the same missing audio in the source
    file. Keep Current visible, video unmuted and playback running. Hide, Pause,
    Clear and transferring to lyrics intentionally change the program audio.
-   For an NDI-only workspace, enable Workspace → Monitor Audio Locally for this
+   For an NDI-only workspace, enable Output → Listen on This Mac for this
    source check, then turn it off before listening through a separate receiver.
-   In Settings → Manage Outputs → Performance Details, watch submitted audio
+   In Settings → Outputs → Performance Details, watch submitted audio
    blocks and source state. Uninterrupted audio submits about 50 blocks per second.
    Advancing counters establish submission, but cannot distinguish tone from silence.
 2. Receive that source on the sending Mac with NDI Video Monitor. If the same gap

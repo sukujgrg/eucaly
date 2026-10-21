@@ -18,7 +18,10 @@ final class NDILocalAudioMonitoringTests: XCTestCase {
         let store = OutputProfileStore(), peerID = try XCTUnwrap(store.addWorkspace(name: "Online"))
         var row = OutputDestinationConfiguration(name: "Monitoring test", profileID: OutputProfile.audienceID, monitor: nil)
         row.ndi = .init(sourceName: "eucaly local monitoring \(UUID())")
-        store.edit { $0.destinations = [row]; $0.backgroundAudioDestinationID = row.id }
+        store.edit {
+            $0.destinations = [row]; $0.backgroundAudioDestinationID = row.id
+            for index in $0.workspaces.indices { $0.workspaces[index].monitorAudioLocally = false }
+        }
         let outputs = OutputCoordinator(profiles: store, displays: ProjectionDisplayManager(displays: { [] }),
             retainsPreparedSessions: true, ndi: router)
         let home = outputs.session(workspace: OutputWorkspaceRecord.primaryID), peer = outputs.session(workspace: peerID)

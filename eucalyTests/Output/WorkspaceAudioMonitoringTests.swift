@@ -5,7 +5,7 @@ import AVFoundation
 
 @MainActor
 final class WorkspaceAudioMonitoringTests: XCTestCase {
-    func testNDIOnlyMonitoringIsQuietByDefaultAndIndependentOfProgramAudio() throws {
+    func testNDIOnlyListeningOptOutIsIndependentOfProgramAudio() throws {
         let f = try Fixture(); defer { f.outputs.stopAllOutputs() }
         f.showVideos()
         let homePlayer = try XCTUnwrap(f.outputs.media(for: f.homeNDI)?.program)
@@ -42,6 +42,31 @@ final class WorkspaceAudioMonitoringTests: XCTestCase {
         XCTAssertEqual(f.outputs.media(for: f.homeNDI)?.programAudioGain.value, 0)
         f.home.videoMuted = false
         XCTAssertEqual(f.outputs.media(for: f.homeNDI)?.programAudioGain.value, 1)
+    }
+
+    func testDefaultListeningUsesSystemAudioWithoutChangingNDIPlaybackOrGain() throws {
+        let f = try Fixture(useDefaultListening: true)
+        defer { f.home.clearBackgroundAudio(); f.outputs.stopAllOutputs() }
+        f.showVideos()
+        let home = try XCTUnwrap(f.outputs.media(for: f.homeNDI)?.program)
+        let peer = try XCTUnwrap(f.outputs.media(for: f.peerNDI)?.program)
+        XCTAssertEqual(home.volume, 1); XCTAssertEqual(peer.volume, 1)
+        XCTAssertNil(home.audioOutputDeviceUniqueID)
+        f.home.setBackgroundAudioVolume(0.35)
+        f.home.setBackgroundAudio(url: musicURL(), autoplay: true)
+        let music = try XCTUnwrap(f.home.programBackgroundAudioPlayer)
+        XCTAssertNil(music.audioOutputDeviceUniqueID)
+        XCTAssertEqual(music.volume, 0.35)
+        let starts = f.transport.starts
+        let revision = f.outputs.snapshot(for: f.homeNDI).revision
+        f.outputs.setMonitorAudioLocally(false, workspace: f.home.outputSourceID)
+        XCTAssertEqual(home.volume, 0); XCTAssertEqual(music.volume, 0)
+        XCTAssertEqual(peer.volume, 1)
+        XCTAssertEqual(f.outputs.media(for: f.homeNDI)?.programAudioGain.value, 1)
+        XCTAssertEqual(f.home.backgroundAudioGain.value, 0.35)
+        XCTAssertEqual(f.transport.starts, starts)
+        XCTAssertEqual(f.outputs.snapshot(for: f.homeNDI).revision, revision)
+        XCTAssertTrue(home === f.outputs.media(for: f.homeNDI)?.program)
     }
 
     func testClosingLastNativeConsumerSilencesTheSameNDIProgramPlayer() throws {
@@ -200,8 +225,15 @@ final class WorkspaceAudioMonitoringTests: XCTestCase {
         let peerNDI: UUID
         let native: UUID?
 
-        init(native includeNative: Bool = false) throws {
+        init(native includeNative: Bool = false, useDefaultListening: Bool = false) throws {
             let peerID = try XCTUnwrap(store.addWorkspace(name: "Online"))
+            // Opt-out scenarios explicitly save off; the default-on behavior
+            // is exercised separately without changing the workspace records.
+            if !useDefaultListening {
+                store.edit { document in
+                    for index in document.workspaces.indices { document.workspaces[index].monitorAudioLocally = false }
+                }
+            }
             let monitor = ProjectionMonitor(id: 1, identity: UUID().uuidString, name: "House",
                 frame: .init(x: 0, y: 0, width: 1920, height: 1080))
             let displays = ProjectionDisplayManager(displays: { [monitor] })

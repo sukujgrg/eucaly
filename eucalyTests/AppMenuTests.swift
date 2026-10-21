@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import XCTest
 @testable import eucaly
 
@@ -68,6 +69,11 @@ final class AppMenuTests: XCTestCase {
         XCTAssertTrue(app.workspaceWindows.controllers.isEmpty)
         XCTAssertEqual(app.outputProfiles.document, saved)
         XCTAssertFalse(hub.outputs.isRunning)
+        let manageOutputs = try XCTUnwrap(menus.outputMenu.item(withTitle: "Manage Outputs…"))
+        menus.outputMenu.performActionForItem(at: menus.outputMenu.index(of: manageOutputs))
+        XCTAssertTrue(app.settings?.window === window)
+        XCTAssertEqual(app.settings?.settings.selectedPane, .outputs)
+        XCTAssertFalse(hub.outputs.isRunning)
     }
 
     func testNativeMenusPreserveEditingResponderChainAndShortcutAssignments() throws {
@@ -107,7 +113,8 @@ final class AppMenuTests: XCTestCase {
         let menus = AppMenuController(app: app)
         menus.menuNeedsUpdate(menus.workspaceMenu)
         let saved = menus.workspaceMenu.items.filter { $0.representedObject is UUID }
-        XCTAssertEqual(saved.map(\.title), ["Open Home", "Open Home"])
+        XCTAssertEqual(saved.map(\.title), ["Home", "Home"])
+        XCTAssertTrue(saved.allSatisfy { $0.image != nil && $0.image?.isTemplate == false })
         XCTAssertEqual(saved.compactMap { $0.representedObject as? UUID }, [hub.session.outputSourceID, secondID])
         let item = try XCTUnwrap(saved.last)
         let index = menus.workspaceMenu.index(of: item)
@@ -123,6 +130,53 @@ final class AppMenuTests: XCTestCase {
         XCTAssertNotNil(app.workspaceWindows.controllers[newID])
         XCTAssertTrue(hub.outputs.destinations(workspace: newID).isEmpty)
         XCTAssertEqual(hub.outputs.destination(hub.nativeRow)?.workspaceID, hub.session.outputSourceID)
+    }
+
+    func testToolbarAndMenuBarWorkspaceChoicesMatchAndCurrentSelectionIsEnabledAndInert() async throws {
+        guard #available(macOS 14.4, *) else { throw XCTSkip("Inspecting SwiftUI's native menus requires macOS 14.4") }
+        let hub = LocalOutputHarness(), focus = MenuFocus()
+        let app = AppDelegate()
+        app.outputProfiles = hub.outputs.profiles; app.outputs = hub.outputs
+        let peerID = try XCTUnwrap(app.outputProfiles.addWorkspace(name: "Home"))
+        app.workspaceWindows = makeWorkspaceWindows(outputs: hub.outputs, keyWindow: { focus.window })
+        defer { for window in app.workspaceWindows.windows.values { window.close() } }
+        let home = try XCTUnwrap(app.workspaceWindows.open(hub.session.outputSourceID))
+        focus.window = home.window
+        let menus = AppMenuController(app: app)
+        var switches: [UUID] = []
+        let toolbar = NSHostingMenu(rootView: OutputWorkspacePicker(store: app.outputProfiles,
+            badges: app.workspaceWindows.tabBadges, currentID: hub.session.outputSourceID, openWorkspace: { switches.append($0) }))
+        toolbar.update()
+        let toolbarChoices = descendants(toolbar).filter { !$0.isSeparatorItem }
+        let barChoices = menus.workspaceMenu.items.filter { $0.representedObject is UUID }
+        XCTAssertEqual(toolbarChoices.map(\.title), barChoices.map(\.title))
+        XCTAssertEqual(toolbarChoices.count, 2)
+        for (choice, barChoice) in zip(toolbarChoices, barChoices) {
+            XCTAssertTrue(menus.validateMenuItem(barChoice))
+            XCTAssertTrue(choice.isEnabled, "The current choice is selected, not unavailable")
+            XCTAssertEqual(choice.state, barChoice.state)
+            XCTAssertNotNil(choice.image); XCTAssertNotNil(barChoice.image)
+            XCTAssertEqual(choice.image?.isTemplate, false)
+            XCTAssertEqual(barChoice.image?.isTemplate, false)
+        }
+        let current = try XCTUnwrap(toolbarChoices.first)
+        XCTAssertEqual(current.state, .on)
+        XCTAssertTrue(NSApp.sendAction(try XCTUnwrap(current.action), to: current.target, from: current))
+        for _ in 0..<5 { await Task.yield() }
+        XCTAssertTrue(switches.isEmpty, "Choosing the current workspace must be a no-op")
+        let peer = try XCTUnwrap(toolbarChoices.last)
+        XCTAssertTrue(NSApp.sendAction(try XCTUnwrap(peer.action), to: peer.target, from: peer))
+        for _ in 0..<5 { await Task.yield() }
+        XCTAssertEqual(switches, [peerID])
+        let saved = app.outputProfiles.document
+        let action = hub.session.outputActionClock.current
+        let barCurrent = try XCTUnwrap(barChoices.first)
+        menus.workspaceMenu.performActionForItem(at: menus.workspaceMenu.index(of: barCurrent))
+        XCTAssertTrue(app.workspaceWindows.controllers[hub.session.outputSourceID] === home)
+        XCTAssertEqual(app.workspaceWindows.controllers.count, 1)
+        XCTAssertEqual(app.outputProfiles.document, saved)
+        XCTAssertEqual(hub.session.outputActionClock.current, action)
+        XCTAssertFalse(hub.outputs.isRunning)
     }
 
     func testClosedWorkspaceDoesNotReceiveCommandsAndRemainsAvailableToReopen() throws {

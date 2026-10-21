@@ -3,6 +3,39 @@ import Combine
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// Both native Output menus describe the same workspace listening preference.
+/// Native projection and explicitly requested standalone music retain their
+/// local audio; the menu explains those routes without changing the preference.
+@MainActor
+struct OutputAudioListeningState: Equatable {
+    static let title = "Listen on This Mac"
+    let workspace: OutputWorkspaceRecord
+    let hasNativeAudio: Bool
+    let hasStandaloneAudio: Bool
+    let isReadOnly: Bool
+
+    init?(outputs: OutputCoordinator, workspaceID: UUID?) {
+        guard let workspace = outputs.profiles.document.workspaces.first(where: { $0.id == workspaceID }) else { return nil }
+        self.workspace = workspace
+        hasNativeAudio = outputs.hasOpenNativeOutput(workspace: workspace.id)
+        hasStandaloneAudio = outputs.hasStandaloneLocalAudio(workspace: workspace.id)
+        isReadOnly = outputs.profiles.recoveryNotice != nil
+    }
+    var isListening: Bool { workspace.monitorAudioLocally || hasNativeAudio || hasStandaloneAudio }
+    var canChange: Bool { !hasNativeAudio && !hasStandaloneAudio && !isReadOnly }
+    var scope: String { "Audio for " + workspace.name }
+    var detail: String {
+        if hasNativeAudio { return "Native projection uses the default macOS audio output." }
+        if hasStandaloneAudio { return "Standalone music uses the default macOS audio output." }
+        return "Uses the default macOS audio output."
+    }
+    var help: String {
+        "Play video and background music from \(workspace.name) through the default audio output selected in macOS Sound settings. NDI audio is unchanged."
+            + (hasNativeAudio ? " Native projection already plays audio locally; the saved listening preference applies to NDI-only playback." : "")
+            + (hasStandaloneAudio ? " Standalone music uses its own Play/Pause controls; the saved listening preference applies to NDI-only playback." : "")
+    }
+}
+
 /// Native intrinsic sizes keep the toolbar independent of destination-name length.
 /// The controls and their menus survive unrelated output/status view updates.
 struct OutputQuickControls: View {
@@ -64,6 +97,7 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         let monitorProblems: [String?]
         let locked: Bool
         let problem: String?
+        let listening: OutputAudioListeningState?
     }
     private struct AppearanceState: Equatable {
         let target: OutputProfileStore.QuickEditTarget?
@@ -116,7 +150,8 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
             labels: displays.displays.map { displays.label(for: $0.target) },
             monitorProblems: displays.displays.map { display in destination.flatMap { outputs.monitorAssignmentProblem(for: display.target, destinationID: $0.id) } },
             locked: destination.map { outputs.isOpen($0.id) } ?? false,
-            problem: reason ?? destination?.monitor.flatMap { displays.problem(for: $0) })
+            problem: reason ?? destination?.monitor.flatMap { displays.problem(for: $0) },
+            listening: OutputAudioListeningState(outputs: outputs, workspaceID: workspaceID))
         if selection != selectionState {
             selectionState = selection
             let menu = menu(caption: "Output", symbol: "display")
@@ -159,6 +194,19 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
 
             }
             menu.addItem(.separator())
+            if let listening = selection.listening {
+                menu.addItem(info(listening.scope))
+                let item = command(OutputAudioListeningState.title, enabled: listening.canChange, selected: listening.isListening) { [weak self] in
+                    guard let self, let current = OutputAudioListeningState(outputs: self.outputs, workspaceID: self.workspaceID),
+                          current.canChange else { return }
+                    self.outputs.setMonitorAudioLocally(!current.workspace.monitorAudioLocally, workspace: current.workspace.id)
+                    self.render()
+                }
+                item.toolTip = listening.help
+                menu.addItem(item)
+                menu.addItem(info(listening.detail))
+                menu.addItem(.separator())
+            }
             menu.addItem(command("Manage Outputs…") { [weak self] in self?.manageOutputs() })
             outputButton.menu = menu
         }

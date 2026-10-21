@@ -10,9 +10,9 @@ nonisolated struct OutputWorkspaceRecord: Codable, Equatable, Identifiable, Send
     static let primary = Self(id: primaryID, name: "Home")
     var id: UUID
     var name: String
-    var monitorAudioLocally = false
+    var monitorAudioLocally = true
 
-    init(id: UUID, name: String, monitorAudioLocally: Bool = false) {
+    init(id: UUID, name: String, monitorAudioLocally: Bool = true) {
         self.id = id; self.name = name; self.monitorAudioLocally = monitorAudioLocally
     }
 
@@ -21,9 +21,9 @@ nonisolated struct OutputWorkspaceRecord: Codable, Equatable, Identifiable, Send
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(UUID.self, forKey: .id)
         name = try c.decode(String.self, forKey: .name)
-        // Existing workspaces must adopt the same quiet NDI-only default as
-        // newly created workspaces without changing their saved identities.
-        monitorAudioLocally = try c.decodeIfPresent(Bool.self, forKey: .monitorAudioLocally) ?? false
+        // Unset preferences use the current default. An explicit saved off
+        // remains off across migration, restoration and later default changes.
+        monitorAudioLocally = try c.decodeIfPresent(Bool.self, forKey: .monitorAudioLocally) ?? true
     }
 }
 
@@ -121,25 +121,8 @@ struct OutputWorkspaceView: View {
                     Button("Rename Workspace…") { draftName = store.workspaceName(session.outputSourceID); renaming = true }
                     Button("Move Tab to New Window", action: detach)
                     Divider()
-                    Toggle("Monitor Audio Locally", isOn: Binding(
-                        get: { session.outputCoordinator.monitorAudioLocally(workspace: session.outputSourceID) },
-                        set: { session.outputCoordinator.setMonitorAudioLocally($0, workspace: session.outputSourceID) }))
-                        .disabled(store.recoveryNotice != nil)
-                        .help("Play this workspace’s video and background music on this Mac when it has only NDI outputs. NDI audio is unchanged. Native projection keeps its normal audio.")
-                    Divider()
-                    ForEach(store.document.workspaces) { record in
-                        Toggle(isOn: Binding(
-                            get: { record.id == session.outputSourceID },
-                            set: { _ in openWorkspace(record.id) })) {
-                            Label {
-                                Text(record.name)
-                            } icon: {
-                                if let image = badges.badge(for: record.id).menuImage {
-                                    Image(nsImage: image).renderingMode(.original)
-                                }
-                            }
-                        }
-                    }
+                    OutputWorkspacePicker(store: store, badges: badges,
+                        currentID: session.outputSourceID, openWorkspace: openWorkspace)
                 } label: {
                     Label {
                         Text(store.workspaceName(session.outputSourceID))
@@ -167,5 +150,31 @@ struct OutputWorkspaceView: View {
     private func rename() {
         store.renameWorkspace(session.outputSourceID, name: draftName)
         renaming = false
+    }
+}
+
+/// A workspace switch is a single selection, not a collection of independent
+/// toggles. The current choice stays enabled and checked, like a native picker.
+struct OutputWorkspacePicker: View {
+    @ObservedObject var store: OutputProfileStore
+    @ObservedObject var badges: OutputWorkspaceTabBadges
+    let currentID: UUID
+    let openWorkspace: (UUID) -> Void
+
+    var body: some View {
+        Picker("Workspace", selection: Binding(get: { currentID }, set: { id in
+            guard id != currentID else { return }
+            openWorkspace(id)
+        })) {
+            ForEach(store.document.workspaces) { record in
+                Label {
+                    Text(record.name)
+                } icon: {
+                    if let image = badges.badge(for: record.id).menuImage {
+                        Image(nsImage: image).renderingMode(.original)
+                    }
+                }.tag(record.id)
+            }
+        }.pickerStyle(.inline).labelsHidden()
     }
 }

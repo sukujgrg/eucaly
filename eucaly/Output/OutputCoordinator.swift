@@ -197,13 +197,18 @@ final class OutputCoordinator: ObservableObject {
         refreshMedia()
     }
     func localBackgroundAudioEnabled(workspace: UUID) -> Bool {
-        let rows = destinations(workspace: workspace)
         return monitorAudioLocally(workspace: workspace)
-            || rows.contains { $0.enabled && $0.isMonitorDestination && windows[$0.id] != nil }
+            || hasOpenNativeOutput(workspace: workspace)
             // Retain explicit standalone local music. A saved NDI music route
             // never falls back to local speakers when its sender stops/moves.
-            || (programs[workspace]?.session?.backgroundAudioHasStandaloneLocalRoute == true
-                && canPlayStandaloneBackgroundAudio(workspace: workspace))
+            || hasStandaloneLocalAudio(workspace: workspace)
+    }
+    func hasOpenNativeOutput(workspace: UUID) -> Bool {
+        destinations(workspace: workspace).contains { $0.enabled && $0.isMonitorDestination && windows[$0.id] != nil }
+    }
+    func hasStandaloneLocalAudio(workspace: UUID) -> Bool {
+        programs[workspace]?.session?.backgroundAudioHasStandaloneLocalRoute == true
+            && canPlayStandaloneBackgroundAudio(workspace: workspace)
     }
     func canPlayStandaloneBackgroundAudio(workspace: UUID) -> Bool {
         profiles.document.backgroundAudioDestinationID == nil && !destinations(workspace: workspace).contains { $0.ndi != nil }

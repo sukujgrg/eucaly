@@ -35,6 +35,9 @@ Tab titles include output count and Live/Hidden/Standby/Stopped or failure statu
 Each workspace has a coloured shape in its native tab title, workspace toolbar,
 and beside its name in the toolbar menu's workspace list. A native checkmark marks
 the workspace whose controls own that menu, independently of the launch default.
+The menu-bar Workspace list uses the same names and coloured shapes. The current
+choice remains enabled and checked; choosing it again is a no-op. The toolbar
+uses a single-choice native picker, and window tabs retain AppKit's active styling.
 Badges are saved as UI preferences by workspace UUID, retaining their identity
 through rename, reordering, detachment, closing and relaunch. Remaining workspaces
 keep their badges after deletion; new workspaces reuse available badges. Legacy
@@ -64,6 +67,19 @@ for another workspace command. Switching Settings tabs or closing Settings relea
 the playback observations. Reopening retains selection and refreshes current state.
 Rename uses a Settings sheet; it blocks tab changes and requires explicit Rename.
 Closing Settings or quitting cancels an unconfirmed workspace rename.
+
+**Output → Listen on This Mac** is available in both the toolbar and menu bar.
+It names the affected workspace and explains that listening uses the default
+macOS audio output. New and unset workspace preferences default on; explicit
+saved off remains off. Native projection keeps its normal audio, so while it is
+open the menu shows listening checked and unavailable to change, with an
+explanation. This does not overwrite the saved preference for NDI-only playback.
+Explicit standalone music uses its own playback controls and receives the same
+checked state and explanation while that local route is requested.
+The toggle changes local video/music listening without changing NDI gain, music
+routing, playback position, players or output lifetimes. Settings restoration
+reads on the persistence queue after pending writes; it cannot re-save an older
+snapshot that was read ahead of the latest listening edit.
 
 The initial workspace is **Home**. **Make Default Workspace** in the Workspace menu
 or toolbar, and **Make Default** in Manage Workspaces, save the workspace opened at

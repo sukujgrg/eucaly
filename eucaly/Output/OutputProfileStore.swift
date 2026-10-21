@@ -107,7 +107,7 @@ final class OutputProfileStore: ObservableObject {
         self.defaults = defaults
         persistence = defaults.map { OutputProfilePersistence(defaults: $0, cleanup: retirementCleanup) }
         let fallback = OutputProfileMigration.migrate(defaults: defaults, monitor: monitor)
-        if let data = defaults?.data(forKey: Self.key) {
+        if let data = persistence?.load(documentKey: Self.key) {
             do {
                 guard data.count <= 1_048_576 else { throw StoreError.invalid }
                 let saved = try OutputLegacyMigration.decode(data)
@@ -301,14 +301,19 @@ final class OutputProfileStore: ObservableObject {
 }
 
 /// Foundation guarantees UserDefaults is thread-safe. This narrow boundary only
-/// accepts value snapshots. All stores share one write order, so migration or
-/// restoration cannot overwrite a later edit from another store for the same
-/// defaults domain. UI state never enters the queued closures.
+/// accepts value snapshots. All stores share one read/write order, so migration
+/// or restoration cannot read ahead of a pending edit for the same defaults
+/// domain and then re-save an older snapshot. UI state never enters the queue.
 nonisolated private final class OutputProfilePersistence: @unchecked Sendable {
     private let defaults: UserDefaults
     private let cleanup: OutputRetirementCleanup?
     private static let queue = DispatchQueue(label: "com.suku.eucaly.output-profiles")
     init(defaults: UserDefaults, cleanup: OutputRetirementCleanup?) { self.defaults = defaults; self.cleanup = cleanup }
+    func load(documentKey: String) -> Data? {
+        // Restoration must follow pending saves too. Reading UserDefaults on
+        // the caller's queue can restore and then re-save an older snapshot.
+        Self.queue.sync { defaults.data(forKey: documentKey) }
+    }
     func save(_ document: OutputProfileDocument, documentKey: String, revisionKey: String, defaultsRevision: Int) {
         Self.queue.async { [self] in
             guard let data = try? JSONEncoder().encode(document) else { return }

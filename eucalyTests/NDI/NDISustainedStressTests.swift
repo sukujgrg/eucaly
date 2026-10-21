@@ -185,7 +185,10 @@ final class NDISustainedStressTests: XCTestCase {
         moving.ndi = .init(sourceName: "eucaly stress switching \(UUID())")
         var anchor = OutputDestinationConfiguration(name: "Stress anchor", profileID: OutputProfile.audienceID, monitor: nil)
         anchor.ndi = .init(sourceName: "eucaly stress anchor \(UUID())")
-        store.edit { $0.destinations = [moving, anchor] }
+        store.edit {
+            $0.destinations = [moving, anchor]
+            for index in $0.workspaces.indices { $0.workspaces[index].monitorAudioLocally = false }
+        }
         let outputs = OutputCoordinator(profiles: store, displays: ProjectionDisplayManager(displays: { [] }),
             retainsPreparedSessions: true, ndi: router)
         let home = outputs.session(workspace: OutputWorkspaceRecord.primaryID), online = outputs.session(workspace: onlineID)

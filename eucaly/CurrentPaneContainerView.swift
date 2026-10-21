@@ -320,7 +320,7 @@ struct CurrentPaneContainerView: View {
                     systemImage: session.videoMuted ? "speaker.wave.2.fill" : "speaker.slash.fill"
                 )
             }
-            .help("Mute or unmute video audio on every output, including NDI and local monitoring. For local listening only, use Workspace → Monitor Audio Locally.")
+            .help("Mute or unmute video audio on every output, including NDI and local monitoring. For local listening through the default macOS audio output, use Output → Listen on This Mac.")
 
             Button {
                 session.videoLoop.toggle()

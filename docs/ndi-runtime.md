@@ -48,7 +48,7 @@ physical receiver, network, audio synchronization or a sustained session.
    after all output assignments (including disabled rows) are moved/removed and
    playback is stopped. Closing a tab keeps its saved workspace, Current, live NDI
    source and background audio running.
-2. In Settings → Manage Outputs, use **+ → NDI Output**. New rows start disabled,
+2. In Settings → Outputs, use **+ → NDI Output**. New rows start disabled,
    retain the default-output editing preference, and suggest `eucaly` (then an
    unused numbered name). Enable the row and assign it to the intended workspace.
 3. Load the intended item into that workspace’s Current. Choose **Start Output**
@@ -62,15 +62,20 @@ physical receiver, network, audio synchronization or a sustained session.
    explicit local music owner and this route survive output moves. Video audio
    follows the owning workspace; transfer never substitutes another music selection.
    Stopping the selected destination leaves the route inactive without moving it.
-6. **Workspace → Monitor Audio Locally**, also in the workspace toolbar menu,
-   controls local listening for that workspace's video and background music.
-   It defaults to **off**, including for existing workspaces. NDI-only playback
-   is silent on the sending Mac; enabling monitoring plays the same audio locally
+6. **Output → Listen on This Mac**, in both the toolbar and menu bar, controls
+   local listening for the named workspace's video and background music through
+   the **default macOS audio output** selected in Sound settings. It defaults to
+   **on** for new workspaces and unset preferences; an explicit saved off is retained.
+   Turning it off silences NDI-only playback on the sending Mac
    without changing NDI gain, the selected music destination or playback position.
    The choice is saved per workspace and survives tab changes and output restarts.
-   Native projection retains normal local audio while open. Intentional standalone
+   Native projection retains normal local audio while open; the menus show this
+   checked and unavailable to change, without overwriting the NDI-only preference.
+   Intentional standalone
    music playback without an NDI assignment/route remains available; losing,
    stopping or moving an NDI output never creates a standalone playback request.
+   While a standalone music route is requested, the menu likewise shows listening
+   checked with an explanation; music remains controlled by its own Play/Pause.
 
 Programme mute and music volume still apply to both local and NDI audio. Local
 monitoring uses AVPlayer's output volume, independently of asset PCM decoding; NDI
