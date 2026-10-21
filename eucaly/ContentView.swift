@@ -1067,7 +1067,10 @@ public struct ContentView: View {
 
             let refreshedResults: [LibraryTextSearchIndex.SearchResult]
             if currentQuery.count >= LibrarySearchModel.minimumCharacterCount {
-                refreshedResults = await index.search(query: currentQuery)
+                refreshedResults = await index.search(
+                    query: currentQuery,
+                    scopeFiles: metadata.filter { $0.kind.isPreviewLibraryItem }.map(\.url)
+                )
             } else {
                 refreshedResults = []
             }

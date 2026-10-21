@@ -1,11 +1,123 @@
 import AppKit
 import CoreGraphics
+import IOSurface
 import PDFKit
 import XCTest
 @testable import eucaly
 
 @MainActor
 final class PDFDocumentReloadTests: XCTestCase {
+    func testNDINavigationRetainsAcceptedPagesAfterReplacementAndDeletion() async throws {
+        try await withTemporaryDirectory { directory in
+            let url = directory.appendingPathComponent("accepted.pdf")
+            try writePDF(to: url, pageCount: 2)
+            let (outputs, session, destination) = makeNDISession()
+            let prepared = OutputPreparedMedia()
+            defer { prepared.stop(); outputs.stopAllOutputs() }
+            session.setPDFSlideSource(.init(url: url, pageCount: 2))
+            session.showSlides()
+            let source = try XCTUnwrap(outputs.snapshot(for: destination).acceptedPDF)
+            let native = makeView()
+            try displayCurrent(in: native, session: session)
+            let nativeDocument = try XCTUnwrap(native.document)
+            let firstPixel = pixel(try await preparedFrame(prepared, source: source, page: 0))
+            let secondPixel = pixel(try await preparedFrame(prepared, source: source, page: 1))
+            // Leave page zero cached so navigating to page one must rasterize.
+            _ = try await preparedFrame(prepared, source: source, page: 0)
+
+            try writePDF(to: url, pageCount: 1)
+            session.selectCurrentSlide(PDFSlideCatalog.stableSlideID(url: url, pageIndex: 1))
+            let secondSnapshot = outputs.snapshot(for: destination)
+            XCTAssertTrue(secondSnapshot.acceptedPDF === source)
+            let retainedSecondPixel = pixel(try await preparedFrame(prepared, source: try XCTUnwrap(secondSnapshot.acceptedPDF), page: 1))
+            XCTAssertEqual(retainedSecondPixel, secondPixel)
+            try displayCurrent(in: native, session: session)
+            XCTAssertTrue(native.document === nativeDocument)
+            XCTAssertEqual(native.document?.pageCount, 2)
+
+            try FileManager.default.removeItem(at: url)
+            session.selectCurrentSlide(PDFSlideCatalog.stableSlideID(url: url, pageIndex: 0))
+            let deletedSnapshot = outputs.snapshot(for: destination)
+            XCTAssertTrue(deletedSnapshot.acceptedPDF === source)
+            let retainedFirstPixel = pixel(try await preparedFrame(prepared, source: try XCTUnwrap(deletedSnapshot.acceptedPDF), page: 0))
+            XCTAssertEqual(retainedFirstPixel, firstPixel,
+                           "Neither preparation nor its cache lookup may stat/reopen the deleted path")
+            try displayCurrent(in: native, session: session)
+            XCTAssertTrue(native.document === nativeDocument)
+        }
+    }
+
+    func testExplicitPDFReloadInvalidatesNDICacheWithUnchangedPathAndFileMetadata() async throws {
+        try await withTemporaryDirectory { directory in
+            let url = directory.appendingPathComponent("reload.pdf")
+            try writePDF(to: url, pageCount: 2)
+            try padPDF(at: url)
+            let modified = Date(timeIntervalSince1970: 1_700_000_000)
+            try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: url.path)
+            let originalAttributes = try FileManager.default.attributesOfItem(atPath: url.path)
+            let (outputs, session, destination) = makeNDISession()
+            let prepared = OutputPreparedMedia()
+            defer { prepared.stop(); outputs.stopAllOutputs() }
+            session.setPDFSlideSource(.init(url: url, pageCount: 2))
+            session.showSlides()
+            let original = try XCTUnwrap(outputs.snapshot(for: destination).acceptedPDF)
+            let originalPixel = pixel(try await preparedFrame(prepared, source: original, page: 0))
+
+            try writePDF(to: url, pageCount: 2, reversed: true)
+            try padPDF(at: url)
+            try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: url.path)
+            let replacementAttributes = try FileManager.default.attributesOfItem(atPath: url.path)
+            XCTAssertEqual(originalAttributes[.size] as? NSNumber, replacementAttributes[.size] as? NSNumber)
+            XCTAssertEqual(originalAttributes[.modificationDate] as? Date, replacementAttributes[.modificationDate] as? Date)
+            session.setPDFSlideSource(.init(url: url, pageCount: 2))
+            session.requestCurrentProjection()
+            let reloaded = try XCTUnwrap(outputs.snapshot(for: destination).acceptedPDF)
+            XCTAssertFalse(reloaded === original)
+            let reloadedPixel = pixel(try await preparedFrame(prepared, source: reloaded, page: 0))
+            XCTAssertNotEqual(reloadedPixel, originalPixel,
+                              "Accepted source identity must invalidate a same-path/page/mtime/size cached picture")
+            let retainedOriginalPixel = pixel(try await preparedFrame(prepared, source: original, page: 0))
+            XCTAssertEqual(retainedOriginalPixel, originalPixel,
+                           "A retained prior snapshot remains bound to its original bytes")
+            let native = makeView()
+            try displayCurrent(in: native, session: session)
+            XCTAssertTrue(native.document === session.pdfDocumentCache.document(for: url))
+        }
+    }
+
+    func testPDFTransferAndOtherWorkspaceClearPreserveIndependentAcceptedSources() async throws {
+        try await withTemporaryDirectory { directory in
+            let url = directory.appendingPathComponent("workspaces.pdf")
+            try writePDF(to: url, pageCount: 2)
+            let (outputs, a, destination) = makeNDISession()
+            let prepared = OutputPreparedMedia()
+            defer { prepared.stop(); outputs.stopAllOutputs() }
+            let bID = try XCTUnwrap(outputs.profiles.addWorkspace())
+            let b = PresentationSession(projectionDisplays: outputs.displays, outputCoordinator: outputs, workspaceID: bID)
+            a.setPDFSlideSource(.init(url: url, pageCount: 2))
+            a.showSlides()
+            let acceptedA = try XCTUnwrap(outputs.snapshot(for: destination).acceptedPDF)
+            let originalPixel = pixel(try await preparedFrame(prepared, source: acceptedA, page: 1))
+            try writePDF(to: url, pageCount: 3)
+            b.setPDFSlideSource(.init(url: url, pageCount: 3))
+            XCTAssertEqual(a.pdfDocumentRevision, b.pdfDocumentRevision)
+            XCTAssertTrue(outputs.moveOutput(destination, to: b))
+            let acceptedB = try XCTUnwrap(outputs.snapshot(for: destination).acceptedPDF)
+            XCTAssertFalse(acceptedA === acceptedB)
+            let workspaceBPixel = pixel(try await preparedFrame(prepared, source: acceptedB, page: 1))
+            XCTAssertNotEqual(workspaceBPixel, originalPixel)
+
+            b.clearSlides()
+            XCTAssertNil(outputs.snapshot(for: destination).acceptedPDF)
+            XCTAssertTrue(a.pdfDocumentCache.acceptedSource(for: url) === acceptedA)
+            XCTAssertTrue(outputs.moveOutput(destination, to: a))
+            XCTAssertTrue(outputs.snapshot(for: destination).acceptedPDF === acceptedA)
+            try FileManager.default.removeItem(at: url)
+            let workspaceAPixel = pixel(try await preparedFrame(prepared, source: acceptedA, page: 1))
+            XCTAssertEqual(workspaceAPixel, originalPixel)
+        }
+    }
+
     func testExplicitSameURLReloadReplacesNativeDocumentForMaterializedSlides() throws {
         try withTemporaryDirectory { directory in
             let url = directory.appendingPathComponent("slides.pdf")
@@ -118,6 +230,34 @@ final class PDFDocumentReloadTests: XCTestCase {
         PresentationSession(projectionDisplays: ProjectionDisplayManager(displays: { [] }))
     }
 
+    private func makeNDISession() -> (OutputCoordinator, PresentationSession, UUID) {
+        let store = OutputProfileStore()
+        var destination = OutputDestinationConfiguration(name: "PDF NDI", profileID: OutputProfile.audienceID, monitor: nil)
+        destination.ndi = .init(sourceName: "PDF regression")
+        store.edit { $0.destinations[0].enabled = false; $0.destinations.append(destination) }
+        let displays = ProjectionDisplayManager(displays: { [] })
+        let outputs = OutputCoordinator(profiles: store, displays: displays, ndi: RecordingNDIOutput())
+        let session = PresentationSession(projectionDisplays: displays, outputCoordinator: outputs)
+        return (outputs, session, destination.id)
+    }
+
+    private func preparedFrame(_ prepared: OutputPreparedMedia, source: AcceptedPDFSource, page: Int) async throws -> NDIFrameResource {
+        try await withCheckedThrowingContinuation { continuation in
+            prepared.request(.init(url: source.url, page: page, identity: "\(source.id):\(page)", acceptedPDF: source), slot: 0) { _, frame, error in
+                if let frame { continuation.resume(returning: frame) }
+                else { continuation.resume(throwing: NSError(domain: "PDF preparation regression", code: 1,
+                                                            userInfo: [NSLocalizedDescriptionKey: error ?? "No prepared PDF frame"])) }
+            }
+        }
+    }
+
+    private func pixel(_ frame: NDIFrameResource) -> [UInt8] {
+        let surface = frame.surface
+        let offset = (surface.height / 2) * surface.bytesPerRow + (surface.width / 2) * 4
+        let pixels = surface.baseAddress.assumingMemoryBound(to: UInt8.self)
+        return Array(UnsafeBufferPointer(start: pixels + offset, count: 4))
+    }
+
     private func makeView() -> PDFSlideNSView {
         PDFSlideNSView(frame: CGRect(x: 0, y: 0, width: 800, height: 600))
     }
@@ -136,14 +276,29 @@ final class PDFDocumentReloadTests: XCTestCase {
         try body(directory)
     }
 
-    private func writePDF(to url: URL, pageCount: Int) throws {
+    private func withTemporaryDirectory(_ body: (URL) async throws -> Void) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("eucaly-pdf-reload-\(UUID())", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try await body(directory)
+    }
+
+    private func padPDF(at url: URL) throws {
+        var data = try Data(contentsOf: url)
+        guard data.count <= 8192 else { throw CocoaError(.fileWriteUnknown) }
+        data.append(Data(repeating: 0x20, count: 8192 - data.count))
+        try data.write(to: url, options: .atomic)
+    }
+
+    private func writePDF(to url: URL, pageCount: Int, reversed: Bool = false) throws {
         let staging = url.deletingLastPathComponent().appendingPathComponent("replacement-\(UUID()).pdf")
         defer { try? FileManager.default.removeItem(at: staging) }
         var mediaBox = CGRect(x: 0, y: 0, width: 200, height: 150)
         let context = try XCTUnwrap(CGContext(staging as CFURL, mediaBox: &mediaBox, nil))
         for index in 0..<pageCount {
             context.beginPDFPage(nil)
-            context.setFillColor(CGColor(gray: CGFloat(index + 1) / CGFloat(pageCount + 1), alpha: 1))
+            let level = reversed ? pageCount - index : index + 1
+            context.setFillColor(CGColor(gray: CGFloat(level) / CGFloat(pageCount + 1), alpha: 1))
             context.fill(mediaBox)
             context.endPDFPage()
         }

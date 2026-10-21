@@ -39,13 +39,18 @@ final class OutputMediaFrameBroker {
         guard !stopped else { return }
         let supported = !snapshot.visible || (snapshot.localMedia.map(OutputContentClassifier.supportsNDI) ?? true)
         let slide = snapshot.visible && supported ? snapshot.localMedia : nil
+        // Workspace snapshots must carry their explicit load's accepted bytes.
+        // URL-only requests are retained for standalone preparation/probe callers.
+        if snapshot.source != nil, slide?.pdfURL != nil, snapshot.acceptedPDF == nil {
+            failure("NDI could not prepare the accepted PDF. Load the PDF to Current again."); return
+        }
         let media = slide.map { OutputContentClassifier.mode(for: $0) == .media } ?? false
         let background = profile.background
         let showBackground = supported && background.visible && (!snapshot.visible ? background.whenHidden : media ? background.whenMediaShown : background.whenTextShown)
         let backgroundURL = showBackground ? runtime.backgroundURL(for: profile) : nil
         let foregroundKey: OutputPreparedMedia.Key? = slide.flatMap {
             if let url = $0.imageURL { return .init(url: url, page: nil, identity: "\(snapshot.source?.uuidString ?? ""):\($0.id):\(snapshot.revision)") }
-            if let url = $0.pdfURL { return .init(url: url, page: $0.pdfPageIndex ?? 0, identity: "\(snapshot.source?.uuidString ?? ""):\($0.id):\(snapshot.revision)") }
+            if let url = $0.pdfURL { return .init(url: url, page: $0.pdfPageIndex ?? 0, identity: "\(snapshot.source?.uuidString ?? ""):\($0.id):\(snapshot.revision)", acceptedPDF: snapshot.acceptedPDF) }
             return nil
         }
         let backgroundKey = backgroundURL.flatMap { OutputMediaRuntime.isVideo($0) ? nil : OutputPreparedMedia.Key(url: $0, page: nil, identity: "\(snapshot.source?.uuidString ?? ""):\(profile.id):\(snapshot.revision)") }
@@ -77,7 +82,7 @@ final class OutputMediaFrameBroker {
     private func request(_ key: OutputPreparedMedia.Key?, slot: Int) {
         guard requested[slot] != key else { return }
         let previous = requested[slot]
-        if key == nil || previous?.url != key?.url || previous?.page != key?.page { pictures[slot] = nil }
+        if key == nil || previous?.url != key?.url || previous?.page != key?.page || previous?.acceptedPDF != key?.acceptedPDF { pictures[slot] = nil }
         requested[slot] = key
         prepared.request(key, slot: slot) { [weak self] key, frame, error in
             Task { @MainActor [weak self] in
@@ -186,13 +191,21 @@ nonisolated final class NDIMediaFrameClock: @unchecked Sendable {
 /// One preparation worker, two latest slots, two retained static pictures.
 /// Rapid navigation cannot enqueue an unbounded set of PDF/image decoders.
 nonisolated final class OutputPreparedMedia: @unchecked Sendable {
-    struct Key: Equatable, Sendable { let url: URL; let page: Int?; let identity: String }
+    struct Key: Equatable, Sendable {
+        let url: URL
+        let page: Int?
+        let identity: String
+        let acceptedPDF: AcceptedPDFSource?
+        init(url: URL, page: Int?, identity: String, acceptedPDF: AcceptedPDFSource? = nil) {
+            self.url = url; self.page = page; self.identity = identity; self.acceptedPDF = acceptedPDF
+        }
+    }
     private struct Work: Sendable { let key: Key; let result: @Sendable (Key, NDIFrameResource?, String?) -> Void }
     private let lock = NSLock()
     private let queue = DispatchQueue(label: "com.suku.eucaly.ndi.prepare-media", qos: .userInitiated)
     private var pending: [Int: Work] = [:]
     private var scheduled = false
-    private struct Cache { let url: URL; let page: Int?; let modified: Date?; let size: UInt64; let frame: NDIFrameResource }
+    private struct Cache { let url: URL; let page: Int?; let sourceID: UUID?; let modified: Date?; let size: UInt64; let frame: NDIFrameResource }
     private var cache: [Int: Cache] = [:] // Preparation queue only, at most two entries.
     private var stopped = false
     func request(_ key: Key?, slot: Int, result: @escaping @Sendable (Key, NDIFrameResource?, String?) -> Void) {
@@ -212,14 +225,17 @@ nonisolated final class OutputPreparedMedia: @unchecked Sendable {
             lock.unlock()
             autoreleasepool {
                 do {
-                    let attributes = try FileManager.default.attributesOfItem(atPath: work.key.url.path)
+                    let sourceID = work.key.acceptedPDF?.id
+                    // Accepted PDFs remain usable after replacement/deletion.
+                    // Only unpinned image/probe inputs consult the live path.
+                    let attributes = sourceID == nil ? try FileManager.default.attributesOfItem(atPath: work.key.url.path) : [:]
                     let modified = attributes[.modificationDate] as? Date, size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
                     if let cached = cache[slot], cached.url == work.key.url, cached.page == work.key.page,
-                       cached.modified == modified, cached.size == size {
+                       cached.sourceID == sourceID, cached.modified == modified, cached.size == size {
                         work.result(work.key, cached.frame, nil)
                     } else {
                         let frame = try Self.prepare(work.key)
-                        cache[slot] = .init(url: work.key.url, page: work.key.page, modified: modified, size: size, frame: frame)
+                        cache[slot] = .init(url: work.key.url, page: work.key.page, sourceID: sourceID, modified: modified, size: size, frame: frame)
                         work.result(work.key, frame, nil)
                     }
                 }
@@ -228,13 +244,18 @@ nonisolated final class OutputPreparedMedia: @unchecked Sendable {
         }
     }
     static func prepare(_ key: Key) throws -> NDIFrameResource {
-        let scoped = key.url.startAccessingSecurityScopedResource()
+        let scoped = key.acceptedPDF == nil && key.url.startAccessingSecurityScopedResource()
         defer { if scoped { key.url.stopAccessingSecurityScopedResource() } }
         let image: CGImage?
         let page: CGPDFPage?
         let sourceSize: CGSize
         if let index = key.page {
-            guard let document = CGPDFDocument(key.url as CFURL), let selected = document.page(at: index + 1) else { throw NDIHelperWire.Failure.unavailable }
+            let document: CGPDFDocument?
+            if let source = key.acceptedPDF {
+                guard source.url == key.url.standardizedFileURL else { throw NDIHelperWire.Failure.unavailable }
+                document = source.makeDocument()
+            } else { document = CGPDFDocument(key.url as CFURL) }
+            guard let document, let selected = document.page(at: index + 1) else { throw NDIHelperWire.Failure.unavailable }
             page = selected; image = nil
             let box = selected.getBoxRect(.cropBox)
             sourceSize = abs(selected.rotationAngle) % 180 == 90 ? .init(width: box.height, height: box.width) : box.size

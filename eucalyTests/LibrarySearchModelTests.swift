@@ -224,6 +224,53 @@ final class LibrarySearchModelTests: XCTestCase {
         XCTAssertEqual(model.filteredResults.map(\.url), [scopedURL.standardizedFileURL])
     }
 
+    func testImmediateAndDebouncedSearchApplyScopeBeforeResultLimit() async throws {
+        let (index, directoryURL) = try makeIndex()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        var outsideFiles: [URL] = []
+        for index in 0..<300 {
+            outsideFiles.append(try writeTextFile(in: directoryURL, name: "outside-\(index).txt", contents: "mercy"))
+        }
+        let target = try writeTextFile(
+            in: directoryURL,
+            name: "current-song.txt",
+            contents: String(repeating: "ordinary ", count: 700) + "mercy"
+        )
+        _ = await index.rebuild(with: outsideFiles + [target])
+
+        let model = LibrarySearchModel(index: index)
+        model.setScopeFiles([target])
+        model.setQuery("mercy", currentSelectedURL: nil)
+        let immediate = await model.searchImmediately(currentSelectedURL: nil)
+        XCTAssertEqual(immediate, target.standardizedFileURL)
+
+        model.setQuery("mer", currentSelectedURL: nil)
+        for _ in 0..<100 where model.resultsQuery != "mer" {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(model.resultsQuery, "mer")
+        XCTAssertEqual(model.filteredResults.map(\.url), [target.standardizedFileURL])
+    }
+
+    func testScopeExpansionSearchesForNewlyEligibleMatches() async throws {
+        let (index, directoryURL) = try makeIndex()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let first = try writeTextFile(in: directoryURL, name: "first.txt", contents: "Amazing grace")
+        let second = try writeTextFile(in: directoryURL, name: "second.txt", contents: "Amazing grace")
+        _ = await index.rebuild(with: [first, second])
+        let model = LibrarySearchModel(index: index)
+        model.setScopeFiles([first])
+        model.setQuery("amazing", currentSelectedURL: nil)
+        _ = await model.searchImmediately(currentSelectedURL: nil)
+        XCTAssertEqual(model.filteredResults.map(\.url), [first.standardizedFileURL])
+
+        model.setScopeFiles([first, second])
+        for _ in 0..<100 where model.filteredResults.count != 2 {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(Set(model.filteredResults.map(\.url)), Set([first, second].map(\.standardizedFileURL)))
+    }
+
     private func makeIndex() throws -> (LibraryTextSearchIndex, URL) {
         let directoryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("eucaly-search-model-tests-\(UUID().uuidString)", isDirectory: true)

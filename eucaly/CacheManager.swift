@@ -213,7 +213,7 @@ class CacheManager: ObservableObject {
             try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate] as? Date
         }
         guard let currentDate else { return .modified }
-        return currentDate > cachedDate ? .modified : .fresh
+        return currentDate == cachedDate ? .fresh : .modified
     }
 
 #if DEBUG

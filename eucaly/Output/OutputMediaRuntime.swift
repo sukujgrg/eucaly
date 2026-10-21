@@ -52,7 +52,8 @@ final class OutputMediaRuntime {
             if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
         }
     }
-    func updateProgram(slide: Slide?, session: PresentationSession?, running: Bool, visible: Bool, localAudioEnabled: Bool = true) {
+    func updateProgram(slide: Slide?, session: PresentationSession?, running: Bool, visible: Bool,
+                       localAudioEnabled: Bool = true, documentRevision: UInt64? = nil) {
         programFill = session?.videoFill ?? false
         programVisible = visible && running
         programAudioGain.set(session?.videoMuted == true ? 0 : 1)
@@ -90,7 +91,11 @@ final class OutputMediaRuntime {
         program.volume = localAudioEnabled ? 1 : 0
         program.isMuted = session?.videoMuted ?? false
         if visible && session?.videoPaused != true { program.play() } else { program.pause() }
-        if let session, session.videoSeekRevision != seekRevision {
+        // Current can hold a replacement document before output accepts it.
+        // Its progress reset must not seek the previously accepted live video,
+        // including when a later appearance/audio edit refreshes that program.
+        if let session, documentRevision == nil || documentRevision == session.documentRevision,
+           session.videoSeekRevision != seekRevision {
             seekRevision = session.videoSeekRevision
             program.seek(to: CMTime(seconds: session.videoSeekTarget, preferredTimescale: 600))
         }

@@ -93,6 +93,71 @@ final class LibraryTextSearchIndexTests: XCTestCase {
         XCTAssertTrue(containsResult(videoResults, url: videoURL))
     }
 
+    func testScopedSearchLimitsAfterExcludingPreviousRootAndAudioMatches() async throws {
+        let (index, directoryURL) = try makeIndex()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let root = directoryURL.appendingPathComponent("Library_%", isDirectory: true)
+        let previousRoot = directoryURL.appendingPathComponent("Library_%-backup", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: previousRoot, withIntermediateDirectories: true)
+        for index in 0..<300 {
+            _ = try writeTextFile(in: previousRoot, name: "song-\(index).txt", contents: "mercy")
+            _ = try writeBinaryFile(in: root, name: "mercy-\(index).mp3")
+        }
+        let target = try writeTextFile(
+            in: root,
+            name: "target's_%song.txt",
+            contents: String(repeating: "ordinary ", count: 700) + "mercy"
+        )
+        let scanner = LibraryFileScannerService()
+        _ = await index.syncLibraryMetadata(root: previousRoot, discoveredFiles: try scanner.discoverFiles(in: previousRoot))
+        let metadata = await index.syncLibraryMetadata(root: root, discoveredFiles: try scanner.discoverFiles(in: root))
+        let previewFiles = metadata.filter { $0.kind.isPreviewLibraryItem }.map(\.url)
+
+        let unscoped = await index.search(query: "mercy")
+        XCTAssertEqual(unscoped.count, 250)
+        XCTAssertFalse(containsResult(unscoped, url: target), "The fixture must put the current song below stronger out-of-scope matches")
+        let scoped = await index.search(query: "mercy", scopeFiles: previewFiles)
+        XCTAssertEqual(scoped.map(\.url), [target.standardizedFileURL])
+
+        // Even without the retained root, audio-only filename rows must not
+        // consume the Preview library's result budget.
+        _ = await index.syncLibraryMetadata(root: previousRoot, discoveredFiles: [])
+        let audioDominated = await index.search(query: "mercy")
+        XCTAssertEqual(audioDominated.count, 250)
+        XCTAssertFalse(containsResult(audioDominated, url: target))
+        let scopedWithAudio = await index.search(query: "mercy", scopeFiles: previewFiles)
+        XCTAssertEqual(scopedWithAudio.map(\.url), [target.standardizedFileURL])
+    }
+
+    func testScopedSearchReplacesScopeAndPreservesUnscopedSearch() async throws {
+        let (index, directoryURL) = try makeIndex()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let first = try writeTextFile(in: directoryURL, name: "first.txt", contents: "Amazing grace")
+        let second = try writeTextFile(in: directoryURL, name: "second.txt", contents: "Amazing grace")
+        _ = await index.rebuild(with: [first, second])
+        let equivalentFirst = directoryURL.appendingPathComponent(".").appendingPathComponent(first.lastPathComponent)
+
+        let firstResults = await index.search(query: "amazing gra", scopeFiles: [first, equivalentFirst])
+        let secondResults = await index.search(query: "amazing gra", scopeFiles: [second])
+        let emptyResults = await index.search(query: "amazing gra", scopeFiles: [])
+        let unscoped = await index.search(query: "amazing gra")
+        XCTAssertEqual(firstResults.map(\.url), [first.standardizedFileURL])
+        XCTAssertEqual(secondResults.map(\.url), [second.standardizedFileURL])
+        XCTAssertTrue(emptyResults.isEmpty)
+        XCTAssertEqual(Set(unscoped.map(\.url)), Set([first, second].map(\.standardizedFileURL)))
+    }
+
+    func testScopedSearchDoesNotUseOneSQLParameterPerLibraryFile() async throws {
+        let (index, directoryURL) = try makeIndex()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let target = try writeTextFile(in: directoryURL, name: "song.txt", contents: "Amazing grace")
+        _ = await index.rebuild(with: [target])
+        let largeScope = (0..<40_000).map { directoryURL.appendingPathComponent("song-\($0).txt") } + [target]
+        let results = await index.search(query: "amazing", scopeFiles: largeScope)
+        XCTAssertEqual(results.map(\.url), [target.standardizedFileURL])
+    }
+
     func testMultiTokenSearchUsesPhraseMatchingWithFinalTokenPrefix() async throws {
         let (index, directoryURL) = try makeIndex()
         defer { try? FileManager.default.removeItem(at: directoryURL) }

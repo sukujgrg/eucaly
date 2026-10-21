@@ -17,6 +17,7 @@ actor LibraryTextSearchIndex {
     }
 
     private var db: OpaquePointer?
+    private var cachedSearchScope: Set<String>?
     private let databaseURL: URL
 #if DEBUG
     private var failNextCommit = false
@@ -229,17 +230,26 @@ actor LibraryTextSearchIndex {
         return metadata
     }
 
-    func search(query: String, limit: Int = 250) -> [SearchResult] {
+    func search(query: String, scopeFiles: [URL]? = nil, limit: Int = 250) -> [SearchResult] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count >= LibrarySearchModel.minimumCharacterCount else { return [] }
         guard openDatabaseIfNeeded(), let db else { return [] }
 
         let ftsQuery = matchQuery(for: trimmed)
         guard !ftsQuery.isEmpty else { return [] }
+        if let scopeFiles {
+            guard !scopeFiles.isEmpty, prepareSearchScope(scopeFiles, db: db) else { return [] }
+        }
 
+        // Scope before ranking/limiting so retained roots and audio rows cannot
+        // consume the result budget of the current Preview library.
+        let scopeJoin = scopeFiles == nil ? "" : """
+        JOIN temp.library_search_scope AS search_scope ON search_scope.path = file_index.path
+        """
         let sql = """
-        SELECT path, content
+        SELECT file_index.path, file_index.content
         FROM file_index
+        \(scopeJoin)
         WHERE file_index MATCH ?1
         ORDER BY bm25(file_index, 0.05, 1.0)
         LIMIT ?2;
@@ -280,6 +290,34 @@ actor LibraryTextSearchIndex {
             )
         }
         return results
+    }
+
+    /// Exact paths avoid root-prefix ambiguity and keep SQL bindings bounded for
+    /// large libraries. TEMP state belongs to this actor's database connection.
+    private func prepareSearchScope(_ urls: [URL], db: OpaquePointer) -> Bool {
+        let paths = Set(urls.map { $0.standardizedFileURL.path })
+        guard paths != cachedSearchScope else { return true }
+        cachedSearchScope = nil
+        guard execute("CREATE TEMP TABLE IF NOT EXISTS library_search_scope(path TEXT PRIMARY KEY) WITHOUT ROWID;", db: db),
+              execute("DELETE FROM temp.library_search_scope;", db: db)
+        else { return false }
+
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "INSERT INTO temp.library_search_scope(path) VALUES (?1);", -1, &statement, nil) == SQLITE_OK else {
+            return false
+        }
+        defer { sqlite3_finalize(statement) }
+
+        for path in paths {
+            guard !Task.isCancelled,
+                  bindText(path, at: 1, statement: statement),
+                  sqlite3_step(statement) == SQLITE_DONE
+            else { return false }
+            sqlite3_reset(statement)
+            sqlite3_clear_bindings(statement)
+        }
+        cachedSearchScope = paths
+        return true
     }
 
     private static func previewText(from content: String) -> String {

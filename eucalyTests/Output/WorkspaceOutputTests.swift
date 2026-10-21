@@ -206,6 +206,70 @@ final class WorkspaceOutputTests: XCTestCase {
         XCTAssertTrue(f.outputs.isOpen(f.network))
     }
 
+    func testRejectedWindowLoadCannotUseClosedNativeCompanionDuringDeferredRefresh() async throws {
+        let f = Fixture(); defer { f.outputs.stopAllOutputs() }
+        f.load(f.a, "Accepted lyrics"); f.a.showSlides()
+        await settle()
+        f.outputs.closeOutput(f.house)
+        let accepted = f.outputs.snapshot(for: f.network)
+        let starts = f.transport.starts
+        XCTAssertTrue(try XCTUnwrap(f.outputs.destination(f.house)).enabled)
+
+        // Match Load to Current: replace the prepared document, then explicitly
+        // activate it before the model's queued passive refresh executes.
+        f.a.setSlides([pickedWindow()])
+        f.a.requestCurrentProjection()
+        await settle()
+
+        XCTAssertNotNil(f.a.currentSlide?.captureWindowID)
+        XCTAssertNotNil(f.a.projectionDisplayIssue)
+        XCTAssertEqual(f.outputs.snapshot(for: f.network).current, accepted.current)
+        XCTAssertEqual(f.outputs.snapshot(for: f.network).localMedia?.id, accepted.localMedia?.id)
+        XCTAssertEqual(f.outputs.snapshot(for: f.network).documentRevision, accepted.documentRevision)
+        XCTAssertTrue(f.outputs.isOpen(f.network))
+        XCTAssertFalse(f.outputs.isOpen(f.house), "A deferred refresh cannot reopen its native companion")
+        XCTAssertEqual(f.transport.starts, starts)
+    }
+
+    func testRejectedWindowLoadPreservesAcceptedVideoPositionThroughLaterRefreshAndReload() async throws {
+        let url = try await NDIRegressionTests.makePortraitVideoFixture()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let f = Fixture(); defer { f.outputs.stopAllOutputs() }
+        XCTAssertNil(f.store.setEnabled(false, for: f.house))
+        let slide = Slide(index: 0, lines: [], label: "Accepted video", videoURL: url,
+                          pdfURL: nil, pdfPageIndex: nil, imageURL: nil)
+        f.a.videoPaused = true
+        f.a.setSlides([slide]); f.a.showSlides()
+        let player = try XCTUnwrap(f.outputs.media(for: f.network)?.program)
+        try await waitForPlayback { player.status == .readyToPlay && f.a.videoDuration > 2 }
+        f.a.seekVideo(to: 1.5)
+        try await waitForPlayback { abs(player.currentTime().seconds - 1.5) < 0.1 }
+        let acceptedRevision = f.outputs.snapshot(for: f.network).documentRevision
+
+        f.a.setSlides([pickedWindow()])
+        f.a.requestCurrentProjection()
+        await settle()
+        // A fix must also fence the pending reset when unrelated output edits
+        // refresh media after the rejected load has completed.
+        f.store.editDestinationProfile(f.network) { $0.background.dimming = 0.25 }
+        f.outputs.refreshMedia()
+        await settle()
+        XCTAssertTrue(f.outputs.media(for: f.network)?.program === player)
+        XCTAssertEqual(f.outputs.snapshot(for: f.network).localMedia?.videoURL, url)
+        XCTAssertEqual(f.outputs.snapshot(for: f.network).documentRevision, acceptedRevision)
+        XCTAssertEqual(player.currentTime().seconds, 1.5, accuracy: 0.1)
+        XCTAssertNotNil(f.a.projectionDisplayIssue)
+
+        // An explicit successful reload of the same video still replays it,
+        // retaining the workspace's shared player rather than recreating it.
+        f.a.setSlides([slide])
+        f.a.requestCurrentProjection()
+        try await waitForPlayback { player.currentTime().seconds < 0.1 }
+        XCTAssertTrue(f.outputs.media(for: f.network)?.program === player)
+        XCTAssertEqual(f.outputs.snapshot(for: f.network).documentRevision, f.a.documentRevision)
+        XCTAssertNil(f.a.projectionDisplayIssue)
+    }
+
     func testMovingStandbyConfidenceKeepsPreparedCurrentPrivate() async throws {
         let f = Fixture(); defer { f.outputs.stopAllOutputs() }
         f.store.selectProfile(OutputProfile.confidenceID, for: f.house)
@@ -346,6 +410,16 @@ final class WorkspaceOutputTests: XCTestCase {
     }
 
     private func settle() async { try? await Task.sleep(for: .milliseconds(40)) }
+    private func waitForPlayback(_ condition: () -> Bool) async throws {
+        let deadline = ProcessInfo.processInfo.systemUptime + 6
+        while !condition() {
+            guard ProcessInfo.processInfo.systemUptime < deadline else {
+                XCTFail("Timed out waiting for the accepted video")
+                throw NSError(domain: "WorkspaceOutputTests", code: 1)
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
     private func video(_ name: String) -> Slide {
         Slide(index: 0, lines: [], label: name, videoURL: URL(fileURLWithPath: "/tmp/workspace-\(name).mov"), pdfURL: nil, pdfPageIndex: nil, imageURL: nil)
     }

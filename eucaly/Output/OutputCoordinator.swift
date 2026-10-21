@@ -364,7 +364,8 @@ final class OutputCoordinator: ObservableObject {
         } ?? .empty
         state.snapshot = .init(source: state.id, kind: kind, current: OutputContentAdapter.text(for: slide),
             next: session.currentSlideID.flatMap { session.slideIndex(for: $0) }.flatMap { session.slide(at: $0 + 1) }.map { OutputContentAdapter.text(for: $0) },
-            visible: visible, revision: state.snapshot.revision &+ 1, localMedia: slide)
+            visible: visible, revision: state.snapshot.revision &+ 1, documentRevision: session.documentRevision,
+            localMedia: slide, acceptedPDF: slide?.pdfURL.flatMap { session.pdfDocumentCache.acceptedSource(for: $0) })
     }
     private func presentationProblem(for slide: Slide?, rows: [OutputDestinationConfiguration]) -> String? {
         let available = availableDestinations(rows)
@@ -377,7 +378,10 @@ final class OutputCoordinator: ObservableObject {
         guard profiles.document.workspaces.contains(where: { $0.id == session.outputSourceID }) else { return }
         let state = program(session.outputSourceID)
         guard state.ownership.source == state.id else { return }
-        if let problem = presentationProblem(for: session.currentSlide, rows: destinations(workspace: state.id).filter(\.enabled)) {
+        // A model refresh only updates surviving consumers. A closed native
+        // companion cannot make picked-window content supported by live NDI.
+        let rows = destinations(workspace: state.id).filter { $0.enabled && isOpen($0.id) }
+        if let problem = presentationProblem(for: session.currentSlide, rows: rows) {
             setIssue(problem, workspace: state.id); return
         }
         accept(session, into: state, visible: state.snapshot.visible, activate: false); changed(workspace: state.id)
@@ -393,7 +397,7 @@ final class OutputCoordinator: ObservableObject {
         if let session, !profiles.document.workspaces.contains(where: { $0.id == session.outputSourceID }) { return }
         let state = (session.map { program($0.outputSourceID) }) ?? commandProgram
         cancelRequests(state); state.ownership.revoke()
-        state.snapshot.current = .empty; state.snapshot.next = nil; state.snapshot.localMedia = nil; state.snapshot.kind = .empty
+        state.snapshot.current = .empty; state.snapshot.next = nil; state.snapshot.localMedia = nil; state.snapshot.acceptedPDF = nil; state.snapshot.kind = .empty
         changed(workspace: state.id)
     }
     /// Ordinary stop is workspace scoped. Stop All Outputs is deliberately separate.
@@ -586,7 +590,8 @@ final class OutputCoordinator: ObservableObject {
         state.session?.updateBackgroundAudioLocalPlayback(enabled: localBackgroundAudioEnabled(workspace: state.id))
         state.media.updateProgram(slide: state.snapshot.localMedia, session: state.session,
             running: state.started && !live.isEmpty, visible: state.snapshot.visible && playbackReady,
-            localAudioEnabled: monitorAudioLocally(workspace: state.id) || live.contains { $0.isMonitorDestination })
+            localAudioEnabled: monitorAudioLocally(workspace: state.id) || live.contains { $0.isMonitorDestination },
+            documentRevision: state.snapshot.documentRevision)
         let active = Set(live.map(\.profileID))
         let workspaceID = state.id
         state.media.syncBackgrounds(profiles: profiles.document.profiles.filter { active.contains($0.id) }, visible: state.snapshot.visible,

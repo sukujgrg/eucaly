@@ -48,6 +48,42 @@ final class CacheManagerTests: XCTestCase {
         XCTAssertNil(afterReplace)
     }
 
+    func testOlderReplacementTimestampInvalidatesMemoryAndDiskThumbnails() async throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("eucaly-cache-older-replacement-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        let cacheURL = directoryURL.appendingPathComponent("Cache", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let fileURL = directoryURL.appendingPathComponent("slide.png")
+        let originalPNG = try makePNGData(color: .red)
+        try originalPNG.write(to: fileURL)
+        let originalDate = Date().addingTimeInterval(-60)
+        try FileManager.default.setAttributes([.modificationDate: originalDate], ofItemAtPath: fileURL.path)
+        let cache = CacheManager(diskCacheURL: cacheURL)
+        await cache.waitForDiskIOForTests()
+        cache.cacheThumbnail(try XCTUnwrap(NSImage(data: originalPNG)), pngData: originalPNG, for: fileURL, type: .image)
+        // Persist the revision metadata so a second cache also has a disk hit.
+        try await Task.sleep(for: .milliseconds(350))
+        await cache.waitForDiskIOForTests()
+        let diskCache = CacheManager(diskCacheURL: cacheURL)
+        await diskCache.waitForDiskIOForTests()
+        XCTAssertEqual(diskCache.getCacheStats().memoryThumbnails, 0)
+        let metadata = try JSONDecoder().decode(
+            [String: Date].self,
+            from: Data(contentsOf: cacheURL.appendingPathComponent("modification_dates.json"))
+        )
+        XCTAssertEqual(metadata.count, 1)
+        XCTAssertEqual(diskCache.getCacheStats().diskThumbnails, 2, "The persisted thumbnail and revision metadata must both exist")
+
+        let replacementPNG = try makePNGData(color: .blue)
+        try replacementPNG.write(to: fileURL)
+        try FileManager.default.setAttributes([.modificationDate: originalDate.addingTimeInterval(-3600)], ofItemAtPath: fileURL.path)
+        let memoryResult = await cache.getCachedThumbnailAsync(for: fileURL, type: .image)
+        let diskResult = await diskCache.getCachedThumbnailAsync(for: fileURL, type: .image)
+        XCTAssertNil(memoryResult)
+        XCTAssertNil(diskResult)
+    }
+
     func testUnverifiableFreshnessDoesNotDeleteCachedThumbnail() async throws {
         let directoryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("eucaly-cache-unverifiable-\(UUID().uuidString)", isDirectory: true)

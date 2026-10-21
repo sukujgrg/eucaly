@@ -150,7 +150,10 @@ final class OutputProfileReviewTests: XCTestCase {
             session.setSlides([.init(index: 1, lines: [], label: "PDF", videoURL: nil, pdfURL: pdfURL, pdfPageIndex: 0, imageURL: nil)])
             session.showSlides(); await settle()
             let pdf = try XCTUnwrap(descendants(view).compactMap { $0 as? PDFView }.first, "\(kind) needs a native PDF renderer")
-            XCTAssertEqual(pdf.document?.documentURL, pdfURL)
+            let accepted = try XCTUnwrap(outputs.snapshot(for: destination).acceptedPDF)
+            XCTAssertEqual(accepted.url, pdfURL.standardizedFileURL)
+            XCTAssertTrue(pdf.document === session.pdfDocumentCache.document(for: pdfURL),
+                          "Native output must render the document created from the accepted bytes")
             XCTAssertEqual(pdf.currentPage?.pageRef?.getBoxRect(.mediaBox), page)
             XCTAssertEqual(pdf.bounds.size, view.bounds.size, "\(kind) must give PDF the full output canvas")
         }

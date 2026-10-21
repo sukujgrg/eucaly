@@ -107,8 +107,10 @@ nonisolated struct OutputContentSnapshot {
     var next: OutputTextContent?
     var visible = true
     var revision: UInt64 = 0
+    var documentRevision: UInt64 = 0
     // Native media references remain local to eucaly.
     var localMedia: Slide?
+    var acceptedPDF: AcceptedPDFSource?
 }
 
 nonisolated extension OutputProfileDocument {
