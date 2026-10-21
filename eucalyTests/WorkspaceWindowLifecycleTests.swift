@@ -29,11 +29,8 @@ final class WorkspaceWindowLifecycleTests: XCTestCase {
         // Retain the old windows throughout the test: closing controls must
         // release their autosave names even before AppKit deallocates them.
         let first = try openSeparate(firstID), second = try openSeparate(secondID)
-        let visible = try XCTUnwrap(first.screen).visibleFrame
-        first.setContentSize(.init(width: 1120, height: 640))
-        first.setFrameTopLeftPoint(.init(x: visible.minX + 40, y: visible.maxY - 50))
-        second.setContentSize(.init(width: 1210, height: 710))
-        second.setFrameTopLeftPoint(.init(x: visible.minX + 90, y: visible.maxY - 90))
+        try setFittingFrame(first, contentSize: .init(width: 1120, height: 640), topLeftOffset: .init(x: 40, y: 50))
+        try setFittingFrame(second, contentSize: .init(width: 1210, height: 710), topLeftOffset: .init(x: 90, y: 90))
         let firstFrame = first.frame, secondFrame = second.frame
         try await Task.sleep(for: .milliseconds(50))
         first.close(); second.close()
@@ -58,7 +55,7 @@ final class WorkspaceWindowLifecycleTests: XCTestCase {
         // showing it later must not reload or cascade over that restored frame.
         let restored = try XCTUnwrap(fresh.restoreWindow(identifier: OutputWorkspaceWindows.identifier(for: firstID)))
         restored.tabbingMode = .disallowed
-        restored.setFrame(.init(x: visible.minX + 120, y: visible.midY - 360, width: 1170, height: 720), display: false)
+        try setFittingFrame(restored, contentSize: .init(width: 1170, height: 720), topLeftOffset: .init(x: 120, y: 40))
         let nativeFrame = restored.frame
         fresh.openInitialWorkspace()
         fresh.open(firstID)
@@ -101,8 +98,7 @@ final class WorkspaceWindowLifecycleTests: XCTestCase {
         }
         let first = try XCTUnwrap(windows.open(id)?.window)
         try await Task.sleep(for: .milliseconds(100))
-        first.setContentSize(.init(width: 1160, height: 720))
-        first.setFrameOrigin(.init(x: 110, y: 140))
+        try setFittingFrame(first, contentSize: .init(width: 1160, height: 720), topLeftOffset: .init(x: 110, y: 140))
         let frame = first.frame
         first.close()
         let reopened = try XCTUnwrap(windows.open(id)?.window)
@@ -302,6 +298,20 @@ final class WorkspaceWindowLifecycleTests: XCTestCase {
         focus.window = settings
         XCTAssertEqual(hub.outputs.preferredLocalSession?.outputSourceID, second)
         XCTAssertEqual(hub.outputs.commandSession(for: settings)?.outputSourceID, second)
+    }
+
+    private func setFittingFrame(_ window: NSWindow, contentSize: NSSize, topLeftOffset: NSPoint) throws {
+        let visible = try XCTUnwrap(window.screen).visibleFrame
+        let minimum = window.frameRect(forContentRect: .init(origin: .zero, size: window.contentMinSize)).size
+        var frame = window.frameRect(forContentRect: .init(origin: .zero, size: contentSize))
+        // AppKit constrains saved frames when reopening on a smaller display.
+        // Keep the fixture within that display, respecting the app's minimum size.
+        frame.size.width = max(minimum.width, min(frame.width, visible.width))
+        frame.size.height = max(minimum.height, min(frame.height, visible.height))
+        frame.origin = .init(
+            x: visible.minX + min(topLeftOffset.x, max(0, visible.width - frame.width)),
+            y: visible.maxY - frame.height - min(topLeftOffset.y, max(0, visible.height - frame.height)))
+        window.setFrame(frame, display: false)
     }
 }
 
