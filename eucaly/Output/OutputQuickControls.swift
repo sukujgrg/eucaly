@@ -205,9 +205,8 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
                 item.toolTip = listening.help
                 menu.addItem(item)
                 menu.addItem(info(listening.detail))
-                menu.addItem(.separator())
             }
-            menu.addItem(command("Manage Outputs…") { [weak self] in self?.manageOutputs() })
+            addManagementFooter(to: menu)
             outputButton.menu = menu
         }
         let canEdit = target.map { store.canCustomizeProfile(for: $0.destinationID) } ?? false
@@ -283,8 +282,7 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
             }
         }
         if let notice = state.recoveryNotice { menu.addItem(info(notice)) }
-        menu.addItem(.separator())
-        menu.addItem(command("Manage Outputs…") { [weak self] in self?.manageOutputs() })
+        addManagementFooter(to: menu)
         ndiButton.menu = menu
     }
 
@@ -302,6 +300,7 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
     }
     private func appearanceMenu(_ profile: OutputProfile?, target: OutputProfileStore.QuickEditTarget?) -> NSMenu {
         let menu = menu(caption: "Appearance", symbol: "textformat")
+        defer { addManagementFooter(to: menu) }
         guard let profile, let target else { return menu }
         for (title, key, values) in [
             ("Layout", \OutputProfile.layout, [("Stacked", "stacked"), ("Columns", "columns")]),
@@ -349,6 +348,7 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
     }
     private func backgroundMenu(_ profile: OutputProfile?, target: OutputProfileStore.QuickEditTarget?) -> NSMenu {
         let menu = menu(caption: "Background", symbol: "photo.on.rectangle")
+        defer { addManagementFooter(to: menu) }
         guard let profile, let target else { return menu }
         menu.addItem(command("Choose Visual…") { [weak self] in self?.chooseBackground(target) })
         menu.addItem(edit("Clear Visual", target) { $0.background.bookmark = nil })
@@ -376,6 +376,10 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
                 if let bookmark { store.editDefaultProfile(target) { $0.background.bookmark = bookmark } }
             }
         }
+    }
+    private func addManagementFooter(to menu: NSMenu) {
+        if menu.items.last?.isSeparatorItem != true { menu.addItem(.separator()) }
+        menu.addItem(command("Manage Outputs…") { [weak self] in self?.manageOutputs() })
     }
     private func menu(caption: String, symbol: String, showsTitle: Bool = false) -> NSMenu {
         let menu = NSMenu(); menu.autoenablesItems = false

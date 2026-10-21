@@ -35,9 +35,11 @@ Tab titles include output count and Live/Hidden/Standby/Stopped or failure statu
 Each workspace has a coloured shape in its native tab title, workspace toolbar,
 and beside its name in the toolbar menu's workspace list. A native checkmark marks
 the workspace whose controls own that menu, independently of the launch default.
-The menu-bar Workspace list uses the same names and coloured shapes. The current
-choice remains enabled and checked; choosing it again is a no-op. The toolbar
-uses a single-choice native picker, and window tabs retain AppKit's active styling.
+The toolbar and menu-bar Workspace menus share one AppKit implementation: the
+same names, coloured shapes, ordering, availability and actions. The current
+choice remains enabled and checked; choosing it again is a no-op. Manage Workspaces
+is the final row after a separator. Move Tab to New Window is available only for
+a group with multiple tabs. Window tabs retain AppKit's active styling.
 Badges are saved as UI preferences by workspace UUID, retaining their identity
 through rename, reordering, detachment, closing and relaunch. Remaining workspaces
 keep their badges after deletion; new workspaces reuse available badges. Legacy
@@ -65,8 +67,13 @@ rate and time-control changes. Player replacement rebinds these observations. La
 AVPlayer pause/readiness changes refresh deletion safety without polling or waiting
 for another workspace command. Switching Settings tabs or closing Settings releases
 the playback observations. Reopening retains selection and refreshes current state.
-Rename uses a Settings sheet; it blocks tab changes and requires explicit Rename.
-Closing Settings or quitting cancels an unconfirmed workspace rename.
+Workspace menus and Settings share one native rename sheet and name validator.
+Names are trimmed, non-empty, single-line and at most 160 UTF-8 bytes. A Settings
+sheet blocks tab changes, and every rename requires explicit Rename. Closing its
+parent window or quitting cancels an unconfirmed workspace rename.
+
+Output, NDI, Appearance and Background quick menus all finish with a separated
+**Manage Outputs…** action. Workspace management uses the same footer convention.
 
 **Output → Listen on This Mac** is available in both the toolbar and menu bar.
 It names the affected workspace and explains that listening uses the default

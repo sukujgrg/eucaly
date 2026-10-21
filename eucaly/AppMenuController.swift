@@ -6,11 +6,12 @@ import AppKit
 final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
     private unowned let app: AppDelegate
     let mainMenu = NSMenu()
-    let workspaceMenu = NSMenu(title: "Workspace")
+    private let workspaceCommands: OutputWorkspaceMenuController
+    var workspaceMenu: NSMenu { workspaceCommands.menu }
     let outputMenu = NSMenu(title: "Output")
 
     private enum Command: String {
-        case settings, updates, notices, support, newWorkspace, openWorkspace, detach, manageWorkspaces, defaultWorkspace
+        case settings, updates, notices, support, newWorkspace, detach
         case newLyrics, quickOpen, refresh, save, stop, stopAll, slides, background, audio
         case clearBackground, clearAudio, clearAll
         case monitorAudioLocally, manageOutputs
@@ -18,6 +19,7 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
 
     init(app: AppDelegate) {
         self.app = app
+        workspaceCommands = OutputWorkspaceMenuController(workspaces: app.workspaceWindows)
         super.init()
         let application = submenu("eucaly")
         add("About eucaly", to: application, action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)))
@@ -73,8 +75,6 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
 
         let workspace = NSMenuItem(title: "Workspace", action: nil, keyEquivalent: "")
         workspace.submenu = workspaceMenu; mainMenu.addItem(workspace)
-        workspaceMenu.delegate = self
-        rebuildWorkspaceMenu()
 
         let slides = submenu("Slides")
         add("Stop Workspace Outputs", to: slides, command: .stop, key: "1")
@@ -117,26 +117,9 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        if menu === workspaceMenu { rebuildWorkspaceMenu() }
+        if menu === workspaceMenu { workspaceCommands.menuNeedsUpdate(menu) }
         else if menu === outputMenu { rebuildOutputMenu() }
     }
-    private func rebuildWorkspaceMenu() {
-        workspaceMenu.removeAllItems()
-        add("New Workspace Tab", to: workspaceMenu, command: .newWorkspace)
-        add("Manage Workspaces…", to: workspaceMenu, command: .manageWorkspaces)
-        add("Make Default Workspace", to: workspaceMenu, command: .defaultWorkspace)
-        add("Move Tab to New Window", to: workspaceMenu, command: .detach)
-        workspaceMenu.addItem(.separator())
-        let badges = app.workspaceWindows.tabBadges
-        badges.synchronize(app.outputProfiles.document.workspaces)
-        for record in app.outputProfiles.document.workspaces {
-            let item = add(record.name, to: workspaceMenu, command: .openWorkspace)
-            item.representedObject = record.id
-            item.image = badges.badge(for: record.id).menuImage
-            item.state = app.workspaceWindows.activeWorkspaceID == record.id ? .on : .off
-        }
-    }
-
     private func rebuildOutputMenu() {
         outputMenu.removeAllItems()
         let listening = OutputAudioListeningState(outputs: app.outputs, workspaceID: app.outputs.commandSession?.outputSourceID)
@@ -149,15 +132,11 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        guard let command = command(for: menuItem) else { return false }
+        guard let command = command(for: menuItem) else { return workspaceCommands.validateMenuItem(menuItem) }
         switch command {
         case .updates: return app.updates.state.canCheckForUpdates
         case .newWorkspace: return app.workspaceWindows.canCreateWorkspace
-        case .defaultWorkspace:
-            return app.outputProfiles.recoveryNotice == nil && app.workspaceWindows.activeWorkspaceID.map {
-                $0 != app.outputProfiles.document.defaultWorkspaceID
-            } == true
-        case .detach: return app.workspaceWindows.activeWorkspaceID != nil
+        case .detach: return app.workspaceWindows.canDetach(app.workspaceWindows.activeWorkspaceID)
         case .monitorAudioLocally:
             guard let listening = OutputAudioListeningState(outputs: app.outputs, workspaceID: app.outputs.commandSession?.outputSourceID) else {
                 menuItem.state = .off
@@ -171,10 +150,7 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         case .stop, .background, .audio, .clearBackground, .clearAudio, .clearAll:
             return app.outputs.commandSession != nil
         case .stopAll: return app.outputs.isRunning
-        case .openWorkspace:
-            menuItem.state = menuItem.representedObject as? UUID == app.workspaceWindows.activeWorkspaceID ? .on : .off
-            return (menuItem.representedObject as? UUID).map { id in app.outputProfiles.document.workspaces.contains { $0.id == id } } ?? false
-        case .settings, .notices, .support, .manageWorkspaces, .manageOutputs: return true
+        case .settings, .notices, .support, .manageOutputs: return true
         }
     }
 
@@ -187,14 +163,7 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
             if let url = Bundle.main.url(forResource: "ThirdPartyNotices", withExtension: "txt") { NSWorkspace.shared.open(url) }
         case .support: NSWorkspace.shared.open(URL(string: "https://sukujgrg.github.io/eucaly/")!)
         case .newWorkspace: app.workspaceWindows.newWorkspace()
-        case .manageWorkspaces: app.showSettings(pane: .workspaces)
         case .manageOutputs: app.showSettings(pane: .outputs)
-        case .defaultWorkspace:
-            if let id = app.workspaceWindows.activeWorkspaceID { app.outputProfiles.setDefaultWorkspace(id) }
-        case .openWorkspace:
-            if let id = sender.representedObject as? UUID, id != app.workspaceWindows.activeWorkspaceID {
-                app.workspaceWindows.open(id, beside: app.workspaceWindows.activeWorkspaceID)
-            }
         case .detach:
             if let id = app.workspaceWindows.activeWorkspaceID { app.workspaceWindows.detach(id) }
         case .monitorAudioLocally:

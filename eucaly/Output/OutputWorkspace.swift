@@ -16,6 +16,12 @@ nonisolated struct OutputWorkspaceRecord: Codable, Equatable, Identifiable, Send
         self.id = id; self.name = name; self.monitorAudioLocally = monitorAudioLocally
     }
 
+    static func normalizedName(_ name: String) -> String? {
+        let value = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, value.utf8.count <= 160, !value.contains(where: \.isNewline) else { return nil }
+        return value
+    }
+
     private enum CodingKeys: String, CodingKey { case id, name, monitorAudioLocally }
     init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -62,8 +68,7 @@ extension OutputProfileStore {
     }
     @discardableResult
     func renameWorkspace(_ id: UUID, name: String) -> Bool {
-        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard recoveryNotice == nil, !name.isEmpty, name.utf8.count <= 160, !name.contains(where: \.isNewline),
+        guard recoveryNotice == nil, let name = OutputWorkspaceRecord.normalizedName(name),
               document.workspaces.contains(where: { $0.id == id }) else { return false }
         edit { doc in if let i = doc.workspaces.firstIndex(where: { $0.id == id }) { doc.workspaces[i].name = name } }
         return document.workspaces.first { $0.id == id }?.name == name
@@ -91,90 +96,17 @@ extension OutputProfileStore {
 struct OutputWorkspaceView: View {
     let session: PresentationSession
     let commands: OutputWorkspaceCommands
-    @ObservedObject private var badges: OutputWorkspaceTabBadges
-    @ObservedObject private var store: OutputProfileStore
-    let newWorkspace: () -> Void
-    let openWorkspace: (UUID) -> Void
-    let detach: () -> Void
-    let manageWorkspaces: () -> Void
-    @State private var renaming = false
-    @State private var draftName = ""
-    init(session: PresentationSession, commands: OutputWorkspaceCommands, badges: OutputWorkspaceTabBadges,
-         newWorkspace: @escaping () -> Void, openWorkspace: @escaping (UUID) -> Void,
-         detach: @escaping () -> Void, manageWorkspaces: @escaping () -> Void) {
+    @StateObject private var menu: OutputWorkspaceMenuController
+    init(session: PresentationSession, commands: OutputWorkspaceCommands, workspaces: OutputWorkspaceWindows) {
         self.session = session; self.commands = commands
-        self.badges = badges
-        store = session.outputCoordinator.profiles
-        self.newWorkspace = newWorkspace; self.openWorkspace = openWorkspace; self.detach = detach
-        self.manageWorkspaces = manageWorkspaces
+        _menu = StateObject(wrappedValue: OutputWorkspaceMenuController(workspaces: workspaces, workspaceID: session.outputSourceID))
     }
     var body: some View {
         ContentView(session: session, commands: commands)
         .toolbar {
             ToolbarItem {
-                Menu {
-                    Button("New Workspace Tab", action: newWorkspace)
-                        .disabled(!store.canAddWorkspace)
-                    Button("Manage Workspaces…", action: manageWorkspaces)
-                    Button("Make Default Workspace") { store.setDefaultWorkspace(session.outputSourceID) }
-                        .disabled(store.document.defaultWorkspaceID == session.outputSourceID || store.recoveryNotice != nil)
-                    Button("Rename Workspace…") { draftName = store.workspaceName(session.outputSourceID); renaming = true }
-                    Button("Move Tab to New Window", action: detach)
-                    Divider()
-                    OutputWorkspacePicker(store: store, badges: badges,
-                        currentID: session.outputSourceID, openWorkspace: openWorkspace)
-                } label: {
-                    Label {
-                        Text(store.workspaceName(session.outputSourceID))
-                    } icon: {
-                        let badge = badges.badge(for: session.outputSourceID)
-                        Image(systemName: badge.systemImage).foregroundStyle(Color(nsColor: badge.colour))
-                    }
-                }
-                .help("Workspace tabs and windows")
+                OutputWorkspaceMenuButton(controls: menu)
             }
         }
-        .sheet(isPresented: $renaming) {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("Rename Workspace").font(.headline)
-                TextField("Workspace name", text: $draftName).onSubmit(rename)
-                HStack {
-                    Button("Cancel") { renaming = false }.keyboardShortcut(.cancelAction)
-                    Spacer()
-                    Button("Rename", action: rename).keyboardShortcut(.defaultAction)
-                        .disabled(draftName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draftName.utf8.count > 160)
-                }
-            }.padding(24).frame(width: 360)
-        }
-    }
-    private func rename() {
-        store.renameWorkspace(session.outputSourceID, name: draftName)
-        renaming = false
-    }
-}
-
-/// A workspace switch is a single selection, not a collection of independent
-/// toggles. The current choice stays enabled and checked, like a native picker.
-struct OutputWorkspacePicker: View {
-    @ObservedObject var store: OutputProfileStore
-    @ObservedObject var badges: OutputWorkspaceTabBadges
-    let currentID: UUID
-    let openWorkspace: (UUID) -> Void
-
-    var body: some View {
-        Picker("Workspace", selection: Binding(get: { currentID }, set: { id in
-            guard id != currentID else { return }
-            openWorkspace(id)
-        })) {
-            ForEach(store.document.workspaces) { record in
-                Label {
-                    Text(record.name)
-                } icon: {
-                    if let image = badges.badge(for: record.id).menuImage {
-                        Image(nsImage: image).renderingMode(.original)
-                    }
-                }.tag(record.id)
-            }
-        }.pickerStyle(.inline).labelsHidden()
     }
 }

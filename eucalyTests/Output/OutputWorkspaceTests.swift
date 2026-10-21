@@ -200,9 +200,10 @@ final class OutputWorkspaceTests: XCTestCase {
 @MainActor
 func makeWorkspaceWindows(outputs: OutputCoordinator,
                           defaults: UserDefaults? = nil,
-                          keyWindow: @escaping @MainActor () -> NSWindow? = { NSApp.keyWindow }) -> OutputWorkspaceWindows {
+                          keyWindow: @escaping @MainActor () -> NSWindow? = { NSApp.keyWindow },
+                          manageWorkspaces: @escaping () -> Void = {}) -> OutputWorkspaceWindows {
     OutputWorkspaceWindows(outputs: outputs, updates: AppUpdateViewModel(driver: WorkspaceUpdateDriver()),
-        defaults: defaults, keyWindow: keyWindow, contentFactory: { _, _ in
+        defaults: defaults, keyWindow: keyWindow, manageWorkspaces: manageWorkspaces, contentFactory: { _, _ in
             let controller = NSViewController()
             controller.view = NSView(frame: .init(x: 0, y: 0, width: 1280, height: 800))
             return controller

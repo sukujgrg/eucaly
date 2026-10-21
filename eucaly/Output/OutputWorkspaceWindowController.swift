@@ -14,7 +14,8 @@ final class OutputWorkspaceWindows: ObservableObject {
     private let defaults: UserDefaults?
     private let keyWindow: @MainActor () -> NSWindow?
     private let contentFactory: ((PresentationSession, OutputWorkspaceCommands) -> NSViewController)?
-    private let manageWorkspaces: () -> Void
+    private let showWorkspaceSettings: () -> Void
+    var profiles: OutputProfileStore { outputs.profiles }
     let tabBadges: OutputWorkspaceTabBadges
     private var workspaceObservation: AnyCancellable?
     @Published private(set) var controllers: [UUID: OutputWorkspaceWindowController] = [:]
@@ -33,7 +34,7 @@ final class OutputWorkspaceWindows: ObservableObject {
          contentFactory: ((PresentationSession, OutputWorkspaceCommands) -> NSViewController)? = nil) {
         self.outputs = outputs; self.updates = updates; self.defaults = defaults
         self.keyWindow = keyWindow; self.contentFactory = contentFactory
-        self.manageWorkspaces = manageWorkspaces
+        self.showWorkspaceSettings = manageWorkspaces
         tabBadges = OutputWorkspaceTabBadges(workspaces: outputs.profiles.document.workspaces, defaults: defaults)
         workspaceObservation = outputs.profiles.$document
             .map(\.workspaces).removeDuplicates()
@@ -98,7 +99,19 @@ final class OutputWorkspaceWindows: ObservableObject {
         open(id)
     }
 
-    func detach(_ id: UUID) { controllers[id]?.window?.moveTabToNewWindow(nil) }
+    func canDetach(_ id: UUID?) -> Bool {
+        guard let id else { return false }
+        return (controllers[id]?.window?.tabGroup?.windows.count ?? 0) > 1
+    }
+    func detach(_ id: UUID) {
+        guard let window = controllers[id]?.window, let group = window.tabGroup, group.windows.count > 1 else { return }
+        // Move this exact controls window, even if another tab became selected
+        // after the menu opened. Its hosting view and session remain attached.
+        group.removeWindow(window)
+        window.makeKeyAndOrderFront(nil)
+    }
+    func rename(_ id: UUID) { controllers[id]?.renameWorkspace() }
+    func manageWorkspaces() { showWorkspaceSettings() }
 
     @discardableResult
     func deleteWorkspace(_ id: UUID) -> String? {
@@ -126,11 +139,7 @@ final class OutputWorkspaceWindows: ObservableObject {
         if let contentFactory {
             content = contentFactory(session, commands)
         } else {
-            content = OutputWorkspaceWindowController.hostingController(rootView: OutputWorkspaceView(session: session, commands: commands, badges: tabBadges,
-                newWorkspace: { [weak self] in self?.newWorkspace(beside: id) },
-                openWorkspace: { [weak self] in self?.open($0, beside: id) },
-                detach: { [weak self] in self?.detach(id) },
-                manageWorkspaces: manageWorkspaces)
+            content = OutputWorkspaceWindowController.hostingController(rootView: OutputWorkspaceView(session: session, commands: commands, workspaces: self)
                 .environmentObject(updates))
         }
         let controller = OutputWorkspaceWindowController(session: session, commands: commands, content: content, badge: badge,
@@ -155,6 +164,7 @@ final class OutputWorkspaceWindowController: NSWindowController, NSWindowDelegat
     let session: PresentationSession
     let commands: OutputWorkspaceCommands
     let badge: OutputWorkspaceTabBadge
+    let renamer: OutputWorkspaceRenamer
     private let creationAccessory: OutputWorkspaceCreationAccessory
     private let didBecomeKey: () -> Void
     private let didClose: (OutputWorkspaceWindowController) -> Void
@@ -178,6 +188,7 @@ final class OutputWorkspaceWindowController: NSWindowController, NSWindowDelegat
          newWorkspace: @escaping () -> Void) {
         self.session = session; self.commands = commands
         self.badge = badge
+        renamer = OutputWorkspaceRenamer(profiles: session.outputCoordinator.profiles)
         creationAccessory = OutputWorkspaceCreationAccessory(newWorkspace: newWorkspace)
         self.didBecomeKey = didBecomeKey; self.didClose = didClose
         let window = OutputWorkspaceWindow(contentRect: .init(x: 0, y: 0, width: 1280, height: 800),
@@ -230,9 +241,14 @@ final class OutputWorkspaceWindowController: NSWindowController, NSWindowDelegat
         didBecomeKey()
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { commands.confirmClose() }
+    func renameWorkspace() {
+        guard !closed, let window else { return }
+        renamer.present(workspaceID: session.outputSourceID, on: window)
+    }
     func windowWillClose(_ notification: Notification) {
         guard !closed else { return }
         closed = true
+        renamer.cancel()
         commands.controlsWillClose()
         ApplicationTerminationCoordinator.shared.unregister(id: registrationID)
         titleObservation = nil

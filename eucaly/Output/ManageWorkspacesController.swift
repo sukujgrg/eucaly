@@ -4,7 +4,7 @@ import Combine
 
 /// Native Settings pane. Browsing it never prepares a session or starts output.
 @MainActor
-final class ManageWorkspacesController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
+final class ManageWorkspacesController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
     let outputs: OutputCoordinator
     private let workspaces: OutputWorkspaceWindows
     let table = NSTableView()
@@ -16,9 +16,8 @@ final class ManageWorkspacesController: NSViewController, NSTableViewDataSource,
     let deletionLabel = outputSettingsLabel(secondary: true)
     let messageLabel = outputSettingsLabel(secondary: true)
     private(set) var selectedID: UUID?
-    private(set) var renameField: NSTextField?
-    private var renameAlert: NSAlert?
-    private var renameWorkspaceID: UUID?
+    private let renamer: OutputWorkspaceRenamer
+    var renameField: NSTextField? { renamer.field }
     private(set) var isPresented = false
     private var reloading = false
     private var reloadTask: Task<Void, Never>?
@@ -35,6 +34,7 @@ final class ManageWorkspacesController: NSViewController, NSTableViewDataSource,
 
     init(outputs: OutputCoordinator, workspaces: OutputWorkspaceWindows) {
         self.outputs = outputs; self.workspaces = workspaces
+        renamer = OutputWorkspaceRenamer(profiles: outputs.profiles)
         super.init(nibName: nil, bundle: nil)
         for publisher in [outputs.objectWillChange, outputs.profiles.objectWillChange, workspaces.objectWillChange,
                           workspaces.tabBadges.objectWillChange] {
@@ -191,29 +191,14 @@ final class ManageWorkspacesController: NSViewController, NSTableViewDataSource,
         reload()
     }
     @objc private func renameSelected(_ sender: Any?) {
-        guard let id = selectedID, let window = view.window, renameAlert == nil,
-              let record = outputs.profiles.document.workspaces.first(where: { $0.id == id }) else { return }
-        let alert = NSAlert(); alert.messageText = "Rename Workspace"
-        alert.informativeText = "Choose a short name for this workspace. Its Current and output assignments stay the same."
-        alert.addButton(withTitle: "Rename"); alert.addButton(withTitle: "Cancel")
-        let field = NSTextField(string: record.name); field.frame = .init(x: 0, y: 0, width: 320, height: 24)
-        field.setAccessibilityLabel("Workspace name"); field.delegate = self
-        alert.accessoryView = field
-        renameAlert = alert; renameField = field; renameWorkspaceID = id
-        alert.beginSheetModal(for: window) { [weak self] response in
+        guard let id = selectedID, let window = view.window else { return }
+        renamer.present(workspaceID: id, on: window) { [weak self] problem in
             guard let self else { return }
-            if response == .alertFirstButtonReturn, let id = self.renameWorkspaceID, let name = self.renameField?.stringValue,
-               !self.outputs.profiles.renameWorkspace(id, name: name) {
-                self.messageLabel.stringValue = "Use a short, non-empty name on one line."
+            if let problem {
+                self.messageLabel.stringValue = problem
                 self.messageLabel.isHidden = false
             }
-            self.renameAlert = nil; self.renameField = nil; self.renameWorkspaceID = nil; self.reload()
+            self.reload()
         }
-        alert.window.makeFirstResponder(field)
-    }
-    func controlTextDidChange(_ notification: Notification) {
-        guard let field = renameField else { return }
-        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        renameAlert?.buttons.first?.isEnabled = !name.isEmpty && name.utf8.count <= 160 && !name.contains(where: \.isNewline)
     }
 }

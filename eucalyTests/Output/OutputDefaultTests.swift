@@ -90,6 +90,10 @@ final class OutputDefaultTests: XCTestCase {
         defer { outputs.stop() }
         let controls = OutputQuickControlsController(outputs: outputs, manageOutputs: {})
         let first = try XCTUnwrap(store.defaultDestination)
+        for button in [controls.outputButton, controls.ndiButton, controls.appearanceButton, controls.backgroundButton] {
+            XCTAssertEqual(button.menu?.items.last?.title, "Manage Outputs…")
+            XCTAssertEqual(button.menu?.items.dropLast().last?.isSeparatorItem, true)
+        }
         let second = OutputDestinationConfiguration(name: "Other", profileID: OutputProfile.audienceID, monitor: nil)
         store.edit { $0.destinations.append(second) }; controls.render()
         let oldColumns = try item("Columns", in: controls.appearanceButton.menu)
