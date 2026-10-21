@@ -91,6 +91,7 @@ extension OutputProfileStore {
 struct OutputWorkspaceView: View {
     let session: PresentationSession
     let commands: OutputWorkspaceCommands
+    let badge: OutputWorkspaceTabBadge
     @ObservedObject private var store: OutputProfileStore
     let newWorkspace: () -> Void
     let openWorkspace: (UUID) -> Void
@@ -98,10 +99,11 @@ struct OutputWorkspaceView: View {
     let manageWorkspaces: () -> Void
     @State private var renaming = false
     @State private var draftName = ""
-    init(session: PresentationSession, commands: OutputWorkspaceCommands,
+    init(session: PresentationSession, commands: OutputWorkspaceCommands, badge: OutputWorkspaceTabBadge,
          newWorkspace: @escaping () -> Void, openWorkspace: @escaping (UUID) -> Void,
          detach: @escaping () -> Void, manageWorkspaces: @escaping () -> Void) {
         self.session = session; self.commands = commands
+        self.badge = badge
         store = session.outputCoordinator.profiles
         self.newWorkspace = newWorkspace; self.openWorkspace = openWorkspace; self.detach = detach
         self.manageWorkspaces = manageWorkspaces
@@ -128,7 +130,13 @@ struct OutputWorkspaceView: View {
                     ForEach(store.document.workspaces) { record in
                         Button("Open " + record.name) { openWorkspace(record.id) }
                     }
-                } label: { Label(store.workspaceName(session.outputSourceID), systemImage: "rectangle.stack") }
+                } label: {
+                    Label {
+                        Text(store.workspaceName(session.outputSourceID))
+                    } icon: {
+                        Image(systemName: badge.systemImage).foregroundStyle(Color(nsColor: badge.colour))
+                    }
+                }
                 .help("Workspace tabs and windows")
             }
         }

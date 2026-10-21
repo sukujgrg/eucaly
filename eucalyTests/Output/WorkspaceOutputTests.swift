@@ -246,15 +246,20 @@ final class WorkspaceOutputTests: XCTestCase {
         XCTAssertTrue(f.outputs.isOpen(f.online))
     }
 
-    func testSettingsBackgroundParticipatesInWorkspaceShowAndVisibilityControls() throws {
+    func testSettingsBackgroundOpensIndependentlyOfEmptyCurrentSlideCommands() throws {
         let f = Fixture(); defer { f.outputs.stopAllOutputs() }
         XCTAssertTrue(f.outputs.moveOutput(f.online, to: f.b))
         f.store.editDestinationProfile(f.house) { $0.background.bookmark = "settings visual" }
         f.store.editDestinationProfile(f.online) { $0.background.bookmark = "other workspace visual" }
         XCTAssertNil(f.a.backgroundVisualURL, "Settings do not depend on a sidebar selection")
-        XCTAssertTrue(f.a.hasProjectionContent)
+        XCTAssertTrue(f.a.hasAvailableBackgroundVisual)
         f.outputs.program(f.a.outputSourceID).flow.toggleSlidesVisibility(in: f.a)
-        XCTAssertTrue(f.a.isPresenting)
+        XCTAssertFalse(f.outputs.isRunning)
+        f.a.toggleBackgroundVisualVisibility()
+        XCTAssertTrue(f.outputs.isOpen(f.house))
+        XCTAssertFalse(f.a.isPresenting)
+        XCTAssertFalse(f.outputs.isOpen(f.network), "Opening a native background does not start NDI")
+        XCTAssertTrue(try XCTUnwrap(f.outputs.profile(for: f.house)).background.visible)
         f.a.toggleBackgroundVisualVisibility()
         XCTAssertFalse(try XCTUnwrap(f.outputs.profile(for: f.house)).background.visible)
         XCTAssertTrue(try XCTUnwrap(f.outputs.profile(for: f.online)).background.visible)
@@ -264,6 +269,57 @@ final class WorkspaceOutputTests: XCTestCase {
                        "Toggle reads the current Settings state")
         f.a.toggleBackgroundVisualVisibility()
         XCTAssertTrue(try XCTUnwrap(f.outputs.profile(for: f.house)).background.visible)
+    }
+
+    func testEmptyCurrentSlideCommandsPreserveLiveOutputsAcrossWorkspaces() throws {
+        let window = PresentationWindow(contentRect: .init(x: -10000, y: -10000, width: 100, height: 100),
+                                        styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let f = Fixture(keyWindow: { window })
+        defer { f.outputs.stopAllOutputs(); window.close() }
+        XCTAssertTrue(f.outputs.moveOutput(f.online, to: f.b))
+        f.load(f.a, "House"); f.a.showSlides()
+        f.load(f.b, "Online"); f.b.showSlides()
+        let saved = f.store.document
+        let starts = f.transport.starts
+        window.outputCoordinator = f.outputs
+        let command2 = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+            timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "2",
+            charactersIgnoringModifiers: "2", isARepeat: false, keyCode: 19))
+
+        for (session, destination, other) in [(f.a, f.house, f.b), (f.b, f.online, f.a)] {
+            for hidden in [false, true] {
+                f.load(session, "Current before clear"); session.showSlides()
+                if hidden { session.hideSlides() }
+                session.clearSlides()
+                let snapshot = f.outputs.snapshot(for: destination)
+                let action = session.outputActionClock.current
+                let otherAction = other.outputActionClock.current
+                let flow = f.outputs.program(session.outputSourceID).flow
+                flow.setPreviewSlides(LyricsParser.parseDocument("Verse\nPrivate Preview").slides)
+                flow.isCurrentCollapsed = true
+                flow.toggleSlidesVisibility(in: session)
+                // Even with the other controls workspace focused, projection
+                // shortcuts resolve this destination's owner.
+                f.outputs.focusWorkspace(other)
+                window.outputDestinationID = destination
+                f.outputs.toggleSlides()
+                window.keyDown(with: command2)
+                XCTAssertTrue(session.isEmpty)
+                XCTAssertTrue(flow.isCurrentCollapsed)
+                XCTAssertEqual(flow.previewSlides.first?.lines.first?.text, "Private Preview")
+                XCTAssertEqual(session.outputActionClock.current, action)
+                XCTAssertEqual(other.outputActionClock.current, otherAction)
+                XCTAssertEqual(f.outputs.snapshot(for: destination).revision, snapshot.revision)
+                XCTAssertEqual(session.areSlidesVisible, snapshot.visible)
+                XCTAssertTrue(session.isPresenting)
+                XCTAssertTrue(f.outputs.isOpen(f.house))
+                XCTAssertTrue(f.outputs.isOpen(f.network))
+                XCTAssertTrue(f.outputs.isOpen(f.online))
+                XCTAssertEqual(f.transport.starts, starts)
+                XCTAssertEqual(f.store.document, saved)
+            }
+        }
     }
 
     func testExplicitNDIStartPreparesAnUnopenedRestoredWorkspace() throws {

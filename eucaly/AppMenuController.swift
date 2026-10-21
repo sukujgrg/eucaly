@@ -151,7 +151,8 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
             menuItem.state = app.outputs.monitorAudioLocally(workspace: session.outputSourceID) ? .on : .off
             return app.outputProfiles.recoveryNotice == nil
         case .newLyrics, .quickOpen, .refresh, .save: return app.workspaceWindows.activeWorkspaceID != nil
-        case .stop, .slides, .background, .audio, .clearBackground, .clearAudio, .clearAll:
+        case .slides: return app.outputs.commandSession?.isEmpty == false
+        case .stop, .background, .audio, .clearBackground, .clearAudio, .clearAll:
             return app.outputs.commandSession != nil
         case .stopAll: return app.outputs.isRunning
         case .openWorkspace:

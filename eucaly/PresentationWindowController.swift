@@ -130,10 +130,6 @@ final class PresentationSession: NSObject, ObservableObject {
 
     private var outputChangeScheduled = false
 
-    var hasProjectionContent: Bool {
-        !isEmpty || hasAvailableBackgroundVisual || outputCoordinator.hasEnabledConfidenceOutput(workspace: outputSourceID)
-    }
-
     private func scheduleOutputChange() {
         guard !outputChangeScheduled else { return }
         outputChangeScheduled = true
@@ -325,6 +321,18 @@ final class PresentationSession: NSObject, ObservableObject {
     func showSlides() {
         guard outputCoordinator.presentLocal(self) else { return }
         areSlidesVisible = true
+    }
+
+    /// Slide commands require Current content; output and background controls
+    /// can still open their destinations independently.
+    func toggleSlidesVisibility() {
+        guard !isEmpty else { return }
+        if isPresenting && areSlidesVisible {
+            hideSlides()
+        } else {
+            if currentSlide == nil { currentSlideID = firstSlideID }
+            showSlides()
+        }
     }
 
     func hideSlides() {
@@ -1391,10 +1399,7 @@ final class PresentationWindow: NSWindow {
 
     private func requestHideSlides() { commandSession?.hideSlides() }
     private func requestStopProjection() { commandSession?.stopPresentation() }
-    private func requestToggleSlidesVisibility() {
-        guard let session = commandSession else { return }
-        if session.isPresenting && session.areSlidesVisible { session.hideSlides() } else { session.showSlides() }
-    }
+    private func requestToggleSlidesVisibility() { commandSession?.toggleSlidesVisibility() }
     private func requestClearBackgroundVisual() { if let session = commandSession { outputCoordinator?.clearBackgrounds(for: session) } }
     private func requestClearBackgroundAudio() { commandSession?.clearBackgroundAudio() }
     private func requestClearAllLayers() { requestHideSlides(); requestClearBackgroundVisual(); requestClearBackgroundAudio() }

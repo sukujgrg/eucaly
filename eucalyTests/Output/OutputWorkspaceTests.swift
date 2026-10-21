@@ -23,7 +23,7 @@ final class OutputWorkspaceTests: XCTestCase {
         let registry = makeWorkspaceWindows(outputs: hub.outputs)
         defer { for window in registry.windows.values { window.close() } }
         let first = try XCTUnwrap(registry.open(hub.session.outputSourceID)?.window)
-        first.newWindowForTab(nil)
+        XCTAssertNotNil(registry.newWorkspace(beside: hub.session.outputSourceID))
         let otherID = try XCTUnwrap(hub.outputs.profiles.document.workspaces.last?.id)
         let other = hub.outputs.session(workspace: otherID)
         let second = try XCTUnwrap(registry.windows[otherID])
@@ -98,9 +98,15 @@ final class OutputWorkspaceTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(window.title, "Morning Service — 1 output · Live")
         XCTAssertEqual(window.tab.title, window.title)
+        XCTAssertEqual(window.tab.attributedTitle?.string, "●  " + window.title)
+        XCTAssertEqual(window.tab.attributedTitle?.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor, .systemTeal)
+        XCTAssertNil(window.tab.attributedTitle?.attribute(.foregroundColor, at: 3, effectiveRange: nil),
+                     "The workspace symbol must not override native title styling")
+        XCTAssertEqual(window.tab.toolTip, window.title)
         hub.session.hideSlides()
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(window.title, "Morning Service — 1 output · Hidden")
+        XCTAssertEqual(window.tab.attributedTitle?.string, "●  " + window.title)
     }
 
     func testNewWorkspaceLimitAndUnknownOpenDoNotCreateOrRetargetWindows() throws {

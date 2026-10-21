@@ -179,34 +179,12 @@ final class PresentationFlowController: ObservableObject {
         session.selectCurrentSlide(slideID)
     }
 
-    func selectCurrentSlideForPresentationStart(in session: PresentationSession) {
-        if let selection = session.currentSlideID,
-           session.containsSlide(id: selection) {
-            return
-        }
-        session.currentSlideID = session.firstSlideID
-    }
-
     func toggleSlidesVisibility(in session: PresentationSession) {
-        if session.isPresenting && session.areSlidesVisible {
-            session.outputCoordinator.hide(for: session)
-            return
+        let wasPresenting = session.isPresenting
+        session.toggleSlidesVisibility()
+        if !wasPresenting && session.isPresenting {
+            isCurrentCollapsed = false
         }
-        if session.isPresenting {
-            if session.areSlidesVisible {
-                session.hideSlides()
-            } else {
-                selectCurrentSlideForPresentationStart(in: session)
-                session.showSlides()
-            }
-            return
-        }
-
-        guard session.hasProjectionContent else { return }
-
-        selectCurrentSlideForPresentationStart(in: session)
-        session.showSlides()
-        isCurrentCollapsed = false
     }
 
     func hideSlides(in session: PresentationSession) {

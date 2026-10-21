@@ -118,6 +118,46 @@ final class WorkspaceWindowLifecycleTests: XCTestCase {
         XCTAssertEqual(window.title, hub.outputs.profiles.workspaceName(hub.session.outputSourceID) + " — Stopped")
     }
 
+    func testWorkspacePlusDisappearsAtSavedLimitAndReturnsOnlyAfterDeletion() async throws {
+        let hub = LocalOutputHarness()
+        let windows = OutputWorkspaceWindows(outputs: hub.outputs, updates: AppUpdateViewModel(driver: WorkspaceUpdateDriver()),
+            contentFactory: { _, _ in
+                OutputWorkspaceWindowController.hostingController(rootView: Text("Workspace")
+                    .toolbar { ToolbarItem { Button("Workspace Action") {} } })
+            })
+        defer { for window in windows.windows.values { window.close() } }
+        let home = try XCTUnwrap(windows.open(hub.session.outputSourceID)?.window)
+        try await Task.sleep(for: .milliseconds(100))
+        let toolbar = try XCTUnwrap(home.toolbar)
+        XCTAssertEqual(toolbar.items.count, 1)
+        func creationControl(in window: NSWindow) -> OutputWorkspaceCreationAccessory? {
+            window.titlebarAccessoryViewControllers.compactMap { $0 as? OutputWorkspaceCreationAccessory }.first
+        }
+        let creation = try XCTUnwrap(creationControl(in: home))
+        XCTAssertFalse(home.responds(to: #selector(NSResponder.newWindowForTab(_:))),
+                       "The native tab bar must not retain a second, cached plus button")
+        for _ in 1..<OutputWorkspaceRecord.creationLimit { creation.button.performClick(nil) }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(hub.outputs.profiles.document.workspaces.count, OutputWorkspaceRecord.creationLimit)
+        XCTAssertNil(creationControl(in: home), "Remove the add control and its space at the saved workspace limit")
+        XCTAssertEqual(toolbar.items.count, 1, "Workspace creation must preserve the hosted toolbar")
+        let otherID = try XCTUnwrap(hub.outputs.profiles.document.workspaces.last?.id)
+        let other = try XCTUnwrap(windows.open(otherID, beside: hub.session.outputSourceID)?.window)
+        XCTAssertFalse(other.responds(to: #selector(NSResponder.newWindowForTab(_:))))
+        XCTAssertNil(creationControl(in: other), "A newly opened workspace must respect the saved limit")
+        other.close()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(creationControl(in: home), "Closing a tab does not free a saved workspace slot")
+        XCTAssertNil(windows.deleteWorkspace(otherID))
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNotNil(creationControl(in: home))
+        XCTAssertTrue(windows.canCreateWorkspace)
+        home.close()
+        creation.button.performClick(nil)
+        XCTAssertEqual(hub.outputs.profiles.document.workspaces.count, OutputWorkspaceRecord.creationLimit - 1,
+                       "A retained button from closed controls must not create another workspace")
+    }
+
     func testClosedWindowRejectsLaterKeyNotificationAndCannotBeShownAgain() async throws {
         let hub = LocalOutputHarness()
         let second = try XCTUnwrap(hub.outputs.profiles.addWorkspace())

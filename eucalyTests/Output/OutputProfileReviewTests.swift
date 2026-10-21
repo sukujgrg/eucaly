@@ -212,16 +212,21 @@ final class OutputProfileReviewTests: XCTestCase {
         XCTAssertNotNil(outputs.issue)
     }
 
-    func testIdleConfidenceClockIsAutomaticAfterEmptyShowClearAndHide() async throws {
+    func testIdleConfidenceClockIsIndependentOfEmptySlideCommandsAndSurvivesClearAndHide() async throws {
         let (outputs, session, destination) = setup(.confidence); defer { outputs.stop() }
         let profile = try XCTUnwrap(outputs.profiles.profile(outputs.profiles.document.destinations[0].profileID))
-        XCTAssertTrue(session.hasProjectionContent)
+        outputs.workspaceWindowReady(session)
+        await settle()
         PresentationFlowController().toggleSlidesVisibility(in: session)
-        XCTAssertTrue(outputs.isRunning, "The toolbar flow must open an idle Confidence output without a slide")
+        XCTAssertTrue(outputs.isRunning, "Confidence opens its clock independently of slide commands")
+        XCTAssertFalse(session.isPresenting)
         let (window, view) = host(outputs, destination: destination); defer { window.close() }
         await settle(); try assertCenteredClock(view)
-        outputs.stop(); outputs.toggleSlides(); await settle(); try assertCenteredClock(view)
-        XCTAssertTrue(outputs.isRunning, "The app command must also open the idle clock without a slide")
+        outputs.stop(); outputs.toggleSlides(); await settle()
+        XCTAssertFalse(outputs.isRunning, "Cmd+2 cannot start outputs with empty Current")
+        outputs.openConfidence(destination); await settle(); try assertCenteredClock(view)
+        XCTAssertTrue(outputs.isRunning, "Open Confidence resumes the clock without a slide")
+        XCTAssertFalse(session.isPresenting)
         session.setSlides(LyricsParser.parseDocument("Verse\nPresented lyrics").slides); session.showSlides()
         await settle(); XCTAssertFalse(OutputConfidenceContent(snapshot: outputs.snapshot, profile: profile).isIdle)
         session.hideSlides()

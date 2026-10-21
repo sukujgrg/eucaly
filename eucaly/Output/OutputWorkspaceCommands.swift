@@ -55,7 +55,7 @@ struct OutputSlidesToggleButton: View {
         self.session = session; self.outputs = session.outputCoordinator; self.onToggle = onToggle
     }
     private var showing: Bool {
-        session.isPresenting && session.areSlidesVisible
+        !session.isEmpty && session.isPresenting && session.areSlidesVisible
     }
     var body: some View {
         Button(action: onToggle) {
@@ -63,8 +63,8 @@ struct OutputSlidesToggleButton: View {
         }
         .labelStyle(.iconOnly)
         .buttonStyle(.borderedProminent)
-        .disabled(!session.isPresenting && !session.hasProjectionContent)
-        .help(showing ? "Hide Slides" : "Show Slides")
+        .disabled(session.isEmpty)
+        .help(session.isEmpty ? "Load a document into Current to show slides." : showing ? "Hide Slides" : "Show Slides")
     }
 }
 

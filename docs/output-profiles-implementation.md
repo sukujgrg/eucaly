@@ -25,10 +25,18 @@ provides its current unsaved-change decision without replacing the window delega
 There is no SwiftUI window scene, `openWindow` action, hidden bootstrap window,
 window-discovery view or replacement-window polling.
 
-New Workspace Tab (`Cmd+T` and the native tab-bar plus button) creates an empty
-workspace with no outputs. Workspace menus open saved workspaces and detach tabs.
+New Workspace Tab (`Cmd+T` and the title-bar plus button) creates an empty
+workspace with no outputs. The plus button is hidden at the four-workspace saved
+limit, including closed controls; deleting an unused workspace restores it. Creation
+uses an app-owned native title-bar accessory because AppKit caches its tab-bar plus
+button when a group is created. Workspace menus open saved workspaces and detach tabs.
 Detach moves the same native window and retains the editor, Preview and Current.
 Tab titles include output count and Live/Hidden/Standby/Stopped or failure status.
+Each workspace has a coloured shape in its native tab title and workspace toolbar
+menu. Badges are saved as UI preferences by workspace UUID, retaining their identity
+through rename, reordering, detachment, closing and relaunch. Remaining workspaces
+keep their badges after deletion; new workspaces reuse available badges. Legacy
+saved workspaces above four remain available and share the four-badge palette.
 Closing controls releases their private view consumers; reopening uses the same
 app-owned session and Preview flow while live output continues. Native Settings
 remain one app-owned window. Quick Open and Refresh Library target only the active
@@ -87,6 +95,12 @@ the existing layer operations within that workspace. Projection-window input and
 Slides-menu shortcuts resolve the owning workspace by destination ID, even when
 another workspace was the last controls window used. `Cmd+T` does not collide with
 standard macOS text editing.
+
+Show/Hide Slides and `Cmd+2` require content in the controlled workspace's Current,
+including virtual PDFs. Empty Current disables the toolbar and Slides-menu toggle;
+projection-window shortcuts use the same guarded session action. Clearing Current
+keeps outputs open without enabling the slide toggle. NDI Start/Stop/Retry, background
+visual/audio controls and Open Confidence continue to operate independently.
 
 The dedicated **NDI: workspace** toolbar menu routes a single source directly to
 any saved workspace, without changing the default output used by appearance edits.

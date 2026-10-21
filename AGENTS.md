@@ -142,6 +142,7 @@ If a new type cannot follow this contract, treat it as a design bug and refactor
   - `Load to Current` (or `Switch Current` while presenting)
   - `Clear`
 - Clear can run while projecting; it clears Current without implicitly restoring Preview.
+- Show/Hide Slides and Cmd+2 are disabled when that workspace's Current is empty, including while outputs remain open. NDI Start/Stop/Retry, background controls and Open Confidence remain independent.
 
 ### Webpages
 - Webpages are opened from `File > Quick Open...` / the command palette.

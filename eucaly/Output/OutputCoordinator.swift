@@ -301,8 +301,7 @@ final class OutputCoordinator: ObservableObject {
         return destination(id)?.workspaceID == session.outputSourceID
     }
     func toggleSlides() {
-        guard let session = commandSession else { return }
-        if session.isPresenting && session.areSlidesVisible { session.hideSlides() } else { session.showSlides() }
+        commandSession?.toggleSlidesVisibility()
     }
     func startNDI(_ id: UUID) {
         guard let row = destination(id), row.enabled, row.ndi != nil, let owner = row.workspaceID,

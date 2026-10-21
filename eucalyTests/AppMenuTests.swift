@@ -4,6 +4,45 @@ import XCTest
 
 @MainActor
 final class AppMenuTests: XCTestCase {
+    func testSlidesCommandRequiresCurrentInTheControlledWorkspace() throws {
+        let hub = LocalOutputHarness()
+        defer { hub.outputs.stopAllOutputs() }
+        let app = AppDelegate()
+        app.outputProfiles = hub.outputs.profiles; app.outputs = hub.outputs
+        app.workspaceWindows = makeWorkspaceWindows(outputs: hub.outputs)
+        let menus = AppMenuController(app: app)
+        let slides = try XCTUnwrap(menus.mainMenu.item(withTitle: "Slides")?.submenu)
+        let toggle = try XCTUnwrap(slides.item(withTitle: "Show/Hide Slides"))
+        XCTAssertEqual(toggle.keyEquivalent, "2")
+        XCTAssertFalse(menus.validateMenuItem(toggle))
+
+        hub.load("Verse\nLoaded Current")
+        XCTAssertTrue(menus.validateMenuItem(toggle))
+        slides.performActionForItem(at: slides.index(of: toggle))
+        XCTAssertTrue(hub.session.isPresenting)
+
+        let otherID = try XCTUnwrap(app.outputProfiles.addWorkspace(name: "Online"))
+        let other = hub.outputs.session(workspace: otherID)
+        hub.outputs.focusWorkspace(other)
+        XCTAssertFalse(menus.validateMenuItem(toggle), "Another workspace's Current cannot enable Cmd+2")
+        // Virtual PDFs have no materialized slides but still count as Current.
+        other.setPDFSlideSource(.init(url: URL(fileURLWithPath: "/tmp/menu-current.pdf"), pageCount: 200))
+        XCTAssertTrue(other.slides.isEmpty)
+        XCTAssertTrue(menus.validateMenuItem(toggle))
+
+        hub.outputs.focusWorkspace(hub.session)
+        hub.session.clearSlides()
+        XCTAssertTrue(hub.session.isPresenting, "Clear retains the output")
+        XCTAssertFalse(menus.validateMenuItem(toggle))
+        let action = hub.session.outputActionClock.current
+        slides.performActionForItem(at: slides.index(of: toggle))
+        XCTAssertEqual(hub.session.outputActionClock.current, action)
+        XCTAssertTrue(hub.outputs.isOpen(hub.nativeRow))
+        for title in ["Stop Workspace Outputs", "Show/Hide Background", "Pause/Play Background Audio", "Clear All Layers"] {
+            XCTAssertTrue(menus.validateMenuItem(try XCTUnwrap(slides.item(withTitle: title))))
+        }
+    }
+
     func testWorkspaceLimitDisablesCreationButKeepsManagementAvailable() throws {
         let hub = LocalOutputHarness()
         let app = AppDelegate()
