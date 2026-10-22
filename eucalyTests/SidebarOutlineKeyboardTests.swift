@@ -173,9 +173,6 @@ final class SidebarOutlineKeyboardTests: XCTestCase {
         XCTAssertTrue(outline.isItemExpanded(fixture.outer), "The group title shares its disclosure action")
         try fixture.click(row: row, x: trailingX)
         XCTAssertFalse(outline.isItemExpanded(fixture.outer), "Blank space in the group row shares its disclosure action")
-        // AppKit tracks same-point double clicks using elapsed wall time. This
-        // pause makes the repeated click a separate single-click gesture.
-        try await Task.sleep(for: .seconds(NSEvent.doubleClickInterval + 0.05))
         try fixture.click(row: row, x: trailingX)
         XCTAssertTrue(outline.isItemExpanded(fixture.outer), "A repeated row click toggles once")
         try fixture.click(row: row, x: titleX)
@@ -185,7 +182,6 @@ final class SidebarOutlineKeyboardTests: XCTestCase {
         XCTAssertFalse(disclosure.isEmpty)
         try fixture.click(row: row, x: disclosure.midX)
         XCTAssertTrue(outline.isItemExpanded(fixture.outer), "The native disclosure button must not be toggled twice")
-        try await Task.sleep(for: .seconds(NSEvent.doubleClickInterval + 0.05))
         try fixture.click(row: row, x: disclosure.midX)
         XCTAssertFalse(outline.isItemExpanded(fixture.outer))
         XCTAssertEqual(fixture.focusedID, fixture.outer.id)
@@ -194,18 +190,39 @@ final class SidebarOutlineKeyboardTests: XCTestCase {
         XCTAssertEqual(fixture.session.slides.map(\.id), [fixture.currentSlideID])
     }
 
-    func testNativeGroupRowDoubleClickKeepsSingleDisclosureActivation() async throws {
-        let fixture = SidebarKeyboardFixture()
-        defer { fixture.close() }
-        try await fixture.settle()
-        let outline = fixture.controller.outlineView
-        try fixture.click(row: 0, x: 100, clickCount: 1)
-        XCTAssertTrue(outline.isItemExpanded(fixture.outer))
-        try fixture.click(row: 0, x: 100, clickCount: 2)
-        XCTAssertTrue(outline.isItemExpanded(fixture.outer), "The double action must not undo the first click's disclosure")
-        XCTAssertTrue(fixture.recorder.requests.isEmpty)
-        XCTAssertNil(fixture.recorder.accepted)
-        XCTAssertEqual(fixture.session.slides.map(\.id), [fixture.currentSlideID])
+    func testRapidNativeGroupRowClicksToggleForEveryClickClassification() async throws {
+        enum Target: CaseIterable { case title, blank, disclosure }
+        for target in Target.allCases {
+            let fixture = SidebarKeyboardFixture(selectsFirstLeaf: true)
+            defer { fixture.close() }
+            try await fixture.settle()
+            let outline = fixture.controller.outlineView
+            outline.collapseItem(fixture.outer)
+            let row = outline.row(forItem: fixture.outer)
+            let cell = try XCTUnwrap(outline.view(atColumn: 0, row: row, makeIfNecessary: true) as? NSTableCellView)
+            let x: CGFloat
+            switch target {
+            case .title:
+                let title = try XCTUnwrap(cell.textField)
+                x = title.convert(title.bounds, to: outline).midX
+            case .blank:
+                x = outline.frameOfCell(atColumn: 0, row: row).maxX - 12
+            case .disclosure:
+                let disclosure = outline.frameOfOutlineCell(atRow: row)
+                XCTAssertFalse(disclosure.isEmpty)
+                x = disclosure.midX
+            }
+            for clickCount in 1...4 {
+                try fixture.click(row: row, x: x, clickCount: clickCount)
+                XCTAssertEqual(outline.isItemExpanded(fixture.outer), !clickCount.isMultiple(of: 2),
+                    "Every physical \(target) click toggles once, including native click count \(clickCount)")
+                XCTAssertEqual(fixture.focusedID, fixture.outer.id)
+                XCTAssertEqual(fixture.recorder.accepted, fixture.firstLeaf.id)
+                XCTAssertTrue(fixture.recorder.requests.isEmpty)
+                XCTAssertTrue(fixture.recorder.defaultActions.isEmpty)
+                XCTAssertEqual(fixture.session.slides.map(\.id), [fixture.currentSlideID])
+            }
+        }
     }
 
     func testDetachedNativeGroupRowActionsRemainInert() async throws {
@@ -216,10 +233,12 @@ final class SidebarOutlineKeyboardTests: XCTestCase {
         try fixture.click(row: 0, x: 100)
         XCTAssertTrue(outline.isItemExpanded(fixture.outer))
         let action = try XCTUnwrap(outline.action)
+        let doubleAction = try XCTUnwrap(outline.doubleAction)
         let target = try XCTUnwrap(outline.target)
         fixture.controller.detach()
         let expandedAfterDetach = outline.isItemExpanded(fixture.outer)
         XCTAssertTrue(NSApp.sendAction(action, to: target, from: outline))
+        XCTAssertTrue(NSApp.sendAction(doubleAction, to: target, from: outline))
         try fixture.click(row: 0, x: 100)
         XCTAssertEqual(outline.isItemExpanded(fixture.outer), expandedAfterDetach)
         XCTAssertTrue(fixture.recorder.requests.isEmpty)

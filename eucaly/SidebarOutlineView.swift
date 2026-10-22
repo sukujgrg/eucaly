@@ -642,6 +642,7 @@ final class SidebarOutlineController {
         @objc fileprivate func performRowDisclosure(_ sender: NSOutlineView) {
             guard sender === outlineView, sender.window != nil, !sender.isHiddenOrHasHiddenAncestor,
                   !isSynchronizingSelection, !isProcessingExpansion, sender.clickedRow >= 0,
+                  sender.clickedRow < sender.numberOfRows,
                   let item = sender.item(atRow: sender.clickedRow) as? SidebarOutlineItem,
                   item.groupID != nil else { return }
             if let event = NSApp.currentEvent, event.window === sender.window {
@@ -658,12 +659,27 @@ final class SidebarOutlineController {
         }
 
         @objc fileprivate func performDefaultAction(_ sender: NSOutlineView) {
-            _ = activateDefaultAction(preferClickedRow: true)
+            guard sender === outlineView, sender.window != nil, !sender.isHiddenOrHasHiddenAncestor,
+                  sender.clickedRow >= 0, sender.clickedRow < sender.numberOfRows,
+                  let item = sender.item(atRow: sender.clickedRow) as? SidebarOutlineItem else { return }
+            if item.groupID != nil {
+                // AppKit chooses action or doubleAction for each physical
+                // click. Both classifications share one guarded disclosure.
+                performRowDisclosure(sender)
+            } else {
+                _ = activateSourceDefaultAction(preferClickedRow: true)
+            }
         }
 
         @discardableResult
         fileprivate func performKeyboardDefaultAction() -> Bool {
-            activateDefaultAction(preferClickedRow: false)
+            if let outlineView, outlineView.selectedRow >= 0,
+               let item = outlineView.item(atRow: outlineView.selectedRow) as? SidebarOutlineItem,
+               item.groupID != nil {
+                toggleGroup(item)
+                return true
+            }
+            return activateSourceDefaultAction(preferClickedRow: false)
         }
 
         @discardableResult
@@ -685,16 +701,7 @@ final class SidebarOutlineController {
             return true
         }
 
-        private func activateDefaultAction(preferClickedRow: Bool) -> Bool {
-            if let outlineView {
-                let row = preferClickedRow ? outlineView.clickedRow : outlineView.selectedRow
-                if row >= 0, let item = outlineView.item(atRow: row) as? SidebarOutlineItem, item.groupID != nil {
-                    // Pointer disclosure already ran for the first click.
-                    // Keep the native double action available for source rows.
-                    if !preferClickedRow { toggleGroup(item) }
-                    return true
-                }
-            }
+        private func activateSourceDefaultAction(preferClickedRow: Bool) -> Bool {
             guard !isSynchronizingSelection,
                   !isProcessingExpansion,
                   let onDefaultAction
