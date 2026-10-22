@@ -1,8 +1,7 @@
 import SwiftUI
 import AVFoundation
 
-/// Composition is a native layer boundary. Every layer receives identical full
-/// screen geometry. A future frame adapter can provide GPU-backed offscreen output.
+/// Composition is a native layer boundary. Every layer receives identical full-screen geometry.
 struct OutputCompositionView: View {
     @ObservedObject var coordinator: OutputCoordinator
     let destinationID: UUID
@@ -46,9 +45,12 @@ struct OutputCompositionView: View {
     /// columns and playback status must not reduce the native playback frame.
     private func media(_ slide: Slide, snapshot: OutputContentSnapshot, profile: OutputProfile,
                        session: PresentationSession, size: CGSize) -> some View {
-        OutputMediaSlideView(slide: slide, session: session, runtime: coordinator.program(session.outputSourceID).media,
-                             showsBackground: profile.background.whenMediaShown,
-                             imageContentIdentity: ProjectionImageContentIdentity(snapshot: snapshot)).id(slide.id)
+        // Native PDFKit retains its parsed document across pages of one accepted
+        // source. Explicit reloads and workspace transfers bring a new source ID.
+        let identity = slide.pdfURL != nil ? snapshot.acceptedPDF?.id ?? slide.id : slide.id
+        return OutputMediaSlideView(slide: slide, snapshot: snapshot, session: session,
+                             runtime: coordinator.program(session.outputSourceID).media,
+                             showsBackground: profile.background.whenMediaShown).id(identity)
             .frame(width: size.width, height: size.height)
             .overlay(alignment: .bottomLeading) {
                 if profile.kind == .confidence && slide.videoURL != nil {
@@ -84,22 +86,21 @@ struct OutputBackgroundView: View {
 
 struct OutputMediaSlideView: View {
     let slide: Slide
+    let snapshot: OutputContentSnapshot
     @ObservedObject var session: PresentationSession
     let runtime: OutputMediaRuntime
     var showsBackground = false
-    var imageContentIdentity: ProjectionImageContentIdentity?
     var body: some View {
         ZStack {
             if !showsBackground { Color.black }
             if let windowID = slide.captureWindowID { WindowCaptureSlideView(windowID: windowID, showsOperatorMessages: false) }
             else if slide.videoURL != nil { AVPlayerViewRepresentable(player: runtime.program, isMuted: session.videoMuted, isFill: session.videoFill) }
-            else if let url = slide.pdfURL, let page = slide.pdfPageIndex {
-                PDFSlideView(url: url, pageIndex: page, documentRevision: session.pdfDocumentRevision,
-                             documentCache: session.pdfDocumentCache)
+            else if slide.pdfURL != nil, let page = slide.pdfPageIndex {
+                PDFSlideView(source: snapshot.acceptedPDF, pageIndex: page)
             }
             else if let url = slide.imageURL {
                 ImageSlideView(url: url, backgroundColour: showsBackground ? .clear : .black,
-                               contentIdentity: imageContentIdentity)
+                               contentIdentity: ProjectionImageContentIdentity(snapshot: snapshot))
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
     }

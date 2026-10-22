@@ -202,6 +202,12 @@ all appearance profiles. Unsupported NDI-only content cannot replace an accepted
 With native companions it can present locally while NDI submits replacement empty/key
 frames. A transfer to unsupported Current is rejected before ownership changes.
 
+Native PDF views render the immutable source retained by the accepted output
+snapshot, as NDI already does. Current preparation owns a separate bounded source
+cache. Rejected Current changes and later file replacement/deletion cannot reopen
+or replace an accepted PDF. Page navigation retains its native document; explicit
+same-path acceptance replaces it using the new accepted source identity.
+
 Native foreground images carry the accepted snapshot's workspace UUID and document
 revision through the view request, displayed-image identity and decode cache. An
 explicit accepted Load therefore refreshes bytes even when a file rewrite preserves
@@ -351,6 +357,12 @@ with a checked frame-rate choice and an accessible current value.
 Audio volume and playback-position sliders expose explicit accessibility names and
 useful values. Incoming state stays passive; UI teardown does not stop playback,
 capture or outputs.
+
+Sidebar arrow navigation reaches visible section headers, hierarchy containers
+and items. Native Right/Left expansion and parent navigation preserve Preview
+while containers hold focus; leaf changes still pass normal selection approval.
+Passive configuration/progress updates retain the operator's container focus and
+collapsed state. Audio selection and playback remain independent.
 
 The Profiles list separates reusable profiles, assigned output appearances and
 unused saved appearances using customization metadata and actual references, never

@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-enum LibraryCommandPaletteAction: String, CaseIterable, Identifiable {
+nonisolated enum LibraryCommandPaletteAction: String, CaseIterable, Identifiable, Sendable {
     case newLyrics
     case refreshLibrary
 
@@ -59,12 +59,13 @@ enum LibraryCommandPaletteAction: String, CaseIterable, Identifiable {
 struct LibrarySearchOverlayView: View {
     @Binding var query: String
 
-    @Binding var selectedResult: URL?
+    @Binding var selectedEntry: LibrarySearchEntryID?
 
     let actions: [LibraryCommandPaletteAction]
     let results: [LibraryTextSearchIndex.SearchResult]
     let minimumCharacterCount: Int
     let isIndexing: Bool
+    let searchPhase: LibrarySearchQueryPhase
     let displayName: (URL) -> String
     let onRunAction: (LibraryCommandPaletteAction) -> Void
     let onClose: () -> Void
@@ -80,7 +81,7 @@ struct LibrarySearchOverlayView: View {
             Color.black.opacity(0.22)
                 .ignoresSafeArea()
                 .onTapGesture {
-                    onClose()
+                    if commandRouter.isAttached { onClose() }
                 }
 
             VStack(alignment: .leading, spacing: 0) {
@@ -106,7 +107,7 @@ struct LibrarySearchOverlayView: View {
             )
         }
         .onExitCommand {
-            onClose()
+            if commandRouter.isAttached { onClose() }
         }
     }
 
@@ -142,15 +143,16 @@ struct LibrarySearchOverlayView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             LibrarySearchResultsListView(
-                selectedResult: $selectedResult,
+                selectedEntry: $selectedEntry,
                 commandRouter: commandRouter,
                 actions: actions,
                 results: results,
                 displayName: displayName,
                 onRunAction: onRunAction,
                 onOpenResult: onOpenResult,
+                onClose: onClose,
                 onAddResultToPlaylist: { url in
-                    selectedResult = url
+                    selectedEntry = .result(url)
                     onAddResultToPlaylist(url)
                     commandRouter.restoreSearchFocus()
                 }
@@ -161,11 +163,16 @@ struct LibrarySearchOverlayView: View {
     private var footer: some View {
         HStack {
             Button("Close") {
-                onClose()
+                if commandRouter.isAttached { onClose() }
             }
             .keyboardShortcut(.cancelAction)
 
             Spacer()
+
+            Button("Add to Playlist") {
+                if commandRouter.addSelectionToPlaylist() { commandRouter.restoreSearchFocus() }
+            }
+            .disabled(primaryEntry?.resultURL == nil)
 
             Button(primaryButtonTitle) {
                 performPrimaryAction()
@@ -177,23 +184,18 @@ struct LibrarySearchOverlayView: View {
         .padding(.vertical, 12)
     }
 
-    private func openSelectedResult() {
-        guard let url = selectedResult ?? results.first?.url else { return }
-        onOpenResult(url)
+    func performPrimaryAction() {
+        commandRouter.performPrimaryAction {
+            if primaryEntry == nil, trimmedQuery.count >= minimumCharacterCount { onCommitQuery() }
+        }
     }
 
-    private func performPrimaryAction() {
-        if shouldUsePrimaryActionForResult {
-            openSelectedResult()
-            return
+    private var primaryEntry: LibrarySearchEntryID? {
+        guard let selectedEntry else { return nil }
+        switch selectedEntry {
+        case .action(let action): return actions.contains(action) ? selectedEntry : nil
+        case .result(let url): return results.contains(where: { $0.url == url }) ? selectedEntry : nil
         }
-
-        if let action = matchedPrimaryAction {
-            onRunAction(action)
-            return
-        }
-
-        onCommitQuery()
     }
 
     private var trimmedQuery: String {
@@ -210,7 +212,7 @@ struct LibrarySearchOverlayView: View {
 
     private var shouldShowNoResults: Bool {
         trimmedQuery.count >= minimumCharacterCount &&
-            !isIndexing &&
+            !isIndexing && searchPhase == .completed &&
             results.isEmpty &&
             actions.isEmpty
     }
@@ -219,37 +221,26 @@ struct LibrarySearchOverlayView: View {
         if !actions.isEmpty || !results.isEmpty {
             return false
         }
-        return shouldShowEmptyState || shouldShowMinimumHint || shouldShowNoResults || isIndexing
-    }
-
-    private var shouldUsePrimaryActionForResult: Bool {
-        !results.isEmpty
-    }
-
-    private var matchedPrimaryAction: LibraryCommandPaletteAction? {
-        guard !trimmedQuery.isEmpty else { return nil }
-        return actions.first
+        return shouldShowEmptyState || shouldShowMinimumHint || shouldShowNoResults || isIndexing || searchPhase == .pending
     }
 
     private var primaryButtonTitle: String {
-        if shouldUsePrimaryActionForResult {
-            return "Preview"
+        switch primaryEntry {
+        case .action(let action): action.title
+        case .result: "Preview"
+        case nil: "Search"
         }
-        return matchedPrimaryAction?.title ?? "Run"
     }
 
     private var shouldDisablePrimaryButton: Bool {
-        if shouldUsePrimaryActionForResult {
-            return selectedResult == nil && results.first == nil
-        }
-        return matchedPrimaryAction == nil
+        primaryEntry == nil && (trimmedQuery.count < minimumCharacterCount || searchPhase == .completed)
     }
 
     private var statusSymbol: String {
         if shouldShowEmptyState {
             return "sparkle.magnifyingglass"
         }
-        if isIndexing {
+        if isIndexing || searchPhase == .pending {
             return "clock.arrow.trianglehead.counterclockwise.rotate.90"
         }
         if shouldShowMinimumHint {
@@ -261,12 +252,15 @@ struct LibrarySearchOverlayView: View {
         return "magnifyingglass"
     }
 
-    private var statusText: String {
+    var statusText: String {
         if shouldShowEmptyState {
             return "Search songs or run a library action"
         }
         if isIndexing {
             return "Indexing text files..."
+        }
+        if searchPhase == .pending {
+            return "Searching songs…"
         }
         if shouldShowMinimumHint {
             return "Type at least \(minimumCharacterCount) characters to search songs"
@@ -280,7 +274,7 @@ struct LibrarySearchOverlayView: View {
 
 }
 
-private struct LibrarySearchFieldView: NSViewRepresentable {
+struct LibrarySearchFieldView: NSViewRepresentable {
     @Binding var text: String
 
     let commandRouter: LibrarySearchCommandRouter
@@ -297,24 +291,30 @@ private struct LibrarySearchFieldView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> LibrarySearchField {
+        Self.makeSearchField(coordinator: context.coordinator, commandRouter: commandRouter)
+    }
+
+    static func makeSearchField(coordinator: Coordinator, commandRouter: LibrarySearchCommandRouter) -> LibrarySearchField {
         let searchField = LibrarySearchField()
         searchField.placeholderString = "Search songs or commands"
         searchField.font = .systemFont(ofSize: NSFont.systemFontSize)
         searchField.controlSize = .large
-        searchField.focusRingType = .none
+        searchField.setAccessibilityLabel("Search songs or commands")
         searchField.sendsSearchStringImmediately = true
         searchField.sendsWholeSearchString = false
-        searchField.delegate = context.coordinator
-        searchField.target = context.coordinator
+        searchField.delegate = coordinator
+        searchField.target = coordinator
         searchField.action = #selector(Coordinator.performSearchFieldAction(_:))
-        context.coordinator.searchField = searchField
+        coordinator.searchField = searchField
         commandRouter.register(searchField: searchField)
         return searchField
     }
 
     func updateNSView(_ searchField: LibrarySearchField, context: Context) {
+        guard context.coordinator.searchField === searchField else { return }
         context.coordinator.update(from: self)
-        if searchField.stringValue != text {
+        if (searchField.currentEditor() as? NSTextView)?.hasMarkedText() != true,
+           searchField.stringValue != text {
             searchField.stringValue = text
         }
         commandRouter.register(searchField: searchField)
@@ -325,11 +325,10 @@ private struct LibrarySearchFieldView: NSViewRepresentable {
         coordinator: Coordinator
     ) {
         searchField.restorePreviousFocus()
-        coordinator.commandRouter.unregister(searchField: searchField)
+        coordinator.retire(searchField)
         searchField.delegate = nil
         searchField.target = nil
         searchField.action = nil
-        coordinator.searchField = nil
     }
 
     @MainActor
@@ -354,18 +353,30 @@ private struct LibrarySearchFieldView: NSViewRepresentable {
         }
 
         func update(from view: LibrarySearchFieldView) {
+            guard searchField != nil else { return }
             text = view.$text
             commandRouter = view.commandRouter
             onSubmit = view.onSubmit
             onClose = view.onClose
         }
 
+        fileprivate func retire(_ searchField: LibrarySearchField) {
+            guard self.searchField === searchField else { return }
+            commandRouter.unregister(searchField: searchField)
+            self.searchField = nil
+            text = .constant("")
+            onSubmit = {}
+            onClose = {}
+        }
+
         func controlTextDidChange(_ notification: Notification) {
-            guard let searchField else { return }
+            guard let searchField,
+                  (searchField.currentEditor() as? NSTextView)?.hasMarkedText() != true else { return }
             synchronizeText(from: searchField)
         }
 
         func searchFieldDidEndSearching(_ sender: NSSearchField) {
+            guard searchField === sender, sender.window != nil else { return }
             synchronizeText(from: sender)
             commandRouter.restoreSearchFocus()
         }
@@ -375,6 +386,7 @@ private struct LibrarySearchFieldView: NSViewRepresentable {
         }
 
         private func synchronizeText(from searchField: NSSearchField) {
+            guard self.searchField === searchField, searchField.window != nil else { return }
             if text.wrappedValue != searchField.stringValue {
                 text.wrappedValue = searchField.stringValue
             }
@@ -385,8 +397,12 @@ private struct LibrarySearchFieldView: NSViewRepresentable {
             textView: NSTextView,
             doCommandBy commandSelector: Selector
         ) -> Bool {
+            // Candidate selection and commit/cancel belong to the input method.
+            guard let searchField, searchField === control, searchField.window != nil,
+                  !textView.hasMarkedText() else { return false }
             switch commandSelector {
             case #selector(NSResponder.insertNewline(_:)):
+                if let field = control as? NSSearchField { synchronizeText(from: field) }
                 onSubmit()
                 return true
             case #selector(NSResponder.cancelOperation(_:)):

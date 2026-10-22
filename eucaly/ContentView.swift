@@ -1006,12 +1006,6 @@ public struct ContentView: View {
                         failedRoot: folder
                     ) {
                         applyLibraryMetadata([], for: folder)
-                        librarySearch.applySearchResults(
-                            [],
-                            query: librarySearch.trimmedQuery,
-                            currentSelectedURL: currentSelectedURL,
-                            preferFirstResult: true
-                        )
                     }
                     libraryLoadFailure = failure
                     isLibraryLoading = false
@@ -1023,21 +1017,6 @@ public struct ContentView: View {
 
             let metadata = syncResult.metadata
 
-            let currentQuery = await MainActor.run {
-                librarySearch.trimmedQuery
-            }
-
-            let refreshedResults: [LibraryTextSearchIndex.SearchResult]
-            if currentQuery.count >= LibrarySearchModel.minimumCharacterCount {
-                refreshedResults = await index.search(
-                    query: currentQuery,
-                    scopeFiles: metadata.filter { $0.kind.isPreviewLibraryItem }.map(\.url)
-                )
-            } else {
-                refreshedResults = []
-            }
-            guard !Task.isCancelled else { return }
-
             await MainActor.run {
                 guard !Task.isCancelled else { return }
                 let searchScopeFiles = applyLibraryMetadata(metadata, for: folder)
@@ -1046,12 +1025,7 @@ public struct ContentView: View {
                 libraryLoadFailure = syncResult.failure.map { LibraryLoadFailure(url: folder, error: $0) }
 
                 if refreshSearchResults || !haveSameStandardizedURLs(previousSearchScopeFiles, searchScopeFiles) {
-                    librarySearch.applySearchResults(
-                        refreshedResults,
-                        query: currentQuery,
-                        currentSelectedURL: currentSelectedURL,
-                        preferFirstResult: true
-                    )
+                    librarySearch.refreshSearch(currentSelectedURL: currentSelectedURL)
                 }
             }
         }
@@ -1388,7 +1362,8 @@ public struct ContentView: View {
         InterfaceMotion.search.animate(reduceMotion: reduceMotion) {
             isLibrarySearchPresented = true
         }
-        librarySearch.syncSelectedResult(
+        librarySearch.refreshSearch(currentSelectedURL: currentSelectedURL)
+        librarySearch.syncSelection(
             currentSelectedURL: currentSelectedURL,
             preferFirstResult: true
         )
@@ -1396,6 +1371,7 @@ public struct ContentView: View {
 
     @MainActor
     private func dismissLibrarySearch() {
+        librarySearch.cancelDebounce()
         InterfaceMotion.search.animate(reduceMotion: reduceMotion) {
             isLibrarySearchPresented = false
         }

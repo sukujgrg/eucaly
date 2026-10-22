@@ -130,7 +130,9 @@ final class OutputProfileReviewTests: XCTestCase {
         let pdfURL = folder.appendingPathComponent("actual-page.pdf")
         var page = CGRect(x: 0, y: 0, width: 640, height: 360)
         let context = try XCTUnwrap(CGContext(pdfURL as CFURL, mediaBox: &page, nil))
-        context.beginPDFPage(nil); context.setFillColor(NSColor.red.cgColor); context.fill(page); context.endPDFPage(); context.closePDF()
+        let pageColour = try XCTUnwrap(CGColor(colorSpace: try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB)),
+                                               components: [1, 0, 0, 1]))
+        context.beginPDFPage(nil); context.setFillColor(pageColour); context.fill(page); context.endPDFPage(); context.closePDF()
         for kind in OutputProfile.Kind.allCases {
             let (outputs, session, destination) = setup(kind); defer { outputs.stop() }
             session.setSlides([.init(index: 1, lines: [], label: "Image", videoURL: nil, pdfURL: nil, pdfPageIndex: nil, imageURL: imageURL)])
@@ -152,8 +154,17 @@ final class OutputProfileReviewTests: XCTestCase {
             let pdf = try XCTUnwrap(descendants(view).compactMap { $0 as? PDFView }.first, "\(kind) needs a native PDF renderer")
             let accepted = try XCTUnwrap(outputs.snapshot(for: destination).acceptedPDF)
             XCTAssertEqual(accepted.url, pdfURL.standardizedFileURL)
-            XCTAssertTrue(pdf.document === session.pdfDocumentCache.document(for: pdfURL),
-                          "Native output must render the document created from the accepted bytes")
+            let renderedPage = try XCTUnwrap(pdf.currentPage?.pageRef)
+            let pagePixels = try XCTUnwrap(CGContext(data: nil, width: 16, height: 16, bitsPerComponent: 8,
+                bytesPerRow: 64, space: try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB)),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            pagePixels.concatenate(renderedPage.getDrawingTransform(.mediaBox,
+                rect: .init(x: 0, y: 0, width: 16, height: 16), rotate: 0, preserveAspectRatio: true))
+            pagePixels.drawPDFPage(renderedPage)
+            let centre = try XCTUnwrap(pagePixels.data).assumingMemoryBound(to: UInt8.self) + 8 * 64 + 8 * 4
+            XCTAssertGreaterThan(centre[0], 230, "Native PDFKit must display the accepted red page")
+            XCTAssertLessThan(centre[1], 26)
+            XCTAssertLessThan(centre[2], 26)
             XCTAssertEqual(pdf.currentPage?.pageRef?.getBoxRect(.mediaBox), page)
             XCTAssertEqual(pdf.bounds.size, view.bounds.size, "\(kind) must give PDF the full output canvas")
         }

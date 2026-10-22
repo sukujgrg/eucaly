@@ -48,6 +48,10 @@ enum SidebarSection: String, CaseIterable {
     var defaultExpanded: Bool { self == .library || self == .playlist }
 }
 
+enum SidebarSectionNavigationCommand: Equatable {
+    case up, down, left, right
+}
+
 @MainActor
 final class SidebarSectionView: NSStackView {
     let header: SidebarSectionHeaderButton
@@ -96,6 +100,7 @@ final class SidebarSectionView: NSStackView {
 @MainActor
 final class SidebarSectionHeaderButton: NSButton {
     let section: SidebarSection
+    var navigationHandler: ((SidebarSectionNavigationCommand) -> Void)?
     private let disclosure = NSImageView()
     private var hoverArea: NSTrackingArea?
     private var isHovered = false
@@ -177,13 +182,23 @@ final class SidebarSectionHeaderButton: NSButton {
 
     override func keyDown(with event: NSEvent) {
         let modifiers: NSEvent.ModifierFlags = [.command, .control, .option, .shift]
-        if event.keyCode == 49, event.modifierFlags.intersection(modifiers).isEmpty,
-           window?.firstResponder === self {
-            if !event.isARepeat { performClick(nil) }
-            return
+        if event.modifierFlags.intersection(modifiers).isEmpty, window?.firstResponder === self {
+            if event.keyCode == 49 {
+                if !event.isARepeat { performClick(nil) }
+                return
+            }
+            if (123...126).contains(event.keyCode) {
+                interpretKeyEvents([event])
+                return
+            }
         }
         super.keyDown(with: event)
     }
+
+    override func moveUp(_ sender: Any?) { navigationHandler?(.up) }
+    override func moveDown(_ sender: Any?) { navigationHandler?(.down) }
+    override func moveLeft(_ sender: Any?) { navigationHandler?(.left) }
+    override func moveRight(_ sender: Any?) { navigationHandler?(.right) }
 
     override func draw(_ dirtyRect: NSRect) {
         if window?.isKeyWindow == true && (isHovered || isHighlighted) {

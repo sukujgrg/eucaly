@@ -7,6 +7,8 @@ final class LibrarySearchField: NSSearchField {
         set { super.cellClass = newValue }
     }
 
+    weak var focusCompanion: NSView?
+
     private var needsInitialFocus = true
     private weak var previousFocus: NSView?
     private var previousSelection: [NSValue]?
@@ -53,12 +55,15 @@ final class LibrarySearchField: NSSearchField {
     /// Restore synchronously while the native field still has its window. A
     /// result action that already chose another responder keeps that focus.
     func restorePreviousFocus() {
-        defer { previousFocus = nil; previousSelection = nil; searchEditor = nil }
+        defer { previousFocus = nil; previousSelection = nil; searchEditor = nil; focusCompanion = nil }
         guard let window, let previousFocus, previousFocus.window === window,
               !previousFocus.isHiddenOrHasHiddenAncestor else { return }
         let editor = currentEditor() ?? searchEditor
         let ownsEditor = editor.map { window.firstResponder === $0 } ?? false
-        guard window.firstResponder === self || ownsEditor else { return }
+        let ownsCompanion = (window.firstResponder as? NSView).map { responder in
+            focusCompanion.map { responder === $0 || responder.isDescendant(of: $0) } ?? false
+        } ?? false
+        guard window.firstResponder === self || ownsEditor || ownsCompanion else { return }
         guard window.makeFirstResponder(previousFocus) else { return }
         if let previousSelection, let control = previousFocus as? NSControl,
            let editor = control.currentEditor() as? NSTextView {

@@ -119,6 +119,7 @@ final class SidebarViewController: NSViewController {
         buildPlaylist()
         buildAudio()
         buildWindows()
+        configureSectionNavigation()
     }
 
     override func viewDidLayout() {
@@ -161,6 +162,10 @@ final class SidebarViewController: NSViewController {
         prepareLibraryIfNeeded()
     }
 
+#if DEBUG
+    var pendingLibraryPreparationForTests: Task<Void, Never>? { libraryTask }
+#endif
+
     /// Closing controls releases UI observers and delegates only. The app keeps
     /// its session, players, captures and outputs alive independently.
     func detach() {
@@ -170,6 +175,8 @@ final class SidebarViewController: NSViewController {
         libraryTask = nil
         subscriptions.removeAll()
         preferenceSubscription = nil
+        navigation.removeAllRegistrations()
+        sections.values.forEach { $0.header.navigationHandler = nil }
         [libraryOutline, playlistOutline, audioOutline, windowOutline].forEach { $0.detach() }
     }
 
@@ -573,25 +580,111 @@ final class SidebarViewController: NSViewController {
 
     private func navigationSection(_ section: SidebarSection) -> SidebarOutlineNavigationSection? {
         guard sections[section]?.isExpanded == true, sections[section]?.isHidden == false else { return nil }
+        return navigationIdentity(section)
+    }
+
+    private func navigationIdentity(_ section: SidebarSection) -> SidebarOutlineNavigationSection {
         switch section {
         case .library: return .library
         case .playlist: return .playlist
         case .windows: return .window
-        case .audio: return nil
+        case .audio: return .audio
+        }
+    }
+
+    private func outline(for section: SidebarSection) -> SidebarOutlineController {
+        switch section {
+        case .library: libraryOutline
+        case .playlist: playlistOutline
+        case .audio: audioOutline
+        case .windows: windowOutline
+        }
+    }
+
+    private func configureSectionNavigation() {
+        for section in SidebarSection.allCases {
+            navigation.register(
+                for: navigationIdentity(section),
+                isAvailable: { [weak self] in
+                    guard let self, !isDetached, let view = sections[section],
+                          view.window != nil else { return false }
+                    return !view.isHiddenOrHasHiddenAncestor
+                },
+                hasVisibleRows: { [weak self] in
+                    guard let self, !isDetached, sections[section]?.isExpanded == true else { return false }
+                    return outline(for: section).hasVisibleRows
+                },
+                focusHeader: { [weak self] in self?.focusHeader(section) ?? false },
+                focusBoundaryRow: { [weak self] direction in
+                    guard let self, !isDetached else { return false }
+                    return outline(for: section).focusBoundaryRow(for: direction)
+                }
+            )
+            sections[section]?.header.navigationHandler = { [weak self] command in
+                self?.navigateSection(section, command: command)
+            }
+        }
+    }
+
+    private func focusHeader(_ section: SidebarSection) -> Bool {
+        guard !isDetached, let header = sections[section]?.header,
+              let window = header.window, !header.isHiddenOrHasHiddenAncestor else { return false }
+        header.scrollToVisible(header.bounds)
+        return window.makeFirstResponder(header)
+    }
+
+    private func navigateSection(_ section: SidebarSection, command: SidebarSectionNavigationCommand) {
+        guard !isDetached, let sectionView = sections[section], !sectionView.isHiddenOrHasHiddenAncestor else { return }
+        switch command {
+        case .up, .down:
+            _ = navigation.moveFromHeader(
+                from: navigationIdentity(section), direction: command == .up ? .up : .down,
+                restoreSourceFocus: { [weak self] in _ = self?.focusHeader(section) }
+            )
+        case .right:
+            if !sectionView.isExpanded {
+                setExpanded(true, section: section)
+                updateOutlines()
+            } else if outline(for: section).hasVisibleRows,
+                      !outline(for: section).focusBoundaryRow(for: .down) {
+                _ = focusHeader(section)
+            }
+        case .left:
+            if sectionView.isExpanded {
+                setExpanded(false, section: section)
+                updateOutlines()
+            }
         }
     }
 
     private func updateLibraryOutline() {
         let presentation = libraryModels.presentation
-        let model = presentation?.revision == libraryRevision ? presentation!.model : .empty
-        libraryOutline.scrollView.isHidden = configuration.libraryFiles.isEmpty || presentation?.revision != libraryRevision
+        let isPrepared = presentation?.revision == libraryRevision
+        let sameSource = presentation.map {
+            $0.revision.grouping == grouping && $0.revision.libraryRootURL == libraryRevision.libraryRootURL
+        } ?? false
+        let hideOutline = configuration.libraryFiles.isEmpty || (!isPrepared && !sameSource)
+        if hideOutline, !libraryOutline.scrollView.isHidden,
+           let responder = view.window?.firstResponder as? NSView,
+           responder === libraryOutline.outlineView || responder.isDescendant(of: libraryOutline.outlineView) {
+            _ = focusHeader(.library)
+        }
+        libraryOutline.scrollView.isHidden = hideOutline
         libraryCaption.superview?.isHidden = !libraryOutline.scrollView.isHidden || (configuration.libraryFiles.isEmpty && configuration.libraryLoadFailure != nil)
         libraryCaption.stringValue = configuration.libraryFiles.isEmpty
             ? (configuration.isLibraryLoading ? "Loading library…" : "No supported files in Library")
             : "Preparing \(grouping.title) view…"
+        // Same-source preparation keeps the last complete list visible so its
+        // native keyboard ownership survives. A new root/grouping waits at its
+        // header; an actual empty inventory clears the native model below.
+        guard configuration.libraryFiles.isEmpty || isPrepared else {
+            updateGroupButton()
+            return
+        }
+        let model = configuration.libraryFiles.isEmpty ? .empty : presentation!.model
         let selected: SidebarOutlineItemID? = if case .library(let url) = configuration.sidebarSelection { .library(url.standardizedFileURL) } else { nil }
         libraryOutline.update(SidebarOutlineConfiguration(
-            contentRevision: AnyHashable(presentation?.revision == libraryRevision ? libraryRevision : LibraryOutlineRevision(libraryRevision: -1, grouping: grouping, libraryRootURL: nil)),
+            contentRevision: AnyHashable(libraryRevision),
             expansionKey: libraryExpansionKey, modelBuilder: { model }, selectedItemIDs: selected.map { [$0] } ?? [], primarySelectedItemID: selected,
             scrollRequest: configuration.libraryScrollRequest.map { .init(id: $0.id, itemID: .library($0.url.standardizedFileURL)) },
             expansionCommand: libraryExpansionCommand, expansionStore: expansionStore,
@@ -599,10 +692,12 @@ final class SidebarViewController: NSViewController {
             onSelectionChange: { [weak self] _, primary in
                 guard let self, !isDetached, !isApplyingSnapshot else { return false }
                 guard let primary else { return configuration.onSelectionRequest(nil, []) }
-                guard case .library(let url) = primary else { return false }
+                guard case .library(let url) = primary,
+                      configuration.libraryFiles.contains(where: { $0.standardizedFileURL == url }) else { return false }
                 return configuration.onSelectionRequest(.library(url), [])
             }, onAction: { [weak self] item, action in
-                guard let self, !isDetached, !isApplyingSnapshot, case .library(let url) = item else { return }
+                guard let self, !isDetached, !isApplyingSnapshot, case .library(let url) = item,
+                      configuration.libraryFiles.contains(where: { $0.standardizedFileURL == url }) else { return }
                 switch action {
                 case .addToPlaylist: configuration.onAddLibraryItemToPlaylist(url)
                 case .revealInFinder: NSWorkspace.shared.activateFileViewerSelecting([url])
@@ -668,7 +763,8 @@ final class SidebarViewController: NSViewController {
             contentRevision: AnyHashable(configuration.libraryRevision), modelBuilder: {
                 SidebarOutlineModel(roots: files.map { SidebarOutlineItem(id: .audio($0.standardizedFileURL), title: self.configuration.displayName($0), contextActions: [.revealInFinder]) })
             }, selectedItemIDs: selected.map { [$0] } ?? [], primarySelectedItemID: selected, itemStatuses: statuses,
-            expansionStore: expansionStore, allowsEmptySelection: true,
+            expansionStore: expansionStore, navigationSection: files.isEmpty ? nil : navigationSection(.audio),
+            navigationCoordinator: navigation, allowsEmptySelection: true,
             onSelectionChange: { [weak self] _, primary in
                 guard let self, !isDetached, !isApplyingSnapshot else { return false }
                 let url: URL? = if case .audio(let url) = primary { url.standardizedFileURL } else { nil }

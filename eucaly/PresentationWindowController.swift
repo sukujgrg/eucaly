@@ -109,10 +109,7 @@ final class PresentationSession: NSObject, ObservableObject {
     private var currentThumbnailColumnCount: Int = 1
     private var currentDocumentRevision: UInt64 = 0
     var documentRevision: UInt64 { currentDocumentRevision }
-    // A page's stable slide ID does not change when its source is reloaded.
-    // Native PDF views also need this workspace's explicit-load identity.
-    var pdfDocumentRevision: UInt64 { documentRevision }
-    let pdfDocumentCache = PDFDocumentCache()
+    let pdfDocumentCache = AcceptedPDFSourceCache()
     private var pendingNavigationCount = 0
     private var navigationActionOrder: UInt64?
     private var navigationGeneration = UUID()
@@ -607,10 +604,8 @@ final class PresentationSession: NSObject, ObservableObject {
 }
 
 struct PDFSlideView: NSViewRepresentable {
-    let url: URL
+    let source: AcceptedPDFSource?
     let pageIndex: Int
-    let documentRevision: UInt64
-    let documentCache: PDFDocumentCache
 
     func makeNSView(context: Context) -> PDFSlideNSView {
         let view = PDFSlideNSView(frame: .zero)
@@ -623,19 +618,14 @@ struct PDFSlideView: NSViewRepresentable {
     }
 
     private func update(_ view: PDFSlideNSView) {
-        view.display(url: url, pageIndex: pageIndex, revision: documentRevision, cache: documentCache)
+        view.display(source: source, pageIndex: pageIndex)
     }
 }
 
-/// A page change reuses its accepted document. An explicit Current load changes
-/// the revision, even when its URL and page-derived slide identity are unchanged.
+/// Native output owns a parsed view of accepted immutable bytes. It never
+/// reopens a path or consults private Current's preparation cache.
 final class PDFSlideNSView: PDFView {
-    private struct Source: Equatable {
-        let url: URL
-        let revision: UInt64
-    }
-    private var displayedSource: Source?
-    private weak var displayedCache: PDFDocumentCache?
+    private var displayedSourceID: UUID?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -657,63 +647,52 @@ final class PDFSlideNSView: PDFView {
         displaysAsBook = false
     }
 
-    func display(url: URL, pageIndex: Int, revision: UInt64, cache: PDFDocumentCache) {
-        let source = Source(url: url.standardizedFileURL, revision: revision)
-        if displayedSource != source || displayedCache !== cache {
-            document = cache.document(for: url)
-            displayedSource = source
-            displayedCache = cache
+    func display(source: AcceptedPDFSource?, pageIndex: Int) {
+        if displayedSourceID != source?.id {
+            document = source.flatMap { PDFDocument(data: $0.data) }
+            displayedSourceID = source?.id
         }
         if let page = document?.page(at: pageIndex) { go(to: page) }
     }
 }
 
-/// Each prepared workspace retains at most three native documents. Reloading or
-/// clearing its Current cannot invalidate another workspace's accepted PDF.
+/// Explicit Load validates and retains at most three immutable sources per
+/// workspace. Accepted output snapshots keep their own source after this clears.
 @MainActor
-final class PDFDocumentCache {
-    private struct Entry {
-        let document: PDFDocument
-        let source: AcceptedPDFSource
-    }
-    private let maxCachedDocuments = 3
-    private var documents: [URL: Entry] = [:]
+final class AcceptedPDFSourceCache {
+    private let maxCachedSources = 3
+    private var sources: [URL: AcceptedPDFSource] = [:]
     private var accessOrder: [URL] = []
 
     init() {}
 
-    func document(for url: URL) -> PDFDocument? {
+    @discardableResult
+    func prepareAcceptedSource(for url: URL) -> AcceptedPDFSource? {
         let key = url.standardizedFileURL
-        if let cached = documents[key] {
+        if let cached = sources[key] {
             touch(key)
-            return cached.document
+            return cached
         }
 
-        guard let source = AcceptedPDFSource(url: key), let document = PDFDocument(data: source.data) else { return nil }
-        while documents.count >= maxCachedDocuments, let oldest = accessOrder.first {
-            documents.removeValue(forKey: oldest)
+        guard let source = AcceptedPDFSource(url: key), PDFDocument(data: source.data) != nil else { return nil }
+        while sources.count >= maxCachedSources, let oldest = accessOrder.first {
+            sources.removeValue(forKey: oldest)
             accessOrder.removeAll { $0 == oldest }
         }
 
-        documents[key] = Entry(document: document, source: source)
+        sources[key] = source
         touch(key)
-        return document
-    }
-
-    @discardableResult
-    func prepareAcceptedSource(for url: URL) -> AcceptedPDFSource? {
-        guard document(for: url) != nil else { return nil }
-        return acceptedSource(for: url)
+        return source
     }
 
     // Acceptance and publication only look up the source captured by explicit
     // Load. They must never reopen a path while an accepted PDF is on output.
     func acceptedSource(for url: URL) -> AcceptedPDFSource? {
-        documents[url.standardizedFileURL]?.source
+        sources[url.standardizedFileURL]
     }
 
     func clear() {
-        documents.removeAll()
+        sources.removeAll()
         accessOrder.removeAll()
     }
 

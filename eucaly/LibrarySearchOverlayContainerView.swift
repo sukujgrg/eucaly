@@ -16,11 +16,12 @@ struct LibrarySearchOverlayContainerView: View {
                 get: { model.query },
                 set: { model.setQuery($0, currentSelectedURL: currentSelectedURL) }
             ),
-            selectedResult: $model.selectedResult,
+            selectedEntry: $model.selectedEntry,
             actions: model.matchingActions,
             results: model.filteredResults,
             minimumCharacterCount: LibrarySearchModel.minimumCharacterCount,
             isIndexing: model.isIndexing,
+            searchPhase: model.queryPhase,
             displayName: displayName,
             onRunAction: onRunAction,
             onClose: onClose,

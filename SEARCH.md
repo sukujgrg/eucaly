@@ -17,7 +17,16 @@ The app uses a hybrid filesystem/SQLite model:
 ## User Behavior
 - Search starts only when query length is `>= 3` characters.
 - Query is debounced (about `220ms`) to reduce unnecessary recomputation.
-- Clearing query returns the full current library list.
+- An empty Quick Open query exposes its actions without starting a file query.
+- Quick Open actions and file results share one keyboard selection; section
+  headings stay outside selection. Arrow keys traverse available entries and
+  Return activates the selected action or opens the selected file in Preview.
+- Search status covers both debounce and query execution. An empty-result message
+  appears only after the current query completes; cancelled or superseded queries
+  cannot overwrite a newer query's results or status.
+- Intervening keyboard selection survives query completion when the entry remains
+  available. Dismissal invalidates pending requests and retires native actions;
+  late results or retained controls cannot activate a closed Quick Open.
 
 ## Query Semantics
 - Single-word query: prefix match (for example, `bea` matches `beautiful`).

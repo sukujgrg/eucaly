@@ -227,7 +227,7 @@ final class SidebarControlLayoutTests: XCTestCase {
         XCTAssertFalse(fixture.session.isPresenting)
     }
 
-    func testArrowTraversalSkipsCollapsedPlaylistAndAudioAndHonorsSelectionRejection() async throws {
+    func testArrowTraversalVisitsCollapsedHeadersAndHonorsLeafRejection() async throws {
         for acceptsSelection in [true, false] {
             let fixture = try SidebarControlsFixture(grouping: .none, selectsLibraryItem: true)
             defer { fixture.close() }
@@ -235,7 +235,7 @@ final class SidebarControlLayoutTests: XCTestCase {
             fixture.calls.acceptsSelection = acceptsSelection
             let outlines = nativeViews(NSOutlineView.self, in: fixture.controller.view)
             let library = try XCTUnwrap(outlines.first { $0.accessibilityIdentifier() == "sidebar.library.outline" })
-            let windows = try XCTUnwrap(outlines.first { $0.accessibilityIdentifier() == "sidebar.windows.outline" })
+            let playlist = try XCTUnwrap(outlines.first { $0.accessibilityIdentifier() == "sidebar.playlist.outline" })
             let playlistHeader = try XCTUnwrap(nativeViews(SidebarSectionHeaderButton.self, in: fixture.controller.view).first { $0.section == .playlist })
             _ = playlistHeader.sidebarAccessibilityElement.accessibilityPerformPress()
             try await settle(fixture.window)
@@ -243,9 +243,124 @@ final class SidebarControlLayoutTests: XCTestCase {
             XCTAssertTrue(fixture.window.makeFirstResponder(library))
             library.moveDown(nil)
             try await settle(fixture.window)
-            XCTAssertEqual(fixture.calls.selections, [.window(42)])
-            XCTAssertTrue(fixture.window.firstResponder === (acceptsSelection ? windows : library))
-            XCTAssertEqual(windows.selectedRow, acceptsSelection ? 0 : -1)
+            XCTAssertTrue(fixture.window.firstResponder === playlistHeader)
+            XCTAssertTrue(fixture.calls.selections.isEmpty, "Focusing a collapsed header must preserve Preview")
+            XCTAssertTrue(playlist.isHiddenOrHasHiddenAncestor)
+            try sendArrow(124, in: fixture.window)
+            try await settle(fixture.window)
+            XCTAssertFalse(playlist.isHiddenOrHasHiddenAncestor)
+            XCTAssertTrue(fixture.window.firstResponder === playlistHeader)
+            XCTAssertTrue(fixture.calls.selections.isEmpty, "Expanding a header must not select hidden content")
+            try sendArrow(125, in: fixture.window)
+            let playlistID = try XCTUnwrap(fixture.configuration.playlistItems.first?.id)
+            XCTAssertEqual(fixture.calls.selections, [.playlist(playlistID)])
+            XCTAssertTrue(fixture.window.firstResponder === (acceptsSelection ? playlist : playlistHeader))
+            XCTAssertEqual(fixture.calls.count, 0)
+            XCTAssertTrue(fixture.session.slides.isEmpty)
+        }
+    }
+
+    func testAudioParticipatesInNativeTraversalWithoutStartingPlaybackOrChangingPreview() async throws {
+        let fixture = try SidebarControlsFixture()
+        defer { fixture.close() }
+        try await settle(fixture.window)
+        let outlines = nativeViews(NSOutlineView.self, in: fixture.controller.view)
+        let playlist = try XCTUnwrap(outlines.first { $0.accessibilityIdentifier() == "sidebar.playlist.outline" })
+        let audio = try XCTUnwrap(outlines.first { $0.accessibilityIdentifier() == "sidebar.audio.outline" })
+        let headers = nativeViews(SidebarSectionHeaderButton.self, in: fixture.controller.view)
+        let audioHeader = try XCTUnwrap(headers.first { $0.section == .audio })
+        let windowHeader = try XCTUnwrap(headers.first { $0.section == .windows })
+        XCTAssertTrue(fixture.window.makeFirstResponder(playlist))
+        playlist.moveDown(nil)
+        XCTAssertTrue(fixture.window.firstResponder === audioHeader)
+        XCTAssertEqual(fixture.calls.count, 0)
+        try sendArrow(125, in: fixture.window)
+        XCTAssertTrue(fixture.window.firstResponder === audio)
+        XCTAssertEqual(fixture.calls.count, 1, "Entering Audio only updates its independent draft selection")
+        XCTAssertTrue(fixture.calls.selections.isEmpty)
+        XCTAssertNil(fixture.session.backgroundAudioURL)
+        XCTAssertFalse(fixture.session.isBackgroundAudioPlaying)
+        audio.moveDown(nil)
+        XCTAssertTrue(fixture.window.firstResponder === windowHeader)
+        try sendArrow(126, in: fixture.window)
+        XCTAssertTrue(fixture.window.firstResponder === audio)
+        audio.moveLeft(nil)
+        XCTAssertTrue(fixture.window.firstResponder === audioHeader)
+        try sendArrow(123, in: fixture.window)
+        XCTAssertTrue(audio.isHiddenOrHasHiddenAncestor)
+        let selectionCount = fixture.calls.count
+        audio.moveDown(nil)
+        XCTAssertEqual(fixture.calls.count, selectionCount, "Retained hidden outlines cannot navigate")
+        XCTAssertTrue(fixture.calls.selections.isEmpty)
+        XCTAssertTrue(fixture.session.slides.isEmpty)
+        XCTAssertFalse(fixture.session.isPresenting)
+    }
+
+    func testPassiveLibraryPreparationPreservesCollapsedContainerFocus() async throws {
+        let fixture = try SidebarControlsFixture(selectsLibraryItem: true)
+        defer { fixture.close() }
+        await fixture.controller.pendingLibraryPreparationForTests?.value
+        fixture.window.contentView?.layoutSubtreeIfNeeded()
+        let library = try XCTUnwrap(nativeViews(NSOutlineView.self, in: fixture.controller.view).first {
+            $0.accessibilityIdentifier() == "sidebar.library.outline"
+        })
+        let selected = try XCTUnwrap(library.item(atRow: library.selectedRow) as? SidebarOutlineItem)
+        let container = try XCTUnwrap(library.parent(forItem: selected) as? SidebarOutlineItem)
+        XCTAssertTrue(fixture.window.makeFirstResponder(library))
+        library.collapseItem(container)
+        XCTAssertEqual((library.item(atRow: library.selectedRow) as? SidebarOutlineItem)?.id, container.id)
+
+        let next = fixture.configuration(libraryRevision: fixture.configuration.libraryRevision + 1)
+        fixture.controller.update(next)
+        XCTAssertEqual((library.item(atRow: library.selectedRow) as? SidebarOutlineItem)?.id, container.id,
+            "An in-flight build must not install a temporary empty selection")
+        XCTAssertTrue(fixture.window.firstResponder === library)
+        await fixture.controller.pendingLibraryPreparationForTests?.value
+        fixture.window.contentView?.layoutSubtreeIfNeeded()
+        let reloadedContainer = try XCTUnwrap(library.item(atRow: library.selectedRow) as? SidebarOutlineItem)
+        XCTAssertEqual(reloadedContainer.id, container.id)
+        XCTAssertFalse(library.isItemExpanded(reloadedContainer))
+        XCTAssertFalse(library.isHiddenOrHasHiddenAncestor)
+        XCTAssertTrue(fixture.window.firstResponder === library, "Prepared replacement must retain keyboard ownership")
+        XCTAssertTrue(fixture.calls.selections.isEmpty)
+        XCTAssertEqual(fixture.calls.count, 0)
+        XCTAssertTrue(fixture.session.slides.isEmpty)
+        XCTAssertFalse(fixture.session.isPresenting)
+    }
+
+    func testLibraryScopeChangesReturnOutlineFocusToTheHeaderWithoutStealingItBack() async throws {
+        enum Change: CaseIterable, Equatable { case empty, root, grouping }
+        for change in Change.allCases {
+            let fixture = try SidebarControlsFixture(selectsLibraryItem: true)
+            defer { fixture.close() }
+            await fixture.controller.pendingLibraryPreparationForTests?.value
+            fixture.window.contentView?.layoutSubtreeIfNeeded()
+            let library = try XCTUnwrap(nativeViews(NSOutlineView.self, in: fixture.controller.view).first {
+                $0.accessibilityIdentifier() == "sidebar.library.outline"
+            })
+            let header = try XCTUnwrap(nativeViews(SidebarSectionHeaderButton.self, in: fixture.controller.view).first {
+                $0.section == .library
+            })
+            XCTAssertTrue(fixture.window.makeFirstResponder(library))
+            switch change {
+            case .empty:
+                fixture.controller.update(fixture.configuration(libraryRevision: 2, libraryFiles: []))
+            case .root:
+                let root = URL(fileURLWithPath: "/sidebar-control-replacement")
+                fixture.controller.update(fixture.configuration(libraryRevision: 2,
+                    libraryRootURL: root, libraryFiles: [root.appendingPathComponent("Replacement.txt")]))
+            case .grouping:
+                fixture.controller.groupingPopup.selectItem(at: try XCTUnwrap(LibraryGrouping.allCases.firstIndex(of: .folder)))
+                XCTAssertTrue(fixture.controller.groupingPopup.sendAction(fixture.controller.groupingPopup.action,
+                    to: fixture.controller.groupingPopup.target))
+            }
+            XCTAssertTrue(library.isHiddenOrHasHiddenAncestor)
+            XCTAssertTrue(fixture.window.firstResponder === header)
+            await fixture.controller.pendingLibraryPreparationForTests?.value
+            fixture.window.contentView?.layoutSubtreeIfNeeded()
+            XCTAssertTrue(fixture.window.firstResponder === header, "Preparation never overrides a newer native focus choice")
+            XCTAssertEqual(library.isHiddenOrHasHiddenAncestor, change == .empty)
+            XCTAssertTrue(fixture.calls.selections.isEmpty)
             XCTAssertEqual(fixture.calls.count, 0)
             XCTAssertTrue(fixture.session.slides.isEmpty)
         }
@@ -311,6 +426,20 @@ final class SidebarControlLayoutTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(20))
         }
     }
+
+    private func sendArrow(_ keyCode: UInt16, in window: NSWindow) throws {
+        let characters: String
+        switch keyCode {
+        case 123: characters = "\u{F702}"
+        case 124: characters = "\u{F703}"
+        case 125: characters = "\u{F701}"
+        default: characters = "\u{F700}"
+        }
+        let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, characters: characters, charactersIgnoringModifiers: characters,
+            isARepeat: false, keyCode: keyCode))
+        window.sendEvent(event)
+    }
 }
 
 @MainActor
@@ -321,6 +450,7 @@ private final class SidebarControlsFixture {
     let calls: SidebarControlCalls
     let frameRateSelection: SidebarFrameRateSelection
     let configuration: SidebarConfiguration
+    private let configurationBuilder: (Int, URL, [URL]) -> SidebarConfiguration
     private let defaults: UserDefaults
     private let suite: String
 
@@ -344,47 +474,51 @@ private final class SidebarControlsFixture {
         let root = URL(fileURLWithPath: "/sidebar-control-fixture")
         let audio = root.appendingPathComponent("Audio/Fixture audio.mp3")
         let playlistID = UUID()
-        let configuration = SidebarConfiguration(
-            session: session,
-            isWindowCaptureSupported: true,
-            libraryFiles: [root.appendingPathComponent("Song.txt")],
-            audioFiles: [audio],
-            isLibraryLoading: false,
-            libraryLoadFailure: nil,
-            libraryRevision: 1,
-            playlistItems: [.init(id: playlistID, title: "Fixture song", exists: true)],
-            libraryRootURL: root,
-            captureWindows: [.init(id: 42, windowID: 42, title: "Fixture window", appName: "Fixture", appBundleIdentifier: nil, frame: .init(x: 0, y: 0, width: 640, height: 480))],
-            libraryScrollRequest: nil,
-            selectedPlaylistEntryIDs: [playlistID],
-            sidebarSelection: selectsLibraryItem ? .library(root.appendingPathComponent("Song.txt")) : nil,
-            selectedAudioURL: audio,
-            backgroundAudioLoop: false,
-            backgroundAudioVolumeDraft: 0.37,
-            windowCaptureFrameRate: frameRateSelection.value,
-            displayName: { $0.lastPathComponent },
-            onImportToLibrary: { calls.count += 1 },
-            onRetryLibraryLoad: { calls.count += 1 },
-            onImportToAudio: { calls.count += 1 },
-            onAddLibraryItemToPlaylist: { _ in calls.count += 1 },
-            onRemovePlaylistItem: { _ in calls.count += 1 },
-            onRemoveSelectedFromPlaylist: { calls.count += 1 },
-            onMovePlaylistUp: { calls.count += 1 },
-            onMovePlaylistDown: { calls.count += 1 },
-            onSelectBackgroundAudio: { _ in calls.count += 1 },
-            onPlayPauseBackgroundAudio: { calls.count += 1 },
-            onStopBackgroundAudio: { calls.count += 1 },
-            onClearBackgroundAudio: { calls.count += 1 },
-            onApplyBackgroundAudioVolume: { _ in calls.count += 1 },
-            onSeekBackgroundAudio: { _ in calls.count += 1 },
-            onSelectionRequest: { selection, _ in calls.selections.append(selection); return calls.acceptsSelection },
-            onPickWindow: { calls.count += 1 },
-            onClearSelectedWindow: { calls.count += 1 },
-            setSelectedAudioURL: { _ in calls.count += 1 },
-            setBackgroundAudioLoop: { _ in calls.count += 1 },
-            setBackgroundAudioVolumeDraft: { _ in calls.count += 1 },
-            setWindowCaptureFrameRate: { frameRateSelection.value = $0 }
-        )
+        let makeConfiguration: (Int, URL, [URL]) -> SidebarConfiguration = { libraryRevision, libraryRoot, libraryFiles in
+            SidebarConfiguration(
+                session: session,
+                isWindowCaptureSupported: true,
+                libraryFiles: libraryFiles,
+                audioFiles: [audio],
+                isLibraryLoading: false,
+                libraryLoadFailure: nil,
+                libraryRevision: libraryRevision,
+                playlistItems: [.init(id: playlistID, title: "Fixture song", exists: true)],
+                libraryRootURL: libraryRoot,
+                captureWindows: [.init(id: 42, windowID: 42, title: "Fixture window", appName: "Fixture", appBundleIdentifier: nil, frame: .init(x: 0, y: 0, width: 640, height: 480))],
+                libraryScrollRequest: nil,
+                selectedPlaylistEntryIDs: [playlistID],
+                sidebarSelection: selectsLibraryItem ? .library(root.appendingPathComponent("Song.txt")) : nil,
+                selectedAudioURL: audio,
+                backgroundAudioLoop: false,
+                backgroundAudioVolumeDraft: 0.37,
+                windowCaptureFrameRate: frameRateSelection.value,
+                displayName: { $0.lastPathComponent },
+                onImportToLibrary: { calls.count += 1 },
+                onRetryLibraryLoad: { calls.count += 1 },
+                onImportToAudio: { calls.count += 1 },
+                onAddLibraryItemToPlaylist: { _ in calls.count += 1 },
+                onRemovePlaylistItem: { _ in calls.count += 1 },
+                onRemoveSelectedFromPlaylist: { calls.count += 1 },
+                onMovePlaylistUp: { calls.count += 1 },
+                onMovePlaylistDown: { calls.count += 1 },
+                onSelectBackgroundAudio: { _ in calls.count += 1 },
+                onPlayPauseBackgroundAudio: { calls.count += 1 },
+                onStopBackgroundAudio: { calls.count += 1 },
+                onClearBackgroundAudio: { calls.count += 1 },
+                onApplyBackgroundAudioVolume: { _ in calls.count += 1 },
+                onSeekBackgroundAudio: { _ in calls.count += 1 },
+                onSelectionRequest: { selection, _ in calls.selections.append(selection); return calls.acceptsSelection },
+                onPickWindow: { calls.count += 1 },
+                onClearSelectedWindow: { calls.count += 1 },
+                setSelectedAudioURL: { _ in calls.count += 1 },
+                setBackgroundAudioLoop: { _ in calls.count += 1 },
+                setBackgroundAudioVolumeDraft: { _ in calls.count += 1 },
+                setWindowCaptureFrameRate: { frameRateSelection.value = $0 }
+            )
+        }
+        configurationBuilder = makeConfiguration
+        let configuration = makeConfiguration(1, root, [root.appendingPathComponent("Song.txt")])
         self.configuration = configuration
         let controller = SidebarViewController(configuration: configuration, defaults: defaults)
         self.controller = controller
@@ -400,6 +534,10 @@ private final class SidebarControlsFixture {
     }
 
     var isWindowSectionExpanded: Bool { defaults.bool(forKey: "sidebar.windowsSectionExpanded") }
+
+    func configuration(libraryRevision: Int, libraryRootURL: URL? = nil, libraryFiles: [URL]? = nil) -> SidebarConfiguration {
+        configurationBuilder(libraryRevision, libraryRootURL ?? configuration.libraryRootURL!, libraryFiles ?? configuration.libraryFiles)
+    }
 
     func close() {
         controller.detach()

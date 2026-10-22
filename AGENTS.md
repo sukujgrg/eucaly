@@ -175,6 +175,10 @@ correctness. Keep shared process here and domain-specific checks in the roles.
 - Size native lists from their content, including source-list edge space. Hidden
   section contents must not receive keyboard selection; visible headers remain
   reachable for expansion.
+- Arrow navigation reaches visible sections, groups and items. Right expands or
+  enters a container; Left collapses or returns to its parent. Container focus
+  preserves Preview/Current, and passive updates preserve that focus and expansion.
+  Leaf selection still requires the workspace's normal selection approval.
 
 ### Output Profiles
 - AppDelegate owns OutputProfileStore, OutputCoordinator and NDIOutputRouter independently of controls windows. OutputCoordinator owns native destinations, local workspace ownership, snapshots and shared media. There is no incoming presentation receiver or forwarding path.
@@ -187,7 +191,9 @@ correctness. Keep shared process here and domain-specific checks in the roles.
 - Per-workspace OutputActionClock order and session cancellation generations invalidate old queued navigation after newer commands, transfer or destination closure without canceling another workspace’s navigation. Native close and outgoing connection callbacks are generation guarded.
 - Reservations and teardown are per destination. Losing one retains the others, resources, Current and saved assignments. Reconnection requires explicit Show; never silently move output to a different monitor. Enabled destinations cannot share a monitor or NDI source name. Disabled rows retain assignments without reserving them. Pickers offer None.
 - Images, PDFs, video and picked windows use the same native media boundary in every enabled profile. Remote-only media, including deferred model refresh, must not replace a valid live lyrics program.
-- Explicit PDF loads replace the owning session's cached document even when its URL is unchanged. Page navigation reuses that accepted document; another workspace's reload or Clear cannot invalidate it.
+- Explicit PDF loads replace the owning session's accepted source even when its URL is unchanged. Native page navigation reuses its accepted document; another workspace's reload or Clear cannot invalidate it.
+- Native and NDI PDF output render the accepted snapshot's retained PDF bytes.
+  A rejected Current replacement cannot reopen its path or alter accepted output.
 - Each workspace’s OutputMediaRuntime owns one program AVPlayer shared by all its outputs and pools matching muted background resources. Independent workspaces have independent program players that outlive inactive tabs. ScreenCaptureManager owns one picker-approved stream with reference-counted consumers and GPU-backed sample-buffer fan-out. Closing one destination does not stop others. Independent background audio has one explicit session owner.
 - AppDelegate owns one native AppKit Settings window shared by the app menu, Manage Outputs toolbar action and inline output notices. General, Outputs and Workspaces use native toolbar tabs. Appearance and backgrounds live in Manage Outputs; thumbnail size and font size use a separate native Thumbnails toolbar menu. Add Native and Add NDI Output create disabled destinations for the controlled workspace. Native monitors are unassigned; generic NDI sources require no receiver assignment. Multiple generic NDI outputs use unique enabled names, with eucaly as the first default source name. Audience, Confidence and Lower Third are locally rendered appearance profiles. NDI output-level edits own independent customized appearances. Lower Third defaults to chroma green. Retired Meaning/Translation presets migrate to Audience while custom copies retain their settings.
 - Validate a destination's assignment before enabling it. Conflicting monitor/source-name attempts leave its saved enabled state and assignment unchanged, with an inline settings error. Disabled destinations may retain shared assignments. Output failures use an inline workspace notice with Manage Outputs and Dismiss actions; never show a blocking output-unavailable dialog.
