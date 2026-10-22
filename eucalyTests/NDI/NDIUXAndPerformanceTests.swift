@@ -40,6 +40,8 @@ final class NDIUXAndPerformanceTests: XCTestCase {
         XCTAssertNil(fixture.store.setNDISettings(longName, for: fixture.lyrics))
         let controller = ManageOutputsController(coordinator: fixture.outputs)
         let window = NSWindow(contentRect: .init(x: -10000, y: -10000, width: 780, height: 580), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        // Offscreen layout checks do not exercise native window transforms.
+        window.animationBehavior = .none
         window.isReleasedWhenClosed = false; window.contentViewController = controller
         window.setContentSize(.init(width: 780, height: 580))
         defer { controller.finishEditing(); window.close() }

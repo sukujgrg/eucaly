@@ -248,6 +248,8 @@ final class NDIMediaTests: XCTestCase {
         session.setSlides(LyricsParser.parseDocument("Verse\nPrivate").slides)
         let controller = ManageOutputsController(coordinator: outputs)
         let window = NSWindow(contentRect: CGRect(x: -10000, y: -10000, width: 900, height: 780), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        // Offscreen settings checks do not exercise native window transforms.
+        window.animationBehavior = .none
         window.isReleasedWhenClosed = false; window.contentViewController = controller
         window.appearance = NSAppearance(named: .aqua)
         window.setContentSize(NSSize(width: 900, height: 780))

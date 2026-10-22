@@ -366,6 +366,183 @@ final class SidebarControlLayoutTests: XCTestCase {
         }
     }
 
+    func testRemovingLastSectionItemReturnsKeyboardFocusToItsHeader() async throws {
+        for section in [SidebarSection.playlist, .audio, .windows] {
+            let fixture = try SidebarControlsFixture()
+            defer { fixture.close() }
+            await fixture.controller.pendingLibraryPreparationForTests?.value
+            fixture.window.contentView?.layoutSubtreeIfNeeded()
+            let outline = try XCTUnwrap(nativeViews(NSOutlineView.self, in: fixture.controller.view).first {
+                $0.accessibilityIdentifier() == "sidebar.\(section.rawValue).outline"
+            })
+            let header = try XCTUnwrap(nativeViews(SidebarSectionHeaderButton.self, in: fixture.controller.view).first {
+                $0.section == section
+            })
+            XCTAssertTrue(fixture.window.makeFirstResponder(outline))
+            var next = fixture.configuration(libraryRevision: 2,
+                playlistItems: section == .playlist ? [] : nil,
+                audioFiles: section == .audio ? [] : nil)
+            if section == .windows { next.captureWindows = [] }
+            fixture.controller.update(next)
+            fixture.window.contentView?.layoutSubtreeIfNeeded()
+
+            XCTAssertTrue(outline.isHiddenOrHasHiddenAncestor)
+            XCTAssertTrue(fixture.window.firstResponder === header,
+                "Removing the last \(section.title) row must leave keyboard navigation at its visible header")
+            XCTAssertTrue(fixture.calls.selections.isEmpty, "Passive inventory changes cannot accept another source")
+            XCTAssertEqual(fixture.calls.count, 0)
+            XCTAssertTrue(fixture.session.slides.isEmpty)
+            XCTAssertFalse(fixture.session.isPresenting)
+            try sendArrow(123, in: fixture.window)
+            XCTAssertEqual(header.sidebarAccessibilityElement.accessibilityValueDescription(), "Collapsed",
+                "The new focus owner must respond to the next native key event")
+        }
+    }
+
+    func testEmptyInventoryPreservesFocusOutsideItsOutline() async throws {
+        let fixture = try SidebarControlsFixture()
+        defer { fixture.close() }
+        await fixture.controller.pendingLibraryPreparationForTests?.value
+        fixture.window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertTrue(fixture.window.makeFirstResponder(fixture.controller.groupingPopup))
+        var next = fixture.configuration(libraryRevision: 2, libraryFiles: [], playlistItems: [], audioFiles: [])
+        next.captureWindows = []
+        fixture.controller.update(next)
+        fixture.window.contentView?.layoutSubtreeIfNeeded()
+
+        XCTAssertTrue(fixture.window.firstResponder === fixture.controller.groupingPopup,
+            "Hiding a list must never steal focus from another control")
+        XCTAssertTrue(fixture.calls.selections.isEmpty)
+        XCTAssertEqual(fixture.calls.count, 0)
+        XCTAssertFalse(fixture.session.isPresenting)
+    }
+
+    func testCollapsedSectionControlsAndRetainedFrameRateMenuCannotAct() async throws {
+        let fixture = try SidebarControlsFixture()
+        defer { fixture.close() }
+        await fixture.controller.pendingLibraryPreparationForTests?.value
+        fixture.window.contentView?.layoutSubtreeIfNeeded()
+        let controls = nativeViews(NSButton.self, in: fixture.controller.view)
+        let headers = nativeViews(SidebarSectionHeaderButton.self, in: fixture.controller.view)
+        let identifiers: [SidebarSection: String] = [
+            .library: "sidebar.library.import", .playlist: "sidebar.playlist.remove",
+            .audio: "sidebar.audio.play", .windows: "sidebar.window.pick"
+        ]
+        let retainedMenu = try XCTUnwrap(fixture.controller.windowSettingsButton.menu)
+        for section in SidebarSection.allCases {
+            let header = try XCTUnwrap(headers.first { $0.section == section })
+            let control = try XCTUnwrap(controls.first { $0.identifier?.rawValue == identifiers[section] })
+            XCTAssertTrue(control.isEnabled)
+            _ = header.sidebarAccessibilityElement.accessibilityPerformPress()
+            XCTAssertTrue(control.isHiddenOrHasHiddenAncestor)
+            _ = control.sidebarAccessibilityElement.accessibilityPerformPress()
+            XCTAssertEqual(fixture.calls.count, 0, "A retained accessibility action cannot operate collapsed \(section.title) controls")
+        }
+        retainedMenu.performActionForItem(at: retainedMenu.indexOfItem(withTag: 60))
+        XCTAssertEqual(fixture.frameRateSelection.value, 30, "Retained settings cannot edit a hidden section")
+        XCTAssertTrue(fixture.calls.selections.isEmpty)
+        XCTAssertTrue(fixture.session.slides.isEmpty)
+        XCTAssertFalse(fixture.session.isPresenting)
+    }
+
+    func testPlaylistEditingControlsRespectActualSelectionAndMoveBoundaries() async throws {
+        let fixture = try SidebarControlsFixture()
+        defer { fixture.close() }
+        await fixture.controller.pendingLibraryPreparationForTests?.value
+        fixture.window.contentView?.layoutSubtreeIfNeeded()
+        let buttons = nativeViews(NSButton.self, in: fixture.controller.view)
+        let remove = try XCTUnwrap(buttons.first { $0.identifier?.rawValue == "sidebar.playlist.remove" })
+        let up = try XCTUnwrap(buttons.first { $0.identifier?.rawValue == "sidebar.playlist.up" })
+        let down = try XCTUnwrap(buttons.first { $0.identifier?.rawValue == "sidebar.playlist.down" })
+        let ids = (0..<4).map { _ in UUID() }
+        let items = ids.enumerated().map { PlaylistSidebarItem(id: $0.element, title: "Item \($0.offset)", exists: true) }
+        let cases: [(Set<UUID>, Bool, Bool, Bool)] = [
+            ([ids[0]], true, false, true), ([ids[3]], true, true, false),
+            (Set(ids), true, false, false), ([ids[1], ids[2]], true, true, true),
+            ([UUID()], false, false, false), ([], false, false, false)
+        ]
+        for (selectedIDs, canRemove, canMoveUp, canMoveDown) in cases {
+            fixture.controller.update(fixture.configuration(libraryRevision: 1,
+                playlistItems: items, selectedPlaylistEntryIDs: selectedIDs))
+            XCTAssertEqual(remove.isEnabled, canRemove)
+            XCTAssertEqual(up.isEnabled, canMoveUp)
+            XCTAssertEqual(down.isEnabled, canMoveDown)
+            let count = fixture.calls.count
+            _ = up.sidebarAccessibilityElement.accessibilityPerformPress()
+            _ = down.sidebarAccessibilityElement.accessibilityPerformPress()
+            XCTAssertEqual(fixture.calls.count - count, (canMoveUp ? 1 : 0) + (canMoveDown ? 1 : 0),
+                "Unavailable moves must be disabled and must not invoke a mutation")
+        }
+        XCTAssertTrue(fixture.calls.selections.isEmpty)
+        XCTAssertTrue(fixture.session.slides.isEmpty)
+        XCTAssertFalse(fixture.session.isPresenting)
+    }
+
+    func testNativeKeyViewTraversalReachesVisibleListsAndSkipsCollapsedContent() async throws {
+        let fixture = try SidebarControlsFixture()
+        defer { fixture.close() }
+        await fixture.controller.pendingLibraryPreparationForTests?.value
+        fixture.window.contentView?.layoutSubtreeIfNeeded()
+        let outlines = nativeViews(NSOutlineView.self, in: fixture.controller.view)
+        let library = try XCTUnwrap(outlines.first { $0.accessibilityIdentifier() == "sidebar.library.outline" })
+        let audioHeader = try XCTUnwrap(nativeViews(SidebarSectionHeaderButton.self, in: fixture.controller.view).first { $0.section == .audio })
+        for audioCollapsed in [false, true] {
+            if audioCollapsed { _ = audioHeader.sidebarAccessibilityElement.accessibilityPerformPress() }
+            fixture.window.contentView?.layoutSubtreeIfNeeded()
+            fixture.window.recalculateKeyViewLoop()
+            for reverse in [false, true] {
+                XCTAssertTrue(fixture.window.makeFirstResponder(library))
+                var visitedOutlines: Set<String> = []
+                var visitedResponders: Set<ObjectIdentifier> = []
+                for _ in 0..<80 {
+                    if let focusedView = fixture.window.firstResponder as? NSView {
+                        XCTAssertFalse(focusedView.isHiddenOrHasHiddenAncestor, "Tab cannot enter a collapsed section")
+                        visitedResponders.insert(ObjectIdentifier(focusedView))
+                        if let outline = focusedView as? NSOutlineView {
+                            visitedOutlines.insert(outline.accessibilityIdentifier())
+                        }
+                    }
+                    // The unit-test host does not become the key application.
+                    // Exercise AppKit's public Tab/Shift-Tab commands against
+                    // the production key loop without changing system focus.
+                    if reverse { fixture.window.selectPreviousKeyView(nil) }
+                    else { fixture.window.selectNextKeyView(nil) }
+                }
+                let expected = Set(outlines.filter { !$0.isHiddenOrHasHiddenAncestor }.compactMap { $0.accessibilityIdentifier() })
+                XCTAssertEqual(visitedOutlines, expected, "Native key-view commands must reach each visible list")
+                XCTAssertGreaterThan(visitedResponders.count, 1, "The key loop must move out of the source list")
+            }
+        }
+        XCTAssertTrue(fixture.calls.selections.isEmpty, "Tab changes focus without accepting another Preview")
+        XCTAssertTrue(fixture.calls.playbackActions.isEmpty)
+        XCTAssertTrue(fixture.session.slides.isEmpty)
+        XCTAssertFalse(fixture.session.isPresenting)
+    }
+
+    func testReopeningAudioRestoresAuthoritativeLoopAndSliderStateAfterRetainedActions() async throws {
+        let fixture = try SidebarControlsFixture()
+        defer { fixture.close() }
+        fixture.session.setBackgroundAudio(url: fixture.configuration.selectedAudioURL, autoplay: false)
+        defer { fixture.session.clearBackgroundAudio() }
+        fixture.controller.update(fixture.configuration)
+        await fixture.controller.pendingLibraryPreparationForTests?.value
+        fixture.window.contentView?.layoutSubtreeIfNeeded()
+        let header = try XCTUnwrap(nativeViews(SidebarSectionHeaderButton.self, in: fixture.controller.view).first { $0.section == .audio })
+        let loop = try XCTUnwrap(nativeViews(NSButton.self, in: fixture.controller.view).first { $0.identifier?.rawValue == "sidebar.audio.loop" })
+        XCTAssertTrue(loop.isEnabled)
+        XCTAssertEqual(loop.state, .off)
+        _ = header.sidebarAccessibilityElement.accessibilityPerformPress()
+        _ = loop.sidebarAccessibilityElement.accessibilityPerformPress()
+        _ = fixture.controller.volumeSlider.sidebarAccessibilityElement.accessibilityPerformIncrement()
+        XCTAssertEqual(fixture.calls.count, 0, "Retained hidden controls cannot change the model")
+        _ = header.sidebarAccessibilityElement.accessibilityPerformPress()
+        XCTAssertEqual(loop.state, .off, "Reopening cannot display an unaccepted loop edit")
+        XCTAssertEqual(fixture.controller.volumeSlider.doubleValue, fixture.configuration.backgroundAudioVolumeDraft,
+            accuracy: 0.0001, "Reopening cannot display an unaccepted volume edit")
+        XCTAssertTrue(fixture.calls.playbackActions.isEmpty)
+        XCTAssertTrue(fixture.session.slides.isEmpty)
+    }
+
     func testPassiveUpdatesAndRetainedControlsAreSilentAfterDetach() async throws {
         let fixture = try SidebarControlsFixture()
         defer { fixture.close() }
@@ -450,7 +627,7 @@ private final class SidebarControlsFixture {
     let calls: SidebarControlCalls
     let frameRateSelection: SidebarFrameRateSelection
     let configuration: SidebarConfiguration
-    private let configurationBuilder: (Int, URL, [URL]) -> SidebarConfiguration
+    private let configurationBuilder: (Int, URL, [URL], [PlaylistSidebarItem], [URL], Set<UUID>) -> SidebarConfiguration
     private let defaults: UserDefaults
     private let suite: String
 
@@ -474,20 +651,20 @@ private final class SidebarControlsFixture {
         let root = URL(fileURLWithPath: "/sidebar-control-fixture")
         let audio = root.appendingPathComponent("Audio/Fixture audio.mp3")
         let playlistID = UUID()
-        let makeConfiguration: (Int, URL, [URL]) -> SidebarConfiguration = { libraryRevision, libraryRoot, libraryFiles in
+        let makeConfiguration: (Int, URL, [URL], [PlaylistSidebarItem], [URL], Set<UUID>) -> SidebarConfiguration = { libraryRevision, libraryRoot, libraryFiles, playlistItems, audioFiles, selectedPlaylistEntryIDs in
             SidebarConfiguration(
                 session: session,
                 isWindowCaptureSupported: true,
                 libraryFiles: libraryFiles,
-                audioFiles: [audio],
+                audioFiles: audioFiles,
                 isLibraryLoading: false,
                 libraryLoadFailure: nil,
                 libraryRevision: libraryRevision,
-                playlistItems: [.init(id: playlistID, title: "Fixture song", exists: true)],
+                playlistItems: playlistItems,
                 libraryRootURL: libraryRoot,
                 captureWindows: [.init(id: 42, windowID: 42, title: "Fixture window", appName: "Fixture", appBundleIdentifier: nil, frame: .init(x: 0, y: 0, width: 640, height: 480))],
                 libraryScrollRequest: nil,
-                selectedPlaylistEntryIDs: [playlistID],
+                selectedPlaylistEntryIDs: selectedPlaylistEntryIDs,
                 sidebarSelection: selectsLibraryItem ? .library(root.appendingPathComponent("Song.txt")) : nil,
                 selectedAudioURL: audio,
                 backgroundAudioLoop: false,
@@ -502,10 +679,10 @@ private final class SidebarControlsFixture {
                 onRemoveSelectedFromPlaylist: { calls.count += 1 },
                 onMovePlaylistUp: { calls.count += 1 },
                 onMovePlaylistDown: { calls.count += 1 },
-                onSelectBackgroundAudio: { _ in calls.count += 1 },
-                onPlayPauseBackgroundAudio: { calls.count += 1 },
-                onStopBackgroundAudio: { calls.count += 1 },
-                onClearBackgroundAudio: { calls.count += 1 },
+                onSelectBackgroundAudio: { _ in calls.count += 1; calls.playbackActions.append("selectAndPlay") },
+                onPlayPauseBackgroundAudio: { calls.count += 1; calls.playbackActions.append("playPause") },
+                onStopBackgroundAudio: { calls.count += 1; calls.playbackActions.append("stop") },
+                onClearBackgroundAudio: { calls.count += 1; calls.playbackActions.append("clear") },
                 onApplyBackgroundAudioVolume: { _ in calls.count += 1 },
                 onSeekBackgroundAudio: { _ in calls.count += 1 },
                 onSelectionRequest: { selection, _ in calls.selections.append(selection); return calls.acceptsSelection },
@@ -518,12 +695,15 @@ private final class SidebarControlsFixture {
             )
         }
         configurationBuilder = makeConfiguration
-        let configuration = makeConfiguration(1, root, [root.appendingPathComponent("Song.txt")])
+        let configuration = makeConfiguration(1, root, [root.appendingPathComponent("Song.txt")],
+            [.init(id: playlistID, title: "Fixture song", exists: true)], [audio], [playlistID])
         self.configuration = configuration
         let controller = SidebarViewController(configuration: configuration, defaults: defaults)
         self.controller = controller
         let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 260, height: 1000),
                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        // Layout and responder checks do not exercise window transforms.
+        window.animationBehavior = .none
         self.window = window
         window.isReleasedWhenClosed = false
         window.isRestorable = false
@@ -535,8 +715,12 @@ private final class SidebarControlsFixture {
 
     var isWindowSectionExpanded: Bool { defaults.bool(forKey: "sidebar.windowsSectionExpanded") }
 
-    func configuration(libraryRevision: Int, libraryRootURL: URL? = nil, libraryFiles: [URL]? = nil) -> SidebarConfiguration {
-        configurationBuilder(libraryRevision, libraryRootURL ?? configuration.libraryRootURL!, libraryFiles ?? configuration.libraryFiles)
+    func configuration(libraryRevision: Int, libraryRootURL: URL? = nil, libraryFiles: [URL]? = nil,
+                       playlistItems: [PlaylistSidebarItem]? = nil, audioFiles: [URL]? = nil,
+                       selectedPlaylistEntryIDs: Set<UUID>? = nil) -> SidebarConfiguration {
+        configurationBuilder(libraryRevision, libraryRootURL ?? configuration.libraryRootURL!, libraryFiles ?? configuration.libraryFiles,
+            playlistItems ?? configuration.playlistItems, audioFiles ?? configuration.audioFiles,
+            selectedPlaylistEntryIDs ?? configuration.selectedPlaylistEntryIDs)
     }
 
     func close() {
@@ -563,6 +747,7 @@ private final class SidebarControlCalls {
     var count = 0
     var acceptsSelection = true
     var selections: [SidebarSelection?] = []
+    var playbackActions: [String] = []
 }
 
 @MainActor

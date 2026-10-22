@@ -36,6 +36,17 @@ final class ProgramAudioClockTests: XCTestCase {
     }
 
     func testDelayedStoppedClockSnapshotUsesItsActualPauseAnchor() async throws {
+        try await checkDelayedStoppedClock()
+    }
+
+    func testFractionalStoppedClockAnchorsKeepTheExactPauseBoundary() async throws {
+        for fraction in [Int64(490), 510, 0] {
+            try await checkDelayedStoppedClock(controlledHostFraction: fraction)
+        }
+    }
+
+    private func checkDelayedStoppedClock(controlledHostFraction: Int64? = nil,
+                                          file: StaticString = #filePath, line: UInt = #line) async throws {
         var optionalClock: CMTimebase?
         XCTAssertEqual(CMTimebaseCreateWithSourceClock(allocator: kCFAllocatorDefault,
             sourceClock: CMClockGetHostTimeClock(), timebaseOut: &optionalClock), noErr)
@@ -50,9 +61,26 @@ final class ProgramAudioClockTests: XCTestCase {
         XCTAssertEqual(CMTimebaseSetTime(clock, time: .zero), noErr)
         XCTAssertEqual(CMTimebaseSetRate(clock, rate: 1), noErr)
         let startedAt = CMClockGetTime(CMClockGetHostTimeClock())
+        var runningRate = 0.0, runningMedia = CMTime.invalid, runningHost = CMTime.invalid
+        XCTAssertEqual(CMSyncGetRelativeRateAndAnchorTime(clock, relativeTo: CMClockGetHostTimeClock(),
+            relativeRateOut: &runningRate, anchorTimeOut: &runningMedia, relativeToAnchorTimeOut: &runningHost), noErr)
         bus.setPlaybackClock(clock, gain: 1, id: id)
+        let controlledHostBase = CMClockGetTime(CMClockGetHostTimeClock())
+            .convertScale(48000, method: .roundTowardNegativeInfinity)
         try await Task.sleep(for: .milliseconds(20))
-        XCTAssertEqual(CMTimebaseSetRate(clock, rate: 0), noErr)
+        if let fraction = controlledHostFraction {
+            let hostPause = controlledHostBase + CMTime(value: 481_000 + fraction, timescale: 48_000_000)
+            // The real stopped snapshot can differ from the preceding running
+            // mapping: the captured failure differed by 1.125 us (0.054 sample).
+            // Control that media-anchor correction across both half-grid phases;
+            // this does not claim to reproduce CoreMedia's internal calculation.
+            let mediaPause = CMSyncConvertTime(hostPause, from: CMClockGetHostTimeClock(), to: clock)
+                + CMTime(value: 54, timescale: 48_000_000)
+            XCTAssertEqual(CMTimebaseSetRateAndAnchorTime(clock, rate: 0,
+                anchorTime: mediaPause, immediateSourceTime: hostPause), noErr)
+        } else {
+            XCTAssertEqual(CMTimebaseSetRate(clock, rate: 0), noErr)
+        }
         var rate = 0.0, mediaAnchor = CMTime.invalid, hostAnchor = CMTime.invalid
         XCTAssertEqual(CMSyncGetRelativeRateAndAnchorTime(clock, relativeTo: CMClockGetHostTimeClock(),
             relativeRateOut: &rate, anchorTimeOut: &mediaAnchor, relativeToAnchorTimeOut: &hostAnchor), noErr)
@@ -65,8 +93,27 @@ final class ProgramAudioClockTests: XCTestCase {
         bus.setPlaybackClock(clock, gain: 1, id: id)
         bus.start(at: startedAt)
         try await wait { recorded.lastBlockStart >= pausedAt + 960 }
-        XCTAssertGreaterThan(recorded.audibleFrames, 0)
-        XCTAssertLessThan(recorded.lastAudibleSample, pausedAt)
+        XCTAssertGreaterThan(recorded.audibleFrames, 0, file: file, line: line)
+        let reconstructedEnd = runningHost.seconds * 48000
+            + (mediaAnchor.seconds * 48000 - runningMedia.seconds * 48000) / runningRate
+        let rawHostSamplesDescription = String(format: "%.17g", hostAnchor.seconds * 48000)
+        let reconstructedEndDescription = String(format: "%.17g", reconstructedEnd)
+        // Rounding the pause itself can move its boundary before a valid sample.
+        // Compare exact timestamps: even a sample at the pause remains forbidden.
+        XCTAssertLessThan(CMTime(value: recorded.lastAudibleSample, timescale: 48000), hostAnchor,
+            "rawHostSamples=\(rawHostSamplesDescription) reconstructedEnd=\(reconstructedEndDescription) lastAudible=\(recorded.lastAudibleSample)",
+            file: file, line: line)
+        if let fraction = controlledHostFraction {
+            let expectedLast = controlledHostBase.value + (fraction == 0 ? 480 : 481)
+            XCTAssertEqual(recorded.lastAudibleSample, expectedLast,
+                "The controlled fractional pause must retain its last valid sample and exclude the pause/next sample",
+                file: file, line: line)
+            if fraction == 490 {
+                XCTAssertEqual(recorded.lastAudibleSample, pausedAt,
+                    "Nearest rounding would falsely reject this sample, which precedes the exact pause",
+                    file: file, line: line)
+            }
+        }
     }
 
     func testDelayedRenderPreservesPausedPlayerTailButExplicitMuteClosesAudibleAdmission() async throws {

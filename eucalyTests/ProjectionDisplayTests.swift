@@ -370,6 +370,8 @@ final class ProjectionDisplayTests: XCTestCase {
             let session = PresentationSession(projectionDisplays: manager, outputCoordinator: outputs)
             let operatorWindow = NSWindow(contentRect: CGRect(x: 30, y: 30, width: 400, height: 300),
                                           styleMask: .titled, backing: .buffered, defer: false)
+            // This operator fixture checks focus, not window transforms.
+            operatorWindow.animationBehavior = .none
             operatorWindow.isReleasedWhenClosed = false
             defer { operatorWindow.close() }
             operatorWindow.makeKeyAndOrderFront(nil)
@@ -433,6 +435,8 @@ final class ProjectionDisplayTests: XCTestCase {
         let root = editor.view
         let window = NSWindow(contentRect: CGRect(x: -8000, y: 0, width: 560, height: 450),
                               styleMask: .borderless, backing: .buffered, defer: false)
+        // Offscreen monitor-editor layout does not exercise window transforms.
+        window.animationBehavior = .none
         window.isReleasedWhenClosed = false
         window.contentView = root
         defer { window.close() }

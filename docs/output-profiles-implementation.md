@@ -363,10 +363,27 @@ and items. Native Right/Left expansion and parent navigation preserve Preview
 while containers hold focus; leaf changes still pass normal selection approval.
 Passive configuration/progress updates retain the operator's container focus and
 collapsed state. Audio selection and playback remain independent.
+When a list loses its last row, focus inside that list returns to its visible
+section header; inventory changes preserve focus elsewhere. Defined Space/Return
+actions run once per press; source Return follows click approval, and arrows repeat.
+Collapsed, detached or removed controls and retained row/menu actions cannot
+issue commands for an unavailable source.
 Library group titles and blank row space share the disclosure action. Every
 ordinary click toggles expansion, including rapid clicks classified as double or
 triple clicks. Native arrow clicks toggle once; group disclosure never changes
 Preview or Current.
+Clicking a selected source explicitly requests Preview again, including after
+Load to Current or a failed load. Each physical click asks selection approval
+once; Audio retains its separate double-click playback action.
+
+Missing Playlist selections clear stale Preview content, reject superseded file
+loads and show an unavailable-file notice; the saved row remains removable.
+Removing a row preserves the other selected Playlist identities in every open
+workspace without accepting a replacement source. Move controls reflect the
+current selection's available direction. Picker updates retire only obsolete
+window Preview content, preserving a newer pending file selection.
+Explicit file loads recheck readable regular-file availability on the loading
+queue; stale scan entries fail through the same guarded Preview transition.
 
 The Profiles list separates reusable profiles, assigned output appearances and
 unused saved appearances using customization metadata and actual references, never

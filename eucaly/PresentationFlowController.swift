@@ -45,6 +45,9 @@ final class PresentationFlowController: ObservableObject {
 
     @Published private(set) var previewDocument: PreviewDocumentState?
     @Published var previewSource: PreviewSource = .none
+    @Published private(set) var pendingPreviewSource: PreviewSource?
+    @Published private(set) var previewLoadError: String?
+    private(set) var previewLoadToken = UUID()
     @Published var isCurrentCollapsed: Bool = true
     let previewSelection = PreviewSelectionState()
 
@@ -72,6 +75,14 @@ final class PresentationFlowController: ObservableObject {
 
     var previewSelectionID: Slide.ID? {
         previewSelection.selectedSlideID
+    }
+
+    var isPreviewLoading: Bool {
+        pendingPreviewSource != nil
+    }
+
+    var canLoadPreview: Bool {
+        !isPreviewLoading && previewLoadError == nil && !previewIsEmpty
     }
 
     func previewSlide(at index: Int) -> Slide? {
@@ -120,9 +131,105 @@ final class PresentationFlowController: ObservableObject {
     }
 
     func clearPreviewDocument() {
+        cancelPreviewLoad()
+        previewLoadError = nil
+        clearPreviewContent()
+    }
+
+    private func clearPreviewContent() {
         previewDocument = nil
         previewSource = .none
         previewSelection.selectedSlideID = nil
+    }
+
+    @discardableResult
+    func beginPreviewLoad(to source: PreviewSource) -> UUID {
+        previewLoadToken = UUID()
+        pendingPreviewSource = source
+        previewLoadError = nil
+        return previewLoadToken
+    }
+
+    @discardableResult
+    func completePreviewLoad(token: UUID, source: PreviewSource) -> Bool {
+        guard previewLoadToken == token, pendingPreviewSource == source else { return false }
+        pendingPreviewSource = nil
+        previewSource = source
+        previewLoadError = nil
+        return true
+    }
+
+    @discardableResult
+    func failPreviewLoad(token: UUID, source: PreviewSource) -> Bool {
+        guard previewLoadToken == token, pendingPreviewSource == source else { return false }
+        showUnavailablePreview("Couldn’t load \(previewSourceName(source)).")
+        return true
+    }
+
+    func cancelPreviewLoad() {
+        previewLoadToken = UUID()
+        pendingPreviewSource = nil
+    }
+
+    func setPreviewSource(_ source: PreviewSource) {
+        cancelPreviewLoad()
+        previewSource = source
+        previewLoadError = nil
+    }
+
+    /// Missing Playlist rows remain selectable for removal, but cannot leave a
+    /// previously accepted or pending source available under their selection.
+    @discardableResult
+    func previewPlaylistEntry(_ id: UUID, from playlist: PlaylistStore, loadFile: (URL) -> Void) -> Bool {
+        guard let url = playlist.resolvedURL(for: id) else {
+            let title = playlist.entries.first(where: { $0.id == id }).map {
+                URL(fileURLWithPath: $0.relativePath).lastPathComponent
+            } ?? "the selected Playlist item"
+            showUnavailablePreview("Couldn’t load \(title). The file is missing or unavailable.")
+            return false
+        }
+        loadFile(url)
+        return true
+    }
+
+    /// The picker can retire an old window while a newer file selection is
+    /// loading. Remove that window's Preview without canceling the newer load.
+    @discardableResult
+    func clearUnavailableWindowPreview(availableWindowIDs: Set<CGWindowID>) -> Bool {
+        let unavailableSource: Bool
+        if case .window(let id) = previewSource {
+            unavailableSource = !availableWindowIDs.contains(id)
+        } else {
+            unavailableSource = false
+        }
+        let hasUnavailableSlide = previewSlides.contains {
+            $0.captureWindowID.map { !availableWindowIDs.contains($0) } ?? false
+        }
+        guard unavailableSource || hasUnavailableSlide else { return false }
+
+        switch pendingPreviewSource {
+        case .file?, .lyrics?:
+            clearPreviewContent()
+        case .window(let id)? where availableWindowIDs.contains(id):
+            clearPreviewContent()
+        default:
+            clearPreviewDocument()
+        }
+        return true
+    }
+
+    private func showUnavailablePreview(_ message: String) {
+        clearPreviewDocument()
+        previewLoadError = message
+    }
+
+    private func previewSourceName(_ source: PreviewSource) -> String {
+        switch source {
+        case .file(let url): url.lastPathComponent
+        case .window: "the selected window"
+        case .lyrics: "the lyrics draft"
+        case .none: "the selected item"
+        }
     }
 
     func selectPreviewSlide(_ slideID: Slide.ID) {

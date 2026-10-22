@@ -146,9 +146,12 @@ final class SidebarViewController: NSViewController {
         libraryImport.isEnabled = configuration.libraryRootURL != nil
         audioImport.isEnabled = configuration.libraryRootURL != nil
         retryLibrary.isEnabled = !configuration.isLibraryLoading
-        removePlaylist.isEnabled = !configuration.selectedPlaylistEntryIDs.isEmpty
-        movePlaylistUp.isEnabled = removePlaylist.isEnabled
-        movePlaylistDown.isEnabled = removePlaylist.isEnabled
+        let playlistMoves = PlaylistMoveAvailability(
+            selectedIDs: configuration.selectedPlaylistEntryIDs,
+            orderedIDs: configuration.playlistItems.map(\.id))
+        removePlaylist.isEnabled = !playlistMoves.selectedIDs.isEmpty
+        movePlaylistUp.isEnabled = playlistMoves.canMoveUp
+        movePlaylistDown.isEnabled = playlistMoves.canMoveDown
         pickWindow.title = configuration.captureWindows.isEmpty ? "Pick Window…" : "Replace Window…"
         pickWindow.sidebarAccessibilityElement.setAccessibilityLabel(configuration.captureWindows.isEmpty ? "Pick Window" : "Replace Window")
         pickWindow.toolTip = configuration.captureWindows.isEmpty ? "Choose a window to preview" : "Choose a different window to preview"
@@ -401,15 +404,30 @@ final class SidebarViewController: NSViewController {
     }
 
     private func setExpanded(_ expanded: Bool, section: SidebarSection) {
-        sections[section]?.setExpanded(expanded)
+        applySectionExpansion(expanded, section: section)
         defaults.set(expanded, forKey: section.preferenceKey)
+    }
+
+    private func applySectionExpansion(_ expanded: Bool, section: SidebarSection) {
+        sections[section]?.setExpanded(expanded)
+        guard expanded else { return }
+        switch section {
+        case .library:
+            groupingPopup.selectItem(at: LibraryGrouping.allCases.firstIndex(of: grouping) ?? 0)
+        case .audio:
+            refreshAudioState()
+        case .windows:
+            updateWindowSettings()
+        case .playlist:
+            break
+        }
     }
 
     private func restorePreferences() {
         guard !isDetached else { return }
         var changed = false
         for section in SidebarSection.allCases where sections[section]?.isExpanded != expandedPreference(section) {
-            sections[section]?.setExpanded(expandedPreference(section))
+            applySectionExpansion(expandedPreference(section), section: section)
             changed = true
         }
         let savedGrouping = defaults.string(forKey: "sidebar.libraryGrouping").flatMap(LibraryGrouping.init(rawValue:)) ?? .kind
@@ -423,14 +441,20 @@ final class SidebarViewController: NSViewController {
     }
 
     @objc private func toggleSection(_ sender: SidebarSectionHeaderButton) {
-        guard !isDetached, !isApplyingSnapshot, let section = sections[sender.section] else { return }
+        guard acceptsAction(from: sender), let section = sections[sender.section] else { return }
         setExpanded(!section.isExpanded, section: sender.section)
         updateOutlines()
     }
 
+    private func acceptsAction(from control: NSView) -> Bool {
+        !isDetached && !isApplyingSnapshot && control.window != nil
+            && control.isDescendant(of: view) && !control.isHiddenOrHasHiddenAncestor
+    }
+
     @objc private func changeGrouping(_ sender: NSPopUpButton) {
         guard let raw = sender.selectedItem?.representedObject as? String,
-              let grouping = LibraryGrouping(rawValue: raw), !isDetached, !isApplyingSnapshot else { return }
+              let grouping = LibraryGrouping(rawValue: raw),
+              acceptsAction(from: sender), sender.isEnabled else { return }
         self.grouping = grouping
         defaults.set(raw, forKey: "sidebar.libraryGrouping")
         updateLibraryOutline()
@@ -439,14 +463,15 @@ final class SidebarViewController: NSViewController {
 
     @objc private func changeFrameRate(_ sender: NSMenuItem) {
         let rate = sender.tag
-        guard !isDetached, !isApplyingSnapshot, [24, 30, 60].contains(rate) else { return }
+        guard acceptsAction(from: windowSettingsButton), windowSettingsButton.isEnabled,
+              sender.menu === windowSettingsButton.menu, [24, 30, 60].contains(rate) else { return }
         configuration.windowCaptureFrameRate = rate
         updateWindowSettings()
         configuration.setWindowCaptureFrameRate(rate)
     }
 
     @objc private func changeVolume(_ sender: NSSlider) {
-        guard !isDetached, !isApplyingSnapshot, sender.isEnabled else { return }
+        guard acceptsAction(from: sender), sender.isEnabled else { return }
         let value = min(1, max(0, sender.doubleValue))
         configuration.backgroundAudioVolumeDraft = value
         configuration.setBackgroundAudioVolumeDraft(value)
@@ -455,14 +480,14 @@ final class SidebarViewController: NSViewController {
     }
 
     @objc private func changePosition(_ sender: NSSlider) {
-        guard !isDetached, !isApplyingSnapshot, sender.isEnabled else { return }
+        guard acceptsAction(from: sender), sender.isEnabled else { return }
         configuration.onSeekBackgroundAudio(sender.doubleValue)
         currentTime.stringValue = audioTimeLabel(sender.doubleValue)
         positionSlider.sidebarAccessibilityElement.setAccessibilityValueDescription("\(currentTime.stringValue) of \(duration.stringValue)")
     }
 
     @objc private func performAction(_ sender: NSButton) {
-        guard !isDetached, !isApplyingSnapshot, sender.isEnabled else { return }
+        guard acceptsAction(from: sender), sender.isEnabled else { return }
         switch sender.identifier?.rawValue {
         case "sidebar.library.import": configuration.onImportToLibrary()
         case "sidebar.library.retry": configuration.onRetryLibraryLoad()
@@ -601,6 +626,16 @@ final class SidebarViewController: NSViewController {
         }
     }
 
+    private func setOutlineHidden(_ hidden: Bool, section: SidebarSection) {
+        let outline = outline(for: section)
+        if hidden, !outline.scrollView.isHidden,
+           let responder = view.window?.firstResponder as? NSView,
+           responder === outline.outlineView || responder.isDescendant(of: outline.outlineView) {
+            _ = focusHeader(section)
+        }
+        outline.scrollView.isHidden = hidden
+    }
+
     private func configureSectionNavigation() {
         for section in SidebarSection.allCases {
             navigation.register(
@@ -664,12 +699,7 @@ final class SidebarViewController: NSViewController {
             $0.revision.grouping == grouping && $0.revision.libraryRootURL == libraryRevision.libraryRootURL
         } ?? false
         let hideOutline = configuration.libraryFiles.isEmpty || (!isPrepared && !sameSource)
-        if hideOutline, !libraryOutline.scrollView.isHidden,
-           let responder = view.window?.firstResponder as? NSView,
-           responder === libraryOutline.outlineView || responder.isDescendant(of: libraryOutline.outlineView) {
-            _ = focusHeader(.library)
-        }
-        libraryOutline.scrollView.isHidden = hideOutline
+        setOutlineHidden(hideOutline, section: .library)
         libraryCaption.superview?.isHidden = !libraryOutline.scrollView.isHidden || (configuration.libraryFiles.isEmpty && configuration.libraryLoadFailure != nil)
         libraryCaption.stringValue = configuration.libraryFiles.isEmpty
             ? (configuration.isLibraryLoading ? "Loading library…" : "No supported files in Library")
@@ -724,7 +754,7 @@ final class SidebarViewController: NSViewController {
 
     private func updatePlaylistOutline() {
         let items = configuration.playlistItems
-        playlistOutline.scrollView.isHidden = items.isEmpty
+        setOutlineHidden(items.isEmpty, section: .playlist)
         playlistCaption.superview?.isHidden = !items.isEmpty
         let selected: SidebarOutlineItemID? = if case .playlist(let id) = configuration.sidebarSelection { .playlist(id) } else { nil }
         playlistOutline.update(SidebarOutlineConfiguration(
@@ -747,7 +777,7 @@ final class SidebarViewController: NSViewController {
 
     private func updateAudioOutline() {
         let files = configuration.audioFiles
-        audioOutline.scrollView.isHidden = files.isEmpty
+        setOutlineHidden(files.isEmpty, section: .audio)
         audioCaption.superview?.isHidden = !files.isEmpty || configuration.libraryLoadFailure != nil
         let selected = configuration.selectedAudioURL.map { SidebarOutlineItemID.audio($0.standardizedFileURL) }
         var statuses: [SidebarOutlineItemID: SidebarOutlineItemStatus] = [:]
@@ -793,7 +823,7 @@ final class SidebarViewController: NSViewController {
 
     private func updateWindowOutline() {
         let windows = configuration.captureWindows
-        windowOutline.scrollView.isHidden = windows.isEmpty
+        setOutlineHidden(windows.isEmpty, section: .windows)
         let selected: SidebarOutlineItemID? = if case .window(let id) = configuration.sidebarSelection { .window(id) } else { nil }
         windowOutline.update(SidebarOutlineConfiguration(
             contentRevision: AnyHashable(windows.map { "\($0.windowID)|\($0.appName)|\($0.title)" }), modelBuilder: {

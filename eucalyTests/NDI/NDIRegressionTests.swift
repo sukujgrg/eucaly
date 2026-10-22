@@ -82,6 +82,8 @@ final class NDIRegressionTests: XCTestCase {
         try await until { driver.state(destination.id) == .publishing }
         let controller = ManageOutputsController(coordinator: outputs)
         let window = NSWindow(contentRect: .init(x: -10000, y: -10000, width: 820, height: 650), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        // Offscreen editing checks do not exercise native window transforms.
+        window.animationBehavior = .none
         window.isReleasedWhenClosed = false; window.title = "NDI Regression Fixture"; window.contentViewController = controller
         defer { window.close(); outputs.stop() }
         window.makeKeyAndOrderFront(nil); controller.setPresented(true); controller.selectDestination(destination.id)

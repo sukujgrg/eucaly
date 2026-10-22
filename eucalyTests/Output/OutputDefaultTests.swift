@@ -211,6 +211,8 @@ final class OutputDefaultTests: XCTestCase {
         func host(_ id: UUID) -> NSView {
             let view = NSHostingView(rootView: OutputCompositionView(coordinator: outputs, destinationID: id))
             let window = NSWindow(contentRect: .init(x: -10000, y: -10000, width: 640, height: 360), styleMask: .borderless, backing: .buffered, defer: false)
+            // Offscreen rendering must not leave native window transforms running.
+            window.animationBehavior = .none
             window.isReleasedWhenClosed = false; window.contentView = view; window.orderBack(nil)
             hosts.append(window)
             return view
@@ -359,6 +361,8 @@ final class OutputDefaultTests: XCTestCase {
         search.widthAnchor.constraint(equalToConstant: 220).isActive = true
         let window = NSWindow(contentRect: .init(x: -10000, y: -10000, width: 1060, height: 600),
             styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        // Toolbar layout and editing do not depend on show/close animations.
+        window.animationBehavior = .none
         window.isReleasedWhenClosed = false; window.toolbarStyle = .unified
         window.contentViewController = NSHostingController(rootView: OutputToolbarFixture(outputs: outputs, updates: updates, search: search, thumbnailDefaults: thumbnailDefaults))
         window.orderBack(nil)

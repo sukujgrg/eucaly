@@ -367,8 +367,9 @@ final class SidebarOutlineController {
         outlineView.dataSource = coordinator
         outlineView.delegate = coordinator
         outlineView.target = coordinator
-        outlineView.action = #selector(Coordinator.performRowDisclosure(_:))
+        outlineView.action = #selector(Coordinator.performRowClick(_:))
         outlineView.doubleAction = #selector(Coordinator.performDefaultAction(_:))
+        outlineView.observePointerInteractions()
 
         let scrollView = SidebarOutlineScrollView()
         scrollView.documentView = outlineView
@@ -414,6 +415,7 @@ final class SidebarOutlineController {
     }
 
     func detach() {
+        coordinator.outlineView?.retirePointerObservation()
         coordinator.outlineView?.delegate = nil
         coordinator.outlineView?.dataSource = nil
         coordinator.outlineView?.spaceActionHandler = nil
@@ -576,7 +578,7 @@ final class SidebarOutlineController {
                 status: itemStatuses[item.id],
                 accessoryAction: item.accessoryAction
             ) { [weak self] action in
-                self?.onAction(item.id, action)
+                self?.performRowAction(itemID: item.id, action: action, origin: .accessory)
             }
             return cell
         }
@@ -639,47 +641,65 @@ final class SidebarOutlineController {
             reportExpansionState()
         }
 
-        @objc fileprivate func performRowDisclosure(_ sender: NSOutlineView) {
+        @objc fileprivate func performRowClick(_ sender: ReusableSidebarNSOutlineView) {
+            handleRowClick(sender, activatesDefaultAction: false)
+        }
+
+        @objc fileprivate func performDefaultAction(_ sender: ReusableSidebarNSOutlineView) {
+            handleRowClick(sender, activatesDefaultAction: true)
+        }
+
+        private func handleRowClick(_ sender: ReusableSidebarNSOutlineView, activatesDefaultAction: Bool) {
             guard sender === outlineView, sender.window != nil, !sender.isHiddenOrHasHiddenAncestor,
                   !isSynchronizingSelection, !isProcessingExpansion, sender.clickedRow >= 0,
                   sender.clickedRow < sender.numberOfRows,
-                  let item = sender.item(atRow: sender.clickedRow) as? SidebarOutlineItem,
-                  item.groupID != nil else { return }
-            if let event = NSApp.currentEvent, event.window === sender.window {
+                  let item = sender.item(atRow: sender.clickedRow) as? SidebarOutlineItem else { return }
+            let event = sender.pointerInteraction?.event
+                ?? NSApp.currentEvent.flatMap { $0.window === sender.window ? $0 : nil }
+            let ordinaryClick = event?.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty ?? false
+            if item.groupID != nil {
                 // The native disclosure button owns its own target/action and
                 // modifier behavior. Only ordinary clicks in the rest of the
                 // group row need this additional disclosure action.
-                guard event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
+                guard ordinaryClick, let event,
                       !sender.frameOfOutlineCell(atRow: sender.clickedRow).contains(
                         sender.convert(event.locationInWindow, from: nil)
                       ) else { return }
+                focusContainer(item)
+                toggleGroup(item)
+                return
             }
-            focusContainer(item)
-            toggleGroup(item)
-        }
-
-        @objc fileprivate func performDefaultAction(_ sender: NSOutlineView) {
-            guard sender === outlineView, sender.window != nil, !sender.isHiddenOrHasHiddenAncestor,
-                  sender.clickedRow >= 0, sender.clickedRow < sender.numberOfRows,
-                  let item = sender.item(atRow: sender.clickedRow) as? SidebarOutlineItem else { return }
-            if item.groupID != nil {
-                // AppKit chooses action or doubleAction for each physical
-                // click. Both classifications share one guarded disclosure.
-                performRowDisclosure(sender)
-            } else {
+            if ordinaryClick, let interaction = sender.pointerInteraction {
+                if let accepted = interaction.selectionResult {
+                    guard accepted else { return }
+                } else {
+                    // AppKit can skip selection notifications for an unchanged
+                    // row or a double click after a veto. Ask for the clicked
+                    // source once, then update native selection only on approval.
+                    guard requestSelection([item.id], primary: item.id) else { return }
+                    synchronizeSelection(to: externalSelectedItemIDs, primary: externalPrimarySelectedItemID, forceReveal: true)
+                }
+            }
+            if activatesDefaultAction {
                 _ = activateSourceDefaultAction(preferClickedRow: true)
             }
         }
 
         @discardableResult
         fileprivate func performKeyboardDefaultAction() -> Bool {
-            if let outlineView, outlineView.selectedRow >= 0,
-               let item = outlineView.item(atRow: outlineView.selectedRow) as? SidebarOutlineItem,
-               item.groupID != nil {
+            guard let outlineView, outlineView.selectedRow >= 0,
+                  let item = outlineView.item(atRow: outlineView.selectedRow) as? SidebarOutlineItem else {
+                return activateSourceDefaultAction(preferClickedRow: false)
+            }
+            if item.groupID != nil {
                 toggleGroup(item)
                 return true
             }
-            return activateSourceDefaultAction(preferClickedRow: false)
+            if onDefaultAction != nil {
+                return activateSourceDefaultAction(preferClickedRow: false)
+            }
+            _ = submitCurrentSelection()
+            return true
         }
 
         @discardableResult
@@ -826,9 +846,22 @@ final class SidebarOutlineController {
         }
 
         @objc private func performContextAction(_ sender: NSMenuItem) {
-            guard outlineView != nil,
-                  let representedAction = sender.representedObject as? SidebarOutlineMenuAction else { return }
-            onAction(representedAction.itemID, representedAction.action)
+            guard let representedAction = sender.representedObject as? SidebarOutlineMenuAction else { return }
+            performRowAction(itemID: representedAction.itemID, action: representedAction.action, origin: .contextMenu)
+        }
+
+        private enum RowActionOrigin { case accessory, contextMenu }
+
+        private func performRowAction(itemID: SidebarOutlineItemID, action: SidebarOutlineAction, origin: RowActionOrigin) {
+            guard let outlineView, outlineView.window != nil, !outlineView.isHiddenOrHasHiddenAncestor,
+                  let item = model.itemsByID[itemID], outlineView.row(forItem: item) >= 0 else { return }
+            let allowed: Bool
+            switch origin {
+            case .accessory: allowed = item.accessoryAction == action
+            case .contextMenu: allowed = item.contextActions.contains(action)
+            }
+            guard allowed else { return }
+            onAction(itemID, action)
         }
 
         private func rowCell(in outlineView: NSOutlineView) -> SidebarOutlineRowCellView {
@@ -869,10 +902,18 @@ final class SidebarOutlineController {
             let proposedIDs = Set(selectedItems.filter { $0.groupID == nil }.map(\.id))
             let primaryID = primarySelectionID(in: outlineView, proposedIDs: proposedIDs)
 
-            if onSelectionChange(proposedIDs, primaryID) {
+            return requestSelection(proposedIDs, primary: primaryID)
+        }
+
+        private func requestSelection(_ proposedIDs: Set<SidebarOutlineItemID>, primary: SidebarOutlineItemID?) -> Bool {
+            let interaction = outlineView?.pointerInteraction
+            interaction?.selectionResult = false
+            let accepted = onSelectionChange(proposedIDs, primary)
+            interaction?.selectionResult = accepted
+            if accepted {
                 focusedContainerID = nil
                 externalSelectedItemIDs = proposedIDs
-                externalPrimarySelectedItemID = primaryID
+                externalPrimarySelectedItemID = primary
                 return true
             } else {
                 synchronizeSelection(
@@ -967,14 +1008,23 @@ final class SidebarOutlineController {
             })
 
             isSynchronizingSelection = true
-            outlineView.selectRowIndexes(selectedRows, byExtendingSelection: false)
+            var primaryRow: Int?
             if let primary,
                let item = model.itemsByID[primary] {
                 let row = outlineView.row(forItem: item)
-                if row >= 0 {
-                    outlineView.scrollRowToVisible(row)
-                }
+                if row >= 0 { primaryRow = row }
             }
+            if let primaryRow, selectedRows.contains(primaryRow) {
+                // AppKit makes the last added row primary. Restore the other
+                // highlights first so reloads and vetoes retain that native lead.
+                var otherRows = selectedRows
+                otherRows.remove(primaryRow)
+                outlineView.selectRowIndexes(otherRows, byExtendingSelection: false)
+                outlineView.selectRowIndexes(IndexSet(integer: primaryRow), byExtendingSelection: true)
+            } else {
+                outlineView.selectRowIndexes(selectedRows, byExtendingSelection: false)
+            }
+            if let primaryRow { outlineView.scrollRowToVisible(primaryRow) }
             isSynchronizingSelection = false
         }
 
@@ -1113,16 +1163,38 @@ final class SidebarOutlineScrollView: NSScrollView {
     }
 }
 
-private final class ReusableSidebarNSOutlineView: NSOutlineView {
+private final class ReusableSidebarNSOutlineView: NSOutlineView, NSGestureRecognizerDelegate {
     var spaceActionHandler: (() -> Bool)?
     var defaultActionHandler: (() -> Bool)?
     var menuProvider: ((Int) -> NSMenu?)?
     var verticalMoveHandler: ((SidebarOutlineNavigationDirection) -> Bool)?
     var containerMoveHandler: (() -> Bool)?
     var childMoveHandler: (() -> Bool)?
+    private(set) var pointerInteraction: SidebarPointerInteraction?
+    private let pointerObserver = NSClickGestureRecognizer(target: nil, action: nil)
 
     private var acceptsSidebarInput: Bool {
         dataSource != nil && window != nil && !isHiddenOrHasHiddenAncestor
+    }
+
+    func observePointerInteractions() {
+        pointerObserver.delaysPrimaryMouseButtonEvents = false
+        pointerObserver.delegate = self
+        addGestureRecognizer(pointerObserver)
+    }
+
+    func retirePointerObservation() {
+        pointerObserver.delegate = nil
+        removeGestureRecognizer(pointerObserver)
+        pointerInteraction = nil
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: NSGestureRecognizer, shouldAttemptToRecognizeWith event: NSEvent) -> Bool {
+        guard gestureRecognizer === pointerObserver, acceptsSidebarInput, event.type == .leftMouseDown else { return false }
+        pointerInteraction = SidebarPointerInteraction(event: event)
+        // Observe the new primary-click stream before native table gestures,
+        // then opt out without recognizing, delaying or preventing their input.
+        return false
     }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -1159,8 +1231,14 @@ private final class ReusableSidebarNSOutlineView: NSOutlineView {
 
     override func keyDown(with event: NSEvent) {
         guard acceptsSidebarInput else { return }
+        pointerInteraction = nil
         let disallowedModifiers: NSEvent.ModifierFlags = [.command, .control, .option, .shift]
         if event.modifierFlags.intersection(disallowedModifiers).isEmpty {
+            if event.isARepeat && [UInt16(49), 36, 76].contains(event.keyCode) {
+                // Activation happens once per press; arrow navigation below
+                // keeps AppKit's normal key-repeat behavior.
+                return
+            }
             if (123...126).contains(event.keyCode) {
                 // NSOutlineView handles arrows internally instead of calling
                 // responder selectors. Route plain arrows through AppKit's key
@@ -1183,6 +1261,13 @@ private final class ReusableSidebarNSOutlineView: NSOutlineView {
         let location = convert(event.locationInWindow, from: nil)
         return menuProvider?(row(at: location))
     }
+}
+
+private final class SidebarPointerInteraction {
+    let event: NSEvent
+    var selectionResult: Bool?
+
+    init(event: NSEvent) { self.event = event }
 }
 
 private final class SidebarOutlineMenuAction: NSObject {

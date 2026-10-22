@@ -540,6 +540,8 @@ final class OutputProfileReviewTests: XCTestCase {
     private func host(_ outputs: OutputCoordinator, destination: UUID) -> (NSWindow, NSHostingView<OutputCompositionView>) {
         let view = NSHostingView(rootView: OutputCompositionView(coordinator: outputs, destinationID: destination))
         let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 480, height: 270), styleMask: .borderless, backing: .buffered, defer: false)
+        // Offscreen pixel fixtures exercise content, not window transforms.
+        window.animationBehavior = .none
         window.isReleasedWhenClosed = false; window.contentView = view
         window.setFrameOrigin(NSPoint(x: -10000, y: -10000)); window.orderBack(nil)
         view.layoutSubtreeIfNeeded()

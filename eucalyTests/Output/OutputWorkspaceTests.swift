@@ -207,9 +207,19 @@ func makeWorkspaceWindows(outputs: OutputCoordinator,
     OutputWorkspaceWindows(outputs: outputs, updates: AppUpdateViewModel(driver: WorkspaceUpdateDriver()),
         defaults: defaults, autosavesWindowFrames: autosavesWindowFrames, keyWindow: keyWindow, manageWorkspaces: manageWorkspaces, contentFactory: { _, _ in
             let controller = NSViewController()
-            controller.view = NSView(frame: .init(x: 0, y: 0, width: 1280, height: 800))
+            controller.view = WorkspaceFixtureContentView(frame: .init(x: 0, y: 0, width: 1280, height: 800))
             return controller
         })
+}
+
+@MainActor
+private final class WorkspaceFixtureContentView: NSView {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        // The fixture attaches before its real workspace controller first shows
+        // the window. Lifecycle/command checks do not exercise window transforms.
+        window?.animationBehavior = .none
+    }
 }
 
 @MainActor
