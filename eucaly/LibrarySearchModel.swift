@@ -5,6 +5,10 @@ import Combine
 final class LibrarySearchModel: ObservableObject {
     nonisolated static let minimumCharacterCount = 3
 
+    // Queries, scope and selection remain private to each workspace. Discovery
+    // and persistent index writes have one app-level owner and connection.
+    private static let sharedIndex = LibraryTextSearchIndex()
+
     let index: LibraryTextSearchIndex
 
     @Published private(set) var query: String = ""
@@ -18,8 +22,8 @@ final class LibrarySearchModel: ObservableObject {
     private var scopeFileSet: Set<URL> = []
     private var debounceTask: Task<Void, Never>?
 
-    init(index: LibraryTextSearchIndex = LibraryTextSearchIndex()) {
-        self.index = index
+    init(index: LibraryTextSearchIndex? = nil) {
+        self.index = index ?? Self.sharedIndex
     }
 
     deinit {

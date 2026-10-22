@@ -36,9 +36,9 @@ fixes and straightforward questions directly.
 ### Coordinator responsibilities
 - Keep the main agent as the user's contact and integration owner. It scopes the
   task, assigns work, resolves decisions across domains and verifies the result.
-- Give each handoff a concrete objective, acceptance criteria, relevant user
-  constraints, explicit write ownership (or a read-only scope), and expected
-  validation. Read the role definition before dispatching it.
+- Read the role definition before dispatching it. Give each handoff the objective,
+  user constraints, explicit write ownership (or read-only scope), dependencies
+  and acceptance/validation criteria from the Shared Completion Contract below.
 - Prefer the named custom agent when the client supports role selection. If its
   spawn interface cannot select custom roles, include the role's full
   `developer_instructions` in the delegated task. A task name alone does not load
@@ -52,17 +52,14 @@ fixes and straightforward questions directly.
 - Bring in `presentation_core` for output/workspace ownership changes,
   `media_engine` for shared playback/lifetime changes and `ndi_transport` for
   sender/IPC changes, even when the visible change begins in a menu or Settings.
-  These consultations may be read-only and can run in phases.
+  Bring in `macos_interface` for substantial operator-interaction changes,
+  including those caused by backend work. Consultations may be read-only and
+  can run in phases; do not add every specialist to every task.
 - Request `independent_reviewer` after integrating substantial behavior changes,
   concurrency/lifecycle changes, persistence migrations or delegation-policy
-  changes. Provide the objective, changed files/diff and observed validation.
-  Resolve actionable findings and repeat affected checks before completion.
-- Keep one owner for full builds/tests; avoid duplicate concurrent Xcode runs.
-  Use `make build` for local app builds and `make test` for app regressions.
-  For changes confined to agent instructions/configuration, validate TOML,
-  referenced paths and dispatch rules with `make test-codex-agents` instead of
-  building the app. Native discovery/delegation smoke tests also need a current
-  Codex client; use the desktop app's bundled client when the PATH client lags.
+  changes. Provide the objective, changed files/diff and completion evidence.
+- Keep one owner for full builds/tests; coordinate scoped checks to avoid
+  duplicate concurrent Xcode runs. Use the validation commands in the contract.
 - Respect the active client's concurrency limit and use batches when needed.
   Specialists execute their assigned task without recursively redispatching it;
   further subagents require an explicit delegation assignment from the parent.
@@ -75,6 +72,58 @@ All specialists preserve the media-flow, workspace-isolation and explicit-output
 contracts below, and assess UX effects within their task. Release/update work
 stays with the coordinator, using the existing release and self-update guides;
 add specialist assistance only when the task warrants it.
+
+## Shared Completion Contract
+
+This contract applies to the coordinator and all six roles. Scale it to the risk
+and assigned scope; a small local edit does not need a broad refactor, new tests
+or extra agents. Review-only agents return findings without making changes.
+
+1. **Define acceptance.** For behavior changes, describe the starting state,
+   operator action, expected result and state that must remain intact. Identify
+   affected ownership/lifetime boundaries and the checks that will establish
+   the result. Apply the relevant Change Checklist items below; shared media or
+   flow changes need coverage across all affected media types and workspaces.
+2. **Explain the repair.** Trace the actual state owner and failure or design
+   decision. Apply the Engineering Rules below: make the smallest coherent
+   root-cause repair and remove superseded logic. Justify new retries, delays,
+   fallbacks or state flags by the behavior they model. Do not mask failures by
+   swallowing errors, suppressing diagnostics or weakening checks to pass.
+3. **Verify the behavior.** For substantial bugs, establish a concrete
+   reproduction and, when practical, a regression that fails before the repair
+   and passes afterward. Exercise affected failure, cancellation, stale-callback,
+   retry and teardown paths. Prefer controlled ordering for race regressions over
+   timing sleeps. Use isolated fixtures, never the operator's library, preferences
+   or live output. Avoid tests that merely mirror implementation details.
+4. **Check the operator workflow.** For material interaction changes, verify the
+   affected keyboard navigation, text editing, focus return, menu/toolbar state,
+   resizing, accessibility interaction and error recovery. Use existing native
+   tests and targeted UI observation when relevant and available within scope;
+   labels or screenshots alone do not establish usable interaction.
+   AppKit migrations should adopt appropriate native selection, disclosure and
+   responder behavior; limitations of the previous UI are not acceptance criteria.
+5. **Validate and review the integrated result.** Use `make build` for local app
+   builds and `make test` for app regressions. For changes confined to agent
+   instructions/configuration and their validator, use `make test-codex-agents`
+   to check TOML, references and contract wiring instead of building the app.
+   Static checks do not prove live delegation: discovery/dispatch smoke checks,
+   when assigned, need a current Codex client (use the desktop app's bundled
+   client when PATH lags). Resolve actionable independent-review findings and
+   repeat affected checks after repairs. The coordinator owns final integration;
+   a specialist's completed handoff does not establish whole-task completion.
+6. **Report evidence.** Return the cause/decision, files changed or referenced,
+   checks actually run with results and skips, review findings/resolution, and
+   remaining risks or cross-domain work. Reviewers report actionable findings
+   first. Distinguish automated, native-observed, runtime/loopback and physical
+   evidence; never claim unobserved results or treat skipped checks as passes.
+   Run optional stress, hardware and production-qualification work only when
+   assigned; record relevant gaps without expanding unrelated development into
+   a qualification campaign. See the existing qualification documents below.
+
+Read only the architecture sections relevant to the task. This guide's contracts
+and the current implementation resolve older plan descriptions; report conflicts
+with the requested behavior rather than treating existing code as proof of
+correctness. Keep shared process here and domain-specific checks in the roles.
 
 ## Tech Stack
 - Apple Silicon Macs running macOS 26 or later
@@ -114,6 +163,19 @@ add specialist assistance only when the task warrants it.
   - Receives the app-retained workspace `PresentationSession` and `PresentationFlowController`; SwiftUI tab visibility never owns live playback
   - Hosts split view, toolbar controls, selection handling, and sidebar callbacks
 
+### Native Sidebar
+- `eucaly/SidebarView.swift` is the thin host bridge from the SwiftUI workspace.
+- `eucaly/SidebarViewController.swift` owns AppKit sidebar layout, section
+  disclosure, controls, menus, sliders and UI subscriptions.
+- `eucaly/SidebarOutlineView.swift` owns the shared native outline behavior,
+  selection approval, expansion and keyboard traversal.
+- Apply incoming state without invoking user actions or binding setters. Keep
+  selection reconciliation in its workspace owner. Dismantling releases UI work
+  only; closing controls must preserve the app-owned presentation runtime.
+- Size native lists from their content, including source-list edge space. Hidden
+  section contents must not receive keyboard selection; visible headers remain
+  reachable for expansion.
+
 ### Output Profiles
 - AppDelegate owns OutputProfileStore, OutputCoordinator and NDIOutputRouter independently of controls windows. OutputCoordinator owns native destinations, local workspace ownership, snapshots and shared media. There is no incoming presentation receiver or forwarding path.
 - Each named workspace owns one Current, Preview flow, accepted snapshot, action clock and program media runtime. Destinations have one durable workspaceID; several outputs share its program playback and different workspaces present simultaneously. Profiles own reusable appearance, never content. New workspaces have no outputs. Native tabs retain editor/Preview/Current; detaching moves the same window. Tab/focus changes never reroute or start output.
@@ -121,7 +183,7 @@ add specialist assistance only when the task warrants it.
 - Workspace creation is limited to four through one shared creation guard. Existing saved/recovered records above four remain available under the legacy persistence bound; do not trim or reassign them on restore. Keep at least one workspace. Manage Workspaces lists saved identities, assigned outputs (including disabled rows), playback/output status and open/closed controls. Delete is separate from closing a tab: reject any assigned destination or running program/background/audio playback, honor the native unsaved-edit check and revalidate after it. Deletion releases only that workspace's runtime/paused music owner and invalidates queued work without rerouting music or other outputs. Removed workspace restoration and late callbacks cannot revive it. Closing controls continues to preserve Current, live output and background audio.
 - Show, live Load/Switch, visible Current navigation, same-slide activation, playback and ordinary Stop operate only on that workspace’s assigned destinations. The output picker shows the saved owner and an explicit Move to This Workspace action; Show never takes another workspace’s output. Preflight transfers before changing ownership. Hide retains its private snapshot; Clear removes foreground only. Assignments survive Hide/Clear/Stop. Stop All Outputs is a distinct global action. Background and audio controls remain independent.
 - AppDelegate owns OutputWorkspaceWindows and its native workspace window controllers. SwiftUI content receives an already prepared session and never creates or discovers controls windows. AppKit restores windows by workspace UUID and owns tab groups; detaching moves the same window. Coordinator construction never opens windows. The native workspace didBecomeKey delegate callback permits Confidence standby after the workspace exists; no timer, polling or replacement main window is used. Projection windows can become key, never main, and are excluded from automatic restoration.
-- Open Confidence shows a large centered clock when empty, cleared or hidden. Current is on the left and Next on the right, with no source-name header or media filename. Enabled, assigned Confidence opens automatically after the real workspace becomes key or after assignment/enable. Standby never shows a slide, steals focus, takes ownership, starts program media or publishes to NDI. Stop, native close and display loss suppress reopening until Open Confidence/Show or a new assignment/enable. The old Timer/Clock overlay remains removed.
+- Confidence output follows [Confidence Standby Clock](#confidence-standby-clock) below.
 - Per-workspace OutputActionClock order and session cancellation generations invalidate old queued navigation after newer commands, transfer or destination closure without canceling another workspace’s navigation. Native close and outgoing connection callbacks are generation guarded.
 - Reservations and teardown are per destination. Losing one retains the others, resources, Current and saved assignments. Reconnection requires explicit Show; never silently move output to a different monitor. Enabled destinations cannot share a monitor or NDI source name. Disabled rows retain assignments without reserving them. Pickers offer None.
 - Images, PDFs, video and picked windows use the same native media boundary in every enabled profile. Remote-only media, including deferred model refresh, must not replace a valid live lyrics program.
@@ -198,19 +260,13 @@ If a new type cannot follow this contract, treat it as a design bug and refactor
 ## Current UX and Behavior
 
 ### Preview vs Current
-- Selecting files updates **Preview** only.
-- **Current** changes only when user clicks:
-  - `Load to Current` (or `Switch Current` while presenting)
-  - `Clear`
+- Follow the Media Flow Contract above for every source type.
 - Clear can run while projecting; it clears Current without implicitly restoring Preview.
 - Show/Hide Slides and Cmd+2 are disabled when that workspace's Current is empty, including while outputs remain open. NDI Start/Stop/Retry, background controls and Open Confidence remain independent.
 
 ### Projection
-- Toolbar and menu control slide visibility separately from background layer visibility.
-- ESC hides slides.
-- Projection can remain active while slides are hidden.
+- Toolbar and menu control slide visibility separately from backgrounds/audio. Projection may remain active with slides hidden; see Keyboard Shortcuts below for ESC and layer commands.
 - `OutputCoordinator` holds one `ProjectionSleepPrevention` activity while any physical projection window (including a standby clock) is open, preventing idle system and display sleep. Hide Slides, Clear Current, and background/layer changes retain it. Stop Projection, native window close, display-loss shutdown, and teardown release it; browsing, naming, Identify, audio alone, and failed projection starts do not acquire it.
-- Background and audio are independent from slides visibility.
 - Projection target display is user-selectable from the toolbar (`display` menu).
 - `ProjectionDisplayManager` is shared by the toolbar, Manage Outputs, and sessions. Assignments, monitor numbers, and custom names are persisted by macOS display UUID; the old `projectionScreenDisplayID` preference is migrated once.
 - Identify briefly labels an idle monitor without changing Current or opening projection. Stop projection before selecting another monitor.
@@ -241,68 +297,29 @@ Projection screen rule:
 - Do not hardcode screen selection (`NSScreen.screens[1]`) in call sites.
 
 ### Confidence Standby Clock
-- An open Confidence output with no visible text or media always shows a large centered clock.
-- Enabled, assigned Confidence opens its clock before the first slide at startup or after explicit assignment/enable.
-- This clock is local to Confidence and does not change ownership, Current, NDI output or session presentation state.
-- Stop, Close Confidence and monitor loss retain an explicit closed state; Open Confidence or Show Slides resumes output on the saved physical identity.
+- An open Confidence output with no visible text or media shows a large centered clock, including when empty, cleared or hidden. Visible content shows Current on the left and Next on the right, with no source-name header or media filename.
+- Enabled, assigned Confidence opens automatically after the real workspace becomes key or after assignment/enable, including before the first slide.
+- Standby stays local to Confidence: it never shows a slide, steals focus, takes ownership, starts program media, publishes NDI or changes Current/session presentation state.
+- Stop, native close and display loss suppress reopening until Open Confidence/Show or a new assignment/enable; resume only on the saved physical identity.
 - The old optional Timer/Clock overlay and countdown controls have been removed.
 
 ## Window Capture Support (Authoritative)
 
 This section supersedes older window-capture docs.
 
-### Scope
-Window capture supports live streaming of a user-picked app window into a slide.
+Window capture streams one user-picked app window into a normal slide.
 
-### Data Model
-- `eucaly/Models.swift`
-  - `Slide.captureWindowID: CGWindowID?`
-  - Non-window slides set this to `nil`.
+### Picker and Permission
+- `eucaly/ScreenCaptureManager.swift` uses `SCContentSharingPicker` in `.window` mode with `maximumStreamCount = 1`. Picker observer updates to `@Published var windows: [CapturedWindow]` are the selection authority; no persisted allowlist is used. Only the controlled workspace accepts the selection into Preview.
+- Request screen-recording permission lazily, only after explicit `Pick Window...`; never prompt at app launch.
+- The manager exposes `startCapture(windowID:outputHandler:)`, `stopCapture(windowID:)` and `stopAllCaptures()`.
 
-### Source Selection (System Picker)
-- `eucaly/ScreenCaptureManager.swift`
-  - Uses `SCContentSharingPicker` in `.window` mode.
-  - `maximumStreamCount = 1`.
-  - Maintains selected windows in `@Published var windows: [CapturedWindow]`.
-  - Picker updates are the source of truth for selectable windows. Only the controlled workspace accepts a picker selection into Preview.
-- No persisted allowlist model is used.
-
-### Permission Behavior
-- Screen recording permission must be requested lazily from explicit user action only.
-- Do not trigger screen-capture permission prompts during app launch.
-- Permission prompts are expected only after user clicks `Pick Window...`.
-
-### Window Enumeration and Capture
-- `eucaly/ScreenCaptureManager.swift`
-  - Picker observer updates selected windows.
-  - `windows: [CapturedWindow]`
-  - `startCapture(windowID:outputHandler:)`
-  - `stopCapture(windowID:)`
-  - `stopAllCaptures()`
-
-### Sidebar Behavior
-- `eucaly/SidebarView.swift`
-  - Windows section is list-oriented.
-  - `Pick Window...` appears as a row-styled action.
-  - Picked windows appear as selectable rows (`SidebarSelection.window(windowID)`).
-
-### Preview Behavior
-- `eucaly/ContentView.swift`
-  - Selecting a picked window maps to `SidebarSelection.window(windowID)`
-  - Loads window preview via `loadWindowPreview`
-  - Builds standard preview slides with `Slide.captureWindowID`.
-
-### Load to Current
-- Must use the same preview-to-current path as other media:
-  - preview slides built in flow
-  - `handleLoadPreviewToCurrent` -> `flow.movePreviewToCurrent(...)`
-- Window type must not bypass this contract.
-
-### Projection Rendering
-- `eucaly/PresentationWindowController.swift` slides layer:
-  - if `slide.captureWindowID != nil`, render `WindowCaptureSlideView`
-  - otherwise render video/pdf/image/lyrics branch
-- `isLyricsSlide` must continue excluding window slides.
+### Preview, Current and Rendering
+- `eucaly/Models.swift` defines `Slide.captureWindowID: CGWindowID?`; non-window slides use `nil`.
+- `eucaly/SidebarViewController.swift` owns list-style Windows rows, the native
+  `Pick Window...` action and selectable `SidebarSelection.window(windowID)` rows.
+- `eucaly/ContentView.swift` maps that selection through `loadWindowPreview` to standard flow slides with `captureWindowID`. Load follows `handleLoadPreviewToCurrent` -> `flow.movePreviewToCurrent(...)`, exactly as other media; capture cannot bypass the Media Flow Contract.
+- In `eucaly/PresentationWindowController.swift`, the slides layer renders `WindowCaptureSlideView` when `captureWindowID != nil`, otherwise the video/PDF/image/lyrics branch. `isLyricsSlide` must exclude window slides.
 
 ### Lifecycle and Cleanup
 - Capture consumers attach when a window slide appears and detach when it disappears. The shared source stream stops after its last consumer releases it.
@@ -310,9 +327,7 @@ Window capture supports live streaming of a user-picked app window into a slide.
 - Destination/session teardown releases its own consumers; app shutdown stops all active captures.
 - Missing window or permission failure must degrade gracefully (error state, no crash).
 
-### Known Design Constraint
-- Current mode is single selected stream from the system picker (`maximumStreamCount = 1`).
-- If multi-window support is introduced later, it must still honor the same media flow contract and explicit selection semantics.
+Future multi-window support must retain the same media-flow and explicit-selection semantics.
 
 ## Background Visual and Audio
 
@@ -428,7 +443,7 @@ Window capture supports live streaming of a user-picked app window into a slide.
 - Extract heavy subtrees into focused views.
 - Narrow bindings and callback surfaces to reduce `body` recomputation.
 - Keep sidebar lists stable and driven by minimal inputs.
-- Very aggressive scrolling through large sidebar libraries can expose SwiftUI `LazyVStack` limits. If this becomes a real workflow issue, prefer a scoped native `NSOutlineView`/`NSTableView` wrapper for the library list over piling on more `LazyVStack` caching or row micro-optimizations.
+- Use native outline/table virtualization for large sidebar libraries; preserve stable row identities and expansion state across updates.
 
 ### 7) Keyboard shortcut collision safety
 - Any new shortcut must be checked against standard macOS text-editing bindings before merge.
@@ -453,7 +468,8 @@ Window capture supports live streaming of a user-picked app window into a slide.
   - Check target window still exists.
 
 ## Change Checklist
-When changing behavior, verify:
+Select checks for affected behavior and shared boundaries under the Shared
+Completion Contract; shared flow/media changes must cover every affected type:
 - Lyrics/PDF/Image/Video/Window all load into Preview.
 - Preview does not implicitly overwrite Current.
 - Load to Current works identically across media types.

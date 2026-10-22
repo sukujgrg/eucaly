@@ -1,5 +1,4 @@
 import AppKit
-import SwiftUI
 
 nonisolated enum SidebarHighlightMetrics {
     static let horizontalInset: CGFloat = 10
@@ -142,18 +141,6 @@ nonisolated struct SidebarOutlineModel: Sendable {
     }
 
     static let empty = SidebarOutlineModel(roots: [])
-
-    func visibleRowCount(expandedGroupIDs: Set<String>) -> Int {
-        func countVisibleItems(_ items: [SidebarOutlineItem]) -> Int {
-            items.reduce(into: 0) { count, item in
-                count += 1
-                if let groupID = item.groupID, expandedGroupIDs.contains(groupID) {
-                    count += countVisibleItems(item.children)
-                }
-            }
-        }
-        return countVisibleItems(roots)
-    }
 }
 
 nonisolated enum SidebarOutlineNavigationSection: Int, CaseIterable, Hashable, Sendable {
@@ -244,13 +231,11 @@ struct SidebarOutlineExpansionState: Equatable {
     let key: String
     let groupCount: Int
     let expandedGroupCount: Int
-    let visibleContentHeight: CGFloat
 
     static let empty = SidebarOutlineExpansionState(
         key: "",
         groupCount: 0,
-        expandedGroupCount: 0,
-        visibleContentHeight: 0
+        expandedGroupCount: 0
     )
 
     var areAllGroupsCollapsed: Bool {
@@ -262,7 +247,7 @@ final class SidebarOutlineExpansionStore {
     var expandedGroupIDs: [String: Set<String>] = [:]
 }
 
-struct SidebarOutlineView: NSViewRepresentable {
+struct SidebarOutlineConfiguration {
     let contentRevision: AnyHashable
     let expansionKey: String
     let modelBuilder: () -> SidebarOutlineModel
@@ -322,11 +307,18 @@ struct SidebarOutlineView: NSViewRepresentable {
         self.onExpansionStateChange = onExpansionStateChange
     }
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(expansionStore: expansionStore)
-    }
+}
 
-    func makeNSView(context: Context) -> NSScrollView {
+@MainActor
+final class SidebarOutlineController {
+    let scrollView: SidebarOutlineScrollView
+    private let coordinator: Coordinator
+
+    var outlineView: NSOutlineView { scrollView.documentView as! NSOutlineView }
+
+    init(configuration: SidebarOutlineConfiguration) {
+        let coordinator = Coordinator(expansionStore: configuration.expansionStore)
+        self.coordinator = coordinator
         let outlineView = ReusableSidebarNSOutlineView()
         let column = NSTableColumn(identifier: Coordinator.columnIdentifier)
         column.resizingMask = .autoresizingMask
@@ -337,17 +329,17 @@ struct SidebarOutlineView: NSViewRepresentable {
         outlineView.intercellSpacing = .zero
         outlineView.rowSizeStyle = .custom
         outlineView.indentationPerLevel = 8
-        outlineView.allowsEmptySelection = allowsEmptySelection
+        outlineView.allowsEmptySelection = configuration.allowsEmptySelection
         outlineView.allowsTypeSelect = true
         outlineView.focusRingType = .none
         outlineView.backgroundColor = .clear
         outlineView.style = .sourceList
-        outlineView.dataSource = context.coordinator
-        outlineView.delegate = context.coordinator
-        outlineView.target = context.coordinator
+        outlineView.dataSource = coordinator
+        outlineView.delegate = coordinator
+        outlineView.target = coordinator
         outlineView.doubleAction = #selector(Coordinator.performDefaultAction(_:))
 
-        let scrollView = NSScrollView()
+        let scrollView = SidebarOutlineScrollView()
         scrollView.documentView = outlineView
         scrollView.drawsBackground = false
         scrollView.borderType = .noBorder
@@ -355,31 +347,33 @@ struct SidebarOutlineView: NSViewRepresentable {
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
 
-        context.coordinator.outlineView = outlineView
-        outlineView.groupToggleHandler = { [weak coordinator = context.coordinator] item in
+        coordinator.outlineView = outlineView
+        outlineView.groupToggleHandler = { [weak coordinator = coordinator] item in
             coordinator?.toggleGroup(item)
         }
-        outlineView.spaceActionHandler = { [weak coordinator = context.coordinator] in
+        outlineView.spaceActionHandler = { [weak coordinator = coordinator] in
             coordinator?.performSpaceAction() ?? false
         }
-        outlineView.defaultActionHandler = { [weak coordinator = context.coordinator] in
+        outlineView.defaultActionHandler = { [weak coordinator = coordinator] in
             coordinator?.performKeyboardDefaultAction() ?? false
         }
-        outlineView.menuProvider = { [weak coordinator = context.coordinator] row in
+        outlineView.menuProvider = { [weak coordinator = coordinator] row in
             coordinator?.contextMenu(forRow: row)
         }
-        outlineView.boundaryMoveHandler = { [weak coordinator = context.coordinator] direction in
+        outlineView.boundaryMoveHandler = { [weak coordinator = coordinator] direction in
             coordinator?.moveAcrossBoundary(direction) ?? false
         }
-        context.coordinator.update(from: self, forceReload: true)
-        return scrollView
+        self.scrollView = scrollView
+        coordinator.update(from: configuration, forceReload: true)
+        scrollView.updateMeasuredHeight()
     }
 
-    func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        context.coordinator.update(from: self)
+    func update(_ configuration: SidebarOutlineConfiguration) {
+        coordinator.update(from: configuration)
+        scrollView.updateMeasuredHeight()
     }
 
-    static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
+    func detach() {
         coordinator.outlineView?.delegate = nil
         coordinator.outlineView?.dataSource = nil
         coordinator.outlineView?.groupToggleHandler = nil
@@ -428,7 +422,7 @@ struct SidebarOutlineView: NSViewRepresentable {
             self.expansionStore = expansionStore
         }
 
-        func update(from view: SidebarOutlineView, forceReload: Bool = false) {
+        func update(from view: SidebarOutlineConfiguration, forceReload: Bool = false) {
             onSelectionChange = view.onSelectionChange
             onDefaultAction = view.onDefaultAction
             onSpaceAction = view.onSpaceAction
@@ -767,7 +761,7 @@ struct SidebarOutlineView: NSViewRepresentable {
         }
 
         var hasSelectableRows: Bool {
-            guard let outlineView else { return false }
+            guard let outlineView, outlineView.window != nil, !outlineView.isHiddenOrHasHiddenAncestor else { return false }
             return (0..<outlineView.numberOfRows).contains { row in
                 guard let item = outlineView.item(atRow: row) as? SidebarOutlineItem else { return false }
                 return item.groupID == nil
@@ -775,7 +769,7 @@ struct SidebarOutlineView: NSViewRepresentable {
         }
 
         func focusBoundaryRow(for direction: SidebarOutlineNavigationDirection) -> Bool {
-            guard let outlineView else { return false }
+            guard let outlineView, outlineView.window != nil, !outlineView.isHiddenOrHasHiddenAncestor else { return false }
             let selectableRows = selectableRowIndexes(in: outlineView)
             guard let targetRow = direction == .down ? selectableRows.first : selectableRows.last else {
                 return false
@@ -916,6 +910,7 @@ struct SidebarOutlineView: NSViewRepresentable {
         }
 
         private func reportExpansionState() {
+            (outlineView?.enclosingScrollView as? SidebarOutlineScrollView)?.updateMeasuredHeight()
             let groupIDs = Set(model.groupItemsByID.keys)
             let expandedCount = expansionStore.expandedGroupIDs[expansionKey, default: []]
                 .intersection(groupIDs)
@@ -923,8 +918,7 @@ struct SidebarOutlineView: NSViewRepresentable {
             let state = SidebarOutlineExpansionState(
                 key: expansionKey,
                 groupCount: groupIDs.count,
-                expandedGroupCount: expandedCount,
-                visibleContentHeight: visibleContentHeight
+                expandedGroupCount: expandedCount
             )
             guard lastReportedExpansionState != state else { return }
             lastReportedExpansionState = state
@@ -949,11 +943,29 @@ struct SidebarOutlineView: NSViewRepresentable {
                 cell.configureStatus(itemStatuses[item.id])
             }
         }
+    }
+}
 
-        private var visibleContentHeight: CGFloat {
-            guard let outlineView, outlineView.numberOfRows > 0 else { return 0 }
-            return ceil(outlineView.rect(ofRow: outlineView.numberOfRows - 1).maxY)
-        }
+/// AppKit supplies source-list row margins as part of the document's measured
+/// height. Keep short lists at that height, and let longer lists scroll within
+/// their section's viewport limit.
+@MainActor
+final class SidebarOutlineScrollView: NSScrollView {
+    var maximumHeight: CGFloat = 240 {
+        didSet { updateMeasuredHeight() }
+    }
+    private lazy var measuredHeight = heightAnchor.constraint(equalToConstant: 0)
+
+    func updateMeasuredHeight() {
+        let height = min(maximumHeight, documentView?.fittingSize.height ?? 0)
+        guard measuredHeight.constant != height || !measuredHeight.isActive else { return }
+        measuredHeight.constant = height
+        measuredHeight.isActive = true
+    }
+
+    override func layout() {
+        super.layout()
+        updateMeasuredHeight()
     }
 }
 

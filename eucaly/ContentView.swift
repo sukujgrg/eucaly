@@ -243,6 +243,12 @@ public struct ContentView: View {
         .onChange(of: session.backgroundAudioURL) { _, newValue in
             selectedAudioURL = newValue?.standardizedFileURL
         }
+        .onChange(of: libraryRevision) { _, _ in
+            guard let selected = selectedAudioURL?.standardizedFileURL,
+                  !backgroundAudioLibraryFiles.contains(where: { $0.standardizedFileURL == selected }) else { return }
+            importSelectionGeneration = UUID()
+            selectedAudioURL = session.backgroundAudioURL?.standardizedFileURL
+        }
         .onChange(of: session.backgroundAudioPlaybackState) { _, _ in
             importSelectionGeneration = UUID()
         }
@@ -309,7 +315,7 @@ public struct ContentView: View {
 
     @ViewBuilder
     private var sidebarPane: some View {
-        SidebarView(
+        SidebarView(configuration: SidebarConfiguration(
             session: session,
             isWindowCaptureSupported: isWindowCaptureSupported,
             libraryFiles: previewLibraryFiles,
@@ -323,13 +329,10 @@ public struct ContentView: View {
             libraryScrollRequest: libraryScrollRequest,
             selectedPlaylistEntryIDs: selectedPlaylistEntryIDs,
             sidebarSelection: sidebarSelection,
-            selectedAudioURL: Binding(get: { selectedAudioURL }, set: { selection in
-                importSelectionGeneration = UUID()
-                selectedAudioURL = selection
-            }),
-            backgroundAudioLoop: $backgroundAudioLoop,
-            backgroundAudioVolumeDraft: $backgroundAudioVolumeDraft,
-            windowCaptureFrameRate: $windowCaptureFrameRate,
+            selectedAudioURL: selectedAudioURL,
+            backgroundAudioLoop: backgroundAudioLoop,
+            backgroundAudioVolumeDraft: backgroundAudioVolumeDraft,
+            windowCaptureFrameRate: windowCaptureFrameRate,
             displayName: { displayName(for: $0) },
             onImportToLibrary: importFilesToLibrary,
             onRetryLibraryLoad: refreshLibrary,
@@ -352,8 +355,15 @@ public struct ContentView: View {
                 )
             },
             onPickWindow: pickWindowForPreview,
-            onClearSelectedWindow: clearSelectedWindowFromSidebar
-        )
+            onClearSelectedWindow: clearSelectedWindowFromSidebar,
+            setSelectedAudioURL: { selection in
+                importSelectionGeneration = UUID()
+                selectedAudioURL = selection
+            },
+            setBackgroundAudioLoop: { backgroundAudioLoop = $0 },
+            setBackgroundAudioVolumeDraft: { backgroundAudioVolumeDraft = $0 },
+            setWindowCaptureFrameRate: { windowCaptureFrameRate = $0 }
+        ))
 
     }
 
@@ -965,7 +975,6 @@ public struct ContentView: View {
         refreshSearchResults: Bool = false
     ) {
         let previousSearchScopeFiles = librarySearch.scopeFilesSnapshot
-        let scanner = libraryFileScanner
         let index = librarySearch.index
 
         libraryLoadTask?.cancel()
@@ -982,9 +991,9 @@ public struct ContentView: View {
             }
             guard !Task.isCancelled else { return }
 
-            let discoveredFiles: [LibraryDiscoveredFileModel]
+            let syncResult: LibraryTextSearchIndex.MetadataSyncResult
             do {
-                discoveredFiles = try scanner.discoverFiles(in: folder)
+                syncResult = try await index.refreshLibraryMetadata(root: folder)
             } catch is CancellationError {
                 return
             } catch {
@@ -1012,11 +1021,7 @@ public struct ContentView: View {
             }
             guard !Task.isCancelled else { return }
 
-            let metadata = await index.syncLibraryMetadata(
-                root: folder,
-                discoveredFiles: discoveredFiles
-            )
-            guard !Task.isCancelled else { return }
+            let metadata = syncResult.metadata
 
             let currentQuery = await MainActor.run {
                 librarySearch.trimmedQuery
@@ -1038,6 +1043,7 @@ public struct ContentView: View {
                 let searchScopeFiles = applyLibraryMetadata(metadata, for: folder)
                 isLibraryLoading = false
                 librarySearch.setIndexing(false)
+                libraryLoadFailure = syncResult.failure.map { LibraryLoadFailure(url: folder, error: $0) }
 
                 if refreshSearchResults || !haveSameStandardizedURLs(previousSearchScopeFiles, searchScopeFiles) {
                     librarySearch.applySearchResults(

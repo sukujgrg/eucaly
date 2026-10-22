@@ -3,8 +3,73 @@ import XCTest
 
 @MainActor
 final class LibrarySearchModelTests: XCTestCase {
+    func testDefaultWorkspaceModelsShareOnlyTheIndexOwner() {
+        let first = LibrarySearchModel()
+        let second = LibrarySearchModel()
+        defer { first.cancelDebounce(); second.cancelDebounce() }
+        XCTAssertTrue(first.index === second.index)
+        let firstURL = URL(fileURLWithPath: "/tmp/eucaly-first-workspace/song.txt")
+        let secondURL = URL(fileURLWithPath: "/tmp/eucaly-second-workspace/song.txt")
+        first.setScopeFiles([firstURL])
+        second.setScopeFiles([secondURL])
+        first.setQuery("first", currentSelectedURL: nil)
+        first.selectedResult = firstURL
+        XCTAssertEqual(first.scopeFilesSnapshot, [firstURL])
+        XCTAssertEqual(second.scopeFilesSnapshot, [secondURL])
+        XCTAssertEqual(second.query, "")
+        XCTAssertNil(second.selectedResult)
+        // This synchronous identity/state check cancels its debounce before
+        // yielding, and never scans, opens or queries the production database.
+    }
+
+    func testWorkspaceSaveQueuedDuringAnotherRefreshIsIndexedWithPrivateQueries() async throws {
+        let (index, directory) = try makeIndex()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let song = try writeTextFile(in: directory, name: "song.txt", contents: "Song\nolduniquetoken")
+        let other = try writeTextFile(in: directory, name: "other.txt", contents: "Other\notheruniquetoken")
+        let first = LibrarySearchModel(index: index)
+        let second = LibrarySearchModel(index: index)
+        defer { first.cancelDebounce(); second.cancelDebounce() }
+        first.setScopeFiles([other])
+        second.setScopeFiles([song])
+        let transactionOpen = expectation(description: "First workspace holds its complete old inventory")
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        await index.beforeNextTransactionCommit {
+            transactionOpen.fulfill()
+            XCTAssertEqual(release.wait(timeout: .now() + 5), .success)
+        }
+        let firstRefresh = Task { try await first.index.refreshLibraryMetadata(root: directory) }
+        await fulfillment(of: [transactionOpen], timeout: 3)
+        try "Song\nfreshuniquetoken".write(to: song, atomically: true, encoding: .utf8)
+        let secondRequested = expectation(description: "Second workspace requests its saved-song refresh")
+        let secondRefresh = Task {
+            secondRequested.fulfill()
+            return try await second.index.refreshLibraryMetadata(root: directory)
+        }
+        await fulfillment(of: [secondRequested], timeout: 3)
+        release.signal()
+        let firstResult = try await firstRefresh.value
+        let secondResult = try await secondRefresh.value
+        XCTAssertTrue(firstResult.isIndexed)
+        XCTAssertTrue(secondResult.isIndexed)
+        XCTAssertNil(secondResult.failure)
+
+        first.setQuery("otheruniquetoken", currentSelectedURL: nil)
+        second.setQuery("freshuniquetoken", currentSelectedURL: nil)
+        let firstSelection = await first.searchImmediately(currentSelectedURL: nil)
+        let secondSelection = await second.searchImmediately(currentSelectedURL: nil)
+        XCTAssertEqual(firstSelection, other.standardizedFileURL)
+        XCTAssertEqual(secondSelection, song.standardizedFileURL)
+        XCTAssertEqual(first.query, "otheruniquetoken")
+        XCTAssertEqual(second.query, "freshuniquetoken")
+        XCTAssertEqual(first.filteredResults.map(\.url), [other.standardizedFileURL])
+        XCTAssertEqual(second.filteredResults.map(\.url), [song.standardizedFileURL])
+    }
+
     func testFiltersResultsToCurrentScopeAndStandardizesURLs() {
         let model = LibrarySearchModel()
+        defer { model.cancelDebounce() }
         let scopedURL = URL(fileURLWithPath: "/tmp/eucaly-tests/song.txt")
         let outsideURL = URL(fileURLWithPath: "/tmp/eucaly-tests/other.txt")
 
@@ -32,6 +97,7 @@ final class LibrarySearchModelTests: XCTestCase {
 
     func testSyncSelectedResultPreservesExistingValidSelection() {
         let model = LibrarySearchModel()
+        defer { model.cancelDebounce() }
         let firstURL = URL(fileURLWithPath: "/tmp/eucaly-tests/first.txt")
         let secondURL = URL(fileURLWithPath: "/tmp/eucaly-tests/second.txt")
 
@@ -55,6 +121,7 @@ final class LibrarySearchModelTests: XCTestCase {
 
     func testSyncSelectedResultCanPreferFirstResult() {
         let model = LibrarySearchModel()
+        defer { model.cancelDebounce() }
         let firstURL = URL(fileURLWithPath: "/tmp/eucaly-tests/first.txt")
         let secondURL = URL(fileURLWithPath: "/tmp/eucaly-tests/second.txt")
 
@@ -78,6 +145,7 @@ final class LibrarySearchModelTests: XCTestCase {
 
     func testSyncSelectedResultFallsBackToCurrentSelectionWhenExistingSelectionIsInvalid() {
         let model = LibrarySearchModel()
+        defer { model.cancelDebounce() }
         let firstURL = URL(fileURLWithPath: "/tmp/eucaly-tests/first.txt")
         let secondURL = URL(fileURLWithPath: "/tmp/eucaly-tests/second.txt")
         let staleURL = URL(fileURLWithPath: "/tmp/eucaly-tests/stale.txt")
@@ -102,6 +170,7 @@ final class LibrarySearchModelTests: XCTestCase {
 
     func testFilteredResultsAreEmptyWhenQueryAndResultsQueryDoNotMatch() {
         let model = LibrarySearchModel()
+        defer { model.cancelDebounce() }
         let fileURL = URL(fileURLWithPath: "/tmp/eucaly-tests/song.txt")
 
         model.setScopeFiles([fileURL])
@@ -120,6 +189,7 @@ final class LibrarySearchModelTests: XCTestCase {
 
     func testScopeChangesRefilterExistingResults() {
         let model = LibrarySearchModel()
+        defer { model.cancelDebounce() }
         let firstURL = URL(fileURLWithPath: "/tmp/eucaly-tests/first.txt")
         let secondURL = URL(fileURLWithPath: "/tmp/eucaly-tests/second.txt")
 
@@ -142,6 +212,7 @@ final class LibrarySearchModelTests: XCTestCase {
 
     func testScopeExpansionRestoresMatchesWithoutAnotherIndexSearch() {
         let model = LibrarySearchModel()
+        defer { model.cancelDebounce() }
         let firstURL = URL(fileURLWithPath: "/tmp/eucaly-tests/first.txt")
         let secondURL = URL(fileURLWithPath: "/tmp/eucaly-tests/second.txt")
 
@@ -167,6 +238,7 @@ final class LibrarySearchModelTests: XCTestCase {
 
     func testShortQueryClearsResultsAndSelection() {
         let model = LibrarySearchModel()
+        defer { model.cancelDebounce() }
         let fileURL = URL(fileURLWithPath: "/tmp/eucaly-tests/song.txt")
 
         model.setScopeFiles([fileURL])
@@ -189,6 +261,7 @@ final class LibrarySearchModelTests: XCTestCase {
 
     func testSearchImmediatelyReturnsNilForShortQuery() async {
         let model = LibrarySearchModel()
+        defer { model.cancelDebounce() }
 
         model.setQuery("am", currentSelectedURL: nil)
 
@@ -214,6 +287,7 @@ final class LibrarySearchModelTests: XCTestCase {
         _ = try await index.syncFixtureFiles([scopedURL, outsideURL], root: directoryURL)
 
         let model = LibrarySearchModel(index: index)
+        defer { model.cancelDebounce() }
         model.setScopeFiles([scopedURL])
         model.setQuery("amazing", currentSelectedURL: nil)
 
@@ -239,6 +313,7 @@ final class LibrarySearchModelTests: XCTestCase {
         _ = try await index.syncFixtureFiles(outsideFiles + [target], root: directoryURL)
 
         let model = LibrarySearchModel(index: index)
+        defer { model.cancelDebounce() }
         model.setScopeFiles([target])
         model.setQuery("mercy", currentSelectedURL: nil)
         let immediate = await model.searchImmediately(currentSelectedURL: nil)
@@ -259,6 +334,7 @@ final class LibrarySearchModelTests: XCTestCase {
         let second = try writeTextFile(in: directoryURL, name: "second.txt", contents: "Amazing grace")
         _ = try await index.syncFixtureFiles([first, second], root: directoryURL)
         let model = LibrarySearchModel(index: index)
+        defer { model.cancelDebounce() }
         model.setScopeFiles([first])
         model.setQuery("amazing", currentSelectedURL: nil)
         _ = await model.searchImmediately(currentSelectedURL: nil)

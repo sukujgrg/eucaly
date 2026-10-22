@@ -16,6 +16,37 @@ actor LibraryTextSearchIndex {
         let relativeSortKey: String
     }
 
+    nonisolated struct IndexingFailure: LocalizedError, Sendable, Equatable {
+        let databaseCode: Int32
+
+        var errorDescription: String? {
+            "Search could not be refreshed. Your files have not changed. Use Retry to rebuild the search index."
+        }
+    }
+
+    nonisolated enum MetadataSyncResult: Sendable {
+        case indexed([FileMetadata])
+        case failed([FileMetadata], IndexingFailure)
+        case cancelled
+
+        var metadata: [FileMetadata] {
+            switch self {
+            case .indexed(let metadata), .failed(let metadata, _): metadata
+            case .cancelled: []
+            }
+        }
+
+        var failure: IndexingFailure? {
+            guard case .failed(_, let failure) = self else { return nil }
+            return failure
+        }
+
+        var isIndexed: Bool {
+            if case .indexed = self { return true }
+            return false
+        }
+    }
+
     private var connection: LibrarySearchDatabaseConnection?
     private var db: OpaquePointer? { connection?.handle }
     private var onConnectionClosed: (@Sendable (Int32) -> Void)?
@@ -23,6 +54,7 @@ actor LibraryTextSearchIndex {
     private let databaseURL: URL
 #if DEBUG
     private var failNextCommit = false
+    private var beforeNextCommit: (@Sendable () -> Void)?
 #endif
 
     init() {
@@ -31,25 +63,29 @@ actor LibraryTextSearchIndex {
             ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
         let directory = appSupport.appendingPathComponent("eucaly", isDirectory: true)
         let url = directory.appendingPathComponent("library-search.sqlite", isDirectory: false)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         databaseURL = url
     }
 
     init(databaseURL: URL, onConnectionClosed: (@Sendable (Int32) -> Void)? = nil) {
         self.onConnectionClosed = onConnectionClosed
-        try? FileManager.default.createDirectory(
-            at: databaseURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
         self.databaseURL = databaseURL
+    }
+
+    /// The shared actor owns discovery and commit together. A later workspace
+    /// refresh must scan after an earlier refresh finishes, rather than commit
+    /// an older filesystem inventory after a newly saved song was indexed.
+    func refreshLibraryMetadata(root: URL) throws -> MetadataSyncResult {
+        let files = try LibraryFileScannerService().discoverFiles(in: root)
+        return syncLibraryMetadata(root: root, discoveredFiles: files)
     }
 
     func syncLibraryMetadata(
         root: URL,
         discoveredFiles: [LibraryDiscoveredFileModel]
-    ) -> [FileMetadata] {
+    ) -> MetadataSyncResult {
+        guard !Task.isCancelled else { return .cancelled }
         guard openDatabaseIfNeeded(), let db else {
-            return fallbackMetadata(from: discoveredFiles)
+            return failedSync(from: discoveredFiles)
         }
 
         let rootPath = root.standardizedFileURL.path
@@ -57,7 +93,7 @@ actor LibraryTextSearchIndex {
         let existing = existingMetadata(rootPath: rootPath, db: db)
 
         guard execute("BEGIN IMMEDIATE TRANSACTION;", db: db) else {
-            return fallbackMetadata(from: discoveredFiles)
+            return failedSync(from: discoveredFiles)
         }
 
         var didFinishTransaction = false
@@ -70,7 +106,7 @@ actor LibraryTextSearchIndex {
         var metadata: [FileMetadata] = []
         for file in discoveredFiles {
             if Task.isCancelled {
-                return []
+                return .cancelled
             }
 
             let path = file.url.standardizedFileURL.path
@@ -97,7 +133,7 @@ actor LibraryTextSearchIndex {
                 scanToken: scanToken,
                 db: db
             ) else {
-                return fallbackMetadata(from: discoveredFiles)
+                return failedSync(from: discoveredFiles)
             }
 
             if !isUnchanged {
@@ -107,7 +143,7 @@ actor LibraryTextSearchIndex {
                     content: indexedContent,
                     db: db
                 ) else {
-                    return fallbackMetadata(from: discoveredFiles)
+                    return failedSync(from: discoveredFiles)
                 }
             }
 
@@ -122,19 +158,23 @@ actor LibraryTextSearchIndex {
         }
 
         guard removeStaleMetadata(rootPath: rootPath, scanToken: scanToken, db: db) else {
-            return fallbackMetadata(from: discoveredFiles)
+            return failedSync(from: discoveredFiles)
         }
 
+#if DEBUG
+        let beforeCommit = beforeNextCommit
+        beforeNextCommit = nil
+        beforeCommit?()
+#endif
+        guard !Task.isCancelled else { return .cancelled }
         guard execute("COMMIT;", db: db) else {
-            execute("ROLLBACK;", db: db)
-            didFinishTransaction = true
-            return fallbackMetadata(from: discoveredFiles)
+            return failedSync(from: discoveredFiles)
         }
         didFinishTransaction = true
 
-        return metadata.sorted {
+        return .indexed(metadata.sorted {
             $0.relativeSortKey < $1.relativeSortKey
-        }
+        })
     }
 
     func cachedLibraryMetadata(root: URL) -> [FileMetadata] {
@@ -318,6 +358,13 @@ actor LibraryTextSearchIndex {
     private func openDatabaseIfNeeded() -> Bool {
         if db != nil { return true }
 
+        do {
+            try FileManager.default.createDirectory(
+                at: databaseURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        } catch {
+            return false
+        }
+
         var pointer: OpaquePointer?
         let flags = SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
         guard sqlite3_open_v2(databaseURL.path, &pointer, flags, nil) == SQLITE_OK, let pointer else {
@@ -337,7 +384,10 @@ actor LibraryTextSearchIndex {
             tokenize = 'unicode61'
         );
         """
-        execute(createTableSQL, db: pointer)
+        guard execute(createTableSQL, db: pointer) else {
+            connection = nil
+            return false
+        }
         let createMetadataSQL = """
         CREATE TABLE IF NOT EXISTS library_file_metadata(
             path TEXT PRIMARY KEY,
@@ -353,11 +403,13 @@ actor LibraryTextSearchIndex {
             scan_token TEXT NOT NULL
         );
         """
-        execute(createMetadataSQL, db: pointer)
-        execute(
+        guard execute(createMetadataSQL, db: pointer), execute(
             "CREATE INDEX IF NOT EXISTS library_file_metadata_root_path_index ON library_file_metadata(root_path);",
             db: pointer
-        )
+        ) else {
+            connection = nil
+            return false
+        }
         return true
     }
 
@@ -592,6 +644,11 @@ actor LibraryTextSearchIndex {
         }
     }
 
+    private func failedSync(from discoveredFiles: [LibraryDiscoveredFileModel]) -> MetadataSyncResult {
+        let code = db.map { sqlite3_errcode($0) } ?? SQLITE_CANTOPEN
+        return .failed(fallbackMetadata(from: discoveredFiles), IndexingFailure(databaseCode: code))
+    }
+
     @discardableResult
     private func bindText(_ text: String, at index: Int32, statement: OpaquePointer?) -> Bool {
         text.withCString { value in
@@ -613,6 +670,10 @@ actor LibraryTextSearchIndex {
 #if DEBUG
     func failNextTransactionCommit() {
         failNextCommit = true
+    }
+
+    func beforeNextTransactionCommit(_ action: @escaping @Sendable () -> Void) {
+        beforeNextCommit = action
     }
 #endif
 

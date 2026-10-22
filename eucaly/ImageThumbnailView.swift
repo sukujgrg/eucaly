@@ -1,12 +1,12 @@
 import SwiftUI
 import AppKit
-import ImageIO
 
 struct ImageThumbnailView: View {
     let url: URL
     let size: CGSize
     @State private var thumbnail: NSImage?
     @State private var thumbnailTask: Task<Void, Never>?
+    @State private var didFailToLoadThumbnail = false
 
     var body: some View {
         Group {
@@ -34,8 +34,15 @@ struct ImageThumbnailView: View {
                             RoundedRectangle(cornerRadius: 8, style: .continuous)
                                 .stroke(Color.white.opacity(0.08), lineWidth: 1)
                         )
-                    ProgressView()
-                        .controlSize(.small)
+                    if didFailToLoadThumbnail {
+                        Image(systemName: "photo.badge.exclamationmark")
+                            .font(.largeTitle)
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel("Image unavailable")
+                    } else {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
                 }
                 .frame(width: size.width, height: size.height)
                 .shadow(color: Color.black.opacity(0.18), radius: 6, x: 0, y: 2)
@@ -66,77 +73,26 @@ struct ImageThumbnailView: View {
     private func scheduleThumbnailLoad(debounce: Bool = false) {
         thumbnailTask?.cancel()
         let requestSize = ThumbnailCacheSizing.quantizedSize(from: size)
+        didFailToLoadThumbnail = false
         thumbnailTask = Task {
             if debounce {
                 try? await Task.sleep(for: .milliseconds(100))
             }
             guard !Task.isCancelled else { return }
 
-            if let cached = await CacheManager.shared.getCachedThumbnailAsync(for: url, type: .image, size: requestSize) {
-                guard !Task.isCancelled else { return }
-                thumbnail = cached
-                return
-            }
+            let result = await MediaThumbnailLoader.load(for: url, size: requestSize, kind: .image)
             guard !Task.isCancelled else { return }
-
-            let result = await Task.detached(priority: .userInitiated) {
-                Self.makeDownsampledThumbnail(url: url, targetSize: requestSize)
-            }.value
-
-            guard !Task.isCancelled, let result else {
-                return
+            switch result {
+            case .loaded(let image): thumbnail = image
+            case .sourceChanged:
+                // Invalidate the obsolete display and reload the actual replacement.
+                thumbnail = nil
+                scheduleThumbnailLoad()
+            case .failed:
+                thumbnail = nil
+                didFailToLoadThumbnail = true
+            case .cancelled: break
             }
-            CacheManager.shared.cacheThumbnail(
-                result.image,
-                pngData: result.pngData,
-                for: url,
-                type: .image,
-                size: requestSize
-            )
-            thumbnail = result.image
         }
-    }
-
-    private final class ThumbnailData: @unchecked Sendable {
-        let image: NSImage
-        let pngData: Data
-
-        nonisolated init(image: NSImage, pngData: Data) {
-            self.image = image
-            self.pngData = pngData
-        }
-    }
-
-    private nonisolated static func makeDownsampledThumbnail(url: URL, targetSize: CGSize) -> ThumbnailData? {
-        let maxPixelSize = max(
-            1,
-            Int(max(targetSize.width, targetSize.height).rounded(.up)) * 2
-        )
-        let sourceOptions: CFDictionary = [
-            kCGImageSourceShouldCache: false
-        ] as CFDictionary
-        let thumbnailOptions: CFDictionary = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceShouldCacheImmediately: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
-        ] as CFDictionary
-
-        guard
-            let source = CGImageSourceCreateWithURL(url as CFURL, sourceOptions),
-            let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions)
-        else {
-            return nil
-        }
-
-        let image = NSImage(
-            cgImage: cgImage,
-            size: CGSize(width: cgImage.width, height: cgImage.height)
-        )
-        let bitmap = NSBitmapImageRep(cgImage: cgImage)
-        guard let pngData = bitmap.representation(using: .png, properties: [:]) else {
-            return nil
-        }
-        return ThumbnailData(image: image, pngData: pngData)
     }
 }

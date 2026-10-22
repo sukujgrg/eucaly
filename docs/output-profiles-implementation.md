@@ -191,12 +191,27 @@ Clearing one pane releases a picked window only after every workspace's Preview,
 Current and accepted snapshot has released it and its last capture consumer has
 detached. Pending picker requests remain intact, and old teardown work cannot
 retire a newer selection or stream.
+Frame-rate edits update the existing stream configuration and all attached consumer
+gates. Configuration work is serialized and coalesces to the latest requested rate
+within that stream's generation; teardown invalidates pending work. Changing the
+rate does not recreate the stream or invoke the picker.
 Every native layer receives the same explicit full-canvas geometry.
 
 Images, PDFs, video and picked windows use the existing native media boundary in
 all appearance profiles. Unsupported NDI-only content cannot replace an accepted live program.
 With native companions it can present locally while NDI submits replacement empty/key
 frames. A transfer to unsupported Current is rejected before ownership changes.
+
+Native foreground images carry the accepted snapshot's workspace UUID and document
+revision through the view request, displayed-image identity and decode cache. An
+explicit accepted Load therefore refreshes bytes even when a file rewrite preserves
+its path, timestamp, size and inode. Appearance/layout refreshes reuse that identity;
+prepared or rejected Current changes cannot replace it. Background images retain
+their separate previous-frame policy and do not inherit a foreground load identity.
+Image/video thumbnail requests carry the decoded file's captured revision into
+their cache key. Source replacement and cache-clear generations are revalidated
+before displaying or inserting a completion, so old pixels cannot borrow a new
+file's freshness metadata. PDF thumbnail requests retain their existing cache path.
 
 Physical monitor reservations and enabled NDI source-name uniqueness are enforced
 across all workspaces. Disabled rows retain overlapping assignments. Rejected
@@ -321,6 +336,21 @@ choices use document validation; fields commit on Return/editing end. Thumbnails
 have separate sizing and use a representative assigned workspace profile and canvas.
 Readability checks use each destination's actual workspace snapshot and remain
 operator-only. Settings visibility, resizing, drafts and NSFontPanel remain native.
+
+An AppKit sidebar controller owns section layout, disclosure, controls and UI
+subscriptions, with a thin bridge to the SwiftUI workspace. Section headers have
+equal outer gutters and padding inside their hover highlight. Section actions
+share one compact action row per section, the content gutter, spacing and small
+native controls. Library and Audio use matching import icons with descriptive
+accessibility labels and tooltips. Native outline sizing
+includes source-list edge space; collapsed contents stay outside row traversal and
+visible section headers remain keyboard accessible. Playlist editing and audio
+transport use consistent control groups;
+Window capture settings use a native menu beside Pick/Replace Window and Clear,
+with a checked frame-rate choice and an accessible current value.
+Audio volume and playback-position sliders expose explicit accessibility names and
+useful values. Incoming state stays passive; UI teardown does not stop playback,
+capture or outputs.
 
 The Profiles list separates reusable profiles, assigned output appearances and
 unused saved appearances using customization metadata and actual references, never

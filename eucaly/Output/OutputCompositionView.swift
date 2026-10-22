@@ -10,41 +10,45 @@ struct OutputCompositionView: View {
         GeometryReader { geometry in
             if let profile = coordinator.profile(for: destinationID) {
                 let size = geometry.size
-                let confidence = OutputConfidenceContent(snapshot: coordinator.snapshot(for: destinationID), profile: profile)
+                let snapshot = coordinator.snapshot(for: destinationID)
+                let confidence = OutputConfidenceContent(snapshot: snapshot, profile: profile)
                 ZStack {
                     profile.background.colour.color.frame(width: size.width, height: size.height)
                     OutputBackgroundView(profile: profile, url: coordinator.media(for: destinationID)?.backgroundURL(for: profile),
-                                         player: coordinator.media(for: destinationID)?.backgroundPlayer(for: profile), visible: coordinator.snapshot(for: destinationID).visible,
-                                         isMedia: coordinator.snapshot(for: destinationID).localMedia.map { OutputContentClassifier.mode(for: $0) == .media } ?? false)
+                                         player: coordinator.media(for: destinationID)?.backgroundPlayer(for: profile), visible: snapshot.visible,
+                                         isMedia: snapshot.localMedia.map { OutputContentClassifier.mode(for: $0) == .media } ?? false)
                         .frame(width: size.width, height: size.height)
-                    content(profile: profile, confidence: confidence, size: size).frame(width: size.width, height: size.height)
+                    content(profile: profile, snapshot: snapshot, confidence: confidence, size: size).frame(width: size.width, height: size.height)
                 }.frame(width: size.width, height: size.height).clipped()
             }
         }.ignoresSafeArea()
     }
-    @ViewBuilder private func content(profile: OutputProfile, confidence: OutputConfidenceContent, size: CGSize) -> some View {
+    @ViewBuilder private func content(profile: OutputProfile, snapshot: OutputContentSnapshot,
+                                      confidence: OutputConfidenceContent, size: CGSize) -> some View {
         if profile.kind == .confidence {
             if confidence.isIdle {
                 OutputConfidenceIdleClock(size: size)
             } else if let slide = confidence.media, let session = coordinator.session(for: destinationID) {
-                media(slide, profile: profile, session: session, size: size)
+                media(slide, snapshot: snapshot, profile: profile, session: session, size: size)
             } else {
                 OutputConfidenceView(profile: profile, content: confidence, size: size)
             }
-        } else if coordinator.snapshot(for: destinationID).visible {
-            if let slide = coordinator.snapshot(for: destinationID).localMedia, let session = coordinator.session(for: destinationID),
+        } else if snapshot.visible {
+            if let slide = snapshot.localMedia, let session = coordinator.session(for: destinationID),
                       OutputContentClassifier.mode(for: slide) == .media {
-                media(slide, profile: profile, session: session, size: size)
+                media(slide, snapshot: snapshot, profile: profile, session: session, size: size)
             } else {
-                OutputTextView(content: coordinator.snapshot(for: destinationID).current, profile: profile, size: size)
+                OutputTextView(content: snapshot.current, profile: profile, size: size)
             }
         }
     }
     /// Media uses the whole output canvas in every profile. Confidence's text
     /// columns and playback status must not reduce the native playback frame.
-    private func media(_ slide: Slide, profile: OutputProfile, session: PresentationSession, size: CGSize) -> some View {
+    private func media(_ slide: Slide, snapshot: OutputContentSnapshot, profile: OutputProfile,
+                       session: PresentationSession, size: CGSize) -> some View {
         OutputMediaSlideView(slide: slide, session: session, runtime: coordinator.program(session.outputSourceID).media,
-                             showsBackground: profile.background.whenMediaShown).id(slide.id)
+                             showsBackground: profile.background.whenMediaShown,
+                             imageContentIdentity: ProjectionImageContentIdentity(snapshot: snapshot)).id(slide.id)
             .frame(width: size.width, height: size.height)
             .overlay(alignment: .bottomLeading) {
                 if profile.kind == .confidence && slide.videoURL != nil {
@@ -83,6 +87,7 @@ struct OutputMediaSlideView: View {
     @ObservedObject var session: PresentationSession
     let runtime: OutputMediaRuntime
     var showsBackground = false
+    var imageContentIdentity: ProjectionImageContentIdentity?
     var body: some View {
         ZStack {
             if !showsBackground { Color.black }
@@ -92,7 +97,10 @@ struct OutputMediaSlideView: View {
                 PDFSlideView(url: url, pageIndex: page, documentRevision: session.pdfDocumentRevision,
                              documentCache: session.pdfDocumentCache)
             }
-            else if let url = slide.imageURL { ImageSlideView(url: url, backgroundColour: showsBackground ? .clear : .black) }
+            else if let url = slide.imageURL {
+                ImageSlideView(url: url, backgroundColour: showsBackground ? .clear : .black,
+                               contentIdentity: imageContentIdentity)
+            }
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

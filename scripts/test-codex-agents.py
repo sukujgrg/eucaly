@@ -20,6 +20,7 @@ EXPECTED_ROLES = {
     "independent_reviewer",
 }
 REQUIRED_FIELDS = {"name", "description", "developer_instructions"}
+SHARED_CONTRACT_LINK = "[Shared Completion Contract](../../AGENTS.md#shared-completion-contract)"
 INHERITED_FIELDS = {
     "model", "model_reasoning_effort", "sandbox_mode", "approval_policy",
     "model_provider", "mcp_servers",
@@ -37,6 +38,10 @@ def require(condition, message):
 
 def main():
     guide = (ROOT / "AGENTS.md").read_text()
+    require(
+        "\n## Shared Completion Contract\n" in guide,
+        "AGENTS.md must define the shared completion contract linked by every role",
+    )
     config = tomllib.loads((ROOT / ".codex/config.toml").read_text())
     require(config.get("agents", {}).get("enabled") is True, "project agents must be enabled")
     require(
@@ -57,6 +62,10 @@ def main():
             f"{path.name}: required role fields must be nonempty strings",
         )
         require(not INHERITED_FIELDS.intersection(role), f"{path.name}: preserve inherited model/permissions")
+        require(
+            SHARED_CONTRACT_LINK in role["developer_instructions"],
+            f"{path.name}: must link to the shared completion contract",
+        )
         link = f"[{role['name']}](.codex/agents/{path.name})"
         require(link in guide, f"{path.name}: missing AGENTS.md dispatch entry")
         for reference in SOURCE_REFERENCE.findall(role["developer_instructions"]):
@@ -66,6 +75,7 @@ def main():
             require(suite in test_suites, f"{path.name}: missing test suite {suite}")
             suites.add(suite)
     print(f"PASS: {len(paths)} roles, dispatch entries and inherited configuration")
+    print("PASS: every role links to the shared completion contract")
     print(f"PASS: {len(references)} source/document references and {len(suites)} test suites")
     print("PASS: complete AGENTS.md fits the project instruction budget")
 

@@ -3,6 +3,56 @@ import SQLite3
 @testable import eucaly
 
 final class LibraryTextSearchIndexTests: XCTestCase {
+    func testACompetingConnectionReportsFailedIndexingAndRetryFindsTheSavedToken() async throws {
+        let (index, directory) = try makeIndex()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let song = try writeTextFile(in: directory, name: "song.txt", contents: "Original\nolduniquetoken")
+        let initial = try await index.refreshLibraryMetadata(root: directory)
+        XCTAssertTrue(initial.isIndexed)
+        var competing: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(directory.appendingPathComponent("library-search.sqlite").path, &competing), SQLITE_OK)
+        let connection = try XCTUnwrap(competing)
+        defer { sqlite3_close(connection) }
+        XCTAssertEqual(sqlite3_exec(connection, "BEGIN IMMEDIATE TRANSACTION;", nil, nil, nil), SQLITE_OK)
+        try "Replacement\nfreshuniquetoken".write(to: song, atomically: true, encoding: .utf8)
+        let blocked = try await index.refreshLibraryMetadata(root: directory)
+        XCTAssertFalse(blocked.isIndexed)
+        XCTAssertEqual(blocked.failure?.databaseCode, SQLITE_BUSY)
+        XCTAssertEqual(blocked.metadata.first?.title, "Replacement")
+        XCTAssertTrue(blocked.failure?.localizedDescription.contains("Retry") == true)
+        XCTAssertEqual(sqlite3_exec(connection, "ROLLBACK;", nil, nil, nil), SQLITE_OK)
+
+        let recovered = try await index.refreshLibraryMetadata(root: directory)
+        XCTAssertTrue(recovered.isIndexed)
+        XCTAssertNil(recovered.failure)
+        let results = await index.search(query: "freshuniquetoken", scopeFiles: [song])
+        XCTAssertEqual(results.map(\.url), [song.standardizedFileURL])
+    }
+
+    func testCancellingARefreshBeforeCommitRollsBackItsRows() async throws {
+        let (index, directory) = try makeIndex()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let song = try writeTextFile(in: directory, name: "song.txt", contents: "Original\nolduniquetoken")
+        _ = try await index.refreshLibraryMetadata(root: directory)
+        try "Replacement\nfreshuniquetoken".write(to: song, atomically: true, encoding: .utf8)
+        let transactionOpen = expectation(description: "Refresh ready to commit")
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        await index.beforeNextTransactionCommit {
+            transactionOpen.fulfill()
+            XCTAssertEqual(release.wait(timeout: .now() + 5), .success)
+        }
+        let refresh = Task { try await index.refreshLibraryMetadata(root: directory) }
+        await fulfillment(of: [transactionOpen], timeout: 3)
+        refresh.cancel()
+        release.signal()
+        guard case .cancelled = try await refresh.value else { return XCTFail("The cancelled scan must not commit") }
+        let previous = await index.search(query: "olduniquetoken")
+        let fresh = await index.search(query: "freshuniquetoken")
+        XCTAssertEqual(previous.map(\.url), [song.standardizedFileURL])
+        XCTAssertTrue(fresh.isEmpty)
+    }
+
     func testSearchReturnsEmptyForQueriesUnderThreeCharacters() async throws {
         let (index, directoryURL) = try makeIndex()
         defer { try? FileManager.default.removeItem(at: directoryURL) }
@@ -113,7 +163,7 @@ final class LibraryTextSearchIndexTests: XCTestCase {
         let scanner = LibraryFileScannerService()
         _ = await index.syncLibraryMetadata(root: previousRoot, discoveredFiles: try scanner.discoverFiles(in: previousRoot))
         let metadata = await index.syncLibraryMetadata(root: root, discoveredFiles: try scanner.discoverFiles(in: root))
-        let previewFiles = metadata.filter { $0.kind.isPreviewLibraryItem }.map(\.url)
+        let previewFiles = metadata.metadata.filter { $0.kind.isPreviewLibraryItem }.map(\.url)
 
         let unscoped = await index.search(query: "mercy")
         XCTAssertEqual(unscoped.count, 250)
@@ -330,9 +380,10 @@ final class LibraryTextSearchIndexTests: XCTestCase {
             discoveredFiles: try [songURL, audioURL, pdfURL].map { try discoveredFile(for: $0, root: directoryURL) }
         )
 
-        XCTAssertEqual(metadata.first { $0.url == songURL.standardizedFileURL }?.title, "Cached Song Title")
-        XCTAssertEqual(metadata.first { $0.url == audioURL.standardizedFileURL }?.kind, .audio)
-        XCTAssertEqual(metadata.first { $0.url == pdfURL.standardizedFileURL }?.kind, .pdf)
+        XCTAssertTrue(metadata.isIndexed)
+        XCTAssertEqual(metadata.metadata.first { $0.url == songURL.standardizedFileURL }?.title, "Cached Song Title")
+        XCTAssertEqual(metadata.metadata.first { $0.url == audioURL.standardizedFileURL }?.kind, .audio)
+        XCTAssertEqual(metadata.metadata.first { $0.url == pdfURL.standardizedFileURL }?.kind, .pdf)
 
         let lyricResults = await index.search(query: "unique")
         let audioFilenameResults = await index.search(query: "ambient")
@@ -357,7 +408,7 @@ final class LibraryTextSearchIndexTests: XCTestCase {
         )
 
         XCTAssertEqual(
-            metadata.first { $0.url == songURL.standardizedFileURL }?.title,
+            metadata.metadata.first { $0.url == songURL.standardizedFileURL }?.title,
             "Amazing Grace"
         )
         XCTAssertEqual(
@@ -392,9 +443,11 @@ final class LibraryTextSearchIndexTests: XCTestCase {
             discoveredFiles: [try discoveredFile(for: replacementURL, root: directoryURL)]
         )
         XCTAssertEqual(
-            failedSync.first { $0.url == replacementURL.standardizedFileURL }?.title,
+            failedSync.metadata.first { $0.url == replacementURL.standardizedFileURL }?.title,
             "Replacement Title"
         )
+        XCTAssertFalse(failedSync.isIndexed)
+        XCTAssertNotNil(failedSync.failure)
 
         let cachedAfterFailure = await index.cachedLibraryMetadata(root: directoryURL)
         let originalResults = await index.search(query: "originaluniquetoken")
@@ -408,9 +461,11 @@ final class LibraryTextSearchIndexTests: XCTestCase {
             discoveredFiles: [try discoveredFile(for: replacementURL, root: directoryURL)]
         )
         XCTAssertEqual(
-            recovered.first { $0.url == replacementURL.standardizedFileURL }?.title,
+            recovered.metadata.first { $0.url == replacementURL.standardizedFileURL }?.title,
             "Replacement Title"
         )
+        XCTAssertTrue(recovered.isIndexed)
+        XCTAssertNil(recovered.failure)
         let cachedAfterRecovery = await index.cachedLibraryMetadata(root: directoryURL)
         let recoveredResults = await index.search(query: "replacementuniquetoken")
         XCTAssertEqual(cachedAfterRecovery.map(\.url), [replacementURL.standardizedFileURL])
@@ -547,7 +602,7 @@ final class LibraryTextSearchIndexTests: XCTestCase {
         let legacyResults = await index.search(query: "legacyuniquetoken")
         let freshResults = await index.search(query: "freshuniquetoken")
 
-        XCTAssertEqual(metadata.first?.title, "Original Title")
+        XCTAssertEqual(metadata.metadata.first?.title, "Original Title")
         XCTAssertTrue(containsResult(legacyResults, url: fileURL))
         XCTAssertFalse(containsResult(freshResults, url: fileURL))
     }

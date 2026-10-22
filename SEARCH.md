@@ -11,6 +11,8 @@ The app uses a hybrid filesystem/SQLite model:
 - files remain the source of truth and can be edited directly
 - SQLite stores derived metadata and full-text rows for fast startup/search
 - refresh reconciles SQLite with the current filesystem state
+- workspaces share one index actor and connection, while query, scope and selected
+  result stay private to each workspace
 
 ## User Behavior
 - Search starts only when query length is `>= 3` characters.
@@ -49,14 +51,22 @@ In code this is created once with:
 
 ### 2) Sync strategy
 On library refresh/reload:
-1. Begin transaction
-2. Walk supported files under the library root off the main thread
+1. Walk supported files under the library root off the main thread
+2. Begin transaction
 3. Reuse cached metadata and FTS rows for unchanged files
 4. Re-index new or modified files
 5. Remove metadata and FTS rows for deleted files
 6. Commit transaction
 
 This keeps index state aligned with the filesystem without reading every lyrics file on every launch.
+The shared actor owns discovery through commit without yielding, so an older
+workspace inventory cannot commit after a later save's refresh. Cancellation
+rolls back an uncommitted transaction. A failed index update returns filesystem
+metadata for browsing and an explicit failure for the existing Library Retry
+notice; it is not reported as successful full-text indexing. Retry reconciles
+from the current files. An unrelated connection holding the database may cause
+that reported failure, but the app's workspace refreshes no longer compete for
+separate writer connections.
 
 ### 3) Query building
 User input is transformed before SQL `MATCH`:
@@ -101,6 +111,7 @@ Note:
 ## Implementation Pointers
 - Search UI/state orchestration:
   - `/Users/suku/Swift/eucaly/eucaly/ContentView.swift`
-  - `/Users/suku/Swift/eucaly/eucaly/SidebarView.swift`
+  - `/Users/suku/Swift/eucaly/eucaly/SidebarViewController.swift`
+  - `/Users/suku/Swift/eucaly/eucaly/SidebarOutlineView.swift`
 - Index backend:
   - `/Users/suku/Swift/eucaly/eucaly/LibraryTextSearchIndex.swift`
