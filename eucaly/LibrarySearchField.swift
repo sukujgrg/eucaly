@@ -8,17 +8,61 @@ final class LibrarySearchField: NSSearchField {
     }
 
     private var needsInitialFocus = true
+    private weak var previousFocus: NSView?
+    private var previousSelection: [NSValue]?
+    private weak var searchEditor: NSText?
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        guard needsInitialFocus, window != nil else { return }
+        guard needsInitialFocus, let window else { return }
         needsInitialFocus = false
-        DispatchQueue.main.async { [weak self] in
-            guard let self, let window = self.window else { return }
+        rememberPreviousFocus(in: window)
+        let initialResponder = window.firstResponder
+        DispatchQueue.main.async { [weak self, weak window, weak initialResponder] in
+            guard let self, let window, self.window === window else { return }
             // Another focus request may already have started editing before
             // this deferred initial request. Do not reset its selection.
-            if let editor = self.currentEditor(), window.firstResponder === editor { return }
+            if let editor = self.currentEditor(), window.firstResponder === editor {
+                self.searchEditor = editor
+                return
+            }
+            guard window.firstResponder === initialResponder else { return }
             window.makeFirstResponder(self)
+            self.searchEditor = self.currentEditor()
+        }
+    }
+
+    override func removeFromSuperview() {
+        // AppKit clears the field editor before viewWillMove(toWindow: nil).
+        // Restore while search still demonstrably owns the first responder.
+        restorePreviousFocus()
+        super.removeFromSuperview()
+    }
+
+    private func rememberPreviousFocus(in window: NSWindow) {
+        guard let previous = window.firstResponder as? NSView, previous !== self else { return }
+        if let editor = previous as? NSTextView, editor.isFieldEditor,
+           let control = editor.delegate as? NSControl, control !== self {
+            previousFocus = control
+            previousSelection = editor.selectedRanges
+        } else {
+            previousFocus = previous
+        }
+    }
+
+    /// Restore synchronously while the native field still has its window. A
+    /// result action that already chose another responder keeps that focus.
+    func restorePreviousFocus() {
+        defer { previousFocus = nil; previousSelection = nil; searchEditor = nil }
+        guard let window, let previousFocus, previousFocus.window === window,
+              !previousFocus.isHiddenOrHasHiddenAncestor else { return }
+        let editor = currentEditor() ?? searchEditor
+        let ownsEditor = editor.map { window.firstResponder === $0 } ?? false
+        guard window.firstResponder === self || ownsEditor else { return }
+        guard window.makeFirstResponder(previousFocus) else { return }
+        if let previousSelection, let control = previousFocus as? NSControl,
+           let editor = control.currentEditor() as? NSTextView {
+            editor.selectedRanges = previousSelection
         }
     }
 }

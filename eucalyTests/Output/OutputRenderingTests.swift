@@ -6,6 +6,29 @@ import ScreenCaptureKit
 
 @MainActor
 final class OutputRenderingTests: XCTestCase {
+    func testUnavailableCaptureIsNeutralOnProgramOutputAndExplainedInControls() throws {
+        func bitmap(operatorMessages: Bool) throws -> NSBitmapImageRep {
+            let view = NSHostingView(rootView: WindowCaptureSlideView(windowID: CGWindowID.max,
+                                                                      showsOperatorMessages: operatorMessages))
+            view.frame = CGRect(x: 0, y: 0, width: 640, height: 360)
+            view.layoutSubtreeIfNeeded()
+            let result = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+            view.cacheDisplay(in: view.bounds, to: result)
+            return result
+        }
+        let output = try bitmap(operatorMessages: false), controls = try bitmap(operatorMessages: true)
+        func containsVisibleContent(_ bitmap: NSBitmapImageRep) -> Bool {
+            (0..<bitmap.pixelsHigh).contains { y in
+                (0..<bitmap.pixelsWide).contains { x in
+                    guard let colour = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { return false }
+                    return max(colour.redComponent, colour.greenComponent, colour.blueComponent) > 0.1
+                }
+            }
+        }
+        XCTAssertFalse(containsVisibleContent(output), "Audience output must remain a neutral frame")
+        XCTAssertTrue(containsVisibleContent(controls), "Controls must retain the operator explanation")
+    }
+
     func testClearCommandsKeepLowerThirdKeyOnRenderedCanvasAndRetainCurrent() throws {
         let monitor = ProjectionMonitor(id: 1, identity: UUID().uuidString, name: "Lower Third", frame: CGRect(x: 0, y: 0, width: 640, height: 360))
         let displays = ProjectionDisplayManager(displays: { [monitor] })

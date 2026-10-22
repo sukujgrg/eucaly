@@ -130,7 +130,6 @@ final class NDIProgramAudio {
               reportedFailures.insert(id).inserted else { return }
         sourceFailed?(reason)
     }
-    func remove(_ id: UUID) { distribution.remove(id) }
     func stop() {
         distribution.configure([], music: nil)
         timer?.invalidate(); timer = nil

@@ -1,10 +1,80 @@
 import XCTest
 import AppKit
 import AVFoundation
+import Combine
 @testable import eucaly
 
 @MainActor
 final class WorkspaceOutputTests: XCTestCase {
+    func testPendingPickerBlocksCapturedWindowStartWithoutBlockingOtherNativeContent() async throws {
+        let manager = ScreenCaptureManager()
+        let monitor = ProjectionMonitor(id: 1, identity: UUID().uuidString, name: "House",
+                                        frame: .init(x: 0, y: 0, width: 1920, height: 1080))
+        let displays = ProjectionDisplayManager(displays: { [monitor] })
+        let store = OutputProfileStore(monitor: monitor.target)
+        let otherID = try XCTUnwrap(store.addWorkspace(name: "Picker"))
+        let outputs = OutputCoordinator(profiles: store, displays: displays, captureManager: manager,
+                                        driverFactory: { FakeOutputDriver() })
+        defer { outputs.stopAllOutputs() }
+        let session = outputs.session(workspace: OutputWorkspaceRecord.primaryID)
+        session.setSlides([pickedWindow()])
+        let request = manager.beginPickerRequest(workspaceID: otherID, replacementProblem: { "The pending selection was cancelled." })
+        session.showSlides()
+        XCTAssertFalse(outputs.isRunning)
+        XCTAssertTrue(session.projectionDisplayIssue?.contains("Finish or cancel") == true)
+        XCTAssertNil(outputs.preparedSession(workspace: otherID))
+
+        session.setSlides(LyricsParser.parseDocument("Verse\nLyrics remain available").slides)
+        session.showSlides()
+        XCTAssertTrue(session.isPresenting, "An outstanding pick must not block unrelated native presentation.")
+        session.setSlides([pickedWindow()])
+        session.requestCurrentProjection()
+        await settle()
+        XCTAssertEqual(outputs.snapshot.localMedia?.captureWindowID, nil)
+        XCTAssertEqual(outputs.snapshot.current.components.first?.text, "Lyrics remain available")
+        XCTAssertFalse(manager.acceptsPickerSelection(for: request))
+        session.requestCurrentProjection()
+        XCTAssertEqual(outputs.snapshot.localMedia?.captureWindowID, 42)
+    }
+
+    func testCaptureProtectionAndFailuresFollowRetainedCurrentAndAcceptedWindows() throws {
+        let manager = ScreenCaptureManager()
+        let monitor = ProjectionMonitor(id: 1, identity: UUID().uuidString, name: "House",
+                                        frame: .init(x: 0, y: 0, width: 1920, height: 1080))
+        let displays = ProjectionDisplayManager(displays: { [monitor] })
+        let store = OutputProfileStore(monitor: monitor.target)
+        let peerID = try XCTUnwrap(store.addWorkspace(name: "Peer"))
+        let closedID = try XCTUnwrap(store.addWorkspace(name: "Closed"))
+        let outputs = OutputCoordinator(profiles: store, displays: displays, captureManager: manager,
+                                        driverFactory: { FakeOutputDriver() })
+        defer { outputs.stopAllOutputs() }
+        let home = outputs.session(workspace: OutputWorkspaceRecord.primaryID)
+        let peer = outputs.session(workspace: peerID)
+        outputs.program(closedID).flow.setPreviewSlides([pickedWindow()])
+        peer.setSlides([pickedWindow()])
+        XCTAssertNil(outputs.windowCaptureReplacementProblem(), "Preview and stopped Current must not block the picker.")
+        home.setSlides([pickedWindow()]); home.showSlides(); home.hideSlides()
+        home.setSlides(LyricsParser.parseDocument("Verse\nPrivate lyrics").slides)
+        XCTAssertTrue(outputs.windowCaptureReplacementProblem()?.contains("Home") == true)
+        manager.issues.send(.init(workspaceID: nil, windowID: 42, message: "The picked window closed."))
+        XCTAssertEqual(home.projectionDisplayIssue, "The picked window closed.")
+        XCTAssertEqual(peer.projectionDisplayIssue, "The picked window closed.")
+        XCTAssertNil(outputs.preparedSession(workspace: closedID), "Preview-only and closed workspaces stay unprepared.")
+        outputs.reportWindowCaptureIssue(nil, workspace: home.outputSourceID)
+        home.stopPresentation()
+        XCTAssertNil(outputs.windowCaptureReplacementProblem())
+        manager.issues.send(.init(workspaceID: nil, windowID: 42, message: "A late capture error."))
+        XCTAssertNil(home.projectionDisplayIssue, "An old accepted window must not receive late errors after Stop.")
+        XCTAssertEqual(peer.projectionDisplayIssue, "A late capture error.")
+        peer.showSlides()
+        let unrelatedIssue = peer.projectionDisplayIssue
+        outputs.reportWindowCaptureIssue(nil, workspace: peerID)
+        XCTAssertEqual(peer.projectionDisplayIssue, unrelatedIssue, "Capture completion cannot clear a presentation problem.")
+        XCTAssertTrue(outputs.deleteWorkspace(closedID))
+        manager.issues.send(.init(workspaceID: closedID, windowID: nil, message: "A late picker error."))
+        XCTAssertNil(outputs.preparedMedia(workspace: closedID), "Late requester failures cannot revive a deleted workspace.")
+    }
+
     func testFocusPreviewAndUnassignedShowNeverTakeOutputs() async throws {
         let f = Fixture(); defer { f.outputs.stopAllOutputs() }
         f.load(f.a, "House"); f.a.showSlides()

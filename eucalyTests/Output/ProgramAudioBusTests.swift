@@ -366,8 +366,8 @@ final class ProgramAudioBusTests: XCTestCase {
         }
         XCTAssertTrue(heardA, "Live file audio must reach the first destination")
         XCTAssertTrue(heardB, "A second destination must share the tap without stealing it")
-        let pausedAt = CMClockGetTime(CMClockGetHostTimeClock()).seconds
         first.stop(); player.pause(); second.refresh()
+        let pausedAt = CMClockGetTime(CMClockGetHostTimeClock()).seconds
         _ = two.drain()
         try await Task.sleep(nanoseconds: 100_000_000)
         let afterPause = two.drain()
@@ -375,8 +375,9 @@ final class ProgramAudioBusTests: XCTestCase {
             guard case .audio(_, let when) = sample else { return false }
             return Double(when.sampleTime) / when.sampleRate >= pausedAt
         }, "Paused video must keep emitting silent audio")
-        // A pre-pause render can arrive after the drain above. Check the PCM
-        // sample clock so those already rendered samples do not race this test.
+        // Retiring the first consumer can take time before pause is requested.
+        // Preserve that valid tail, but reject every audible PCM sample after
+        // the player's actual pause/refresh boundary, even if delivered later.
         XCTAssertFalse(audible(afterPause, from: pausedAt), "Paused video must not leak buffered audio")
     }
     func testLiveFileAudioRemainsContinuousAfterStartup() async throws {

@@ -4,6 +4,73 @@ import AVFoundation
 
 @MainActor
 final class ProgramAudioClockTests: XCTestCase {
+    func testDelayedStoppedClockSnapshotUsesItsActualPauseAnchor() async throws {
+        var optionalClock: CMTimebase?
+        XCTAssertEqual(CMTimebaseCreateWithSourceClock(allocator: kCFAllocatorDefault,
+            sourceClock: CMClockGetHostTimeClock(), timebaseOut: &optionalClock), noErr)
+        let clock = try XCTUnwrap(optionalClock), recorded = PausedTailSamples(), id = UUID()
+        let bus = ProgramAudioBus { recorded.consume($0, at: $1) }
+        defer { bus.stop() }
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2))
+        let pcm = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4800))
+        pcm.frameLength = 4800
+        for channel in 0..<2 { pcm.floatChannelData![channel].initialize(repeating: 0.25, count: 4800) }
+        XCTAssertTrue(bus.append([.init(pcm, at: .zero)], id: id))
+        XCTAssertEqual(CMTimebaseSetTime(clock, time: .zero), noErr)
+        XCTAssertEqual(CMTimebaseSetRate(clock, rate: 1), noErr)
+        let startedAt = CMClockGetTime(CMClockGetHostTimeClock())
+        bus.setPlaybackClock(clock, gain: 1, id: id)
+        try await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(CMTimebaseSetRate(clock, rate: 0), noErr)
+        var rate = 0.0, mediaAnchor = CMTime.invalid, hostAnchor = CMTime.invalid
+        XCTAssertEqual(CMSyncGetRelativeRateAndAnchorTime(clock, relativeTo: CMClockGetHostTimeClock(),
+            relativeRateOut: &rate, anchorTimeOut: &mediaAnchor, relativeToAnchorTimeOut: &hostAnchor), noErr)
+        XCTAssertEqual(rate, 0)
+        let pausedAt = hostAnchor.convertScale(48000, method: .roundHalfAwayFromZero).value
+
+        // Delay both observation and rendering. The clock's anchor, not when
+        // its notification happens to run, is the end of the audible interval.
+        try await Task.sleep(for: .milliseconds(20))
+        bus.setPlaybackClock(clock, gain: 1, id: id)
+        bus.start(at: startedAt)
+        try await wait { recorded.lastBlockStart >= pausedAt + 960 }
+        XCTAssertGreaterThan(recorded.audibleFrames, 0)
+        XCTAssertLessThan(recorded.lastAudibleSample, pausedAt)
+    }
+
+    func testDelayedRenderPreservesPausedPlayerTailButExplicitMuteClosesAudibleAdmission() async throws {
+        let url = try makeRamp(frames: 48000)
+        defer { try? FileManager.default.removeItem(at: url) }
+        for muted in [false, true] {
+            let player = AVPlayer(url: url), gain = ProgramAudioGain(), recorded = PausedTailSamples()
+            player.volume = 0
+            let bus = ProgramAudioBus { recorded.consume($0, at: $1) }
+            let source = PlayerProgramAudioSource(player: player, mixer: bus, programGain: gain)
+            defer { source.stop(); player.pause(); bus.stop() }
+            try await wait { source.isPrepared && player.status == .readyToPlay }
+            player.play(); source.refresh()
+            try await wait { player.timeControlStatus == .playing && player.currentTime().seconds > 0 }
+            let renderStart = CMClockGetTime(CMClockGetHostTimeClock())
+            let minimumPosition = player.currentTime() + CMTime(value: 960, timescale: 48000)
+            try await wait { player.currentTime() >= minimumPosition }
+            player.pause(); source.refresh()
+            if muted { gain.set(0); source.refresh() }
+            let pausedAt = CMClockGetTime(CMClockGetHostTimeClock()).convertScale(48000, method: .roundHalfAwayFromZero).value
+
+            // No render timer exists before the pause. All audible pre-pause
+            // PCM must therefore come through historical clock intervals;
+            // timing cannot accidentally let a pre-pause render mask the bug.
+            bus.start(at: renderStart)
+            try await wait { recorded.lastBlockStart >= pausedAt + 960 }
+            if muted {
+                XCTAssertEqual(recorded.audibleFrames, 0, "Explicit programme mute must still silence buffered history immediately")
+            } else {
+                XCTAssertGreaterThan(recorded.audibleFrames, 0, "Pause must not erase PCM preceding its clock transition")
+            }
+            XCTAssertLessThan(recorded.lastAudibleSample, pausedAt, "No buffered PCM may play after the pause boundary")
+        }
+    }
+
     func testClockRewindCanReadAlreadyRenderedPCMWithoutWaitingForDecodeAgain() async throws {
         var value: CMTimebase?
         XCTAssertEqual(CMTimebaseCreateWithSourceClock(allocator: kCFAllocatorDefault,
@@ -196,6 +263,26 @@ final class ProgramAudioClockTests: XCTestCase {
         XCTAssertLessThanOrEqual(result.maximumError, 0.0000004,
             "Programme PCM must match asset time without inheriting local AudioQueue processing delay")
         XCTAssertEqual(player.volume, 0)
+    }
+}
+
+nonisolated private final class PausedTailSamples: @unchecked Sendable {
+    private let lock = NSLock()
+    private var frames = 0
+    private var lastAudible: Int64 = .min
+    private var lastBlock: Int64 = .min
+    var audibleFrames: Int { lock.withLock { frames } }
+    var lastAudibleSample: Int64 { lock.withLock { lastAudible } }
+    var lastBlockStart: Int64 { lock.withLock { lastBlock } }
+    func consume(_ pcm: AVAudioPCMBuffer, at time: AVAudioTime) {
+        guard let samples = pcm.floatChannelData?[0] else { return }
+        lock.withLock {
+            lastBlock = time.sampleTime
+            for frame in 0..<Int(pcm.frameLength) where abs(samples[frame]) > 0.01 {
+                frames += 1
+                lastAudible = time.sampleTime + Int64(frame)
+            }
+        }
     }
 }
 

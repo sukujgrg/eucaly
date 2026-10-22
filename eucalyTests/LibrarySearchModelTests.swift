@@ -211,7 +211,7 @@ final class LibrarySearchModelTests: XCTestCase {
             name: "outside.txt",
             contents: "Amazing outside"
         )
-        _ = await index.rebuild(with: [scopedURL, outsideURL])
+        _ = try await index.syncFixtureFiles([scopedURL, outsideURL], root: directoryURL)
 
         let model = LibrarySearchModel(index: index)
         model.setScopeFiles([scopedURL])
@@ -236,7 +236,7 @@ final class LibrarySearchModelTests: XCTestCase {
             name: "current-song.txt",
             contents: String(repeating: "ordinary ", count: 700) + "mercy"
         )
-        _ = await index.rebuild(with: outsideFiles + [target])
+        _ = try await index.syncFixtureFiles(outsideFiles + [target], root: directoryURL)
 
         let model = LibrarySearchModel(index: index)
         model.setScopeFiles([target])
@@ -257,7 +257,7 @@ final class LibrarySearchModelTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directoryURL) }
         let first = try writeTextFile(in: directoryURL, name: "first.txt", contents: "Amazing grace")
         let second = try writeTextFile(in: directoryURL, name: "second.txt", contents: "Amazing grace")
-        _ = await index.rebuild(with: [first, second])
+        _ = try await index.syncFixtureFiles([first, second], root: directoryURL)
         let model = LibrarySearchModel(index: index)
         model.setScopeFiles([first])
         model.setQuery("amazing", currentSelectedURL: nil)

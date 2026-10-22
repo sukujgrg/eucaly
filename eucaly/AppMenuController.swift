@@ -122,7 +122,7 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
     }
     private func rebuildOutputMenu() {
         outputMenu.removeAllItems()
-        let listening = OutputAudioListeningState(outputs: app.outputs, workspaceID: app.outputs.commandSession?.outputSourceID)
+        let listening = OutputAudioListeningState(outputs: app.outputs, workspaceID: app.outputs.commandWorkspaceID)
         if let listening { outputMenu.addItem(NSMenuItem(title: listening.scope, action: nil, keyEquivalent: "")) }
         let item = add(OutputAudioListeningState.title, to: outputMenu, command: .monitorAudioLocally)
         _ = validateMenuItem(item)
@@ -138,7 +138,7 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         case .newWorkspace: return app.workspaceWindows.canCreateWorkspace
         case .detach: return app.workspaceWindows.canDetach(app.workspaceWindows.activeWorkspaceID)
         case .monitorAudioLocally:
-            guard let listening = OutputAudioListeningState(outputs: app.outputs, workspaceID: app.outputs.commandSession?.outputSourceID) else {
+            guard let listening = OutputAudioListeningState(outputs: app.outputs, workspaceID: app.outputs.commandWorkspaceID) else {
                 menuItem.state = .off
                 return false
             }
@@ -147,7 +147,8 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
             return listening.canChange
         case .newLyrics, .quickOpen, .refresh, .save: return app.workspaceWindows.activeWorkspaceID != nil
         case .slides: return app.outputs.commandSession?.isEmpty == false
-        case .stop, .background, .audio, .clearBackground, .clearAudio, .clearAll:
+        case .stop: return app.outputs.commandWorkspaceID != nil
+        case .background, .audio, .clearBackground, .clearAudio, .clearAll:
             return app.outputs.commandSession != nil
         case .stopAll: return app.outputs.isRunning
         case .settings, .notices, .support, .manageOutputs: return true
@@ -167,7 +168,7 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         case .detach:
             if let id = app.workspaceWindows.activeWorkspaceID { app.workspaceWindows.detach(id) }
         case .monitorAudioLocally:
-            if let listening = OutputAudioListeningState(outputs: app.outputs, workspaceID: app.outputs.commandSession?.outputSourceID), listening.canChange {
+            if let listening = OutputAudioListeningState(outputs: app.outputs, workspaceID: app.outputs.commandWorkspaceID), listening.canChange {
                 app.outputs.setMonitorAudioLocally(!listening.workspace.monitorAudioLocally, workspace: listening.workspace.id)
             }
         case .newLyrics: post(.newLyrics)

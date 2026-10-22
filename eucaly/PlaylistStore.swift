@@ -17,6 +17,7 @@ final class PlaylistStore: ObservableObject {
     static let shared = PlaylistStore()
 
     @Published private(set) var entries: [PlaylistEntry] = []
+    @Published private(set) var lastError: String?
 
     private var rootURL: URL?
     private var playlistDirectoryURL: URL?
@@ -25,13 +26,16 @@ final class PlaylistStore: ObservableObject {
     private let playlistDirectoryName = "Playlist"
     private let playlistFileName = "playlist.json"
 
-    func load(fromRoot root: URL?) {
+    @discardableResult
+    func load(fromRoot root: URL?) -> Bool {
+        let previousRoot = rootURL
         rootURL = root
+        lastError = nil
         guard let root else {
             entries = []
             playlistDirectoryURL = nil
             playlistDocumentURL = nil
-            return
+            return true
         }
 
         let playlistDirectory = root.appendingPathComponent(playlistDirectoryName, isDirectory: true)
@@ -42,13 +46,26 @@ final class PlaylistStore: ObservableObject {
             try? fileManager.createDirectory(at: playlistDirectory, withIntermediateDirectories: true)
         }
 
-        entries = (try? readEntries()) ?? []
+        do {
+            entries = try readEntries()
+            return true
+        } catch {
+            if previousRoot != root { entries = [] }
+            lastError = "Could not read Playlist: \(error.localizedDescription)"
+            return false
+        }
     }
 
     @discardableResult
     func add(url: URL, after anchorID: UUID?) -> UUID? {
-        guard let root = rootURL else { return nil }
-        guard let relativePath = makeRelativePath(for: url, fromRoot: root) else { return nil }
+        guard let root = rootURL else {
+            lastError = "Set a library root before adding to Playlist."
+            return nil
+        }
+        guard let relativePath = makeRelativePath(for: url, fromRoot: root) else {
+            lastError = "Only files inside the library root can be added to Playlist."
+            return nil
+        }
 
         let newEntry = PlaylistEntry(id: UUID(), relativePath: relativePath, addedAt: Date())
         let saved = updateEntries { entries in
@@ -61,14 +78,16 @@ final class PlaylistStore: ObservableObject {
         return saved ? newEntry.id : nil
     }
 
-    func remove(ids: Set<UUID>) {
-        guard !ids.isEmpty else { return }
-        updateEntries { $0.removeAll { ids.contains($0.id) } }
+    @discardableResult
+    func remove(ids: Set<UUID>) -> Bool {
+        guard !ids.isEmpty else { return true }
+        return updateEntries { $0.removeAll { ids.contains($0.id) } }
     }
 
-    func moveUp(ids: Set<UUID>) {
-        guard !ids.isEmpty else { return }
-        updateEntries { entries in
+    @discardableResult
+    func moveUp(ids: Set<UUID>) -> Bool {
+        guard !ids.isEmpty else { return true }
+        return updateEntries { entries in
             guard entries.count > 1 else { return }
             for index in 1..<entries.count where ids.contains(entries[index].id) && !ids.contains(entries[index - 1].id) {
                 entries.swapAt(index, index - 1)
@@ -76,9 +95,10 @@ final class PlaylistStore: ObservableObject {
         }
     }
 
-    func moveDown(ids: Set<UUID>) {
-        guard !ids.isEmpty else { return }
-        updateEntries { entries in
+    @discardableResult
+    func moveDown(ids: Set<UUID>) -> Bool {
+        guard !ids.isEmpty else { return true }
+        return updateEntries { entries in
             guard entries.count > 1 else { return }
             for index in stride(from: entries.count - 2, through: 0, by: -1) where ids.contains(entries[index].id) && !ids.contains(entries[index + 1].id) {
                 entries.swapAt(index, index + 1)
@@ -111,7 +131,11 @@ final class PlaylistStore: ObservableObject {
     /// An unreadable document must not be replaced by an empty fallback snapshot.
     @discardableResult
     private func updateEntries(_ update: (inout [PlaylistEntry]) -> Void) -> Bool {
-        guard let playlistDirectoryURL, let playlistDocumentURL else { return false }
+        lastError = nil
+        guard let playlistDirectoryURL, let playlistDocumentURL else {
+            lastError = "Set a library root before changing Playlist."
+            return false
+        }
         do {
             var latestEntries = try readEntries()
             update(&latestEntries)
@@ -121,6 +145,7 @@ final class PlaylistStore: ObservableObject {
             entries = latestEntries
             return true
         } catch {
+            lastError = "Could not save Playlist: \(error.localizedDescription)"
             return false
         }
     }

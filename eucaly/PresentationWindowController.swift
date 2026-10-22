@@ -606,38 +606,6 @@ final class PresentationSession: NSObject, ObservableObject {
 
 }
 
-struct PresentationView: View {
-    @EnvironmentObject var session: PresentationSession
-    @AppStorage("presentationFontScale") private var scale: Double = 1
-    @AppStorage("presentationLyricsLayout") private var layout: PresentationLyricsLayout = .stacked
-    @AppStorage("presentationPaddingScale") private var padding: Double = 1
-    @AppStorage("presentationTextAlignment") private var alignment: PresentationTextAlignment = .center
-    @AppStorage("presentationVerticalPosition") private var position: PresentationVerticalPosition = .middle
-    private var previewProfile: OutputProfile {
-        var profile = OutputProfile.builtIns[0]
-        profile.layout = layout.rawValue; profile.alignment = alignment.rawValue; profile.position = position.rawValue
-        profile.padding = padding; profile.typography.size = 84 * scale
-        return profile
-    }
-    var body: some View {
-        GeometryReader { geometry in
-            let size = geometry.size
-            ZStack {
-                Color.black.frame(width: size.width, height: size.height)
-                if session.areSlidesVisible, let slide = session.currentSlide {
-                    if OutputContentClassifier.mode(for: slide) == .media {
-                        if let runtime = session.outputCoordinator.preparedMedia(workspace: session.outputSourceID) {
-                            OutputMediaSlideView(slide: slide, session: session, runtime: runtime)
-                        }
-                    } else {
-                        OutputTextView(content: OutputContentAdapter.text(for: slide), profile: previewProfile, size: size)
-                    }
-                }
-            }.frame(width: size.width, height: size.height).clipped()
-        }.ignoresSafeArea()
-    }
-}
-
 struct PDFSlideView: NSViewRepresentable {
     let url: URL
     let pageIndex: Int
@@ -822,7 +790,10 @@ final class PresentationWindow: NSWindow {
     private var commandSession: PresentationSession? { outputCoordinator?.commandSession(for: self) }
 
     private func requestHideSlides() { commandSession?.hideSlides() }
-    private func requestStopProjection() { commandSession?.stopPresentation() }
+    private func requestStopProjection() {
+        guard let outputCoordinator, let owner = outputCoordinator.commandWorkspaceID(for: self) else { return }
+        outputCoordinator.stop(workspace: owner)
+    }
     private func requestToggleSlidesVisibility() { commandSession?.toggleSlidesVisibility() }
     private func requestClearBackgroundVisual() { if let session = commandSession { outputCoordinator?.clearBackgrounds(for: session) } }
     private func requestClearBackgroundAudio() { commandSession?.clearBackgroundAudio() }

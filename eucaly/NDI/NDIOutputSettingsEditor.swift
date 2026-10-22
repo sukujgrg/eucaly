@@ -132,7 +132,7 @@ final class NDIOutputSettingsEditor: NSViewController, NSTextFieldDelegate {
         }
         if let route = store.document.backgroundAudioDestinationID, !coordinator.ndi.activeIDs.contains(route) {
             let name = store.document.destinations.first { $0.id == route }?.name ?? "selected output"
-            notices.append("Network music output \(name) is inactive. Local playback continues.")
+            notices.append("Network music output \(name) is inactive.")
         }
         statusLabel.stringValue = detail
         warningLabel.stringValue = notices.joined(separator: "\n"); warningLabel.isHidden = notices.isEmpty

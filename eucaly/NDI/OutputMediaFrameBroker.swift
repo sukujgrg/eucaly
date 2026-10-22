@@ -2,18 +2,6 @@
 import IOSurface
 import ImageIO
 
-/// Immutable local render intent. URLs and players remain in the host; only
-/// validated surface capabilities and small composition values enter the helper.
-nonisolated struct OutputRenderSnapshot: Sendable {
-    let workspace: UUID?
-    let revision: UInt64
-    let visible: Bool
-    let profile: OutputProfile
-    let geometry: CGSize
-    let foreground: OutputPreparedMedia.Key?
-    let background: OutputPreparedMedia.Key?
-}
-
 @MainActor
 final class OutputMediaFrameBroker {
     private let generation: UUID
@@ -49,13 +37,14 @@ final class OutputMediaFrameBroker {
         let showBackground = supported && background.visible && (!snapshot.visible ? background.whenHidden : media ? background.whenMediaShown : background.whenTextShown)
         let backgroundURL = showBackground ? runtime.backgroundURL(for: profile) : nil
         let foregroundKey: OutputPreparedMedia.Key? = slide.flatMap {
-            if let url = $0.imageURL { return .init(url: url, page: nil, identity: "\(snapshot.source?.uuidString ?? ""):\($0.id):\(snapshot.revision)") }
+            if let url = $0.imageURL {
+                return .init(url: url, page: nil, identity: "\(snapshot.source?.uuidString ?? ""):\($0.id):\(snapshot.revision)",
+                             loadIdentity: "\(snapshot.source?.uuidString ?? ""):\(snapshot.documentRevision)")
+            }
             if let url = $0.pdfURL { return .init(url: url, page: $0.pdfPageIndex ?? 0, identity: "\(snapshot.source?.uuidString ?? ""):\($0.id):\(snapshot.revision)", acceptedPDF: snapshot.acceptedPDF) }
             return nil
         }
         let backgroundKey = backgroundURL.flatMap { OutputMediaRuntime.isVideo($0) ? nil : OutputPreparedMedia.Key(url: $0, page: nil, identity: "\(snapshot.source?.uuidString ?? ""):\(profile.id):\(snapshot.revision)") }
-        let intent = OutputRenderSnapshot(workspace: snapshot.source, revision: snapshot.revision,
-            visible: snapshot.visible, profile: profile, geometry: .init(width: 1920, height: 1080), foreground: foregroundKey, background: backgroundKey)
         var required: Set<ObjectIdentifier> = []
         func source(_ player: AVPlayer?) -> NDIVideoFrameLease? {
             guard let player else { return nil }
@@ -67,7 +56,7 @@ final class OutputMediaFrameBroker {
         let foregroundVideo = source(slide?.videoURL != nil ? runtime.program : nil)
         let backgroundVideo = source(backgroundURL.map(OutputMediaRuntime.isVideo) == true ? runtime.backgroundPlayer(for: profile) : nil)
         for key in Array(players.keys) where !required.contains(key) { players.removeValue(forKey: key)?.release() }
-        request(intent.foreground, slot: 0); request(intent.background, slot: 1)
+        request(foregroundKey, slot: 0); request(backgroundKey, slot: 1)
         var textProfile = profile; textProfile.background.bookmark = nil; textProfile.usesLegacySizing = false
         let text = snapshot.visible && supported && !snapshot.current.isEmpty
             ? NDITextRenderRequest(generation: generation, revision: 0, text: snapshot.current, profile: textProfile, transparent: true) : nil
@@ -195,9 +184,13 @@ nonisolated final class OutputPreparedMedia: @unchecked Sendable {
         let url: URL
         let page: Int?
         let identity: String
+        // Explicit Current loads must refresh image bytes even if a writer
+        // preserves the path, inode, timestamp and size. Ordinary composition
+        // revisions retain their prepared image instead of decoding again.
+        let loadIdentity: String?
         let acceptedPDF: AcceptedPDFSource?
-        init(url: URL, page: Int?, identity: String, acceptedPDF: AcceptedPDFSource? = nil) {
-            self.url = url; self.page = page; self.identity = identity; self.acceptedPDF = acceptedPDF
+        init(url: URL, page: Int?, identity: String, acceptedPDF: AcceptedPDFSource? = nil, loadIdentity: String? = nil) {
+            self.url = url; self.page = page; self.identity = identity; self.acceptedPDF = acceptedPDF; self.loadIdentity = loadIdentity
         }
     }
     private struct Work: Sendable { let key: Key; let result: @Sendable (Key, NDIFrameResource?, String?) -> Void }
@@ -205,7 +198,16 @@ nonisolated final class OutputPreparedMedia: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.suku.eucaly.ndi.prepare-media", qos: .userInitiated)
     private var pending: [Int: Work] = [:]
     private var scheduled = false
-    private struct Cache { let url: URL; let page: Int?; let sourceID: UUID?; let modified: Date?; let size: UInt64; let frame: NDIFrameResource }
+    private struct Cache {
+        let url: URL
+        let page: Int?
+        let sourceID: UUID?
+        let modified: Date?
+        let size: UInt64
+        let fileNumber: UInt64?
+        let loadIdentity: String?
+        let frame: NDIFrameResource
+    }
     private var cache: [Int: Cache] = [:] // Preparation queue only, at most two entries.
     private var stopped = false
     func request(_ key: Key?, slot: Int, result: @escaping @Sendable (Key, NDIFrameResource?, String?) -> Void) {
@@ -230,12 +232,15 @@ nonisolated final class OutputPreparedMedia: @unchecked Sendable {
                     // Only unpinned image/probe inputs consult the live path.
                     let attributes = sourceID == nil ? try FileManager.default.attributesOfItem(atPath: work.key.url.path) : [:]
                     let modified = attributes[.modificationDate] as? Date, size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+                    let fileNumber = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value
                     if let cached = cache[slot], cached.url == work.key.url, cached.page == work.key.page,
-                       cached.sourceID == sourceID, cached.modified == modified, cached.size == size {
+                       cached.sourceID == sourceID, cached.modified == modified, cached.size == size,
+                       cached.fileNumber == fileNumber, cached.loadIdentity == work.key.loadIdentity {
                         work.result(work.key, cached.frame, nil)
                     } else {
                         let frame = try Self.prepare(work.key)
-                        cache[slot] = .init(url: work.key.url, page: work.key.page, sourceID: sourceID, modified: modified, size: size, frame: frame)
+                        cache[slot] = .init(url: work.key.url, page: work.key.page, sourceID: sourceID, modified: modified, size: size,
+                                            fileNumber: fileNumber, loadIdentity: work.key.loadIdentity, frame: frame)
                         work.result(work.key, frame, nil)
                     }
                 }

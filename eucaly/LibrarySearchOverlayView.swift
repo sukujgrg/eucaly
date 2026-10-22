@@ -324,6 +324,7 @@ private struct LibrarySearchFieldView: NSViewRepresentable {
         _ searchField: LibrarySearchField,
         coordinator: Coordinator
     ) {
+        searchField.restorePreviousFocus()
         coordinator.commandRouter.unregister(searchField: searchField)
         searchField.delegate = nil
         searchField.target = nil

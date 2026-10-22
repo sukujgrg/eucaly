@@ -9,6 +9,10 @@ public struct ContentView: View {
     private let workspaceCommands: OutputWorkspaceCommands
     @State private var hasInitializedControls = false
     @State private var importPanel = LibraryImportPanelController()
+    @State private var importRequestID: UUID?
+    @State private var importCancellation: LibraryImportCancellation?
+    @State private var isImporting = false
+    @State private var importSelectionGeneration = UUID()
     @State private var lyricsEditor = LyricsEditorSession()
     @State private var lyricsEditorFocusController = PlainTextEditorFocusController()
     @StateObject private var session: PresentationSession
@@ -98,17 +102,6 @@ public struct ContentView: View {
         let playlistEntryIDs: Set<UUID>
     }
 
-    private enum ImportError: LocalizedError {
-        case unsupportedFile(URL)
-
-        var errorDescription: String? {
-            switch self {
-            case .unsupportedFile(let url):
-                return "\(url.lastPathComponent) is not a supported library file."
-            }
-        }
-    }
-
     private var isCurrentSelectionMediaFile: Bool {
         guard let url = currentSelectedURL else { return false }
         let kind = LibraryFileKind(url: url)
@@ -150,7 +143,28 @@ public struct ContentView: View {
     public var body: some View {
         rootSplitView
             .safeAreaInset(edge: .top, spacing: 0) {
-                OutputIssueBanner(session: session, manageOutputs: showOutputSettings)
+                VStack(spacing: 0) {
+                    OutputIssueBanner(session: session, manageOutputs: showOutputSettings)
+                    if isImporting {
+                        HStack {
+                            ProgressView().controlSize(.small)
+                            Text("Importing files…")
+                            Spacer()
+                        }
+                        .font(.caption)
+                        .padding(10)
+                    }
+                    if let newFileWarning, !hasActiveEditorPane || isEditorPreviewAreaCollapsed {
+                        HStack(alignment: .top) {
+                            Image(systemName: "exclamationmark.triangle")
+                            Text(newFileWarning).frame(maxWidth: .infinity, alignment: .leading)
+                            Button("Dismiss") { self.newFileWarning = nil }
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .padding(10)
+                    }
+                }
             }
             .environment(\.lyricsProjectionSize, lyricsProjectionSize)
             .environment(\.audienceOutputProfile, session.outputCoordinator.thumbnailProfile(workspace: session.outputSourceID))
@@ -229,6 +243,9 @@ public struct ContentView: View {
         .onChange(of: session.backgroundAudioURL) { _, newValue in
             selectedAudioURL = newValue?.standardizedFileURL
         }
+        .onChange(of: session.backgroundAudioPlaybackState) { _, _ in
+            importSelectionGeneration = UUID()
+        }
         .onChange(of: backgroundAudioVolume) { _, newValue in
             handleBackgroundAudioVolumeChange(newValue)
         }
@@ -250,6 +267,7 @@ public struct ContentView: View {
 
     private func handleControlsWillClose() {
         importPanel.cancel()
+        cancelFileImport()
         cancelPreviewLoad()
         librarySearch.cancelDebounce()
         libraryLoadTask?.cancel()
@@ -305,7 +323,10 @@ public struct ContentView: View {
             libraryScrollRequest: libraryScrollRequest,
             selectedPlaylistEntryIDs: selectedPlaylistEntryIDs,
             sidebarSelection: sidebarSelection,
-            selectedAudioURL: $selectedAudioURL,
+            selectedAudioURL: Binding(get: { selectedAudioURL }, set: { selection in
+                importSelectionGeneration = UUID()
+                selectedAudioURL = selection
+            }),
             backgroundAudioLoop: $backgroundAudioLoop,
             backgroundAudioVolumeDraft: $backgroundAudioVolumeDraft,
             windowCaptureFrameRate: $windowCaptureFrameRate,
@@ -511,7 +532,10 @@ public struct ContentView: View {
         DetailRootView(
             editorPane: EditorPaneContainerView(
                 newFileWarning: newFileWarning,
-                rawLyrics: $lyricsEditor.draft,
+                rawLyrics: Binding(get: { lyricsEditor.draft }, set: { draft in
+                    importSelectionGeneration = UUID()
+                    lyricsEditor.draft = draft
+                }),
                 editorID: lyricsEditor.documentID,
                 saveButtonTitle: saveButtonTitle,
                 canSave: canSaveEditorContent,
@@ -559,6 +583,7 @@ public struct ContentView: View {
     }
 
     private func handleEditorAction(_ action: EditorPaneAction) {
+        importSelectionGeneration = UUID()
         switch action {
         case .close:
             requestEditorExit(.closeEditor)
@@ -574,6 +599,7 @@ public struct ContentView: View {
 
     @discardableResult
     private func requestEditorExit(_ action: EditorExitAction) -> Bool {
+        importSelectionGeneration = UUID()
         guard lyricsEditor.isEditing else {
             performEditorExit(action)
             return true
@@ -852,155 +878,86 @@ public struct ContentView: View {
     }
 
     private func importFilesToLibrary() {
-        guard let root = libraryRootURL else {
-            newFileWarning = "Set a library root before importing files."
-            return
-        }
-
-        guard let window = workspaceCommands.window else { return }
-        importPanel.present(source: .library, for: window) { urls in
-            importFilesToLibrary(urls, root: root)
-        }
-    }
-
-    private func importFilesToLibrary(_ urls: [URL], root: URL) {
-        let didAccessRoot = root.startAccessingSecurityScopedResource()
-        defer {
-            if didAccessRoot {
-                root.stopAccessingSecurityScopedResource()
-            }
-        }
-
-        do {
-            let importedURLs = try urls.map { try importFile($0, into: root) }
-            guard !importedURLs.isEmpty else { return }
-
-            newFileWarning = nil
-            folderURL = root
-            loadMarkdownFiles(
-                from: root,
-                refreshSearchResults: true
-            )
-            loadPlaylists()
-            if let firstPreviewURL = importedURLs.first(where: { LibraryFileKind(url: $0).isPreviewLibraryItem }) {
-                libraryScrollRequest = LibraryScrollRequest(url: firstPreviewURL)
-                handleSidebarSelectionRequest(.library(firstPreviewURL))
-            }
-        } catch {
-            newFileWarning = "Could not import file: \(error.localizedDescription)"
-        }
+        presentLibraryImport(source: .library)
     }
 
     private func importAudioToLibrary() {
+        presentLibraryImport(source: .audio)
+    }
+
+    private func presentLibraryImport(source: LibraryImportPanelController.Source) {
+        guard !isImporting else { return }
         guard let root = libraryRootURL else {
             newFileWarning = "Set a library root before importing files."
             return
         }
-
         guard let window = workspaceCommands.window else { return }
-        importPanel.present(source: .audio, for: window) { urls in
-            importAudioToLibrary(urls, root: root)
+        importPanel.present(source: source, for: window) { urls in
+            guard libraryRootURL?.standardizedFileURL == root.standardizedFileURL else { return }
+            startFileImport(urls, root: root, source: source)
         }
     }
 
-    private func importAudioToLibrary(_ urls: [URL], root: URL) {
-        let didAccessRoot = root.startAccessingSecurityScopedResource()
-        defer {
-            if didAccessRoot {
-                root.stopAccessingSecurityScopedResource()
+    private func startFileImport(_ urls: [URL], root: URL, source: LibraryImportPanelController.Source) {
+        guard !urls.isEmpty, !isImporting else { return }
+        let requestID = UUID()
+        let cancellation = LibraryImportCancellation()
+        let selectionGeneration = importSelectionGeneration
+        let previewToken = previewLoadToken
+        let editor = lyricsEditor
+        let sidebar = sidebarSelection
+        let previewSelection = flow.previewSelectionID
+        let selectedAudio = selectedAudioURL
+        let activeAudio = session.backgroundAudioURL
+        let audioPlaybackState = session.backgroundAudioPlaybackState
+        importRequestID = requestID
+        importCancellation = cancellation
+        isImporting = true
+        newFileWarning = nil
+        Task {
+            let result = await LibraryFileImportService.shared.importFiles(urls, into: root, cancellation: cancellation)
+            guard importRequestID == requestID else { return }
+            importRequestID = nil
+            importCancellation = nil
+            isImporting = false
+            guard !cancellation.isCancelled, workspaceCommands.window != nil,
+                  libraryRootURL?.standardizedFileURL == root.standardizedFileURL else { return }
+            if !result.importedURLs.isEmpty {
+                folderURL = root
+                loadMarkdownFiles(from: root, refreshSearchResults: true)
+                loadPlaylists()
+                // Copying can finish after the operator has selected or edited
+                // something else. Keep the files and refresh, but preserve that
+                // newer intent instead of opening a document or starting music.
+                let maySelectImport = importSelectionGeneration == selectionGeneration
+                    && previewLoadToken == previewToken && lyricsEditor == editor
+                    && sidebarSelection == sidebar && flow.previewSelectionID == previewSelection
+                    && selectedAudioURL == selectedAudio && session.backgroundAudioURL == activeAudio
+                    && session.backgroundAudioPlaybackState == audioPlaybackState
+                if maySelectImport {
+                    switch source {
+                    case .library:
+                        if let first = result.importedURLs.first(where: { LibraryFileKind(url: $0).isPreviewLibraryItem }) {
+                            libraryScrollRequest = LibraryScrollRequest(url: first)
+                            handleSidebarSelectionRequest(.library(first))
+                        }
+                    case .audio:
+                        if let first = result.importedURLs.first(where: { LibraryFileKind(url: $0).isBackgroundAudioSource }) {
+                            setSidebarSelectionWithoutLoading(nil)
+                            selectBackgroundAudio(first)
+                        }
+                    }
+                }
             }
-        }
-
-        do {
-            let importedURLs = try urls.map { try importFile($0, into: root) }
-            guard let firstAudioURL = importedURLs.first(where: { LibraryFileKind(url: $0).isBackgroundAudioSource }) else {
-                return
-            }
-
-            newFileWarning = nil
-            folderURL = root
-            loadMarkdownFiles(
-                from: root,
-                refreshSearchResults: true
-            )
-            loadPlaylists()
-            setSidebarSelectionWithoutLoading(nil)
-            selectBackgroundAudio(firstAudioURL)
-        } catch {
-            newFileWarning = "Could not import audio: \(error.localizedDescription)"
+            if let failureMessage = result.failureMessage { newFileWarning = failureMessage }
         }
     }
 
-    private func importFile(_ sourceURL: URL, into root: URL) throws -> URL {
-        let kind = LibraryFileKind(url: sourceURL)
-        guard kind.isSupportedLibraryItem else {
-            throw ImportError.unsupportedFile(sourceURL)
-        }
-
-        if LibraryRootPath.isUnderRoot(sourceURL, root: root) {
-            return sourceURL
-        }
-
-        let destinationFolder = root.appendingPathComponent(
-            importFolderName(for: kind),
-            isDirectory: true
-        )
-        let didAccessSource = sourceURL.startAccessingSecurityScopedResource()
-        defer {
-            if didAccessSource {
-                sourceURL.stopAccessingSecurityScopedResource()
-            }
-        }
-
-        try FileManager.default.createDirectory(
-            at: destinationFolder,
-            withIntermediateDirectories: true
-        )
-        let destinationURL = availableImportDestination(
-            for: sourceURL.lastPathComponent,
-            in: destinationFolder
-        )
-        try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
-        return destinationURL
-    }
-
-    private func importFolderName(for kind: LibraryFileKind) -> String {
-        switch kind {
-        case .txt:
-            "Lyrics"
-        case .pdf:
-            "PDFs"
-        case .image:
-            "Images"
-        case .video:
-            "Videos"
-        case .audio:
-            "Audio"
-        case .unsupported:
-            "Other"
-        }
-    }
-
-    private func availableImportDestination(for fileName: String, in folder: URL) -> URL {
-        let fileManager = FileManager.default
-        let baseURL = folder.appendingPathComponent(fileName)
-        guard fileManager.fileExists(atPath: baseURL.path) else {
-            return baseURL
-        }
-
-        let name = (fileName as NSString).deletingPathExtension
-        let ext = (fileName as NSString).pathExtension
-        var index = 2
-        while true {
-            let candidateName = ext.isEmpty
-                ? "\(name) \(index)"
-                : "\(name) \(index).\(ext)"
-            let candidateURL = folder.appendingPathComponent(candidateName)
-            if !fileManager.fileExists(atPath: candidateURL.path) {
-                return candidateURL
-            }
-            index += 1
-        }
+    private func cancelFileImport() {
+        importCancellation?.cancel()
+        importCancellation = nil
+        importRequestID = nil
+        isImporting = false
     }
 
     private func loadMarkdownFiles(
@@ -1226,24 +1183,10 @@ public struct ContentView: View {
         if !slides.isEmpty {
             isEditorPreviewAreaCollapsed = false
         }
-        let preservedCurrentSlides = session.slides
-        let preservedPDFSource = session.pdfSlideSource
-        let preservedCurrentSlideID = session.currentSlideID
-        let preservedCurrentSlideIndex = preservedCurrentSlideID.flatMap { slideID in
-            session.slideIndex(for: slideID)
-        }
-
         flow.setPreviewSlides(
             slides,
             preferredSelection: preferredSelection,
             preferredSelectionIndex: preferredSelectionIndex
-        )
-
-        restoreCurrentDocumentIfNeeded(
-            slides: preservedCurrentSlides,
-            pdfSource: preservedPDFSource,
-            currentSlideID: preservedCurrentSlideID,
-            currentSlideIndex: preservedCurrentSlideIndex
         )
     }
 
@@ -1252,21 +1195,7 @@ public struct ContentView: View {
         preferredSelectionIndex: Int? = nil
     ) {
         isEditorPreviewAreaCollapsed = false
-        let preservedCurrentSlides = session.slides
-        let preservedPDFSource = session.pdfSlideSource
-        let preservedCurrentSlideID = session.currentSlideID
-        let preservedCurrentSlideIndex = preservedCurrentSlideID.flatMap { slideID in
-            session.slideIndex(for: slideID)
-        }
-
         flow.setPreviewPDFSource(source, preferredSelectionIndex: preferredSelectionIndex)
-
-        restoreCurrentDocumentIfNeeded(
-            slides: preservedCurrentSlides,
-            pdfSource: preservedPDFSource,
-            currentSlideID: preservedCurrentSlideID,
-            currentSlideIndex: preservedCurrentSlideIndex
-        )
     }
 
     private var libraryRootURL: URL? {
@@ -1280,6 +1209,7 @@ public struct ContentView: View {
     }
 
     private func refreshLibraryRootAccess() {
+        cancelFileImport()
         importPanel.cancel()
         if libraryRootPath.isEmpty {
             let defaultRoot = URL(fileURLWithPath: NSString(string: "~/Documents/eucaly").expandingTildeInPath)
@@ -1387,6 +1317,7 @@ public struct ContentView: View {
     }
 
     private func selectBackgroundAudio(_ url: URL) {
+        importSelectionGeneration = UUID()
         updateBackgroundAudioAccess(url)
         applyBackgroundAudioSelection(url, autoplay: true)
         if let bookmark = SecurityScopedBookmarks.createBookmark(for: url) {
@@ -1400,6 +1331,7 @@ public struct ContentView: View {
     }
 
     private func clearBackgroundAudio() {
+        importSelectionGeneration = UUID()
         updateBackgroundAudioAccess(nil)
         applyBackgroundAudioSelection(nil, autoplay: false)
         backgroundAudioBookmark = ""
@@ -1489,7 +1421,7 @@ public struct ContentView: View {
             return
         }
 
-        newFileWarning = "Only files inside the library root can be added to Playlist."
+        newFileWarning = playlistStore.lastError
     }
 
     @MainActor
@@ -1537,7 +1469,10 @@ public struct ContentView: View {
     }
 
     private func loadPlaylists() {
-        playlistStore.load(fromRoot: libraryRootURL)
+        guard playlistStore.load(fromRoot: libraryRootURL) else {
+            newFileWarning = playlistStore.lastError
+            return
+        }
         selectedPlaylistEntryIDs = selectedPlaylistEntryIDs.intersection(Set(playlistStore.entries.map(\.id)))
         if let selectedPlaylistEntryID,
            !playlistStore.entries.contains(where: { $0.id == selectedPlaylistEntryID }) {
@@ -1558,12 +1493,16 @@ public struct ContentView: View {
             return
         }
 
-        newFileWarning = "Only files inside the library root can be added to Playlist."
+        newFileWarning = playlistStore.lastError
     }
 
     private func removeSelectedFromPlaylist() {
         guard !selectedPlaylistEntryIDs.isEmpty else { return }
-        playlistStore.remove(ids: selectedPlaylistEntryIDs)
+        guard playlistStore.remove(ids: selectedPlaylistEntryIDs) else {
+            newFileWarning = playlistStore.lastError
+            return
+        }
+        newFileWarning = nil
         if selectedPlaylistEntryID != nil {
             setSidebarSelectionWithoutLoading(nil)
         } else {
@@ -1573,7 +1512,11 @@ public struct ContentView: View {
     }
 
     private func removePlaylistItem(_ id: UUID) {
-        playlistStore.remove(ids: [id])
+        guard playlistStore.remove(ids: [id]) else {
+            newFileWarning = playlistStore.lastError
+            return
+        }
+        newFileWarning = nil
         selectedPlaylistEntryIDs.remove(id)
         if selectedPlaylistEntryID == id {
             setSidebarSelectionWithoutLoading(nil)
@@ -1583,13 +1526,21 @@ public struct ContentView: View {
 
     private func moveSelectedPlaylistEntriesUp() {
         guard !selectedPlaylistEntryIDs.isEmpty else { return }
-        playlistStore.moveUp(ids: selectedPlaylistEntryIDs)
+        guard playlistStore.moveUp(ids: selectedPlaylistEntryIDs) else {
+            newFileWarning = playlistStore.lastError
+            return
+        }
+        newFileWarning = nil
         loadPlaylists()
     }
 
     private func moveSelectedPlaylistEntriesDown() {
         guard !selectedPlaylistEntryIDs.isEmpty else { return }
-        playlistStore.moveDown(ids: selectedPlaylistEntryIDs)
+        guard playlistStore.moveDown(ids: selectedPlaylistEntryIDs) else {
+            newFileWarning = playlistStore.lastError
+            return
+        }
+        newFileWarning = nil
         loadPlaylists()
     }
 
@@ -1610,6 +1561,7 @@ public struct ContentView: View {
     }
 
     private func toggleBackgroundAudioPlayback() {
+        importSelectionGeneration = UUID()
         deferSessionChange {
             if session.isBackgroundAudioPlaying {
                 session.pauseBackgroundAudio()
@@ -1620,12 +1572,14 @@ public struct ContentView: View {
     }
 
     private func stopBackgroundAudioPlayback() {
+        importSelectionGeneration = UUID()
         deferSessionChange {
             session.stopBackgroundAudioPlayback()
         }
     }
 
     private func seekBackgroundAudio(to time: Double) {
+        importSelectionGeneration = UUID()
         deferSessionChange {
             session.seekBackgroundAudio(to: time)
         }
@@ -1645,6 +1599,8 @@ public struct ContentView: View {
         _ selection: SidebarSelection?,
         playlistEntryIDs: Set<UUID> = []
     ) -> Bool {
+        // An explicit same-file selection also supersedes import auto-opening.
+        importSelectionGeneration = UUID()
         let request = SidebarSelectionRequest(
             selection: selection,
             playlistEntryIDs: playlistEntryIDs
@@ -1803,8 +1759,18 @@ public struct ContentView: View {
 
     private func saveCurrentFile() -> Bool {
         guard !isCurrentSelectionMediaFile, let url = editorSourceURL else { return false }
+        let documentID = lyricsEditor.documentID
+        let draft = lyricsEditor.draft
+        let baseline = lyricsEditor.savedText
+        let controlsWindow = workspaceCommands.window
+        let isStillCurrent = {
+            controlsWindow != nil && workspaceCommands.window === controlsWindow
+                && lyricsEditor.isEditing && lyricsEditor.documentID == documentID
+                && lyricsEditor.sourceURL == url && lyricsEditor.draft == draft && lyricsEditor.savedText == baseline
+        }
         do {
-            try lyricsEditor.draft.write(to: url, atomically: true, encoding: .utf8)
+            guard try LyricsFileSave.save(draft, replacing: baseline, at: url, isStillCurrent: isStillCurrent,
+                                         confirmOverwrite: { confirmLyricsOverwrite(url) }), isStillCurrent() else { return false }
             lyricsEditor.markSaved(to: url)
             if let folderURL {
                 loadMarkdownFiles(
@@ -1821,6 +1787,16 @@ public struct ContentView: View {
             newFileWarning = "Could not save file: \(error.localizedDescription)"
             return false
         }
+    }
+
+    private func confirmLyricsOverwrite(_ url: URL) -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Overwrite changes to \(url.lastPathComponent)?"
+        alert.informativeText = "This file has changed since you opened it. Overwrite replaces those saved changes with your draft."
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Overwrite")
+        return alert.runModal() == .alertSecondButtonReturn
     }
 
     @discardableResult
@@ -1862,7 +1838,10 @@ public struct ContentView: View {
 
     private func pickWindowForPreview() {
         guard isWindowCaptureSupported else { return }
-        screenCaptureManager.presentWindowPicker(workspaceID: session.outputSourceID)
+        screenCaptureManager.presentWindowPicker(workspaceID: session.outputSourceID,
+            replacementProblem: { [weak coordinator = session.outputCoordinator] in
+                coordinator?.windowCaptureReplacementProblem()
+            })
     }
 
     private func clearSelectedWindowFromSidebar() {
@@ -1976,6 +1955,7 @@ public struct ContentView: View {
     }
 
     private func beginLyricsEditing() {
+        importSelectionGeneration = UUID()
         guard canEditSelection, let url = previewLyricsSourceURL() else { return }
         if lyricsEditor.isEditing {
             requestEditorExit(.editLyrics(url))
@@ -1996,6 +1976,7 @@ public struct ContentView: View {
     }
 
     private func beginCurrentLyricsEditing() {
+        importSelectionGeneration = UUID()
         guard canEditCurrentLyrics, let url = currentLyricsSourceURL else { return }
         if lyricsEditor.isEditing {
             requestEditorExit(.editCurrentLyrics(url))
@@ -2033,44 +2014,7 @@ public struct ContentView: View {
         return flow.previewSlideIndex(for: previewSelectionID)
     }
 
-    private func restoreCurrentDocumentIfNeeded(
-        slides: [Slide],
-        pdfSource: PDFSlideSource?,
-        currentSlideID: Slide.ID?,
-        currentSlideIndex: Int?
-    ) {
-        let preservedUsesPDF = pdfSource != nil
-        let currentUsesPDF = session.pdfSlideSource != nil
-        let preservedSlideIDs = slides.map(\.id)
-        let currentSlideIDs = session.slides.map(\.id)
-        let pdfSourcesMatch = pdfSource == session.pdfSlideSource
 
-        guard preservedSlideIDs != currentSlideIDs
-            || preservedUsesPDF != currentUsesPDF
-            || !pdfSourcesMatch
-            || session.currentSlideID != currentSlideID else {
-            return
-        }
-
-        if let pdfSource {
-            commitCurrentPDFSource(
-                pdfSource,
-                preferredSelection: currentSlideID,
-                preferredSelectionIndex: currentSlideIndex
-            )
-            return
-        }
-
-        let restoredSelection = currentSlideID.flatMap { slideID in
-            slides.contains(where: { $0.id == slideID }) ? slideID : nil
-        }
-        commitCurrentSlides(
-            slides,
-            lyricsSourceURL: currentLyricsSourceURL,
-            preferredSelection: restoredSelection,
-            preferredSelectionIndex: currentSlideIndex
-        )
-    }
 }
 
 extension View {

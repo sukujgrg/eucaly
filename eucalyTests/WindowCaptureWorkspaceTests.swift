@@ -1,10 +1,50 @@
 import XCTest
 import CoreGraphics
+import Combine
 @testable import eucaly
 
 @MainActor
 final class WindowCaptureWorkspaceTests: XCTestCase {
     private let windowID: CGWindowID = 901
+
+    func testBlockedPickerPreservesApprovedSourceAndPendingRequestWithoutOpeningSystemPicker() throws {
+        let manager = selectedWindowManager()
+        let old = manager.beginPickerRequest(workspaceID: UUID())
+        let requester = UUID(), reason = "Stop the live window output before picking another window."
+        var notices: [WindowCaptureIssue] = []
+        let observation = manager.issues.sink { notices.append($0) }
+        defer { observation.cancel() }
+
+        XCTAssertFalse(manager.presentWindowPicker(workspaceID: requester, replacementProblem: { reason }))
+
+        XCTAssertEqual(manager.pendingPickerRequest, old)
+        XCTAssertTrue(manager.hasPickedWindow(windowID))
+        XCTAssertEqual(notices.count, 1)
+        XCTAssertEqual(notices.first?.workspaceID, requester)
+        XCTAssertEqual(notices.first?.message, reason)
+    }
+
+    func testPickerCompletionRevalidatesOutputProtectionBeforeReplacingApprovedSource() throws {
+        let manager = selectedWindowManager(), protection = PickerProtection()
+        let owner = UUID()
+        let request = manager.beginPickerRequest(workspaceID: owner, replacementProblem: { protection.problem })
+        XCTAssertTrue(manager.acceptsPickerSelection(for: request))
+        var notices: [WindowCaptureIssue] = []
+        let observation = manager.issues.sink { notices.append($0) }
+        defer { observation.cancel() }
+
+        // Another workspace can explicitly start its retained Current while
+        // the system picker is open. Its source still cannot be replaced.
+        protection.problem = "A workspace started using the picked window. Stop its output before picking another window."
+        XCTAssertFalse(manager.acceptsPickerSelection(for: request))
+
+        XCTAssertNil(manager.pendingPickerRequest)
+        XCTAssertTrue(manager.hasPickedWindow(windowID))
+        XCTAssertEqual(notices.first?.workspaceID, owner)
+        XCTAssertEqual(notices.first?.message, protection.problem)
+        XCTAssertFalse(manager.acceptsPickerSelection(for: request))
+        XCTAssertEqual(notices.count, 1, "A stale result must not publish a second notice")
+    }
 
     func testClearingOnePreviewRetainsAnotherWorkspacesCurrentWithoutPreparingClosedWorkspace() throws {
         let f = try Fixture()
@@ -161,6 +201,11 @@ final class WindowCaptureWorkspaceTests: XCTestCase {
     private final class ConsumerCount {
         var value: Int
         init(_ value: Int) { self.value = value }
+    }
+
+    @MainActor
+    private final class PickerProtection {
+        var problem: String?
     }
 
     @MainActor

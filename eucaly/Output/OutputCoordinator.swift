@@ -30,12 +30,14 @@ final class OutputCoordinator: ObservableObject {
     private let sleepPrevention: ProjectionSleepPrevention
     private let keyWindow: @MainActor () -> NSWindow?
     private let driverFactory: @MainActor () -> any OutputDestinationDriving
+    private let captureManager: ScreenCaptureManager?
     private var programs: [UUID: OutputWorkspaceProgram] = [:]
     private var windows: [UUID: any OutputDestinationDriving] = [:]
     private var targets: [UUID: ProjectionMonitorTarget] = [:]
     private var displayObservation: UUID?
     private var profileObservation: UUID?
     private var stopObserver: NSObjectProtocol?
+    private var captureObservation: AnyCancellable?
     private var legacyMonitorTarget: ProjectionMonitorTarget?
     private var standbyConfigurations: [OutputDestinationConfiguration]
     private var confidenceDestinationIDs: Set<UUID>
@@ -45,7 +47,7 @@ final class OutputCoordinator: ObservableObject {
     private var dismissedNDIPerformance: Set<UUID> = []
     private var dismissedNDIFailures: [UUID: String] = [:]
     private var issues: [UUID: String] = [:]
-    private enum IssueReason { case presentation, background, assignment(UUID, ProjectionMonitorTarget), disconnected, transfer }
+    private enum IssueReason { case presentation, background, assignment(UUID, ProjectionMonitorTarget), disconnected, transfer, capture }
     private var issueReasons: [UUID: IssueReason] = [:]
     @Published private(set) var focusedWorkspaceID: UUID?
     @Published private(set) var revision: UInt64 = 0
@@ -58,17 +60,27 @@ final class OutputCoordinator: ObservableObject {
     // These are operator editing conveniences only. Rendering always resolves a
     // destination's saved owner; focus never participates in output routing.
     var preferredLocalSession: PresentationSession? { focusedWorkspaceID.flatMap { programs[$0]?.session } }
+    var commandWorkspaceID: UUID? { commandWorkspaceID(for: keyWindow()) }
     var commandSession: PresentationSession? { commandSession(for: keyWindow()) }
-    func commandSession(for window: NSWindow?) -> PresentationSession? {
+    /// Standby outputs can exist without controls or a prepared session. Resolve
+    /// their saved owner without preparing Current or falling back to focus.
+    func commandWorkspaceID(for window: NSWindow?) -> UUID? {
+        let owner: UUID?
         if let controls = window as? OutputWorkspaceWindow,
-           let session = controls.workspaceSession, session.outputCoordinator === self { return session }
-        if let output = window as? PresentationWindow, output.outputCoordinator === self,
+           let session = controls.workspaceSession, session.outputCoordinator === self {
+            owner = session.outputSourceID
+        } else if let output = window as? PresentationWindow, output.outputCoordinator === self,
            let id = output.outputDestinationID {
-            return session(for: id)
+            owner = destination(id)?.workspaceID
+        } else {
+            owner = focusedWorkspaceID
         }
-        return preferredLocalSession
+        return owner.flatMap { id in profiles.document.workspaces.contains { $0.id == id } ? id : nil }
     }
-    private var commandProgram: OutputWorkspaceProgram { commandSession.map { program($0.outputSourceID) } ?? focusedProgram }
+    func commandSession(for window: NSWindow?) -> PresentationSession? {
+        commandWorkspaceID(for: window).flatMap { programs[$0]?.session }
+    }
+    private var commandProgram: OutputWorkspaceProgram { commandWorkspaceID.map(program) ?? focusedProgram }
     var localSession: PresentationSession? { isPresenting ? preferredLocalSession : nil }
     private var focusedProgram: OutputWorkspaceProgram { program(focusedWorkspaceID ?? profiles.document.workspaces[0].id) }
     var snapshot: OutputContentSnapshot { focusedProgram.snapshot }
@@ -92,11 +104,13 @@ final class OutputCoordinator: ObservableObject {
 
     init(profiles: OutputProfileStore, displays: ProjectionDisplayManager, retainsPreparedSessions: Bool = false,
          media: OutputMediaRuntime? = nil, ndi: (any NDIOutputDriving)? = nil,
+         captureManager: ScreenCaptureManager? = nil,
          sleepPrevention: ProjectionSleepPrevention = ProjectionSleepPrevention(),
          keyWindow: @escaping @MainActor () -> NSWindow? = { NSApp.keyWindow },
          driverFactory: @escaping @MainActor () -> any OutputDestinationDriving = { OutputWindowDestination() }) {
         self.profiles = profiles; self.displays = displays; self.retainsPreparedSessions = retainsPreparedSessions
         self.keyWindow = keyWindow
+        self.captureManager = captureManager ?? (AppLaunchContext.isRunningTests ? nil : .shared)
         self.ndi = ndi ?? NDIOutputRouter(); self.sleepPrevention = sleepPrevention; self.driverFactory = driverFactory
         standbyConfigurations = profiles.document.destinations; legacyMonitorTarget = displays.target
         confidenceDestinationIDs = Set(profiles.document.destinations.filter { profiles.profile($0.profileID)?.kind == .confidence }.map(\.id))
@@ -118,6 +132,7 @@ final class OutputCoordinator: ObservableObject {
         }
         displayObservation = displays.observe { [weak self] in self?.displaysChanged() }
         profileObservation = profiles.observe { [weak self] in self?.profilesChanged() }
+        captureObservation = self.captureManager?.issues.sink { [weak self] in self?.receiveWindowCaptureIssue($0) }
         stopObserver = NotificationCenter.default.addObserver(forName: .stopProjection, object: nil, queue: .main) { [weak self] _ in
             DispatchQueue.main.async { self?.stop() }
         }
@@ -139,6 +154,33 @@ final class OutputCoordinator: ObservableObject {
             state.flow.previewSlides.contains { $0.captureWindowID == windowID }
                 || state.session?.slides.contains { $0.captureWindowID == windowID } == true
                 || state.snapshot.localMedia?.captureWindowID == windowID
+        }
+    }
+    /// Replacing the system pick must not retire a source retained by a native
+    /// program, including its privately accepted picture while slides are hidden.
+    func windowCaptureReplacementProblem() -> String? {
+        let owners = profiles.document.workspaces.filter {
+            programs[$0.id]?.snapshot.localMedia?.captureWindowID != nil && hasOpenNativeOutput(workspace: $0.id)
+        }
+        guard !owners.isEmpty else { return nil }
+        return "Stop the window output in " + owners.map(\.name).joined(separator: ", ") + " before replacing the picked window."
+    }
+    func reportWindowCaptureIssue(_ message: String?, workspace: UUID) {
+        guard profiles.document.workspaces.contains(where: { $0.id == workspace }) else { return }
+        if message != nil { setIssue(message, workspace: workspace, reason: .capture) }
+        else if case .capture? = issueReasons[workspace] { setIssue(nil, workspace: workspace) }
+    }
+    private func receiveWindowCaptureIssue(_ issue: WindowCaptureIssue) {
+        if let workspace = issue.workspaceID {
+            reportWindowCaptureIssue(issue.message, workspace: workspace)
+            return
+        }
+        guard let windowID = issue.windowID else { return }
+        for record in profiles.document.workspaces {
+            guard let state = programs[record.id],
+                  state.session?.slides.contains(where: { $0.captureWindowID == windowID }) == true
+                    || state.snapshot.localMedia?.captureWindowID == windowID else { continue }
+            reportWindowCaptureIssue(issue.message, workspace: record.id)
         }
     }
     func releaseUnusedWindowCaptureSelection(using captureManager: ScreenCaptureManager? = nil) {
@@ -303,6 +345,10 @@ final class OutputCoordinator: ObservableObject {
             setIssue(problem, workspace: workspaceID ?? session.outputSourceID, reason: .transfer); return false
         }
         let transferringProgram = isOpen(id) && row.workspaceID.flatMap { programs[$0]?.started } == true
+        if transferringProgram, row.isMonitorDestination, session.currentSlide?.captureWindowID != nil,
+           let problem = windowCaptureStartProblem {
+            setIssue(problem, workspace: workspaceID ?? session.outputSourceID, reason: .capture); return false
+        }
         if let previous = row.workspaceID { cancelRequests(program(previous)) }
         let state = program(session.outputSourceID); cancelRequests(state)
         if transferringProgram {
@@ -339,6 +385,10 @@ final class OutputCoordinator: ObservableObject {
             $0.enabled && (onlyDestinationID == nil || $0.id == onlyDestinationID)
                 && (activation == .show || isOpen($0.id))
         }
+        if session.currentSlide?.captureWindowID != nil, rows.contains(where: \.isMonitorDestination),
+           let problem = windowCaptureStartProblem {
+            setIssue(problem, workspace: state.id, reason: .capture); return false
+        }
         if let problem = presentationProblem(for: session.currentSlide, rows: rows) {
             setIssue(problem, workspace: state.id); return false
         }
@@ -374,6 +424,9 @@ final class OutputCoordinator: ObservableObject {
         }
         return nil
     }
+    private var windowCaptureStartProblem: String? {
+        captureManager?.pendingPickerRequest == nil ? nil : "Finish or cancel Pick Window before showing a picked window."
+    }
     func passiveLocal(_ session: PresentationSession) {
         guard profiles.document.workspaces.contains(where: { $0.id == session.outputSourceID }) else { return }
         let state = program(session.outputSourceID)
@@ -381,6 +434,10 @@ final class OutputCoordinator: ObservableObject {
         // A model refresh only updates surviving consumers. A closed native
         // companion cannot make picked-window content supported by live NDI.
         let rows = destinations(workspace: state.id).filter { $0.enabled && isOpen($0.id) }
+        if session.currentSlide?.captureWindowID != nil, rows.contains(where: \.isMonitorDestination),
+           let problem = windowCaptureStartProblem {
+            setIssue(problem, workspace: state.id, reason: .capture); return
+        }
         if let problem = presentationProblem(for: session.currentSlide, rows: rows) {
             setIssue(problem, workspace: state.id); return
         }
@@ -402,10 +459,15 @@ final class OutputCoordinator: ObservableObject {
     }
     /// Ordinary stop is workspace scoped. Stop All Outputs is deliberately separate.
     func stop(for session: PresentationSession? = nil) {
-        stop(workspace: session?.outputSourceID ?? commandProgram.id)
+        guard let workspace = session?.outputSourceID ?? commandWorkspaceID else { return }
+        stop(workspace: workspace)
+    }
+    func stop(workspace: UUID) {
+        guard profiles.document.workspaces.contains(where: { $0.id == workspace }) else { return }
+        stopProgram(workspace: workspace)
         changed()
     }
-    private func stop(workspace: UUID) {
+    private func stopProgram(workspace: UUID) {
         guard profiles.document.workspaces.contains(where: { $0.id == workspace }) else { return }
         let state = program(workspace); cancelRequests(state); state.ownership.revoke(); state.started = false; state.backgroundOpen = false
         for row in destinations(workspace: workspace) {
@@ -414,7 +476,7 @@ final class OutputCoordinator: ObservableObject {
         state.snapshot = .init(source: workspace, visible: false, revision: state.snapshot.revision &+ 1)
     }
     func stopAllOutputs() {
-        for id in Array(programs.keys) { stop(workspace: id) }
+        for id in Array(programs.keys) { stopProgram(workspace: id) }
         for id in ndi.activeIDs { ndi.stop(id) }
         changed()
     }
@@ -638,6 +700,8 @@ final class OutputCoordinator: ObservableObject {
             case .transfer:
                 // A failed move leaves ownership unchanged. Keep its explanation
                 // in the requesting workspace until retry succeeds or dismissal.
+                message = issues[id]
+            case .capture:
                 message = issues[id]
             }
             setIssue(message, workspace: id, reason: reason)

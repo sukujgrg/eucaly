@@ -40,6 +40,7 @@ struct SlideGridCellView: View {
             )
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityValue(readability.message)
         .background {
             if !slide.lines.isEmpty {

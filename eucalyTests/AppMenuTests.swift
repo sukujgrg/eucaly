@@ -4,6 +4,74 @@ import XCTest
 
 @MainActor
 final class AppMenuTests: XCTestCase {
+    func testStandbyOwnerWithoutControlsCanStopFromProjectionKeyboardAndMenu() async throws {
+        let monitors = (1...2).map {
+            ProjectionMonitor(id: UInt32($0), identity: UUID().uuidString, name: "Monitor \($0)",
+                              frame: .init(x: 0, y: 0, width: 1920, height: 1080))
+        }
+        let displays = ProjectionDisplayManager(displays: { monitors })
+        let profiles = OutputProfileStore(monitor: monitors[0].target)
+        let owner = try XCTUnwrap(profiles.addWorkspace(name: "Stage"))
+        let standby = OutputDestinationConfiguration(name: "Stage", profileID: OutputProfile.confidenceID,
+                                                     monitor: monitors[1].target, workspaceID: owner)
+        profiles.edit { $0.destinations.append(standby) }
+        let focus = MenuFocus()
+        let outputs = OutputCoordinator(profiles: profiles, displays: displays, retainsPreparedSessions: true,
+                                        keyWindow: { focus.window }, driverFactory: { FakeOutputDriver() })
+        let home = outputs.session(workspace: OutputWorkspaceRecord.primaryID)
+        let audience = profiles.document.destinations[0].id
+        home.setSlides(LyricsParser.parseDocument("Verse\nKeep Home live").slides)
+        home.showSlides()
+        outputs.workspaceWindowReady(home)
+        try await Task.sleep(for: .milliseconds(50))
+
+        let projection = PresentationWindow(contentRect: .init(x: -10000, y: -10000, width: 100, height: 100),
+                                            styleMask: .borderless, backing: .buffered, defer: false)
+        projection.isReleasedWhenClosed = false
+        projection.outputCoordinator = outputs; projection.outputDestinationID = standby.id
+        focus.window = projection
+        defer { outputs.stopAllOutputs(); projection.close() }
+        let app = AppDelegate()
+        app.outputProfiles = profiles; app.outputs = outputs
+        app.workspaceWindows = makeWorkspaceWindows(outputs: outputs)
+        let saved = profiles.document
+        let menus = AppMenuController(app: app)
+        let slides = try XCTUnwrap(menus.mainMenu.item(withTitle: "Slides")?.submenu)
+        let stop = try XCTUnwrap(slides.item(withTitle: "Stop Workspace Outputs"))
+        XCTAssertTrue(outputs.isOpen(standby.id))
+        XCTAssertEqual(outputs.commandWorkspaceID, owner)
+        XCTAssertNil(outputs.commandSession)
+        XCTAssertTrue(menus.validateMenuItem(stop))
+        XCTAssertFalse(menus.validateMenuItem(try XCTUnwrap(slides.item(withTitle: "Show/Hide Slides"))))
+        menus.menuNeedsUpdate(menus.outputMenu)
+        XCTAssertNil(outputs.preparedSession(workspace: owner), "Menu construction and validation must stay passive.")
+        XCTAssertNil(outputs.preparedMedia(workspace: owner)?.program)
+        XCTAssertTrue(app.workspaceWindows.controllers.isEmpty)
+        XCTAssertEqual(profiles.document, saved)
+
+        let key = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+                                               timestamp: 0, windowNumber: projection.windowNumber, context: nil,
+                                               characters: "1", charactersIgnoringModifiers: "1", isARepeat: false, keyCode: 18))
+        projection.keyDown(with: key)
+        XCTAssertFalse(outputs.isOpen(standby.id))
+        XCTAssertTrue(outputs.isOpen(audience), "Cmd+1 must preserve another workspace's program.")
+        XCTAssertTrue(home.isPresenting)
+        XCTAssertNil(outputs.preparedSession(workspace: owner))
+
+        outputs.openConfidence(standby.id)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(outputs.isOpen(standby.id))
+        slides.performActionForItem(at: slides.index(of: stop))
+        XCTAssertFalse(outputs.isOpen(standby.id))
+        XCTAssertTrue(outputs.isOpen(audience))
+        XCTAssertNil(outputs.preparedSession(workspace: owner))
+        profiles.edit { $0.destinations.removeAll { $0.id == standby.id } }
+        XCTAssertTrue(outputs.deleteWorkspace(owner))
+        XCTAssertFalse(menus.validateMenuItem(stop), "A stale projection window must not fall back to focused Home.")
+        projection.keyDown(with: key)
+        XCTAssertTrue(outputs.isOpen(audience))
+    }
+
     func testSlidesCommandRequiresCurrentInTheControlledWorkspace() throws {
         let hub = LocalOutputHarness()
         defer { hub.outputs.stopAllOutputs() }

@@ -34,7 +34,7 @@ struct CurrentPaneContainerView: View {
                     if session.isPresenting {
                         return session.areSlidesVisible ? "(Presenting)" : "(Slides hidden)"
                     }
-                    return slides.isEmpty ? "(Not presenting)" : "(Loaded)"
+                    return session.isEmpty ? "(Not presenting)" : "(Loaded)"
                 }()
 
                 if session.isPresenting || !session.isEmpty {
@@ -227,7 +227,7 @@ struct CurrentPaneContainerView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         )
         .paneAccentRing(.current, isEmphasized: !session.isEmpty && !isCollapsed)
-        .onChange(of: playbackProgress.videoCurrentTime) { _, newValue in
+        .onChange(of: playbackProgress.videoCurrentTime, initial: true) { _, newValue in
             guard !isSeekingVideo else { return }
             videoSeekDraft = newValue
         }
@@ -288,6 +288,8 @@ struct CurrentPaneContainerView: View {
                 }
             )
             .disabled(playbackProgress.videoDuration <= 0)
+            .accessibilityLabel("Video position")
+            .accessibilityValue(formattedVideoTime(videoSeekDraft))
 
             Text(formattedVideoTime(playbackProgress.videoDuration))
                 .font(.caption.monospacedDigit())

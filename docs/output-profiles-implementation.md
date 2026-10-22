@@ -182,6 +182,11 @@ the selected music player's access outlive inactive tabs. ScreenCaptureManager
 continues to own one system-picker-approved stream with reference-counted consumers.
 Picker results retain the requesting workspace through focus changes, and newer
 requests or cancellation invalidate older asynchronous selection work.
+Replacing the pick is blocked while a native output retains an accepted window,
+including a hidden picture. Conversely, an outstanding picker blocks starting a
+picked-window output until the picker finishes or is cancelled. Other content
+remains available. Capture errors appear in the owning controls; audience output
+uses a neutral frame and never displays repick instructions or raw errors.
 Clearing one pane releases a picked window only after every workspace's Preview,
 Current and accepted snapshot has released it and its last capture consumer has
 detached. Pending picker requests remain intact, and old teardown work cannot
@@ -208,6 +213,8 @@ Open Confidence/Show or a new assignment/enable. Native windows, including stand
 hold display/system sleep prevention. NDI independently holds system sleep prevention.
 Moving a standby Confidence window retains standby in a prepared workspace; it does
 not start Current or program media.
+Stop resolves the window's saved workspace identity even when its owner has no
+prepared session or open controls. Menu validation never prepares that session.
 
 ## Generic NDI sender and transfer
 

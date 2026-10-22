@@ -4,6 +4,98 @@ import XCTest
 
 final class LibrarySearchNavigationTests: XCTestCase {
     @MainActor
+    func testDismissingSearchRestoresLyricsInsertionPoint() async throws {
+        let window = focusWindow()
+        defer { window.close() }
+        let lyrics = NSTextView(frame: .init(x: 10, y: 10, width: 300, height: 80))
+        lyrics.string = "Sing with joy"
+        window.contentView?.addSubview(lyrics)
+        XCTAssertTrue(window.makeFirstResponder(lyrics))
+        lyrics.selectedRange = NSRange(location: 5, length: 0)
+        let search = LibrarySearchField(frame: .init(x: 10, y: 100, width: 300, height: 28))
+        window.contentView?.addSubview(search)
+        await drainFocusRequest()
+        XCTAssertTrue(window.firstResponder === search.currentEditor())
+
+        search.removeFromSuperview()
+        XCTAssertTrue(window.firstResponder === lyrics)
+        XCTAssertEqual(lyrics.selectedRange, NSRange(location: 5, length: 0))
+        lyrics.insertText("together ", replacementRange: lyrics.selectedRange())
+        XCTAssertEqual(lyrics.string, "Sing together with joy")
+    }
+
+    @MainActor
+    func testSearchDismissalKeepsAnIntentionallySelectedNewResponder() async {
+        let window = focusWindow()
+        defer { window.close() }
+        let original = NSTextView(frame: .init(x: 10, y: 10, width: 140, height: 80))
+        let destination = NSTextView(frame: .init(x: 160, y: 10, width: 140, height: 80))
+        window.contentView?.addSubview(original)
+        window.contentView?.addSubview(destination)
+        XCTAssertTrue(window.makeFirstResponder(original))
+        let search = LibrarySearchField(frame: .init(x: 10, y: 100, width: 300, height: 28))
+        window.contentView?.addSubview(search)
+        await drainFocusRequest()
+
+        XCTAssertTrue(window.makeFirstResponder(destination))
+        search.removeFromSuperview()
+        XCTAssertTrue(window.firstResponder === destination)
+    }
+
+    @MainActor
+    func testSearchDismissalDoesNotReviveADetachedPreviousEditor() async {
+        let window = focusWindow()
+        defer { window.close() }
+        let original = NSTextView(frame: .init(x: 10, y: 10, width: 300, height: 80))
+        window.contentView?.addSubview(original)
+        XCTAssertTrue(window.makeFirstResponder(original))
+        let search = LibrarySearchField(frame: .init(x: 10, y: 100, width: 300, height: 28))
+        window.contentView?.addSubview(search)
+        await drainFocusRequest()
+
+        original.removeFromSuperview()
+        search.removeFromSuperview()
+        XCTAssertFalse(window.firstResponder === original)
+        await drainFocusRequest()
+        XCTAssertFalse(window.firstResponder === original, "No deferred restoration may revive a removed editor.")
+    }
+
+    @MainActor
+    func testDismissingSearchRestoresAFieldThroughItsControlAndKeepsSelection() async throws {
+        let window = focusWindow()
+        defer { window.close() }
+        let original = NSTextField(frame: .init(x: 10, y: 50, width: 300, height: 28))
+        original.stringValue = "Workspace name"
+        window.contentView?.addSubview(original)
+        XCTAssertTrue(window.makeFirstResponder(original))
+        let originalEditor = try XCTUnwrap(original.currentEditor() as? NSTextView)
+        originalEditor.selectedRange = NSRange(location: 3, length: 4)
+        let search = LibrarySearchField(frame: .init(x: 10, y: 100, width: 300, height: 28))
+        window.contentView?.addSubview(search)
+        await drainFocusRequest()
+
+        search.removeFromSuperview()
+        let restoredEditor = try XCTUnwrap(original.currentEditor() as? NSTextView)
+        XCTAssertTrue(window.firstResponder === restoredEditor)
+        XCTAssertEqual(restoredEditor.selectedRange, NSRange(location: 3, length: 4))
+    }
+
+    @MainActor
+    private func focusWindow() -> NSWindow {
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 320, height: 150),
+            styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        return window
+    }
+
+    @MainActor
+    private func drainFocusRequest() async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+    }
+
+    @MainActor
     func testCustomRowViewHasAReuseIdentifier() throws {
         let tableView = NSTableView()
         let coordinator = LibrarySearchResultsListView.Coordinator()

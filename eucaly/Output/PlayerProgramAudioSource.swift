@@ -69,11 +69,16 @@ nonisolated private final class PlayerAssetAudioDecoder: @unchecked Sendable {
     func update(from player: AVPlayer, item: AVPlayerItem, programGain: ProgramAudioGain?) {
         let current = player.currentItem === item
         let base = current ? item.timebase : nil
-        let gain = current && player.rate != 0 ? (programGain?.value ?? (player.isMuted ? 0 : player.volume)) : 0
+        // A pause/EOF is a clock transition, not a programme mute. Keeping the
+        // gain lets the mixer render any samples before that transition even
+        // when its next block runs after the player has stopped. Explicit mute
+        // still closes audible admission immediately through the supplied gain.
+        let gain = current ? (programGain?.value ?? (player.isMuted ? 0 : player.volume)) : 0
+        let paused = player.rate == 0
         lock.lock()
         guard active else { lock.unlock(); return }
         timebase = base
-        for client in clients.values { client.mixer?.setPlaybackClock(base, gain: gain, id: id) }
+        for client in clients.values { client.mixer?.setPlaybackClock(base, gain: gain, id: id, paused: paused) }
         flush(); lock.unlock()
         wake()
     }

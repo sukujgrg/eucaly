@@ -119,20 +119,29 @@ nonisolated final class ProgramAudioBus: @unchecked Sendable {
             guard active else { return }; gains[id] = value
         }
     }
-    func setPlaybackClock(_ timebase: CMTimebase?, gain: Float, id: UUID) {
+    func setPlaybackClock(_ timebase: CMTimebase?, gain: Float, id: UUID, paused: Bool = false) {
         guard let timebase else { return }
         var rate: Double = 0, media = CMTime.invalid, host = CMTime.invalid
         guard CMSyncGetRelativeRateAndAnchorTime(timebase, relativeTo: CMClockGetHostTimeClock(),
             relativeRateOut: &rate, anchorTimeOut: &media, relativeToAnchorTimeOut: &host) == noErr,
               rate.isFinite, media.isNumeric, host.isNumeric else { return }
         let now = CMClockGetTime(CMClockGetHostTimeClock()).convertScale(48000, method: .roundHalfAwayFromZero).value
-        let value = PlaybackClock(start: now, hostAnchor: host.seconds * 48000, mediaAnchor: media.seconds * 48000, rate: rate, gain: gain)
+        // AVPlayer can report its explicit pause before its item timebase has
+        // stopped. Close that interval immediately without muting the already
+        // accepted samples preceding it. A stopped timebase also supplies its
+        // actual transition anchor, which can precede a delayed notification.
+        let pausing = paused && rate != 0
+        let hostAnchor = pausing ? Double(now) : host.seconds * 48000
+        let mediaAnchor = media.seconds * 48000 + (pausing ? (Double(now) - host.seconds * 48000) * rate : 0)
+        let stoppedAt = rate == 0 ? min(now, host.convertScale(48000, method: .roundHalfAwayFromZero).value) : now
+        let value = PlaybackClock(start: now, hostAnchor: hostAnchor, mediaAnchor: mediaAnchor, rate: paused ? 0 : rate, gain: gain)
         queue.async { [self] in
             if gain == 0 { silenced.insert(id) } else { silenced.remove(id) }
             var history = clocks[id] ?? [], clock = value
             if let last = history.last {
                 let sameMapping = abs(last.mediaSample(now) - clock.mediaSample(now)) <= 1
                 if last.rate == clock.rate, last.gain == clock.gain, sameMapping { return }
+                if last.rate > 0, clock.rate == 0 { clock.start = stoppedAt }
                 clock.start = max(last.start, clock.start)
                 if last.start == clock.start { history.removeLast() }
             }

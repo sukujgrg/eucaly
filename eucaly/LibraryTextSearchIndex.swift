@@ -16,7 +16,9 @@ actor LibraryTextSearchIndex {
         let relativeSortKey: String
     }
 
-    private var db: OpaquePointer?
+    private var connection: LibrarySearchDatabaseConnection?
+    private var db: OpaquePointer? { connection?.handle }
+    private var onConnectionClosed: (@Sendable (Int32) -> Void)?
     private var cachedSearchScope: Set<String>?
     private let databaseURL: URL
 #if DEBUG
@@ -33,63 +35,13 @@ actor LibraryTextSearchIndex {
         databaseURL = url
     }
 
-    init(databaseURL: URL) {
+    init(databaseURL: URL, onConnectionClosed: (@Sendable (Int32) -> Void)? = nil) {
+        self.onConnectionClosed = onConnectionClosed
         try? FileManager.default.createDirectory(
             at: databaseURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
         self.databaseURL = databaseURL
-    }
-
-    func rebuild(with urls: [URL]) -> Int {
-        guard openDatabaseIfNeeded(), let db else { return 0 }
-
-        guard execute("BEGIN IMMEDIATE TRANSACTION;", db: db) else { return 0 }
-        guard execute("DELETE FROM file_index;", db: db) else {
-            execute("ROLLBACK;", db: db)
-            return 0
-        }
-
-        let insertSQL = "INSERT INTO file_index(filename, content, path) VALUES (?1, ?2, ?3);"
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, insertSQL, -1, &statement, nil) == SQLITE_OK else {
-            execute("ROLLBACK;", db: db)
-            return 0
-        }
-        defer {
-            sqlite3_finalize(statement)
-        }
-
-        var inserted = 0
-        let uniqueURLs = Array(Set(urls))
-
-        for url in uniqueURLs {
-            let standardizedURL = url.standardizedFileURL
-            let content = indexedContent(for: standardizedURL, kind: LibraryFileKind(url: standardizedURL))
-
-            guard
-                bindText(standardizedURL.lastPathComponent, at: 1, statement: statement),
-                bindText(content, at: 2, statement: statement),
-                bindText(standardizedURL.path, at: 3, statement: statement)
-            else {
-                sqlite3_reset(statement)
-                sqlite3_clear_bindings(statement)
-                continue
-            }
-
-            if sqlite3_step(statement) == SQLITE_DONE {
-                inserted += 1
-            }
-
-            sqlite3_reset(statement)
-            sqlite3_clear_bindings(statement)
-        }
-
-        if !execute("COMMIT;", db: db) {
-            execute("ROLLBACK;", db: db)
-            return 0
-        }
-        return inserted
     }
 
     func syncLibraryMetadata(
@@ -375,7 +327,7 @@ actor LibraryTextSearchIndex {
             return false
         }
 
-        db = pointer
+        connection = LibrarySearchDatabaseConnection(handle: pointer, onClose: onConnectionClosed)
 
         let createTableSQL = """
         CREATE VIRTUAL TABLE IF NOT EXISTS file_index USING fts5(
@@ -665,4 +617,19 @@ actor LibraryTextSearchIndex {
 #endif
 
     private static let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+}
+
+/// SQLite handles are C resources; actor storage releasing an OpaquePointer
+/// does not close them. No statements outlive an index method's defer.
+nonisolated private final class LibrarySearchDatabaseConnection {
+    let handle: OpaquePointer
+    private let onClose: (@Sendable (Int32) -> Void)?
+    init(handle: OpaquePointer, onClose: (@Sendable (Int32) -> Void)?) {
+        self.handle = handle
+        self.onClose = onClose
+    }
+    deinit {
+        let result = sqlite3_close(handle)
+        onClose?(result)
+    }
 }

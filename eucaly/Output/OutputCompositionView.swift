@@ -86,7 +86,7 @@ struct OutputMediaSlideView: View {
     var body: some View {
         ZStack {
             if !showsBackground { Color.black }
-            if let windowID = slide.captureWindowID { WindowCaptureSlideView(windowID: windowID) }
+            if let windowID = slide.captureWindowID { WindowCaptureSlideView(windowID: windowID, showsOperatorMessages: false) }
             else if slide.videoURL != nil { AVPlayerViewRepresentable(player: runtime.program, isMuted: session.videoMuted, isFill: session.videoFill) }
             else if let url = slide.pdfURL, let page = slide.pdfPageIndex {
                 PDFSlideView(url: url, pageIndex: page, documentRevision: session.pdfDocumentRevision,
