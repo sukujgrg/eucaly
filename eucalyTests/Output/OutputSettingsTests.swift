@@ -4,11 +4,142 @@ import AppKit
 
 @MainActor
 final class OutputSettingsTests: XCTestCase {
+    func testAppearanceGroupsAndPickerPreserveSavedPrivateAndLegacyProfiles() throws {
+        let fixture = OutputSettingsFixture(); defer { fixture.close() }
+        fixture.window.setContentSize(.init(width: 820, height: 650))
+        let first = fixture.store.document.destinations[0]
+        let firstAppearance = try XCTUnwrap(fixture.store.customizeProfile(for: first.id))
+        let disabled = OutputDestinationConfiguration(name: "Disabled NDI", profileID: OutputProfile.lowerThirdID, monitor: nil, enabled: false)
+        fixture.store.edit { $0.destinations.append(disabled) }
+        let secondAppearance = try XCTUnwrap(fixture.store.customizeProfile(for: disabled.id))
+        var legacy = try XCTUnwrap(fixture.store.profile(firstAppearance))
+        legacy.id = UUID(); legacy.name = "NDI Media Appearance"; legacy.customizedForDestinationID = UUID()
+        var reusable = legacy; reusable.id = UUID(); reusable.customizedForDestinationID = nil
+        fixture.store.edit { $0.profiles += [legacy, reusable] }
+        let saved = fixture.store.document
+        fixture.controller.selectProfile(firstAppearance)
+        let headers = (0..<fixture.controller.table.numberOfRows).filter {
+            fixture.controller.tableView(fixture.controller.table, isGroupRow: $0)
+        }
+        let titles = headers.compactMap {
+            (fixture.controller.tableView(fixture.controller.table, viewFor: nil, row: $0) as? NSTableCellView)?.textField?.stringValue
+        }
+        XCTAssertEqual(titles, ["Reusable Profiles", "Output Appearances", "Unused Appearances"])
+        try fixture.capture("appearance-groups")
+        XCTAssertTrue(headers.allSatisfy { !fixture.controller.tableView(fixture.controller.table, shouldSelectRow: $0) })
+        XCTAssertEqual(fixture.controller.profileEditor?.appearanceHeading.stringValue, "Output Appearance")
+        XCTAssertFalse(fixture.controller.removeProfile.isEnabled)
+        fixture.controller.selectProfile(legacy.id)
+        XCTAssertTrue(fixture.controller.removeProfile.isEnabled)
+        XCTAssertTrue(fixture.controller.profileEditor?.scopeNotice.stringValue.contains("unused") == true)
+        fixture.controller.selectDestination(first.id)
+        let picker = try XCTUnwrap(fixture.controller.destinationEditor).profilePicker
+        let offered = picker.itemArray.compactMap { $0.representedObject as? UUID }
+        XCTAssertTrue(offered.contains(firstAppearance))
+        XCTAssertTrue(offered.contains(reusable.id), "Saved names must not determine whether a profile is reusable")
+        XCTAssertTrue(offered.contains(OutputProfile.lowerThirdID))
+        XCTAssertFalse(offered.contains(secondAppearance))
+        XCTAssertFalse(offered.contains(legacy.id))
+        XCTAssertEqual(picker.selectedItem?.representedObject as? UUID, firstAppearance)
+        XCTAssertEqual(fixture.store.document, saved, "Classifying existing appearances must not migrate or change output settings")
+    }
+
+    func testUnusedProfileRemovalProtectsBuiltInsAndDisabledConsumersAndPersists() throws {
+        let fixture = OutputSettingsFixture(); defer { fixture.close() }
+        let appearance = try XCTUnwrap(fixture.store.customizeProfile(for: fixture.store.document.destinations[0].id))
+        fixture.store.selectProfile(OutputProfile.audienceID, for: fixture.store.document.destinations[0].id)
+        let disabled = OutputDestinationConfiguration(name: "Disabled", profileID: appearance, monitor: nil, enabled: false)
+        fixture.store.edit { $0.destinations.append(disabled) }
+        let saved = fixture.store.document
+        XCTAssertFalse(fixture.store.removeProfile(OutputProfile.confidenceID))
+        XCTAssertFalse(fixture.store.removeProfile(appearance), "Disabled rows still reference their appearance")
+        XCTAssertEqual(fixture.store.document, saved)
+        fixture.store.selectProfile(OutputProfile.lowerThirdID, for: disabled.id)
+        let destinations = fixture.store.document.destinations
+        fixture.controller.selectProfile(appearance)
+        XCTAssertTrue(fixture.controller.removeProfile.isEnabled)
+        fixture.controller.removeProfile.performClick(nil)
+        XCTAssertNil(fixture.store.profile(appearance))
+        XCTAssertEqual(fixture.store.document.destinations, destinations)
+        XCTAssertEqual(fixture.controller.selectedID, OutputProfile.audienceID)
+        XCTAssertFalse(fixture.controller.removeProfile.isEnabled)
+        fixture.store.flush()
+        XCTAssertEqual(OutputProfileStore(defaults: fixture.defaults).document, fixture.store.document)
+        XCTAssertFalse(fixture.outputs.isRunning)
+        var custom = OutputProfile.builtIns[0]; custom.id = UUID()
+        fixture.store.edit { $0.profiles.append(custom) }
+        XCTAssertNil(fixture.store.profileRemovalProblem(custom.id))
+        fixture.store.selectProfile(custom.id, for: disabled.id)
+        XCTAssertFalse(fixture.store.removeProfile(custom.id), "Removal must recheck newly added consumers")
+    }
+
+    func testSavingReusableCopyDoesNotReassignOrEditAnOutputAppearance() throws {
+        let fixture = OutputSettingsFixture(); defer { fixture.close() }
+        let appearance = try XCTUnwrap(fixture.store.customizeProfile(for: fixture.store.document.destinations[0].id))
+        let original = fixture.store.profile(appearance), destinations = fixture.store.document.destinations
+        fixture.controller.selectProfile(appearance)
+        XCTAssertEqual(fixture.controller.addProfile.accessibilityLabel(), "Save as Reusable Profile")
+        fixture.controller.addProfile.performClick(nil)
+        let copy = try XCTUnwrap(fixture.store.profile(try XCTUnwrap(fixture.controller.selectedID)))
+        XCTAssertTrue(copy.isReusable); XCTAssertNil(copy.customizedForDestinationID)
+        XCTAssertNotEqual(copy.id, appearance)
+        XCTAssertEqual(copy.background, original?.background)
+        XCTAssertEqual(fixture.store.document.destinations, destinations)
+        XCTAssertEqual(fixture.store.profile(appearance), original)
+        XCTAssertEqual(fixture.controller.profileEditor?.appearanceHeading.stringValue, "Reusable Profile")
+        XCTAssertTrue(fixture.controller.removeProfile.isEnabled)
+    }
+
+    func testNDITransparencyAndColourEditsPreserveSourceAndOtherOutputs() throws {
+        let fixture = OutputSettingsFixture(); defer { fixture.close() }
+        fixture.window.setContentSize(.init(width: 820, height: 650))
+        var output = OutputDestinationConfiguration(name: "Online", profileID: OutputProfile.lowerThirdID, monitor: nil)
+        output.ndi = NDIOutputSettings(sourceName: "Existing source")
+        let shared = try XCTUnwrap(fixture.store.profile(output.profileID))
+        fixture.store.edit { $0.destinations.append(output); $0.backgroundAudioDestinationID = output.id }
+        fixture.controller.selectDestination(output.id)
+        let editor = try XCTUnwrap(fixture.controller.destinationEditor?.ndiEditor)
+        XCTAssertEqual(editor.keyMode.accessibilityLabel(), "NDI transparency")
+        XCTAssertTrue(editor.chromaColour.isHiddenOrHasHiddenAncestor)
+        XCTAssertTrue(editor.transparencyNotice.stringValue.contains("inactive"))
+        try fixture.capture("ndi-alpha")
+        let saved = fixture.store.document
+        editor.keyMode.selectItem(at: 1)
+        NSApp.sendAction(try XCTUnwrap(editor.keyMode.action), to: editor.keyMode.target, from: editor.keyMode)
+        XCTAssertFalse(editor.chromaColour.isHiddenOrHasHiddenAncestor)
+        XCTAssertTrue(editor.transparencyNotice.stringValue.contains("receiver"))
+        try fixture.capture("ndi-chroma")
+        XCTAssertEqual(fixture.store.profile(output.profileID), shared)
+        XCTAssertEqual(fixture.store.document.destinations.last?.profileID, output.profileID)
+        editor.chromaColour.color = NSColor(srgbRed: 0.2, green: 0.4, blue: 0.6, alpha: 0.5)
+        NSApp.sendAction(try XCTUnwrap(editor.chromaColour.action), to: editor.chromaColour.target, from: editor.chromaColour)
+        let changed = try XCTUnwrap(fixture.store.document.destinations.last)
+        XCTAssertNotEqual(changed.profileID, output.profileID)
+        XCTAssertEqual(fixture.store.profile(output.profileID), shared)
+        XCTAssertEqual(changed.ndi?.sourceID, output.ndi?.sourceID)
+        XCTAssertEqual(changed.ndi?.sourceName, output.ndi?.sourceName)
+        XCTAssertEqual(changed.workspaceID, output.workspaceID)
+        XCTAssertEqual(fixture.store.document.destinations[0], saved.destinations[0])
+        XCTAssertEqual(fixture.store.document.backgroundAudioDestinationID, output.id)
+        let colour = try XCTUnwrap(fixture.store.profile(changed.profileID)).background.colour
+        XCTAssertEqual(colour.red, 0.2, accuracy: 0.001); XCTAssertEqual(colour.alpha, 1)
+        editor.keyMode.selectItem(at: 0)
+        NSApp.sendAction(try XCTUnwrap(editor.keyMode.action), to: editor.keyMode.target, from: editor.keyMode)
+        XCTAssertTrue(editor.chromaColour.isHiddenOrHasHiddenAncestor)
+        XCTAssertEqual(fixture.store.profile(changed.profileID)?.background.colour, colour)
+        editor.chromaColour.color = .red
+        NSApp.sendAction(try XCTUnwrap(editor.chromaColour.action), to: editor.chromaColour.target, from: editor.chromaColour)
+        XCTAssertEqual(fixture.store.profile(changed.profileID)?.background.colour, colour, "A late colour-panel callback in Alpha must not alter the remembered key")
+        XCTAssertTrue(fixture.outputs.ndi.activeIDs.isEmpty)
+        fixture.store.flush()
+        XCTAssertEqual(OutputProfileStore(defaults: fixture.defaults).document, fixture.store.document)
+    }
+
     func testOutputsNavigationPerformance() {
         let fixture = OutputSettingsFixture(monitors: true)
         defer { fixture.close() }
         fixture.store.edit { document in
-            for profile in [OutputProfile.confidenceID, OutputProfile.lowerThirdID, OutputProfile.altViewID] {
+            for profile in [OutputProfile.confidenceID, OutputProfile.lowerThirdID] {
                 document.destinations.append(.init(name: "Output", profileID: profile, monitor: nil, enabled: false))
             }
         }
@@ -58,35 +189,6 @@ final class OutputSettingsTests: XCTestCase {
         XCTAssertTrue(fixture.window.firstResponder === fixture.controller.table)
     }
 
-    func testHiddenAltViewAssignmentFormRefreshesOnReturnWithoutPublishing() async throws {
-        let fixture = OutputSettingsFixture()
-        defer { fixture.close() }
-        let nativeID = fixture.store.document.destinations[0].id
-        let output = OutputDestinationConfiguration(name: "AltView", profileID: OutputProfile.altViewID, monitor: nil, enabled: false)
-        fixture.store.edit { $0.destinations.append(output) }
-        fixture.controller.selectDestination(output.id)
-        let editor = try XCTUnwrap(fixture.controller.destinationEditor)
-        let remote = try XCTUnwrap(editor.remoteEditor)
-        let menu = remote.receiverPicker.menu
-        let status = remote.statusLabel.stringValue
-        fixture.controller.selectDestination(nativeID)
-        var receiver = AltViewDestination(name: "New receiver", host: nil, port: nil, serviceType: AltViewProtocol.serviceType, domain: "local.")
-        receiver.discoveredReceiverID = UUID()
-        fixture.router.receiveDiscovered([receiver], notice: nil)
-        try await Task.sleep(for: .milliseconds(50))
-        XCTAssertTrue(remote.receiverPicker.menu === menu, "Hidden forms must not rebuild discovery menus")
-        XCTAssertEqual(remote.statusLabel.stringValue, status)
-        fixture.controller.selectDestination(output.id)
-        XCTAssertTrue(fixture.controller.destinationEditor === editor)
-        XCTAssertEqual(remote.receiverPicker.numberOfItems, 2)
-        XCTAssertNil(fixture.outputs.ownership.source)
-        XCTAssertFalse(fixture.outputs.isRunning)
-        XCTAssertNil(fixture.router.channel(for: output.id))
-        fixture.store.edit { $0.destinations.removeAll { $0.id == output.id } }
-        fixture.controller.reload()
-        XCTAssertNil(editor.parent)
-        XCTAssertNil(editor.view.superview)
-    }
 
     func testSettingsNavigationPerformance() {
         let fixture = OutputSettingsFixture(monitors: true)
@@ -162,7 +264,7 @@ final class OutputSettingsTests: XCTestCase {
         XCTAssertEqual(fixture.store.profile(OutputProfile.audienceID)?.componentTypography[.meaning]?.size, 72)
     }
 
-    func testSectionSwitchesKeepEditorsAndRebuildChangedDestinationKind() throws {
+    func testSectionSwitchesKeepEditorsAndRefreshChangedProfile() throws {
         let fixture = OutputSettingsFixture()
         defer { fixture.close() }
         let id = fixture.store.document.destinations[0].id
@@ -179,11 +281,10 @@ final class OutputSettingsTests: XCTestCase {
         XCTAssertTrue(fixture.controller.profileEditor === profile)
         XCTAssertFalse(meaning.content.isHidden)
         XCTAssertTrue(destination.view.isHidden)
-        fixture.store.selectProfile(OutputProfile.altViewID, for: id)
+        fixture.store.selectProfile(OutputProfile.lowerThirdID, for: id)
         fixture.controller.selectDestination(id)
-        XCTAssertFalse(fixture.controller.destinationEditor === destination)
-        XCTAssertNotNil(fixture.controller.destinationEditor?.remoteEditor)
-        XCTAssertNil(fixture.controller.destinationEditor?.profilePicker.superview)
+        XCTAssertTrue(fixture.controller.destinationEditor === destination)
+        XCTAssertEqual(destination.destination?.profileID, OutputProfile.lowerThirdID)
     }
 
     func testRejectedInheritanceChangeRestoresToggleAndVisibleSize() throws {
@@ -548,7 +649,7 @@ final class OutputSettingsTests: XCTestCase {
         XCTAssertNil(fixture.controller.selectedID)
     }
 
-    func testAddNativeAndAltViewKeepDestinationKindsSeparate() throws {
+    func testAddNativeStartsDisabledAndUnassigned() throws {
         let fixture = OutputSettingsFixture(monitors: true)
         defer { fixture.close() }
         let original = fixture.store.document.destinations[0]
@@ -559,7 +660,6 @@ final class OutputSettingsTests: XCTestCase {
         XCTAssertEqual(nativeOutput.profileID, OutputProfile.audienceID)
         XCTAssertFalse(nativeOutput.enabled)
         XCTAssertNil(nativeOutput.monitor)
-        XCTAssertNil(nativeOutput.receiver)
         XCTAssertEqual(Set(native.profilePicker.itemArray.compactMap { $0.representedObject as? UUID }),
                        Set([OutputProfile.audienceID, OutputProfile.confidenceID, OutputProfile.lowerThirdID]))
         for id in [OutputProfile.confidenceID, OutputProfile.lowerThirdID] {
@@ -567,22 +667,16 @@ final class OutputSettingsTests: XCTestCase {
             NSApp.sendAction(try XCTUnwrap(native.profilePicker.action), to: native.profilePicker.target, from: native.profilePicker)
             XCTAssertEqual(fixture.store.document.destinations.last?.profileID, id)
         }
-        NSApp.sendAction(try XCTUnwrap(fixture.controller.addAltView.action), to: fixture.controller.addAltView.target, from: fixture.controller.addAltView)
-        let altView = try XCTUnwrap(fixture.controller.destinationEditor)
-        XCTAssertEqual(altView.destination?.profileID, OutputProfile.altViewID)
-        XCTAssertEqual(altView.destination?.name, "AltView")
-        XCTAssertFalse(try XCTUnwrap(altView.destination).enabled)
-        XCTAssertNil(altView.destination?.receiver)
-        XCTAssertNotNil(altView.remoteEditor)
-        XCTAssertNil(altView.profilePicker.superview, "AltView owns appearance and has no native profile picker")
         XCTAssertEqual(fixture.store.document.destinations[0], original)
         XCTAssertNil(fixture.outputs.ownership.source)
         XCTAssertFalse(fixture.outputs.isRunning)
         fixture.controller.selectProfile(OutputProfile.confidenceID)
         XCTAssertTrue(fixture.controller.addOutputMenu.isHiddenOrHasHiddenAncestor)
         XCTAssertFalse(fixture.controller.addNative.isEnabled)
-        XCTAssertFalse(fixture.controller.addAltView.isEnabled)
-        XCTAssertEqual(fixture.controller.table.numberOfRows, 3)
+        let selectable = (0..<fixture.controller.table.numberOfRows).filter {
+            fixture.controller.tableView(fixture.controller.table, shouldSelectRow: $0)
+        }
+        XCTAssertEqual(selectable.count, 3)
     }
 
     func testDuplicateProfileNamesRemainSelectableByIdentity() throws {
@@ -592,7 +686,7 @@ final class OutputSettingsTests: XCTestCase {
         fixture.store.edit { $0.profiles.append(copy) }
         fixture.controller.reload()
         let editor = try XCTUnwrap(fixture.controller.destinationEditor)
-        let ids = fixture.store.document.profiles.filter(\.isNative).map(\.id)
+        let ids = fixture.store.document.profiles.map(\.id)
         XCTAssertEqual(editor.profilePicker.numberOfItems, ids.count)
         for id in ids {
             editor.profilePicker.select(editor.profilePicker.itemArray.first { $0.representedObject as? UUID == id })
@@ -609,7 +703,7 @@ final class OutputSettingsTests: XCTestCase {
         let first = try XCTUnwrap(controller.destinationEditor)
         let creationMenu = controller.addOutputMenu.menu
         XCTAssertNotNil(creationMenu?.items.first?.image, "The pull-down's first item owns the + glyph")
-        XCTAssertEqual(creationMenu?.items.map(\.title), ["+", "Native Monitor Output", "AltView Text Output", "AltView Media Output"])
+        XCTAssertEqual(creationMenu?.items.map(\.title), ["+", "Native Monitor Output", "NDI Output"])
         XCTAssertEqual(controller.makeDefault.title, "Default")
         XCTAssertFalse(controller.makeDefault.isEnabled)
         XCTAssertTrue(fixture.window.makeFirstResponder(first.nameField))
@@ -672,7 +766,7 @@ final class OutputSettingsTests: XCTestCase {
         controller.selectDestination(original.id)
         XCTAssertFalse(controller.addOutputMenu.isHiddenOrHasHiddenAncestor)
         XCTAssertTrue(controller.addProfile.isHiddenOrHasHiddenAncestor)
-        XCTAssertEqual(controller.addOutputMenu.menu?.numberOfItems, 4)
+        XCTAssertEqual(controller.addOutputMenu.menu?.numberOfItems, 3)
         // Removing the old compatibility row must not turn inventory updates
         // into an assignment on the new first output.
         NSApp.sendAction(try XCTUnwrap(controller.addNative.action), to: controller.addNative.target, from: controller.addNative)
@@ -712,33 +806,6 @@ final class OutputSettingsTests: XCTestCase {
         }
     }
 
-    func testDuplicateReceiverNamesAndNoneRemainSelectableByIdentity() throws {
-        let fixture = OutputSettingsFixture()
-        defer { fixture.close() }
-        let id = fixture.store.document.destinations[0].id
-        fixture.store.selectProfile(OutputProfile.altViewID, for: id)
-        let endpoints = ["Stage Mac", "Stage Mac", "None"].map { name in
-            var receiver = AltViewDestination(name: name, host: nil, port: nil, serviceType: AltViewProtocol.serviceType, domain: "local.")
-            receiver.discoveredReceiverID = UUID()
-            return receiver
-        }
-        fixture.router.receiveDiscovered(endpoints, notice: nil)
-        let editor = AltViewOutputDestinationSettings(router: fixture.router, store: fixture.store, destinationID: id)
-        _ = editor.view
-        XCTAssertEqual(editor.receiverPicker.numberOfItems, 4)
-        for receiver in fixture.router.receivers {
-            let receiverID = try XCTUnwrap(receiver.receiverIdentity)
-            fixture.store.assignReceiver(.init(receiverID: receiverID, name: receiver.name), to: id)
-            editor.render()
-            XCTAssertEqual(editor.receiverPicker.selectedItem?.representedObject as? UUID, receiverID)
-            editor.receiverPicker.selectItem(at: 0)
-            NSApp.sendAction(try XCTUnwrap(editor.receiverPicker.action), to: editor.receiverPicker.target, from: editor.receiverPicker)
-            XCTAssertNil(fixture.store.document.destinations[0].receiver)
-            editor.receiverPicker.select(editor.receiverPicker.itemArray.first { $0.representedObject as? UUID == receiverID })
-            NSApp.sendAction(try XCTUnwrap(editor.receiverPicker.action), to: editor.receiverPicker.target, from: editor.receiverPicker)
-            XCTAssertEqual(fixture.store.document.destinations[0].receiver?.receiverID, receiverID)
-        }
-    }
 
     func testChoosingComponentFontKeepsRelativeSizeInheritance() throws {
         let fixture = OutputSettingsFixture()
@@ -799,40 +866,6 @@ final class OutputSettingsTests: XCTestCase {
         XCTAssertNil(fixture.store.monitorConflictNotice)
     }
 
-    func testAltViewRejectsConflictingEnableAndStaleReceiverSelectionInline() throws {
-        let fixture = OutputSettingsFixture()
-        defer { fixture.close() }
-        let first = fixture.store.document.destinations[0].id
-        fixture.store.selectProfile(OutputProfile.altViewID, for: first)
-        let target = OutputReceiverTarget(receiverID: UUID(), name: "Stage Mac")
-        var receiver = AltViewDestination(name: target.name, host: nil, port: nil, serviceType: AltViewProtocol.serviceType, domain: "local.")
-        receiver.discoveredReceiverID = target.receiverID
-        fixture.router.receiveDiscovered([receiver], notice: nil)
-        let second = OutputDestinationConfiguration(name: "Second AltView", profileID: OutputProfile.altViewID, monitor: nil)
-        fixture.store.edit { $0.destinations.append(second) }
-        fixture.controller.selectDestination(second.id)
-        let editor = try XCTUnwrap(fixture.controller.destinationEditor)
-        let remote = try XCTUnwrap(editor.remoteEditor)
-        let item = try XCTUnwrap(remote.receiverPicker.itemArray.first { $0.representedObject as? UUID == target.receiverID })
-        XCTAssertTrue(item.isEnabled)
-        XCTAssertNil(fixture.store.assignReceiver(target, to: first))
-        // The menu was built before the other output reserved this receiver.
-        remote.receiverPicker.select(item)
-        NSApp.sendAction(try XCTUnwrap(remote.receiverPicker.action), to: remote.receiverPicker.target, from: remote.receiverPicker)
-        XCTAssertNil(editor.destination?.receiver)
-        XCTAssertTrue(remote.statusLabel.stringValue.contains("used by Audience"))
-        XCTAssertNil(fixture.router.channel(for: second.id))
-        XCTAssertNil(fixture.store.setEnabled(false, for: second.id))
-        XCTAssertNil(fixture.store.assignReceiver(target, to: second.id), "Disabled assignments may be retained")
-        editor.render()
-        editor.enabledButton.performClick(nil)
-        XCTAssertEqual(editor.enabledButton.state, .off)
-        XCTAssertFalse(editor.validationLabel.isHidden)
-        XCTAssertTrue(editor.validationLabel.stringValue.contains("used by Audience"))
-        XCTAssertNil(fixture.store.monitorConflictNotice)
-        XCTAssertNil(fixture.window.attachedSheet)
-        XCTAssertNotNil(fixture.router.channel(for: first))
-    }
 
     func testDismissingInlineOutputNoticePreservesCurrentAndOwnership() throws {
         let fixture = OutputSettingsFixture()
@@ -1034,36 +1067,6 @@ final class OutputSettingsTests: XCTestCase {
         XCTAssertFalse(fixture.outputs.isRunning, "Correcting settings prepares the output; Show remains explicit")
     }
 
-    func testWebpageNoticeRevalidatesWithoutReplacingAnotherWorkspacesLiveLyrics() throws {
-        let fixture = OutputSettingsFixture(monitors: true)
-        defer { fixture.close() }
-        let live = PresentationSession(projectionDisplays: fixture.displays, outputCoordinator: fixture.outputs)
-        live.setSlides(LyricsParser.parseDocument("Verse\nLive Current").slides); live.showSlides()
-        let owner = fixture.outputs.ownership.source, current = live.currentSlideID, snapshot = fixture.outputs.snapshot.current
-        let extra = OutputDestinationConfiguration(name: "Extra Audience", profileID: OutputProfile.audienceID, monitor: nil)
-        fixture.store.edit { $0.destinations.append(extra) }
-        let prepared = PresentationSession(projectionDisplays: fixture.displays, outputCoordinator: fixture.outputs)
-        prepared.setSlides([.init(index: 1, lines: [], label: "Web", videoURL: nil, pdfURL: nil, pdfPageIndex: nil,
-                                 imageURL: nil, webpageURL: URL(string: "https://example.invalid"))])
-        let preparedCurrent = prepared.currentSlideID
-        prepared.showSlides()
-        XCTAssertTrue(try XCTUnwrap(prepared.projectionDisplayIssue).contains("one Audience"))
-        fixture.store.edit { $0.profiles[0].alignment = "left" }
-        XCTAssertTrue(try XCTUnwrap(prepared.projectionDisplayIssue).contains("one Audience"))
-        let monitor = try XCTUnwrap(fixture.store.document.destinations[0].monitor)
-        XCTAssertFalse(fixture.outputs.assignMonitor(monitor, to: extra.id))
-        XCTAssertTrue(fixture.outputs.assignMonitor(nil, to: extra.id))
-        XCTAssertTrue(try XCTUnwrap(prepared.projectionDisplayIssue).contains("one Audience"), "An unrelated corrected assignment must not clear the webpage constraint")
-        XCTAssertNil(fixture.store.setEnabled(false, for: extra.id))
-        XCTAssertNil(fixture.outputs.issue)
-        XCTAssertNil(prepared.projectionDisplayIssue)
-        XCTAssertEqual(fixture.outputs.ownership.source, owner)
-        XCTAssertEqual(live.currentSlideID, current)
-        XCTAssertEqual(prepared.currentSlideID, preparedCurrent)
-        XCTAssertEqual(fixture.outputs.snapshot.current, snapshot)
-        XCTAssertTrue(fixture.outputs.isOpen(fixture.store.document.destinations[0].id))
-    }
-
     func testDisconnectedNoticeSurvivesStyleEditsAndReconnectUntilExplicitShow() throws {
         let monitor = ProjectionMonitor(id: 1, identity: UUID().uuidString, name: "Audience display", frame: .init(x: 0, y: 0, width: 1920, height: 1080))
         let inventory = OutputSettingsMonitorInventory([monitor])
@@ -1137,78 +1140,6 @@ final class OutputSettingsTests: XCTestCase {
         XCTAssertNil(OutputProfileStore(defaults: fixture.defaults).audience.componentTypography[.meaning]?.size)
     }
 
-    func testVanishedReceiverSelectionPreservesAssignmentCurrentAndLiveOutputs() throws {
-        let sender = RecordingAltViewSender()
-        let fixture = OutputSettingsFixture(monitors: true, sender: sender)
-        defer { fixture.close() }
-        let id = fixture.store.document.destinations[0].id
-        fixture.store.selectProfile(OutputProfile.altViewID, for: id)
-        let companion = OutputDestinationConfiguration(name: "Confidence", profileID: OutputProfile.confidenceID, monitor: fixture.displays.target)
-        fixture.store.edit { $0.destinations.append(companion) }
-        let a = OutputReceiverTarget(receiverID: UUID(), name: "Current Receiver")
-        let b = OutputReceiverTarget(receiverID: UUID(), name: "Vanishing Receiver")
-        func discovered(_ target: OutputReceiverTarget) -> AltViewDestination {
-            var receiver = AltViewDestination(name: target.name, host: nil, port: nil, serviceType: AltViewProtocol.serviceType, domain: "local.")
-            receiver.discoveredReceiverID = target.receiverID
-            return receiver
-        }
-        fixture.router.receiveDiscovered([discovered(a), discovered(b)], notice: nil)
-        XCTAssertNil(fixture.store.assignReceiver(a, to: id))
-        fixture.controller.selectDestination(id)
-        let remote = try XCTUnwrap(fixture.controller.destinationEditor?.remoteEditor)
-        let oldChannel = try XCTUnwrap(fixture.router.channel(for: id))
-        fixture.router.connect(id, code: "ABCD2345")
-        oldChannel.receive(sender.connectedStatus)
-        XCTAssertTrue(oldChannel.status.connected)
-        remote.render()
-        let session = PresentationSession(projectionDisplays: fixture.displays, outputCoordinator: fixture.outputs)
-        session.setSlides(LyricsParser.parseDocument("Verse\nLive Current").slides); session.showSlides()
-        let current = session.currentSlideID, owner = fixture.outputs.ownership.source, revision = fixture.outputs.revision
-        let snapshot = fixture.outputs.snapshot.current, takes = sender.takes, releases = sender.releases
-        XCTAssertTrue(fixture.outputs.isOpen(companion.id))
-        let item = try XCTUnwrap(remote.receiverPicker.itemArray.first { $0.representedObject as? UUID == b.receiverID })
-        // Discovery changes while the picker still holds the previous menu.
-        fixture.router.receiveDiscovered([discovered(a)], notice: nil)
-        remote.receiverPicker.select(item)
-        NSApp.sendAction(try XCTUnwrap(remote.receiverPicker.action), to: remote.receiverPicker.target, from: remote.receiverPicker)
-        XCTAssertEqual(fixture.store.document.destinations[0].receiver, a)
-        XCTAssertEqual(fixture.store.document.destinations[0].savedReceiver, a)
-        XCTAssertTrue(fixture.router.channel(for: id) === oldChannel)
-        XCTAssertTrue(oldChannel.hasConnection)
-        XCTAssertTrue(oldChannel.status.connected)
-        XCTAssertTrue(remote.statusLabel.stringValue.contains("no longer available"))
-        XCTAssertEqual(remote.receiverPicker.selectedItem?.representedObject as? UUID, a.receiverID)
-        XCTAssertEqual(fixture.outputs.ownership.source, owner)
-        XCTAssertEqual(session.currentSlideID, current)
-        XCTAssertEqual(fixture.outputs.snapshot.current, snapshot)
-        XCTAssertEqual(fixture.outputs.revision, revision)
-        XCTAssertEqual(sender.takes, takes)
-        XCTAssertEqual(sender.releases, releases)
-        XCTAssertTrue(fixture.outputs.isOpen(companion.id))
-        fixture.store.flush()
-        XCTAssertEqual(OutputProfileStore(defaults: fixture.defaults).document.destinations[0].receiver, a)
-
-        // Rediscovery clears the notice without switching or taking output.
-        fixture.router.receiveDiscovered([discovered(a), discovered(b)], notice: nil)
-        remote.render()
-        XCTAssertFalse(remote.statusLabel.stringValue.contains("no longer available"))
-        XCTAssertEqual(fixture.store.document.destinations[0].receiver, a)
-        XCTAssertTrue(fixture.router.channel(for: id) === oldChannel)
-        XCTAssertEqual(sender.takes, takes)
-
-        // Explicit None still clears only this destination, preserving Current
-        // and the other live native output.
-        let none = try XCTUnwrap(remote.receiverPicker.itemArray.first { $0.representedObject == nil })
-        remote.receiverPicker.select(none)
-        NSApp.sendAction(try XCTUnwrap(remote.receiverPicker.action), to: remote.receiverPicker.target, from: remote.receiverPicker)
-        XCTAssertNil(fixture.store.document.destinations[0].receiver)
-        XCTAssertNil(fixture.router.channel(for: id))
-        XCTAssertTrue(oldChannel.hasConnection, "Receiver pairing remains connected independently of this assignment")
-        XCTAssertTrue(fixture.outputs.isOpen(companion.id))
-        XCTAssertTrue(fixture.outputs.isRunning)
-        XCTAssertEqual(fixture.outputs.ownership.source, owner)
-        XCTAssertEqual(session.currentSlideID, current)
-    }
 
     private func alignmentFrame(_ view: NSView, in ancestor: NSView) -> NSRect {
         view.superview!.convert(view.alignmentRect(forFrame: view.frame), to: ancestor)
@@ -1228,22 +1159,17 @@ private final class OutputSettingsFixture {
     let store: OutputProfileStore
     let displays: ProjectionDisplayManager
     let outputs: OutputCoordinator
-    let router: AltViewOutputRouter
     let controller: ManageOutputsController
     let window: NSWindow
 
-    init(monitors: Bool = false, sender: RecordingAltViewSender? = nil) {
+    init(monitors: Bool = false) {
         defaults = UserDefaults(suiteName: suite)!
         let monitor = ProjectionMonitor(id: 1, identity: UUID().uuidString, name: "Audience monitor", frame: CGRect(x: 0, y: 0, width: 1920, height: 1080))
         displays = ProjectionDisplayManager(displays: { monitors ? [monitor] : [] })
         if monitors { displays.select(monitor.target) }
         store = OutputProfileStore(defaults: defaults, monitor: monitors ? monitor.target : nil)
         outputs = OutputCoordinator(profiles: store, displays: displays, driverFactory: { FakeOutputDriver() })
-        let channelDefaults = defaults
-        router = AltViewOutputRouter(store: store, senderID: UUID(), defaults: defaults, pairingStore: RecordingAltViewPairingStore(),
-            channelFactory: { AltViewService(defaults: channelDefaults, pairingStore: RecordingAltViewPairingStore(), senderFactory: { _ in sender ?? RecordingAltViewSender() }) })
-        router.start(coordinator: outputs, discover: false)
-        controller = ManageOutputsController(coordinator: outputs, router: router)
+        controller = ManageOutputsController(coordinator: outputs)
         window = NSWindow(contentRect: .init(x: -10000, y: -10000, width: 820, height: 650),
             styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -1252,11 +1178,13 @@ private final class OutputSettingsFixture {
         controller.reload()
     }
     func close() {
-        controller.finishEditing(); window.close(); router.shutdown(); outputs.stop()
+        controller.finishEditing(); window.close(); outputs.stop()
         store.flush(); defaults.removePersistentDomain(forName: suite)
     }
     func capture(_ name: String) throws {
+        window.layoutIfNeeded()
         let view = controller.view
+        view.layoutSubtreeIfNeeded()
         let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
         view.cacheDisplay(in: view.bounds, to: bitmap)
         try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: "/tmp/eucaly-manage-\(name).png"))

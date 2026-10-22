@@ -1,8 +1,10 @@
 .DEFAULT_GOAL := help
-.PHONY: help build test test-release clean release release-check release-notarize release-publish
+.PHONY: help build test test-codex-agents test-ndi-stress test-ndi-diagnostics test-release clean release release-check release-notarize release-publish
 
 NOTARY_PROFILE ?= eucalyNotary
 NOTES_FILE ?=
+NDI_STRESS_SECONDS ?= 900
+NDI_DIAGNOSTIC_SECONDS ?= 600
 # Optional notes must be outside the checkout, e.g. /tmp/eucaly-notes.md.
 
 help:
@@ -13,6 +15,9 @@ help:
 	  'make release-notarize  Produce signed local artifacts without publishing' \
 	  'make release-publish   Publish saved artifacts without building or notarizing' \
 	  'make test              Run app and release regression tests' \
+	  'make test-codex-agents  Validate project agent configuration and references' \
+	  'make test-ndi-stress   Run the opt-in 15-minute real-SDK NDI stress test' \
+	  'make test-ndi-diagnostics  Publish steady video/audio for a remote receiver check' \
 	  'make clean             Remove build caches; preserve saved releases'
 
 clean:
@@ -48,3 +53,12 @@ test: test-release
 		-destination 'platform=macOS' -configuration Debug \
 		-derivedDataPath build/DerivedData test \
 		CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM=""
+
+test-codex-agents:
+	python3 scripts/test-codex-agents.py
+
+test-ndi-stress:
+	python3 scripts/test-ndi-stress.py --seconds "$(NDI_STRESS_SECONDS)"
+
+test-ndi-diagnostics:
+	python3 scripts/test-ndi-stress.py --mode steady --seconds "$(NDI_DIAGNOSTIC_SECONDS)"

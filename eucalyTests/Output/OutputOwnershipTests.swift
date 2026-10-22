@@ -123,17 +123,15 @@ final class OutputLifecycleTests: XCTestCase {
         XCTAssertEqual(outputs.preferredLocalSession?.currentSlide?.lines.first?.text, "Retain Current")
     }
     func testDestinationCloseCancelsQueuedNavigationWithoutReopeningTheWindow() async throws {
-        let sender = RecordingAltViewSender(), service = AltViewService(pairingStore: RecordingAltViewPairingStore(), senderFactory: { _ in sender })
-        let hub = LocalOutputHarness(service: service); defer { hub.stop() }
-        service.receive(sender.connectedStatus)
+        let hub = LocalOutputHarness(); defer { hub.stop() }
         hub.load("Verse\nFirst\n\nChorus\nSecond"); hub.session.showSlides()
-        let current = hub.session.currentSlideID, takes = sender.takes
+        let current = hub.session.currentSlideID
         hub.session.moveSelection(1)
         hub.outputs.destinationClosed(hub.nativeRow, generation: hub.driver.generation)
         try await Task.sleep(for: .milliseconds(30))
         XCTAssertFalse(hub.outputs.isOpen(hub.nativeRow))
-        XCTAssertEqual(hub.session.currentSlideID, current); XCTAssertEqual(sender.takes, takes)
-        XCTAssertEqual(sender.submissions.last?.content.body, "First")
+        XCTAssertEqual(hub.session.currentSlideID, current)
+        XCTAssertEqual(hub.outputs.text.components.first?.text, "First")
     }
 }
 

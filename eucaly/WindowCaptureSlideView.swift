@@ -103,6 +103,7 @@ nonisolated struct WindowCaptureFrame: @unchecked Sendable {
 @available(macOS 14.0, *)
 struct WindowCaptureSlideView: View {
     let windowID: CGWindowID
+    var showsOperatorMessages = true
     @ObservedObject private var captureManager = ScreenCaptureManager.shared
     @State private var streamOutput = WindowStreamOutput()
     @State private var error: Error?
@@ -116,9 +117,9 @@ struct WindowCaptureSlideView: View {
             Color.black
 
             if !isWindowAvailable {
-                unavailableWindowView
+                if showsOperatorMessages { unavailableWindowView }
             } else if let error = error {
-                captureErrorView(error)
+                if showsOperatorMessages { captureErrorView(error) }
             } else {
                 WindowCaptureLayerView(streamOutput: streamOutput)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -6,9 +6,9 @@ final class SidebarOutlineNavigationCoordinatorTests: XCTestCase {
     func testMoveUsesVisualSectionOrderAndSkipsUnavailableTargets() {
         let coordinator = SidebarOutlineNavigationCoordinator()
         let playlist = NavigationRecorder(hasSelectableRows: false)
-        let web = NavigationRecorder()
+        let window = NavigationRecorder()
         coordinator.register(recorder: playlist, for: .playlist)
-        coordinator.register(recorder: web, for: .web)
+        coordinator.register(recorder: window, for: .window)
 
         let didMove = coordinator.move(
             from: .library,
@@ -18,14 +18,14 @@ final class SidebarOutlineNavigationCoordinatorTests: XCTestCase {
 
         XCTAssertTrue(didMove)
         XCTAssertTrue(playlist.focusDirections.isEmpty)
-        XCTAssertEqual(web.focusDirections, [.down])
+        XCTAssertEqual(window.focusDirections, [.down])
     }
 
     func testRejectedBoundarySelectionRestoresSourceFocus() {
         let coordinator = SidebarOutlineNavigationCoordinator()
-        let web = NavigationRecorder(acceptsFocus: false)
+        let window = NavigationRecorder(acceptsFocus: false)
         var restoreFocusCount = 0
-        coordinator.register(recorder: web, for: .web)
+        coordinator.register(recorder: window, for: .window)
 
         XCTAssertTrue(
             coordinator.move(
@@ -34,7 +34,7 @@ final class SidebarOutlineNavigationCoordinatorTests: XCTestCase {
                 restoreSourceFocus: { restoreFocusCount += 1 }
             )
         )
-        XCTAssertEqual(web.focusDirections, [.down])
+        XCTAssertEqual(window.focusDirections, [.down])
         XCTAssertEqual(restoreFocusCount, 1)
     }
 }

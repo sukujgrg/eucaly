@@ -9,11 +9,16 @@ final class OutputDefaultTests: XCTestCase {
         let suite = "DefaultOutputs.\(UUID())", defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let store = OutputProfileStore(defaults: defaults)
+        defer { store.flush() }
         let first = try XCTUnwrap(store.defaultDestination)
         let second = OutputDestinationConfiguration(name: "Disabled stage", profileID: OutputProfile.confidenceID, monitor: nil, enabled: false)
         store.edit { $0.destinations.append(second) }
         store.setDefaultDestination(second.id); store.flush()
-        XCTAssertEqual(OutputProfileStore(defaults: defaults).defaultDestination, second)
+        let restored = OutputProfileStore(defaults: defaults)
+        XCTAssertEqual(restored.defaultDestination, second)
+        // Restoration queues a normalized snapshot. Finish it before replacing
+        // the saved document directly with the missing-key migration fixture.
+        restored.flush()
         XCTAssertFalse(try XCTUnwrap(store.defaultDestination).enabled)
         XCTAssertNil(store.quickEditTarget)
         // Simulate an old document without default selection, preserving the old
@@ -30,9 +35,9 @@ final class OutputDefaultTests: XCTestCase {
         XCTAssertNil(OutputProfileStore(defaults: defaults).defaultDestination)
         // Other migrations must retain both a saved default and explicit None.
         store.setDefaultDestination(first.id)
-        XCTAssertEqual(OutputProfileMigration.retireLegacyPresets(in: store.document).defaultDestinationID, first.id)
+        XCTAssertEqual(try OutputLegacyMigration.decode(JSONEncoder().encode(store.document)).defaultDestinationID, first.id)
         store.setDefaultDestination(nil)
-        XCTAssertNil(OutputProfileMigration.retireLegacyPresets(in: store.document).defaultDestinationID)
+        XCTAssertNil(try OutputLegacyMigration.decode(JSONEncoder().encode(store.document)).defaultDestinationID)
     }
 
     func testQuickAppearancePreservesReusableProfilesAndDisabledSharers() throws {
@@ -85,6 +90,10 @@ final class OutputDefaultTests: XCTestCase {
         defer { outputs.stop() }
         let controls = OutputQuickControlsController(outputs: outputs, manageOutputs: {})
         let first = try XCTUnwrap(store.defaultDestination)
+        for button in [controls.outputButton, controls.ndiButton, controls.appearanceButton, controls.backgroundButton] {
+            XCTAssertEqual(button.menu?.items.last?.title, "Manage Outputs…")
+            XCTAssertEqual(button.menu?.items.dropLast().last?.isSeparatorItem, true)
+        }
         let second = OutputDestinationConfiguration(name: "Other", profileID: OutputProfile.audienceID, monitor: nil)
         store.edit { $0.destinations.append(second) }; controls.render()
         let oldColumns = try item("Columns", in: controls.appearanceButton.menu)
@@ -92,7 +101,7 @@ final class OutputDefaultTests: XCTestCase {
         let oldMonitor = try item("None", in: item("Monitor: None", in: controls.outputButton.menu).submenu)
         let defaultMenu = try item("Default: " + first.name, in: controls.outputButton.menu)
         XCTAssertNotNil(defaultMenu.submenu)
-        XCTAssertEqual(try item(first.name, in: defaultMenu.submenu).state, .on)
+        XCTAssertEqual(try item(first.name + " · " + store.workspaceName(first.workspaceID), in: defaultMenu.submenu).state, .on)
         XCTAssertNil(try? item("Default Output", in: controls.outputButton.menu))
         XCTAssertNil(try? item("Identify Monitor", in: controls.outputButton.menu), "Monitor identification belongs in Manage Outputs")
         let selection = controls.outputButton.menu, appearance = controls.appearanceButton.menu, background = controls.backgroundButton.menu
@@ -223,7 +232,7 @@ final class OutputDefaultTests: XCTestCase {
         XCTAssertNotEqual(firstBefore, firstAfter, "The edited destination must render its new font")
         XCTAssertEqual(try pixels(secondView), secondBefore, "A shared profile must not leak quick edits into another output")
         let firstCustomID = try XCTUnwrap(store.defaultDestination?.profileID)
-        invoke(try item(second.name, in: item("Default: " + first.name, in: controls.outputButton.menu).submenu))
+        invoke(try item(second.name + " · " + store.workspaceName(second.workspaceID), in: item("Default: " + first.name, in: controls.outputButton.menu).submenu))
         controls.render()
         invoke(try item("120 pt", in: controls.appearanceButton.menu)); controls.render()
         for _ in 0..<20 { await Task.yield() }
@@ -272,7 +281,7 @@ final class OutputDefaultTests: XCTestCase {
         displays.select(monitors[0].target)
         let store = OutputProfileStore(monitor: monitors[0].target)
         let second = OutputDestinationConfiguration(name: "Second", profileID: OutputProfile.audienceID, monitor: monitors[1].target)
-        let remote = OutputDestinationConfiguration(name: "AltView", profileID: OutputProfile.altViewID, monitor: nil, enabled: false)
+        let remote = OutputDestinationConfiguration(name: "Unassigned", profileID: OutputProfile.audienceID, monitor: nil, enabled: false)
         store.edit { $0.destinations.append(contentsOf: [second, remote]) }
         var drivers: [FakeOutputDriver] = []
         let outputs = OutputCoordinator(profiles: store, displays: displays, driverFactory: { let driver = FakeOutputDriver(); drivers.append(driver); return driver })
@@ -330,31 +339,6 @@ final class OutputDefaultTests: XCTestCase {
         XCTAssertNil(outputs.ownership.source)
     }
 
-    func testAltViewDefaultKeepsReceiverAppearanceAndDoesNotConnectPublishOrTake() throws {
-        let sender = RecordingAltViewSender()
-        let service = AltViewService(pairingStore: RecordingAltViewPairingStore(), senderFactory: { _ in sender })
-        let harness = LocalOutputHarness(service: service)
-        defer { harness.stop() }
-        service.receive(sender.connectedStatus)
-        harness.load("Verse\nLive lyrics"); harness.session.showSlides()
-        let store = harness.outputs.profiles
-        let owner = harness.outputs.ownership.source, revision = harness.outputs.revision
-        let takes = sender.takes, releases = sender.releases, submissions = sender.submissions.count
-        store.setDefaultDestination(harness.remoteRow)
-        let controls = OutputQuickControlsController(outputs: harness.outputs, manageOutputs: {})
-        XCTAssertFalse(controls.appearanceButton.isEnabled); XCTAssertFalse(controls.backgroundButton.isEnabled)
-        XCTAssertTrue(controls.outputButton.isEnabled)
-        XCTAssertNotNil(try? item("AltView controls appearance on the receiver.", in: controls.outputButton.menu))
-        XCTAssertTrue(try XCTUnwrap(controls.appearanceButton.accessibilityHelp()).contains("AltView controls appearance"))
-        let document = store.document
-        store.editDefaultProfile(try XCTUnwrap(store.quickEditTarget)) { $0.layout = "columns" }
-        XCTAssertEqual(store.document, document)
-        XCTAssertTrue(harness.router.channel(for: harness.remoteRow) === service)
-        XCTAssertEqual(sender.takes, takes); XCTAssertEqual(sender.releases, releases)
-        XCTAssertEqual(sender.submissions.count, submissions)
-        XCTAssertEqual(harness.outputs.ownership.source, owner); XCTAssertEqual(harness.outputs.revision, revision)
-        XCTAssertTrue(harness.outputs.isOpen(harness.nativeRow))
-    }
 
     private func drainMainQueue() async {
         await withCheckedContinuation { continuation in DispatchQueue.main.async { continuation.resume() } }
@@ -370,7 +354,7 @@ final class OutputDefaultTests: XCTestCase {
         let outputs = OutputCoordinator(profiles: store, displays: displays, driverFactory: { FakeOutputDriver() })
         let driver = ToolbarUpdateDriver()
         let updates = AppUpdateViewModel(driver: driver)
-        let search = NSSearchField()
+        let search = LibrarySearchField()
         search.placeholderString = "Search"
         search.widthAnchor.constraint(equalToConstant: 220).isActive = true
         let window = NSWindow(contentRect: .init(x: -10000, y: -10000, width: 1060, height: 600),
@@ -384,12 +368,17 @@ final class OutputDefaultTests: XCTestCase {
             descendants(NSPopUpButton.self, in: chrome).first { $0.accessibilityLabel()?.hasPrefix(labelPrefix) == true }
         }
         try await waitForUIState("native toolbar controls to mount") {
-            ["Output, default:", "Appearance for default output:", "Background for default output:", "Thumbnails"].allSatisfy { button($0) != nil }
+            ["Output, default:", "NDI workspace routing", "Appearance for default output:", "Background for default output:", "Thumbnails"].allSatisfy { button($0) != nil }
         }
         let longName = String(repeating: "Long output name ", count: 9)
+        let longWorkspaceName = String(repeating: "Long workspace name ", count: 7).trimmingCharacters(in: .whitespaces)
+        XCTAssertTrue(store.renameWorkspace(OutputWorkspaceRecord.primaryID, name: longWorkspaceName))
+        var network = OutputDestinationConfiguration(name: "YouTube", profileID: OutputProfile.lowerThirdID, monitor: nil, enabled: false)
+        network.ndi = .init()
+        store.edit { $0.destinations.append(network) }
         store.edit { $0.destinations[0].name = longName }
         try await waitForUIState("the renamed default to reach the toolbar") {
-            button("Output, default:")?.toolTip?.contains(longName) == true
+            button("Output, default:")?.toolTip?.contains(longName) == true && button("NDI workspace routing")?.toolTip?.contains(longWorkspaceName) == true
         }
         func hasUpdateReminder() -> Bool {
             window.toolbar?.items.contains { $0.label == "Update" } == true
@@ -406,11 +395,19 @@ final class OutputDefaultTests: XCTestCase {
                 editor.string = "active search draft"
                 editor.selectedRange = NSRange(location: 7, length: 6)
                 driver.state.availableVersion = "99.0"
-                try await waitForUIState("the Update reminder to appear while search is focused") { hasUpdateReminder() }
+                try await waitForUIState("the Update reminder and toolbar controls to appear while search is focused") {
+                    window.layoutIfNeeded(); chrome.layoutSubtreeIfNeeded()
+                    return hasUpdateReminder() && ["Output, default:", "NDI workspace routing", "Appearance for default output:",
+                                           "Background for default output:", "Thumbnails"].allSatisfy { label in
+                        guard let control = button(label) else { return false }
+                        return chrome.bounds.insetBy(dx: -1, dy: -1).contains(chrome.convert(control.bounds, from: control))
+                    }
+                }
                 window.layoutIfNeeded(); chrome.layoutSubtreeIfNeeded()
                 // SwiftUI can remount toolbar items when the item set changes.
                 // Inspect the controls actually mounted in the window.
                 let outputButton = try XCTUnwrap(button("Output, default:"))
+                let ndiButton = try XCTUnwrap(button("NDI workspace routing"))
                 let appearanceButton = try XCTUnwrap(button("Appearance for default output:"))
                 let backgroundButton = try XCTUnwrap(button("Background for default output:"))
                 let thumbnailButton = try XCTUnwrap(button("Thumbnails"))
@@ -422,7 +419,11 @@ final class OutputDefaultTests: XCTestCase {
                 XCTAssertTrue(try XCTUnwrap(outputButton.toolTip).contains(longName))
                 XCTAssertTrue(try XCTUnwrap(outputButton.accessibilityLabel()).contains(longName))
                 XCTAssertNotNil(try? item("Default: " + longName, in: outputButton.menu))
-                for button in [outputButton, appearanceButton, backgroundButton, thumbnailButton] {
+                XCTAssertTrue(ndiButton.title.hasPrefix("NDI: ")); XCTAssertTrue(ndiButton.title.hasSuffix("…"))
+                XCTAssertLessThan(ndiButton.frame.width, 220)
+                XCTAssertTrue(try XCTUnwrap(ndiButton.accessibilityLabel()).contains(longWorkspaceName))
+                XCTAssertEqual(try item("Move to " + longWorkspaceName, in: ndiButton.menu).state, .on)
+                for button in [outputButton, ndiButton, appearanceButton, backgroundButton, thumbnailButton] {
                     XCTAssertGreaterThan(button.visibleRect.width, 20)
                     XCTAssertGreaterThanOrEqual(button.frame.width, button.intrinsicContentSize.width - 1)
                 }

@@ -1,0 +1,7 @@
+# Keep the complete project guide in context (it exceeds the 32 KiB default).
+project_doc_max_bytes = 65536
+
+# Project roles are discovered from .codex/agents/*.toml.
+# Dispatch rules live in AGENTS.md; model, reasoning and concurrency use session defaults.
+[agents]
+enabled = true

@@ -16,7 +16,7 @@ final class OutputProfileTests: XCTestCase {
         store.flush()
         XCTAssertEqual(store.document.destinations.count, 1)
         XCTAssertEqual(store.document.destinations.first?.monitor, target)
-        XCTAssertEqual(store.document.version, 4)
+        XCTAssertEqual(store.document.version, 6)
         XCTAssertEqual(store.audience.typography.size, 126)
         XCTAssertEqual(store.audience.typography(for: .meaning).size, 63)
         XCTAssertEqual(store.audience.background.bookmark, "bookmark")
@@ -82,6 +82,7 @@ final class OutputProfileTests: XCTestCase {
             }
             rows[index]["includesOverlay"] = true // Removed settings must still decode safely.
         }
+        object["version"] = 4
         object["profiles"] = rows
         defaults.set(try JSONSerialization.data(withJSONObject: object), forKey: OutputProfileStore.key)
         let store = OutputProfileStore(defaults: defaults); store.flush()
@@ -96,7 +97,7 @@ final class OutputProfileTests: XCTestCase {
         XCTAssertEqual(store.profile(customID), custom)
         XCTAssertEqual(store.profile(OutputProfile.lowerThirdID)?.kind, .lowerThird)
         XCTAssertEqual(store.document, OutputProfileStore(defaults: defaults).document, "Migration is idempotent")
-        XCTAssertEqual(OutputProfile.builtIns.map(\.kind), [.audience, .confidence, .lowerThird, .altView, .altViewMedia])
+        XCTAssertEqual(OutputProfile.builtIns.map(\.kind), [.audience, .confidence, .lowerThird])
     }
 
     func testLowerThirdGreenDefaultUpgradesOnceAndPreservesLaterExplicitBlack() throws {
@@ -149,7 +150,7 @@ final class OutputProfileTests: XCTestCase {
             doc.destinations.append(.init(name: "Green key", profileID: OutputProfile.lowerThirdID, monitor: nil))
             let confidence = doc.profiles.first { $0.kind == .confidence }!
             doc.destinations.append(.init(name: "Disabled Confidence", profileID: confidence.id, monitor: nil, enabled: false))
-            for index in doc.profiles.indices where doc.profiles[index].isNative {
+            for index in doc.profiles.indices {
                 doc.profiles[index].background.bookmark = "selected visual"
                 if doc.profiles[index].kind != .lowerThird { doc.profiles[index].background.colour = .white }
             }
@@ -167,10 +168,13 @@ final class OutputProfileTests: XCTestCase {
         XCTAssertEqual(OutputProfileStore(defaults: defaults).document, store.document)
     }
 
-    func testLegacyBackgroundImportPreservesProfileAppearanceAndComponentOverrides() {
+    func testWorkspaceBackgroundSelectionPreservesProfileAppearanceAndComponentOverrides() {
         let name = "ProfileRelative.\(UUID())", defaults = UserDefaults(suiteName: name)!
         defer { defaults.removePersistentDomain(forName: name) }
         let store = OutputProfileStore(defaults: defaults)
+        let displays = ProjectionDisplayManager(displays: { [] })
+        let outputs = OutputCoordinator(profiles: store, displays: displays)
+        let session = PresentationSession(projectionDisplays: displays, outputCoordinator: outputs)
         var audience = store.audience
         audience.typography.size = 500
         audience.layout = "columns"
@@ -182,12 +186,14 @@ final class OutputProfileTests: XCTestCase {
         defaults.set(1.5, forKey: "presentationFontScale")
         defaults.set("stacked", forKey: "presentationLyricsLayout")
         defaults.set("sidebar visual", forKey: "backgroundVisualBookmark")
-        store.importLegacyAudienceBackground()
+        outputs.setBackgroundVisualBookmark("sidebar visual", for: session)
         XCTAssertEqual(store.audience.typography.size, 500)
         XCTAssertEqual(store.audience.typography.fontName, "Helvetica")
         XCTAssertEqual(store.audience.layout, "columns")
         XCTAssertEqual(store.audience.typography(for: .meaning).size, 72)
         XCTAssertEqual(store.audience.background.bookmark, "sidebar visual")
+        XCTAssertNil(store.profile(OutputProfile.audienceID)?.background.bookmark,
+                     "A workspace selection customizes its output without editing the reusable profile")
         store.flush()
     }
     func testCorruptOrFutureDataIsRetainedUntilExplicitRecovery() throws {
@@ -232,7 +238,7 @@ final class OutputProfileRecoveryTests: XCTestCase {
         XCTAssertEqual(store.document.destinations.map(\.monitor), doc.destinations.map(\.monitor))
         XCTAssertEqual(store.document.destinations.map(\.id), doc.destinations.map(\.id))
         XCTAssertTrue(store.document.destinations.allSatisfy { !$0.enabled })
-        XCTAssertEqual(store.document.version, 4)
+        XCTAssertEqual(store.document.version, 6)
         store.flush(); XCTAssertEqual(defaults.data(forKey: OutputProfileStore.key), original)
     }
 }

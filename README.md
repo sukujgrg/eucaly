@@ -31,19 +31,12 @@ Browsing never silently replaces **Current**.
 - Background audio layer
 - Confidence output with Current/Next columns and a large centered standby clock
 - Live app-window capture with ScreenCaptureKit
-- Webpage preview / projection
 - Recursive text search under library root
 - [Named projection monitors](docs/projection-monitors.md) with remembered numbers, physical display identity, and an Identify action
 - Keeps the Mac and displays awake while projection is open, including hidden slides and background-only output
-- [AltView Lyrics and Media outputs](docs/altview.md) with one receiver pairing, independent enablement, and nonblocking delivery of eucaly's own live program
+- Named workspace tabs with independent Currents, detachable windows and exclusive output assignments. Optional [generic NDI outputs](docs/ndi-runtime.md) carry keyed lyrics or full-frame media on the same stable 1080p30 source, with shared playback per workspace and an explicit background-music route, using a separately installed runtime. Physical receiver qualification is still required before production use.
+- **Home** is the initial workspace. macOS restores your previous windows and tabs, including their sizes. If nothing is restored, eucaly reopens the last-used workspace.
 - Sparkle self-updates with quiet toolbar reminders during presentations
-
-Webpage behavior:
-
-- webpages are interactive in both Preview and Current
-- webpage mute is intentionally independent:
-  - Preview webpage mute affects Preview only
-  - Current webpage mute affects Current and projection
 
 ## Screenshots
 
@@ -69,7 +62,7 @@ Webpage behavior:
 
 ## Requirements
 
-- Apple Silicon Mac running macOS 14+
+- Apple Silicon Mac running macOS 26+
 - Xcode
 - Python 3.9+ for release tooling and script regressions
 

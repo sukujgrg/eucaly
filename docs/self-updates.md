@@ -8,10 +8,10 @@ the update before extraction and installation.
 
 ## App behavior
 
-- **eucaly → Check for Updates…** and **Settings → Updates → Check for Updates…**
+- **eucaly → Check for Updates…** and **Settings → General → Updates → Check for Updates…**
   open Sparkle's native update UI, including download, installation, errors, and
   up-to-date results.
-- **Settings → Updates → Automatically Check for Updates** controls Sparkle's
+- **Settings → General → Updates → Automatically Check for Updates** controls Sparkle's
   persisted preference. It defaults to enabled on Sparkle's daily schedule.
 - Scheduled checks add an **Update** toolbar reminder without opening a dialog
   or stealing focus, even during projection or launch. Clicking it brings the
@@ -23,7 +23,7 @@ the update before extraction and installation.
   stop updates.
 
 The app stays unsandboxed, retains its bundle ID and preferences, and supports
-Apple Silicon (arm64) on macOS 14+. New appcast entries require Apple Silicon.
+Apple Silicon (arm64) on macOS 26+. New appcast entries require Apple Silicon.
 Sparkle's sandbox installer/downloader flags and Mach lookup exceptions are
 intentionally absent, following its
 [sandbox integration guidance](https://sparkle-project.org/documentation/sandboxing/).

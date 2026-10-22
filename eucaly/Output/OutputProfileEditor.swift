@@ -10,6 +10,14 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
     let nameField = NSTextField()
     let validationLabel = outputSettingsLabel(secondary: true)
     let affectedOutputs = outputSettingsLabel(secondary: true)
+    let usageNotice = outputSettingsLabel(secondary: true)
+    let appearanceHeading = outputSettingsLabel(heading: true)
+    let scopeNotice = outputSettingsLabel(secondary: true)
+    let backgroundColourNotice = outputSettingsLabel(secondary: true)
+    let textControls = OutputSettingsGroup()
+    let visualControls = OutputSettingsGroup()
+    private let confidenceNotice = outputSettingsLabel("Confidence always shows a large centered clock when content is empty or hidden.", secondary: true)
+    private var legacyControl: NSButton?
     private(set) var numberRows: [OutputSettingsNumberRow] = []
     private var renders: [(OutputProfile) -> Void] = []
     private var toggles: [NSButton: (Bool) -> Void] = [:]
@@ -19,6 +27,7 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
     private let fontChooser = OutputSettingsFontChooser()
     private var renderedProfile: OutputProfile?
     private var disclosures: [OutputSettingsDisclosure] = []
+    private var backgroundColourRow: NSView?
 
     init(store: OutputProfileStore, profileID: UUID) {
         self.store = store; self.profileID = profileID
@@ -33,35 +42,36 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
         nameField.setAccessibilityLabel("Profile name")
         validationLabel.textColor = .systemOrange
         validationLabel.isHidden = true
-        form.section("Appearance Profile")
+        form.add(appearanceHeading)
         form.add(outputSettingsRow("Name", nameField))
         form.add(validationLabel)
         form.add(affectedOutputs)
-        form.add(outputSettingsLabel("Changes apply immediately to every output using this profile.", secondary: true))
+        form.add(scopeNotice)
+        form.add(usageNotice)
 
-        form.section("Text Components")
-        form.add(outputSettingsLabel("Missing lyric components leave no empty space.", secondary: true))
+        let text = textControls
+        form.add(text)
+        text.section("Text Components")
+        text.add(outputSettingsLabel("Missing lyric components leave no empty space.", secondary: true))
         for role in OutputComponentRole.lyricRoles {
-            form.add(toggle(role.title, get: { $0.roles.contains(role) }) { profile, selected in
+            text.add(toggle(role.title, get: { $0.roles.contains(role) }) { profile, selected in
                 profile.roles.removeAll { $0 == role }
                 if selected { profile.roles.append(role) }
             })
         }
 
-        form.section("Layout")
-        form.add(choice("Layout", titles: ["Stacked", "Columns"], values: ["stacked", "columns"], key: \.layout))
-        form.add(choice("Alignment", titles: ["Left", "Centre", "Right"], values: ["left", "center", "right"], key: \.alignment))
-        form.add(choice("Position", titles: ["Top", "Middle", "Bottom"], values: ["top", "middle", "bottom"], key: \.position))
-        form.add(number("Padding", range: 0...200, scale: 100, unit: "%", get: { $0.padding }, set: { $0.padding = $1 }))
-        let confidenceNotice = outputSettingsLabel("Confidence always shows a large centered clock when content is empty or hidden.", secondary: true)
-        renders.append { confidenceNotice.isHidden = $0.kind != .confidence }
-        form.add(confidenceNotice)
+        text.section("Layout")
+        text.add(choice("Layout", titles: ["Stacked", "Columns"], values: ["stacked", "columns"], key: \.layout))
+        text.add(choice("Alignment", titles: ["Left", "Centre", "Right"], values: ["left", "center", "right"], key: \.alignment))
+        text.add(choice("Position", titles: ["Top", "Middle", "Bottom"], values: ["top", "middle", "bottom"], key: \.position))
+        text.add(number("Padding", range: 0...200, scale: 100, unit: "%", get: { $0.padding }, set: { $0.padding = $1 }))
+        text.add(confidenceNotice)
 
-        form.section("Typography")
-        addTypography(role: nil, add: form.add)
+        text.section("Typography")
+        addTypography(role: nil, add: text.add)
         let legacy = toggle("Scale fonts for short displays", get: { $0.usesLegacySizing }, set: { $0.usesLegacySizing = $1 })
         legacy.toolTip = "Preserves the existing Audience size adjustment for short displays."
-        form.add(legacy)
+        legacyControl = legacy; text.add(legacy)
         for role in OutputComponentRole.allCases {
             let disclosure = OutputSettingsDisclosure(role.title + " Overrides") { [weak self] disclosure in
                 guard let self else { return }
@@ -73,26 +83,29 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
             }
             disclosures.append(disclosure)
             renders.append { disclosure.isHidden = !$0.typographyOverrideRoles.contains(role) }
-            form.add(disclosure)
+            text.add(disclosure)
         }
 
         form.section("Background")
-        form.add(color("Colour", get: { $0.background.colour }, opaque: true, set: { $0.background.colour = $1 }))
+        let colourRow = color("Colour", get: { $0.background.colour }, opaque: true, set: { $0.background.colour = $1 })
+        backgroundColourRow = colourRow; form.add(colourRow)
+        form.add(backgroundColourNotice)
+        let visuals = visualControls; form.add(visuals)
         let backgroundLabel = outputSettingsLabel(secondary: true)
         renders.append { profile in
             backgroundLabel.stringValue = profile.background.bookmark == nil ? "Solid colour" : "Selected image or video"
         }
-        form.add(outputSettingsFieldGroup("Visual", backgroundLabel, actions: [
+        visuals.add(outputSettingsFieldGroup("Visual", backgroundLabel, actions: [
             button("Choose Visual…") { [weak self] in self?.chooseBackground() },
             button("Clear Visual") { [weak self] in self?.edit { $0.background.bookmark = nil } }
         ]))
-        form.add(choice("Fit", titles: ["Fill", "Fit"], values: ["fill", "fit"], key: \.background.fit))
-        form.add(number("Dimming", range: 0...100, scale: 100, unit: "%", get: { $0.background.dimming }, set: { $0.background.dimming = $1 }))
-        form.add(toggle("Visual enabled", get: { $0.background.visible }, set: { $0.background.visible = $1 }))
-        form.add(toggle("Show behind text", get: { $0.background.whenTextShown }, set: { $0.background.whenTextShown = $1 }))
-        form.add(toggle("Show when slides hidden", get: { $0.background.whenHidden }, set: { $0.background.whenHidden = $1 }))
-        form.add(toggle("Show behind media", get: { $0.background.whenMediaShown }, set: { $0.background.whenMediaShown = $1 }))
-        form.add(outputSettingsLabel("Background videos loop silently. Background audio is controlled separately.", secondary: true))
+        visuals.add(choice("Fit", titles: ["Fill", "Fit"], values: ["fill", "fit"], key: \.background.fit))
+        visuals.add(number("Dimming", range: 0...100, scale: 100, unit: "%", get: { $0.background.dimming }, set: { $0.background.dimming = $1 }))
+        visuals.add(toggle("Visual enabled", get: { $0.background.visible }, set: { $0.background.visible = $1 }))
+        visuals.add(toggle("Show behind text", get: { $0.background.whenTextShown }, set: { $0.background.whenTextShown = $1 }))
+        visuals.add(toggle("Show when slides hidden", get: { $0.background.whenHidden }, set: { $0.background.whenHidden = $1 }))
+        visuals.add(toggle("Show behind media", get: { $0.background.whenMediaShown }, set: { $0.background.whenMediaShown = $1 }))
+        visuals.add(outputSettingsLabel("Background videos loop silently. Background audio is controlled separately.", secondary: true))
         render()
     }
 
@@ -102,6 +115,31 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
         if nameField.currentEditor() == nil { nameField.stringValue = profile.name }
         let names = store.document.destinations.filter { $0.profileID == profileID }.map(\.name)
         affectedOutputs.stringValue = names.isEmpty ? "No outputs currently use this profile." : "Used by: " + names.joined(separator: ", ")
+        let consumers = store.document.destinations.filter { $0.profileID == profileID }
+        let hasNative = consumers.isEmpty || consumers.contains { $0.isMonitorDestination }
+        let hasNDI = consumers.contains { $0.ndi != nil }
+        appearanceHeading.stringValue = profile.isReusable ? "Reusable Profile" : "Output Appearance"
+        nameField.setAccessibilityLabel(profile.isReusable ? "Profile name" : "Appearance name")
+        if profile.isReusable {
+            scopeNotice.stringValue = "Changes apply immediately to every output using this reusable profile."
+        } else if consumers.isEmpty {
+            scopeNotice.stringValue = "This saved output appearance is unused. Remove it with −, or use + to save a reusable copy."
+        } else {
+            scopeNotice.stringValue = "Changes apply immediately to the outputs listed above. Use + to save a reusable copy without changing their appearance."
+        }
+        usageNotice.stringValue = consumers.contains { $0.ndi != nil } ? "NDI outputs use the owning workspace’s lyrics, images, PDFs and video, with independent backgrounds." : ""
+        usageNotice.isHidden = usageNotice.stringValue.isEmpty
+        backgroundColourRow?.isHidden = hasNDI && !hasNative
+        if hasNDI && !hasNative {
+            backgroundColourNotice.stringValue = "Set transparency and chroma colour on each NDI output. Visual backgrounds below apply in either mode."
+        } else if hasNDI {
+            backgroundColourNotice.stringValue = "Native outputs use Colour as their solid background. NDI outputs use it only in Chroma Colour mode; Alpha leaves solid surroundings transparent. Image and video backgrounds remain independent."
+        } else {
+            backgroundColourNotice.stringValue = "Colour sets the solid background. Background images and videos use the controls below."
+        }
+        textControls.isHidden = false; visualControls.isHidden = false
+        legacyControl?.isHidden = !hasNative
+        confidenceNotice.isHidden = profile.kind != .confidence || !hasNative
         // Output status changes do not require font lookup or control updates.
         guard force || profile != renderedProfile else { return }
         renderedProfile = profile
@@ -130,7 +168,7 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
     override func viewWillDisappear() { super.viewWillDisappear(); finishEditing() }
 
     func edit(_ change: (inout OutputProfile) -> Void) {
-        guard var profile = store.profile(profileID), profile.isNative else { return }
+        guard var profile = store.profile(profileID) else { return }
         change(&profile)
         var document = store.document
         guard let index = document.profiles.firstIndex(where: { $0.id == profileID }) else { return }
@@ -330,7 +368,7 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
             guard result == .OK, let url = panel.url else { return }
             Task { @MainActor in
                 let bookmark = await Task.detached { SecurityScopedBookmarks.createBookmark(for: url) }.value
-                guard let bookmark, var profile = store.profile(selectedProfileID), profile.isNative else { return }
+                guard let bookmark, var profile = store.profile(selectedProfileID) else { return }
                 profile.background.bookmark = bookmark
                 store.update(profile)
             }

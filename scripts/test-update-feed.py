@@ -145,15 +145,15 @@ class UpdateFeedTests(unittest.TestCase):
             url = "https://github.com/sukujgrg/eucaly/releases/download/v3.1.0/eucaly.zip"
             xml = f'''<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><item>
                 <sparkle:version>20260910</sparkle:version><sparkle:shortVersionString>3.1.0</sparkle:shortVersionString>
-                <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+                <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
                 <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
                 <enclosure url="{url}" sparkle:edSignature="{signature}" length="7" type="application/octet-stream"/>
                 </item></channel></rss>'''
-            info = {"CFBundleVersion": "20260910", "CFBundleShortVersionString": "3.1.0", "LSMinimumSystemVersion": "14.0"}
+            info = {"CFBundleVersion": "20260910", "CFBundleShortVersionString": "3.1.0", "LSMinimumSystemVersion": "26.0"}
             feed.write_text(xml)
             self.assertEqual(update_feed.verify_feed(feed, info, archive, url), signature)
             for before, after in [(url, "https://example.invalid/other.zip"), ('length="7"', 'length="8"'),
-                                  ("14.0", "15.0"), ("3.1.0</", "3.0.5</"), (signature, ""),
+                                  ("26.0", "27.0"), ("3.1.0</", "3.0.5</"), (signature, ""),
                                   ("<sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>", ""),
                                   ("arm64", "x86_64")]:
                 with self.subTest(change=(before, after)):

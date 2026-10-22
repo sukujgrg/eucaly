@@ -16,7 +16,10 @@ actor LibraryTextSearchIndex {
         let relativeSortKey: String
     }
 
-    private var db: OpaquePointer?
+    private var connection: LibrarySearchDatabaseConnection?
+    private var db: OpaquePointer? { connection?.handle }
+    private var onConnectionClosed: (@Sendable (Int32) -> Void)?
+    private var cachedSearchScope: Set<String>?
     private let databaseURL: URL
 #if DEBUG
     private var failNextCommit = false
@@ -32,63 +35,13 @@ actor LibraryTextSearchIndex {
         databaseURL = url
     }
 
-    init(databaseURL: URL) {
+    init(databaseURL: URL, onConnectionClosed: (@Sendable (Int32) -> Void)? = nil) {
+        self.onConnectionClosed = onConnectionClosed
         try? FileManager.default.createDirectory(
             at: databaseURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
         self.databaseURL = databaseURL
-    }
-
-    func rebuild(with urls: [URL]) -> Int {
-        guard openDatabaseIfNeeded(), let db else { return 0 }
-
-        guard execute("BEGIN IMMEDIATE TRANSACTION;", db: db) else { return 0 }
-        guard execute("DELETE FROM file_index;", db: db) else {
-            execute("ROLLBACK;", db: db)
-            return 0
-        }
-
-        let insertSQL = "INSERT INTO file_index(filename, content, path) VALUES (?1, ?2, ?3);"
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, insertSQL, -1, &statement, nil) == SQLITE_OK else {
-            execute("ROLLBACK;", db: db)
-            return 0
-        }
-        defer {
-            sqlite3_finalize(statement)
-        }
-
-        var inserted = 0
-        let uniqueURLs = Array(Set(urls))
-
-        for url in uniqueURLs {
-            let standardizedURL = url.standardizedFileURL
-            let content = indexedContent(for: standardizedURL, kind: LibraryFileKind(url: standardizedURL))
-
-            guard
-                bindText(standardizedURL.lastPathComponent, at: 1, statement: statement),
-                bindText(content, at: 2, statement: statement),
-                bindText(standardizedURL.path, at: 3, statement: statement)
-            else {
-                sqlite3_reset(statement)
-                sqlite3_clear_bindings(statement)
-                continue
-            }
-
-            if sqlite3_step(statement) == SQLITE_DONE {
-                inserted += 1
-            }
-
-            sqlite3_reset(statement)
-            sqlite3_clear_bindings(statement)
-        }
-
-        if !execute("COMMIT;", db: db) {
-            execute("ROLLBACK;", db: db)
-            return 0
-        }
-        return inserted
     }
 
     func syncLibraryMetadata(
@@ -229,17 +182,26 @@ actor LibraryTextSearchIndex {
         return metadata
     }
 
-    func search(query: String, limit: Int = 250) -> [SearchResult] {
+    func search(query: String, scopeFiles: [URL]? = nil, limit: Int = 250) -> [SearchResult] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count >= LibrarySearchModel.minimumCharacterCount else { return [] }
         guard openDatabaseIfNeeded(), let db else { return [] }
 
         let ftsQuery = matchQuery(for: trimmed)
         guard !ftsQuery.isEmpty else { return [] }
+        if let scopeFiles {
+            guard !scopeFiles.isEmpty, prepareSearchScope(scopeFiles, db: db) else { return [] }
+        }
 
+        // Scope before ranking/limiting so retained roots and audio rows cannot
+        // consume the result budget of the current Preview library.
+        let scopeJoin = scopeFiles == nil ? "" : """
+        JOIN temp.library_search_scope AS search_scope ON search_scope.path = file_index.path
+        """
         let sql = """
-        SELECT path, content
+        SELECT file_index.path, file_index.content
         FROM file_index
+        \(scopeJoin)
         WHERE file_index MATCH ?1
         ORDER BY bm25(file_index, 0.05, 1.0)
         LIMIT ?2;
@@ -280,6 +242,34 @@ actor LibraryTextSearchIndex {
             )
         }
         return results
+    }
+
+    /// Exact paths avoid root-prefix ambiguity and keep SQL bindings bounded for
+    /// large libraries. TEMP state belongs to this actor's database connection.
+    private func prepareSearchScope(_ urls: [URL], db: OpaquePointer) -> Bool {
+        let paths = Set(urls.map { $0.standardizedFileURL.path })
+        guard paths != cachedSearchScope else { return true }
+        cachedSearchScope = nil
+        guard execute("CREATE TEMP TABLE IF NOT EXISTS library_search_scope(path TEXT PRIMARY KEY) WITHOUT ROWID;", db: db),
+              execute("DELETE FROM temp.library_search_scope;", db: db)
+        else { return false }
+
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "INSERT INTO temp.library_search_scope(path) VALUES (?1);", -1, &statement, nil) == SQLITE_OK else {
+            return false
+        }
+        defer { sqlite3_finalize(statement) }
+
+        for path in paths {
+            guard !Task.isCancelled,
+                  bindText(path, at: 1, statement: statement),
+                  sqlite3_step(statement) == SQLITE_DONE
+            else { return false }
+            sqlite3_reset(statement)
+            sqlite3_clear_bindings(statement)
+        }
+        cachedSearchScope = paths
+        return true
     }
 
     private static func previewText(from content: String) -> String {
@@ -337,7 +327,7 @@ actor LibraryTextSearchIndex {
             return false
         }
 
-        db = pointer
+        connection = LibrarySearchDatabaseConnection(handle: pointer, onClose: onConnectionClosed)
 
         let createTableSQL = """
         CREATE VIRTUAL TABLE IF NOT EXISTS file_index USING fts5(
@@ -627,4 +617,19 @@ actor LibraryTextSearchIndex {
 #endif
 
     private static let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+}
+
+/// SQLite handles are C resources; actor storage releasing an OpaquePointer
+/// does not close them. No statements outlive an index method's defer.
+nonisolated private final class LibrarySearchDatabaseConnection {
+    let handle: OpaquePointer
+    private let onClose: (@Sendable (Int32) -> Void)?
+    init(handle: OpaquePointer, onClose: (@Sendable (Int32) -> Void)?) {
+        self.handle = handle
+        self.onClose = onClose
+    }
+    deinit {
+        let result = sqlite3_close(handle)
+        onClose?(result)
+    }
 }

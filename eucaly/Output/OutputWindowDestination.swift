@@ -30,7 +30,7 @@ final class OutputWindowDestination: NSObject, OutputDestinationDriving, NSWindo
         output.isOpaque = true; output.hasShadow = false
         output.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         output.delegate = self
-        output.outputCoordinator = coordinator
+        output.outputCoordinator = coordinator; output.outputDestinationID = destinationID
         output.contentView = NSHostingView(rootView: OutputCompositionView(coordinator: coordinator, destinationID: destinationID))
         output.setFrame(screen.frame, display: true)
         window = output

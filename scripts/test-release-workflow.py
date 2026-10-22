@@ -243,7 +243,7 @@ class ReleaseFlowTests(unittest.TestCase):
                 flags = "0x10000(runtime)" if override.get("runtime", True) else "0x0(none)"
                 return f"CodeDirectory v=20500 flags={flags}\nTeamIdentifier={override.get('team', self.signing_team)}"
             self.assertIn("--xml", args)
-            entitlements = {}
+            entitlements = {"com.apple.security.cs.disable-library-validation": True} if binary.name == "eucalyNDIHelper" else {}
             entitlements = override.get("entitlements", entitlements)
             return plistlib.dumps(entitlements).decode() if entitlements else ""
         if args[0] == "xcodebuild":
@@ -281,6 +281,9 @@ class ReleaseFlowTests(unittest.TestCase):
                 (app / "Info.plist").write_bytes(plistlib.dumps(info))
                 (app / "MacOS").mkdir()
                 (app / "MacOS/eucaly").write_bytes(b"fixture executable")
+                if self.missing_binary != "eucalyNDIHelper":
+                    (app / "Helpers").mkdir()
+                    (app / "Helpers/eucalyNDIHelper").write_bytes(b"fixture output helper")
                 framework = app / "Frameworks/Sparkle.framework"
                 for name in ("Sparkle", "Autoupdate", "Updater.app/Contents/MacOS/Updater",
                              "XPCServices/Installer.xpc/Contents/MacOS/Installer",
@@ -298,7 +301,7 @@ class ReleaseFlowTests(unittest.TestCase):
             return
         if args[0] == "lipo":
             if args[-1] == "-archs":
-                self.assertEqual(Path(args[1]).name, "eucaly")
+                self.assertIn(Path(args[1]).name, ("eucaly", "eucalyNDIHelper"))
                 return self.main_architectures
             self.assertEqual(args[-2:], ("-verify_arch", "arm64"))
             if Path(args[1]).name == self.missing_arm_binary:
@@ -1087,7 +1090,7 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertEqual(self.archive_count(), 0)
 
     def test_every_shipped_binary_must_support_arm64(self):
-        for name in ("eucaly", "Sparkle", "Autoupdate", "Updater", "Installer", "Downloader"):
+        for name in ("eucaly", "eucalyNDIHelper", "Sparkle", "Autoupdate", "Updater", "Installer", "Downloader"):
             with self.subTest(binary=name):
                 self.missing_arm_binary = name
                 with self.assertRaises(subprocess.CalledProcessError):
@@ -1105,7 +1108,7 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assert_not_published()
 
     def test_missing_sparkle_binaries_are_rejected_before_notarization(self):
-        for name in ("Sparkle", "Autoupdate", "Updater", "Installer", "Downloader"):
+        for name in ("eucalyNDIHelper", "Sparkle", "Autoupdate", "Updater", "Installer", "Downloader"):
             with self.subTest(binary=name):
                 self.missing_binary = name
                 with self.assertRaisesRegex(release.ReleaseError, "Required executable is missing"):
@@ -1116,6 +1119,27 @@ class ReleaseFlowTests(unittest.TestCase):
         self.signature_overrides[("Installer", "arm64")] = {"team": "OTHERTEAM"}
         with self.assertRaisesRegex(release.ReleaseError, "Signing team differs"):
             self.invoke(no_publish=True)
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 0)
+
+    def test_output_helper_signature_and_runtime_are_required(self):
+        for override, message in (({"team": "OTHERTEAM"}, "Signing team differs"),
+                                  ({"runtime": False}, "Hardened runtime is missing"),
+                                  ({"entitlements": {"com.apple.security.get-task-allow": True}}, "Debugging entitlement")):
+            with self.subTest(override=override):
+                self.signature_overrides[("eucalyNDIHelper", "arm64")] = override
+                with self.assertRaisesRegex(release.ReleaseError, message):
+                    self.invoke(no_publish=True)
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 0)
+
+    def test_ndi_external_library_exception_is_confined_to_output_helper(self):
+        for binary, entitlements, message in (
+                ("eucaly", {"com.apple.security.cs.disable-library-validation": True}, "Only the NDI helper"),
+                ("eucalyNDIHelper", {}, "separately signed vendor runtime")):
+            with self.subTest(binary=binary):
+                self.signature_overrides.clear()
+                self.signature_overrides[(binary, "arm64")] = {"entitlements": entitlements}
+                with self.assertRaisesRegex(release.ReleaseError, message):
+                    self.invoke(no_publish=True)
         self.assertEqual(self.count("xcrun", "notarytool", "submit"), 0)
 
     def test_missing_hardened_runtime_in_helper_is_rejected(self):

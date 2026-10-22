@@ -12,10 +12,6 @@ struct CurrentPaneContainerView: View {
     @ObservedObject var playbackProgress: PlaybackProgressStore
     @ObservedObject var flow: PresentationFlowController
     let thumbnailScale: Double
-    let titleForWebpage: (URL) -> String
-    let savedWebpageEntryURL: URL?
-    let onWebpageNavigationChange: (URL, URL) -> Void
-    let onWebpageTitleChange: (String, URL) -> Void
     let canEditCurrentLyrics: Bool
     let onEditCurrentLyrics: () -> Void
     let onClearCurrent: (() -> Void)?
@@ -26,7 +22,6 @@ struct CurrentPaneContainerView: View {
     var body: some View {
         let slides = session.slides
         let isCollapsed = flow.isCurrentCollapsed
-        let selectedWebpageURL = currentWebpageURL(from: slides)
         let allowsPDFThumbnailRendering: Bool = {
             if let pdfSource = session.pdfSlideSource {
                 return PDFSlideCatalog.shouldRenderThumbnails(pageCount: pdfSource.pageCount)
@@ -39,7 +34,7 @@ struct CurrentPaneContainerView: View {
                     if session.isPresenting {
                         return session.areSlidesVisible ? "(Presenting)" : "(Slides hidden)"
                     }
-                    return slides.isEmpty ? "(Not presenting)" : "(Loaded)"
+                    return session.isEmpty ? "(Not presenting)" : "(Loaded)"
                 }()
 
                 if session.isPresenting || !session.isEmpty {
@@ -113,67 +108,13 @@ struct CurrentPaneContainerView: View {
                         Text("No document loaded")
                             .font(.headline)
                             .foregroundStyle(.primary)
-                        Text("Click any slide in Preview to load it here")
+                        Text("Select a slide in Preview, then click Load to Current")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding()
-                    .transition(.opacity)
-                } else if let selectedWebpageURL {
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack(spacing: 8) {
-                            Label(
-                                titleForWebpage(selectedWebpageURL),
-                                systemImage: "globe"
-                            )
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-
-                            Spacer()
-
-                            Button {
-                                session.webpageMuted.toggle()
-                            } label: {
-                                Label(
-                                    session.webpageMuted ? "Unmute" : "Mute",
-                                    systemImage: session.webpageMuted ? "speaker.wave.2.fill" : "speaker.slash.fill"
-                                )
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                        }
-                        .padding(.horizontal, 10)
-
-                        if let savedWebpageEntryURL,
-                           !WebpageURLMatcher.representSamePage(savedWebpageEntryURL, selectedWebpageURL) {
-                            Text("Showing a navigated page, not the saved sidebar URL.")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 10)
-                        }
-
-                        WebpageViewRepresentable(
-                            url: selectedWebpageURL,
-                            isMuted: session.webpageMuted,
-                            onURLChange: onWebpageNavigationChange,
-                            onTitleChange: { title, currentURL in
-                                onWebpageTitleChange(title, currentURL)
-                            }
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(.separator, lineWidth: 1)
-                        )
-                        .padding(.horizontal, 10)
-                        .padding(.bottom, 4)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    }
-                    .excludingInterfaceAnimation(.disclosure)
                     .transition(.opacity)
                 } else {
                     GeometryReader { proxy in
@@ -278,7 +219,6 @@ struct CurrentPaneContainerView: View {
         .padding(10)
         .frame(
             maxWidth: .infinity,
-            minHeight: selectedWebpageURL == nil || isCollapsed ? nil : 420,
             maxHeight: isCollapsed ? nil : .infinity,
             alignment: .top
         )
@@ -287,8 +227,7 @@ struct CurrentPaneContainerView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         )
         .paneAccentRing(.current, isEmphasized: !session.isEmpty && !isCollapsed)
-        .layoutPriority(selectedWebpageURL == nil ? 0 : 1)
-        .onChange(of: playbackProgress.videoCurrentTime) { _, newValue in
+        .onChange(of: playbackProgress.videoCurrentTime, initial: true) { _, newValue in
             guard !isSeekingVideo else { return }
             videoSeekDraft = newValue
         }
@@ -320,6 +259,7 @@ struct CurrentPaneContainerView: View {
                     systemImage: session.videoMuted ? "speaker.wave.2.fill" : "speaker.slash.fill"
                 )
             }
+            .help("Mute or unmute video audio on every output, including NDI and local monitoring. For local listening through the default macOS audio output, use Output → Listen on This Mac.")
 
             Button {
                 session.videoLoop.toggle()
@@ -348,6 +288,8 @@ struct CurrentPaneContainerView: View {
                 }
             )
             .disabled(playbackProgress.videoDuration <= 0)
+            .accessibilityLabel("Video position")
+            .accessibilityValue(formattedVideoTime(videoSeekDraft))
 
             Text(formattedVideoTime(playbackProgress.videoDuration))
                 .font(.caption.monospacedDigit())
@@ -438,21 +380,5 @@ struct CurrentPaneContainerView: View {
         } catch {
             return
         }
-    }
-
-    private func currentWebpageURL(from slides: [Slide]) -> URL? {
-        guard session.pdfSlideSource == nil else { return nil }
-
-        if let selectionID = session.currentSlideID,
-           let selectedSlide = slides.first(where: { $0.id == selectionID }),
-           let webpageURL = selectedSlide.webpageURL {
-            return webpageURL
-        }
-
-        if slides.count == 1 {
-            return slides.first?.webpageURL
-        }
-
-        return nil
     }
 }

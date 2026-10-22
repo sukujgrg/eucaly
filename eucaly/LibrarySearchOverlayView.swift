@@ -296,8 +296,8 @@ private struct LibrarySearchFieldView: NSViewRepresentable {
         )
     }
 
-    func makeNSView(context: Context) -> InitialFocusSearchField {
-        let searchField = InitialFocusSearchField()
+    func makeNSView(context: Context) -> LibrarySearchField {
+        let searchField = LibrarySearchField()
         searchField.placeholderString = "Search songs or commands"
         searchField.font = .systemFont(ofSize: NSFont.systemFontSize)
         searchField.controlSize = .large
@@ -312,7 +312,7 @@ private struct LibrarySearchFieldView: NSViewRepresentable {
         return searchField
     }
 
-    func updateNSView(_ searchField: InitialFocusSearchField, context: Context) {
+    func updateNSView(_ searchField: LibrarySearchField, context: Context) {
         context.coordinator.update(from: self)
         if searchField.stringValue != text {
             searchField.stringValue = text
@@ -321,9 +321,10 @@ private struct LibrarySearchFieldView: NSViewRepresentable {
     }
 
     static func dismantleNSView(
-        _ searchField: InitialFocusSearchField,
+        _ searchField: LibrarySearchField,
         coordinator: Coordinator
     ) {
+        searchField.restorePreviousFocus()
         coordinator.commandRouter.unregister(searchField: searchField)
         searchField.delegate = nil
         searchField.target = nil
@@ -393,20 +394,6 @@ private struct LibrarySearchFieldView: NSViewRepresentable {
                 return true
             default:
                 return commandRouter.perform(commandSelector, sender: control)
-            }
-        }
-    }
-
-    final class InitialFocusSearchField: NSSearchField {
-        private var needsInitialFocus = true
-
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            guard needsInitialFocus, window != nil else { return }
-            needsInitialFocus = false
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                self.window?.makeFirstResponder(self)
             }
         }
     }

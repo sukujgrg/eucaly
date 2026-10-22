@@ -6,17 +6,16 @@ import SwiftUI
 @MainActor
 final class ManageOutputsController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
     let coordinator: OutputCoordinator
-    let router: AltViewOutputRouter
     var store: OutputProfileStore { coordinator.profiles }
     let section = NSSegmentedControl(labels: ["Outputs", "Profiles"], trackingMode: .selectOne, target: nil, action: nil)
     let table = NSTableView()
     let addOutputMenu = NSPopUpButton(frame: .zero, pullsDown: true)
     let addNative = NSMenuItem(title: "Native Monitor Output", action: nil, keyEquivalent: "")
-    let addMedia = NSMenuItem(title: "AltView Media Output", action: nil, keyEquivalent: "")
-    let addAltView = NSMenuItem(title: "AltView Text Output", action: nil, keyEquivalent: "")
+    let addNDI = NSMenuItem(title: "NDI Output", action: nil, keyEquivalent: "")
     let removeOutput = NSButton(title: "−", target: nil, action: nil)
     let makeDefault = NSButton(title: "Make Default", target: nil, action: nil)
     let addProfile = NSButton()
+    let removeProfile = NSButton(title: "−", target: nil, action: nil)
     let statusLabel = outputSettingsLabel(secondary: true)
     let issueLabel = outputSettingsLabel(secondary: true)
     private let detailHost = NSView()
@@ -25,17 +24,17 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     private(set) var selectedID: UUID?
     private var outputSelection: UUID?
     private var profileSelection: UUID?
-    private enum DetailKey: Hashable { case output(UUID, native: Bool), profile(UUID), recovery, empty }
+    private enum DetailKey: Hashable { case output(UUID), profile(UUID), recovery, empty }
     private var detailKey: DetailKey?
     private var child: NSViewController?
     // Keep the two navigation panes mounted. Profiles share one retargetable
     // form rather than retaining a large control tree for every saved profile.
     private var profileForm: OutputProfileEditor?
     // The model bounds destinations to 16. Keep each editor tied to its UUID,
-    // including pairing drafts, rather than retargeting destination callbacks.
+    // rather than retargeting destination callbacks.
     private var destinationForms: [DetailKey: OutputDestinationEditor] = [:]
     private var detailNotice: NSView?
-    private struct ListRow: Equatable { let id: UUID; let title: String; let detail: String }
+    private struct ListRow: Equatable { let id: UUID?; let title: String; let detail: String }
     private var rows: [ListRow] = []
     private var reloadingTable = false
     private var reloadTask: Task<Void, Never>?
@@ -49,11 +48,11 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     var destinationEditor: OutputDestinationEditor? { child as? OutputDestinationEditor }
     var profilesMode: Bool { section.selectedSegment == 1 }
 
-    init(coordinator: OutputCoordinator, router: AltViewOutputRouter) {
-        self.coordinator = coordinator; self.router = router
+    init(coordinator: OutputCoordinator) {
+        self.coordinator = coordinator
         super.init(nibName: nil, bundle: nil)
         for publisher in [coordinator.objectWillChange, coordinator.profiles.objectWillChange,
-                          coordinator.displays.objectWillChange, router.objectWillChange] {
+                          coordinator.displays.objectWillChange] {
             publisher.sink { [weak self] _ in self?.scheduleReload() }.store(in: &subscriptions)
         }
     }
@@ -74,12 +73,11 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         list.borderType = .bezelBorder; list.documentView = table
         list.heightAnchor.constraint(greaterThanOrEqualToConstant: 190).isActive = true
         addNative.target = self; addNative.action = #selector(addNativeOutput(_:))
-        addMedia.target = self; addMedia.action = #selector(addMediaOutput(_:))
-        addAltView.target = self; addAltView.action = #selector(addAltViewOutput(_:))
+        addNDI.target = self; addNDI.action = #selector(addNDIOutput(_:))
         let menu = NSMenu(); menu.autoenablesItems = false
         let glyph = NSMenuItem(title: "+", action: nil, keyEquivalent: "")
         glyph.image = NSImage(named: NSImage.addTemplateName)
-        menu.addItem(glyph); menu.addItem(addNative); menu.addItem(addAltView); menu.addItem(addMedia)
+        menu.addItem(glyph); menu.addItem(addNative); menu.addItem(addNDI)
         addOutputMenu.menu = menu; addOutputMenu.imagePosition = .imageOnly
         addOutputMenu.setAccessibilityLabel("Add Output")
         addOutputMenu.toolTip = "Add a disabled, unassigned output."
@@ -91,7 +89,9 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         addProfile.target = self; addProfile.action = #selector(addSelectedProfile(_:))
         addProfile.setAccessibilityLabel("Add Profile")
         addProfile.toolTip = "Add a profile by copying the selected profile."
-        for button in [addOutputMenu, removeOutput, makeDefault, addProfile] {
+        removeProfile.target = self; removeProfile.action = #selector(removeSelectedProfile(_:))
+        removeProfile.setAccessibilityLabel("Remove Unused Profile")
+        for button in [addOutputMenu, removeOutput, makeDefault, addProfile, removeProfile] {
             button.bezelStyle = .rounded; button.controlSize = .small
             button.setContentHuggingPriority(.required, for: .horizontal)
             button.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -99,7 +99,8 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         outputActions.orientation = .horizontal; outputActions.alignment = .centerY; outputActions.spacing = 8
         for action in [addOutputMenu, removeOutput, NSView(), makeDefault] { outputActions.addArrangedSubview(action) }
         profileActions.orientation = .horizontal; profileActions.alignment = .centerY
-        profileActions.addArrangedSubview(addProfile); profileActions.addArrangedSubview(NSView())
+        profileActions.spacing = 8
+        for action in [addProfile, removeProfile, NSView()] { profileActions.addArrangedSubview(action) }
         let sidebar = NSStackView(views: [section, list, outputActions, profileActions])
         sidebar.orientation = .vertical; sidebar.alignment = .leading; sidebar.spacing = 8
         for item in sidebar.arrangedSubviews { item.widthAnchor.constraint(equalTo: sidebar.widthAnchor).isActive = true }
@@ -134,25 +135,22 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         isPresented = value
         isSuspended = !value
         if value {
-            coordinator.displays.refresh(); router.startDiscovery(); reload()
+            coordinator.displays.refresh(); reload()
             profileEditor?.render(force: true)
-            destinationEditor?.remoteEditor?.setActive(true)
-            destinationEditor?.mediaEditor?.setActive(true)
         }
         else {
+            reloadTask?.cancel(); reloadTask = nil
             if isViewLoaded { finishEditing() }
-            destinationEditor?.remoteEditor?.setActive(false)
-            destinationEditor?.mediaEditor?.setActive(false)
-            router.stopDiscovery()
         }
     }
     func finishEditing() {
         guard isViewLoaded else { return }
         finishOutputSettingsFieldEditing(in: view)
         profileEditor?.finishEditing()
+        destinationEditor?.ndiEditor?.finishEditing()
     }
     func scheduleReload() {
-        guard reloadTask == nil else { return }
+        guard !isSuspended, reloadTask == nil else { return }
         reloadTask = Task { @MainActor [weak self] in
             await Task.yield()
             guard let self, !Task.isCancelled else { return }
@@ -162,15 +160,13 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     func reload() {
         guard isViewLoaded else { return }
         let statuses = profilesMode ? [:] : Dictionary(uniqueKeysWithValues: coordinator.destinationStatuses().map { ($0.id, $0.readiness.title) })
-        let fresh = profilesMode ? store.document.profiles.filter(\.isNative).map { profile in
-            ListRow(id: profile.id, title: profile.name, detail: "Reusable appearance")
-        } : store.document.destinations.map { output in
-            ListRow(id: output.id, title: output.name,
+        let fresh = profilesMode ? profileRows() : store.document.destinations.map { output in
+            ListRow(id: output.id, title: store.destinationLabel(output),
                 detail: (output.id == store.document.defaultDestinationID ? "Default · " : "")
-                    + (store.profile(output.profileID)?.isNative == true ? "Native" : "AltView") + " · " + (statuses[output.id] ?? "Disabled"))
+                    + store.workspaceName(output.workspaceID) + " · " + (output.ndi == nil ? "Native" : "NDI") + " · " + (statuses[output.id] ?? "Disabled"))
         }
         if selectedID == nil || !fresh.contains(where: { $0.id == selectedID }) {
-            finishEditing(); selectedID = fresh.first?.id
+            finishEditing(); selectedID = fresh.compactMap(\.id).first
         }
         if profilesMode { profileSelection = selectedID } else { outputSelection = selectedID }
         reloadingTable = true
@@ -181,12 +177,17 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         reloadingTable = false
         outputActions.isHidden = profilesMode
         profileActions.isHidden = !profilesMode
-        addProfile.isEnabled = profilesMode && selectedID.flatMap(store.profile)?.isNative == true
+        addProfile.isEnabled = profilesMode && selectedID.flatMap(store.profile) != nil
             && store.document.profiles.count < 128 && store.recoveryNotice == nil
+        let reusable = selectedID.flatMap(store.profile)?.isReusable ?? true
+        addProfile.setAccessibilityLabel(reusable ? "Add Profile" : "Save as Reusable Profile")
+        addProfile.toolTip = reusable ? "Create a reusable profile by copying the selected profile." : "Save a reusable copy without changing this output’s appearance."
+        let removalProblem = selectedID.map(store.profileRemovalProblem) ?? "Select a profile to remove."
+        removeProfile.isEnabled = profilesMode && selectedID != nil && removalProblem == nil
+        removeProfile.toolTip = removalProblem ?? "Remove this unused profile. Output settings stay unchanged."
         let canAdd = !profilesMode && store.document.destinations.count < 16 && store.recoveryNotice == nil
-        addNative.isEnabled = canAdd && store.profile(OutputProfile.audienceID)?.isNative == true
-        addAltView.isEnabled = canAdd && store.profile(OutputProfile.altViewID)?.kind == .altView
-        addMedia.isEnabled = canAdd && store.profile(OutputProfile.altViewMediaID) != nil
+        addNative.isEnabled = canAdd && store.profile(OutputProfile.audienceID) != nil
+        addNDI.isEnabled = canAdd && store.document.profiles.count < 128
         addOutputMenu.isEnabled = canAdd
         removeOutput.isEnabled = !profilesMode && selectedID != nil && store.recoveryNotice == nil
         let isDefault = !profilesMode && selectedID != nil && selectedID == store.document.defaultDestinationID
@@ -195,7 +196,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         let key: DetailKey
         if store.recoveryNotice != nil { key = .recovery }
         else if let id = selectedID {
-            key = profilesMode ? .profile(id) : .output(id, native: store.profile(store.document.destinations.first { $0.id == id }!.profileID)?.isNative == true)
+            key = profilesMode ? .profile(id) : .output(id)
         } else { key = .empty }
         if detailKey != key { finishEditing(); buildDetail(key) }
         pruneDestinationForms()
@@ -203,10 +204,29 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         renderStatus()
         updateReadability()
     }
+    private func profileRows() -> [ListRow] {
+        let used = Set(store.document.destinations.map(\.profileID))
+        let groups: [(String, [OutputProfile])] = [
+            ("Reusable Profiles", store.reusableProfiles),
+            ("Output Appearances", store.document.profiles.filter { !$0.isReusable && used.contains($0.id) }),
+            ("Unused Appearances", store.document.profiles.filter { !$0.isReusable && !used.contains($0.id) })
+        ]
+        return groups.flatMap { title, profiles -> [ListRow] in
+            guard !profiles.isEmpty else { return [] }
+            return [ListRow(id: nil, title: title, detail: "")] + profiles.map { profile in
+                let names = store.document.destinations.filter { $0.profileID == profile.id }.map(\.name)
+                let detail = names.isEmpty ? "Unused · " + (profile.isReusable ? "Reusable profile" : "Saved output appearance")
+                    : "Used by: " + names.joined(separator: ", ")
+                return ListRow(id: profile.id, title: profile.name, detail: detail)
+            }
+        }
+    }
     private func renderStatus() {
-        let source = coordinator.ownership.source == nil ? "No live source" : "eucaly Current"
-        let slides = coordinator.isPresenting ? (coordinator.visible ? "Visible" : "Hidden") : "Stopped"
-        statusLabel.stringValue = "Live Output · \(source) · \(slides)"
+        let active = store.document.workspaces.filter { coordinator.isRunning(workspace: $0.id) }
+        statusLabel.stringValue = active.isEmpty ? "Workspace outputs stopped" : active.map {
+            $0.name + ": " + coordinator.tabStatus(workspace: $0.id)
+        }.joined(separator: " · ")
+        statusLabel.maximumNumberOfLines = 2; statusLabel.toolTip = statusLabel.stringValue
         issueLabel.stringValue = [coordinator.issue, report.isEmpty ? nil : report.message].compactMap { $0 }.joined(separator: "\n")
         issueLabel.isHidden = issueLabel.stringValue.isEmpty
     }
@@ -225,11 +245,11 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
                 addChild(editor); outputSettingsPin(editor.view, to: detailHost)
             }
             child = editor
-        case .output(let id, _):
+        case .output(let id):
             let editor: OutputDestinationEditor
             if let cached = destinationForms[key] { editor = cached }
             else {
-                editor = OutputDestinationEditor(coordinator: coordinator, router: router, destinationID: id)
+                editor = OutputDestinationEditor(coordinator: coordinator, destinationID: id)
                 editor.onEditProfile = { [weak self] id in self?.selectProfile(id) }
                 destinationForms[key] = editor
                 addChild(editor); outputSettingsPin(editor.view, to: detailHost)
@@ -257,36 +277,37 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         }
         if previous !== child {
             previous?.view.isHidden = true
-            (previous as? OutputDestinationEditor)?.remoteEditor?.setActive(false)
-            (previous as? OutputDestinationEditor)?.mediaEditor?.setActive(false)
         }
         child?.view.isHidden = false
-        destinationEditor?.remoteEditor?.setActive(!isSuspended)
-        destinationEditor?.mediaEditor?.setActive(!isSuspended)
     }
     private func pruneDestinationForms() {
         let keys = Set(store.document.destinations.map { destination in
-            DetailKey.output(destination.id, native: store.profile(destination.profileID)?.isNative == true)
+            DetailKey.output(destination.id)
         })
         for key in Array(destinationForms.keys) where !keys.contains(key) {
             let form = destinationForms.removeValue(forKey: key)
-            form?.remoteEditor?.setActive(false)
-            form?.mediaEditor?.setActive(false)
             form?.view.removeFromSuperview(); form?.removeFromParent()
         }
     }
     private func discardForms() {
         profileForm?.view.removeFromSuperview(); profileForm?.removeFromParent()
         for form in destinationForms.values {
-            form.remoteEditor?.setActive(false)
-            form.mediaEditor?.setActive(false)
             form.view.removeFromSuperview(); form.removeFromParent()
         }
         profileForm = nil; destinationForms.removeAll()
     }
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
+    func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool { rows[row].id == nil }
+    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { rows[row].id != nil }
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { rows[row].id == nil ? 28 : 52 }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let entry = rows[row]
+        if entry.id == nil {
+            let cell = NSTableCellView()
+            let label = outputSettingsLabel(entry.title, secondary: true, heading: true)
+            cell.textField = label; outputSettingsPin(label, to: cell, inset: 6)
+            return cell
+        }
         let title = outputSettingsLabel(entry.title, heading: true); title.maximumNumberOfLines = 1
         title.lineBreakMode = .byTruncatingTail
         let detail = outputSettingsLabel(entry.detail, secondary: true); detail.maximumNumberOfLines = 1
@@ -301,7 +322,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     }
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard !reloadingTable, rows.indices.contains(table.selectedRow) else { return }
-        let id = rows[table.selectedRow].id
+        guard let id = rows[table.selectedRow].id else { return }
         if selectedID != id { finishEditing(); selectedID = id; reload() }
     }
     func selectDestination(_ id: UUID) { select(id, segment: 0) }
@@ -313,12 +334,26 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         finishEditing(); selectedID = profilesMode ? profileSelection : outputSelection; reload()
     }
     @objc private func addNativeOutput(_ sender: Any?) { addOutput(name: "Native Output", profileID: OutputProfile.audienceID) }
-    @objc private func addAltViewOutput(_ sender: Any?) { addOutput(name: "AltView", profileID: OutputProfile.altViewID) }
-    @objc private func addMediaOutput(_ sender: Any?) { addOutput(name: "AltView Media", profileID: OutputProfile.altViewMediaID) }
+    @objc private func addNDIOutput(_ sender: Any?) {
+        guard !profilesMode, store.recoveryNotice == nil, store.document.destinations.count < 16,
+              store.document.profiles.count < 128 else { return }
+        finishEditing()
+        var sourceName = "eucaly", number = 2
+        while store.document.destinations.contains(where: { $0.ndi?.sourceName.caseInsensitiveCompare(sourceName) == .orderedSame }) {
+            sourceName = "eucaly \(number)"; number += 1
+        }
+        var profile = store.audience; profile.id = UUID(); profile.name = sourceName + " Appearance"
+        profile.usesLegacySizing = false; profile.background = OutputBackground(); profile.background.colour = .chromaGreen
+        var output = OutputDestinationConfiguration(name: "NDI Output", profileID: profile.id, monitor: nil,
+            enabled: false, workspaceID: coordinator.focusedWorkspaceID)
+        output.ndi = NDIOutputSettings(sourceName: sourceName); profile.customizedForDestinationID = output.id
+        store.edit { $0.profiles.append(profile); $0.destinations.append(output) }
+        selectDestination(output.id)
+    }
     @objc private func addSelectedProfile(_ sender: Any?) {
         guard profilesMode, store.recoveryNotice == nil, let id = selectedID else { return }
         finishEditing()
-        guard var profile = store.profile(id), profile.isNative, store.document.profiles.count < 128 else { return }
+        guard var profile = store.profile(id), store.document.profiles.count < 128 else { return }
         profile.id = UUID(); profile.customizedForDestinationID = nil
         // Leave room for the suffix even when the source name fills the limit.
         while (profile.name + " Copy").utf8.count > 160 { profile.name.removeLast() }
@@ -330,16 +365,19 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     private func addOutput(name: String, profileID: UUID) {
         guard !profilesMode, store.recoveryNotice == nil, store.profile(profileID) != nil, store.document.destinations.count < 16 else { return }
         finishEditing()
-        var output = OutputDestinationConfiguration(name: name, profileID: profileID, monitor: nil, enabled: false)
-        if profileID == OutputProfile.altViewMediaID {
-            let sources = store.document.destinations.filter { store.profile($0.profileID)?.kind == .audience }
-            output.sourceAudienceID = sources.count == 1 ? sources.first?.id : nil
-        }
+        let output = OutputDestinationConfiguration(name: name, profileID: profileID, monitor: nil, enabled: false, workspaceID: coordinator.focusedWorkspaceID)
+
         store.edit { $0.destinations.append(output) }; selectDestination(output.id)
     }
     @objc private func removeSelectedOutput(_ sender: Any?) {
         guard !profilesMode, store.recoveryNotice == nil, let id = selectedID else { return }
         finishEditing(); store.edit { $0.destinations.removeAll { $0.id == id } }; reload()
+    }
+    @objc private func removeSelectedProfile(_ sender: Any?) {
+        guard profilesMode, let id = selectedID else { return }
+        finishEditing()
+        if store.removeProfile(id) { selectedID = nil }
+        reload()
     }
     @objc private func makeSelectedDefault(_ sender: Any?) {
         guard !profilesMode, let id = selectedID else { return }
@@ -350,11 +388,10 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     // Preserve the existing SwiftUI font-metric probes for all assigned profiles,
     // independently of which native editor is selected. They never render output.
     private func updateReadability() {
-        let snapshot = coordinator.snapshot
-        let input = OutputSettingsReadabilityInput(document: store.document, snapshot: snapshot, displays: coordinator.displays)
+        let input = OutputSettingsReadabilityInput(coordinator: coordinator)
         guard readabilityInput != input else { return }
         readabilityInput = input
-        let root = OutputSettingsReadabilityView(input: input, snapshot: snapshot) { [weak self] report in
+        let root = OutputSettingsReadabilityView(input: input) { [weak self] report in
                 guard let self, self.readabilityInput == input, self.report != report else { return }
                 self.report = report; self.renderStatus()
             }
@@ -370,43 +407,46 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     }
 }
 
-/// Selection and receiver status are not measurement inputs. Resolve monitor
+/// Selection and transport status are not measurement inputs. Resolve output
 /// geometry once, and only update the SwiftUI probes when their inputs change.
 private struct OutputSettingsReadabilityInput: Equatable {
     struct Assignment: Equatable, Identifiable {
         let id: UUID
         let profile: OutputProfile
         let size: CGSize
+        let current: OutputTextContent
+        let next: OutputTextContent?
+        let visible: Bool
+        let hasMedia: Bool
     }
     let assignments: [Assignment]
-    let current: OutputTextContent
-    let next: OutputTextContent?
-    let visible: Bool
-    let hasMedia: Bool
-
-    @MainActor
-    init(document: OutputProfileDocument, snapshot: OutputContentSnapshot, displays: ProjectionDisplayManager) {
-        assignments = document.destinations.compactMap { destination in
-            guard let profile = document.profiles.first(where: { $0.id == destination.profileID }),
-                  let target = destination.monitor, let monitor = displays.resolve(target) else { return nil }
-            return .init(id: destination.id, profile: profile, size: monitor.frame.size)
+    @MainActor init(coordinator: OutputCoordinator) {
+        assignments = coordinator.profiles.document.destinations.compactMap { destination in
+            guard let profile = coordinator.profile(for: destination.id) else { return nil }
+            let size: CGSize
+            if let ndi = destination.ndi { size = .init(width: ndi.width, height: ndi.height) }
+            else if let target = destination.monitor, let monitor = coordinator.displays.resolve(target) { size = monitor.frame.size }
+            else { return nil }
+            let snapshot = coordinator.snapshot(for: destination.id)
+            return .init(id: destination.id, profile: profile, size: size, current: snapshot.current,
+                next: snapshot.next, visible: snapshot.visible,
+                hasMedia: snapshot.localMedia.map { OutputContentClassifier.mode(for: $0) == .media } ?? false)
         }
-        current = snapshot.current; next = snapshot.next; visible = snapshot.visible
-        hasMedia = snapshot.localMedia.map { AltViewPresentationAdapter.mode(for: $0) == .media } ?? false
     }
 }
 
 private struct OutputSettingsReadabilityView: View {
     let input: OutputSettingsReadabilityInput
-    let snapshot: OutputContentSnapshot
     let onReport: (LyricsReadabilityReport) -> Void
     var body: some View {
         ZStack {
             ForEach(input.assignments) { assignment in
-                if assignment.profile.kind == .confidence {
-                    OutputConfidenceReadabilityProbe(snapshot: snapshot, profile: assignment.profile, size: assignment.size)
-                } else {
-                    OutputReadabilityProbe(content: snapshot.current, profile: assignment.profile, size: assignment.size)
+                if assignment.visible && !assignment.hasMedia {
+                    if assignment.profile.kind == .confidence {
+                        OutputConfidenceReadabilityProbe(snapshot: .init(current: assignment.current, next: assignment.next, visible: assignment.visible), profile: assignment.profile, size: assignment.size)
+                    } else {
+                        OutputReadabilityProbe(content: assignment.current, profile: assignment.profile, size: assignment.size)
+                    }
                 }
             }
         }.onPreferenceChange(LyricsReadabilityPreferenceKey.self) { report in

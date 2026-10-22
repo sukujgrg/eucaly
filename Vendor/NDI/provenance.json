@@ -1,0 +1,27 @@
+{
+  "sdk_package": "com.newtek.NDI.SDK",
+  "sdk_version": "6.3.2.0.260413",
+  "source": "https://ndi.video/for-developers/ndi-sdk/download/",
+  "runtime_sha256": "af53789fcb8fc1737e6827a54d7ccea09736dc759e00ef02d53f4ed64d9abbd5",
+  "runtime_team_identifier": "W8U66ET244",
+  "runtime_bundled": false,
+  "header_sha256": {
+    "Processing.NDI.DynamicLoad.h": "c4168c348ca7898bbef2c9010e044aa444532ba984710adc0777a594e4ebe532",
+    "Processing.NDI.Find.h": "7e975119cfc32765d0b8bb627c9deb6826ac891490cae504abeb07905fc7853b",
+    "Processing.NDI.FrameSync.h": "e772cc6afb6ee5fe103509a8286977a3fa8aa1b66ac9f19b114dc2eda4f6814e",
+    "Processing.NDI.Lib.cplusplus.h": "9f82ef6ab4e4aabb1a1d07f3a73ab94c12c021546036d96b941be8b7fa80b58c",
+    "Processing.NDI.Lib.h": "d1824002656d256d79ba77a930f0d7bdf36d056c2e84d58822a9fd46ded14f20",
+    "Processing.NDI.Recv.ex.h": "06b98d323b040f8c76568d4c07fdc366727433ef5abe58535c393ae0f064a7da",
+    "Processing.NDI.Recv.h": "8755be6ac7fa1b582f7205e4bc91ee52462c8efe9b3402eecc3a3886a0d3bc35",
+    "Processing.NDI.RecvAdvertiser.h": "476f8e658800bee3bdf05b89e14764399fe01437aae02734d93487fa135084d7",
+    "Processing.NDI.RecvListener.h": "06a1c42896510f16317f2f29daffbdbc29ee9d33b887c0947443c6399b82cfbe",
+    "Processing.NDI.Routing.h": "8570842b338cb46b806249d73c5f7aa32998011a7ae5c918dd541be6b7951fc2",
+    "Processing.NDI.Send.h": "1816aa6572b915459be400f661f26ef6ec043c723327d6d14f4e38a01251e9ec",
+    "Processing.NDI.SendAdvertiser.h": "1538e9295ae6b8122b5e8371fb0e11b29c25c99a18a54b19757e992f2281bb1a",
+    "Processing.NDI.SendListener.h": "fdfe84634ef931c833057736fed15a1007e135e98ef0bb87300998b0358748db",
+    "Processing.NDI.compat.h": "595f2c74c6f01ebf1b3336550fdecf70093d031fbe423a402b0197babe0d4e84",
+    "Processing.NDI.deprecated.h": "ddbd3fe82b43433e579a9066e06baacbd2a2f08666e04157a397288d77c8b75f",
+    "Processing.NDI.structs.h": "84b811bedfa44497c7085c99215c16e01ca15ecbc95495412095e72b047c253a",
+    "Processing.NDI.utilities.h": "832f0849efa4f1b4f4bb0930f1d785a259ff159837681e4a35015939a1b44374"
+  }
+}

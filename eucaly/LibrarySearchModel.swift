@@ -48,11 +48,15 @@ final class LibrarySearchModel: ObservableObject {
     }
 
     func setScopeFiles(_ files: [URL]) {
+        let previousScope = scopeFileSet
         scopeFiles = files.map(\.standardizedFileURL)
         scopeFileSet = Set(scopeFiles)
         refreshFilteredResults()
         if let selectedResult, !filteredResults.contains(where: { $0.url == selectedResult }) {
             self.selectedResult = filteredResults.first?.url
+        }
+        if previousScope != scopeFileSet {
+            scheduleSearch(currentSelectedURL: selectedResult)
         }
     }
 
@@ -112,8 +116,9 @@ final class LibrarySearchModel: ObservableObject {
         guard searchQuery.count >= Self.minimumCharacterCount else { return nil }
 
         cancelDebounce()
-        let searchResults = await index.search(query: searchQuery)
-        guard trimmedQuery == searchQuery else { return nil }
+        let searchScope = scopeFileSet
+        let searchResults = await index.search(query: searchQuery, scopeFiles: scopeFiles)
+        guard trimmedQuery == searchQuery, scopeFileSet == searchScope else { return nil }
 
         applySearchResults(
             searchResults,
@@ -137,15 +142,17 @@ final class LibrarySearchModel: ObservableObject {
         }
 
         let index = index
+        let searchScopeFiles = scopeFiles
+        let searchScope = scopeFileSet
         debounceTask = Task {
             try? await Task.sleep(nanoseconds: 220_000_000)
             guard !Task.isCancelled else { return }
 
-            let searchResults = await index.search(query: searchQuery)
+            let searchResults = await index.search(query: searchQuery, scopeFiles: searchScopeFiles)
             guard !Task.isCancelled else { return }
 
             await MainActor.run {
-                guard self.trimmedQuery == searchQuery else { return }
+                guard self.trimmedQuery == searchQuery, self.scopeFileSet == searchScope else { return }
                 self.applySearchResults(
                     searchResults,
                     query: searchQuery,

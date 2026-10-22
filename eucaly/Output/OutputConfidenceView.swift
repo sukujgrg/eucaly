@@ -11,7 +11,7 @@ nonisolated struct OutputConfidenceContent {
     init(snapshot: OutputContentSnapshot, profile: OutputProfile) {
         current = snapshot.current
         next = snapshot.next.flatMap { profile.components(in: $0).isEmpty ? nil : $0 }
-        media = snapshot.localMedia.flatMap { AltViewPresentationAdapter.mode(for: $0) == .media ? $0 : nil }
+        media = snapshot.localMedia.flatMap { OutputContentClassifier.mode(for: $0) == .media ? $0 : nil }
         isIdle = !snapshot.visible || (media == nil && profile.components(in: current).isEmpty && next == nil)
     }
     static func labeled(_ content: OutputTextContent, profile: OutputProfile) -> OutputTextContent {

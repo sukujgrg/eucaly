@@ -4,12 +4,19 @@ import AVFoundation
 /// an individual view never resets playback or adds an audio owner.
 @MainActor
 final class OutputMediaRuntime {
+    let ndiVideoFrames = NDISharedVideoFrames()
+    let programAudioGain = ProgramAudioGain()
     private let bookmarkResolver: @Sendable (String) async -> URL?
     init(bookmarkResolver: @escaping @Sendable (String) async -> URL? = { bookmark in
         await Task.detached { SecurityScopedBookmarks.resolve(bookmark)?.url }.value
     }) { self.bookmarkResolver = bookmarkResolver }
     private var programPlayer: AVPlayer?
     var program: AVPlayer? { programPlayer }
+    var hasRunningPlayback: Bool {
+        programPlayer.map { $0.rate != 0 || $0.timeControlStatus == .waitingToPlayAtSpecifiedRate } == true
+            || backgrounds.values.contains { $0.wantsPlayback }
+    }
+    private(set) var programFill = false
     private var programURL: URL?
     private var programGeneration = UUID()
     private var programVisible = false
@@ -45,14 +52,20 @@ final class OutputMediaRuntime {
             if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
         }
     }
-    func updateProgram(slide: Slide?, session: PresentationSession?, running: Bool, visible: Bool) {
+    func updateProgram(slide: Slide?, session: PresentationSession?, running: Bool, visible: Bool,
+                       localAudioEnabled: Bool = true, documentRevision: UInt64? = nil) {
+        programFill = session?.videoFill ?? false
         programVisible = visible && running
+        programAudioGain.set(session?.videoMuted == true ? 0 : 1)
         let url = running ? slide?.videoURL : nil
         if programURL != url || self.session !== session {
             stopProgram()
             self.session = session; programURL = url
             if let url {
                 let player = AVPlayer(url: url); player.allowsExternalPlayback = false
+                // Set the local output level before the first play/preroll.
+                // NDI reads programme gain separately, before this output gain.
+                player.volume = localAudioEnabled ? 1 : 0
                 programPlayer = player
                 let generation = programGeneration
                 timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main) { [weak self] _ in
@@ -75,14 +88,20 @@ final class OutputMediaRuntime {
             }
         }
         guard let program else { return }
+        program.volume = localAudioEnabled ? 1 : 0
         program.isMuted = session?.videoMuted ?? false
         if visible && session?.videoPaused != true { program.play() } else { program.pause() }
-        if let session, session.videoSeekRevision != seekRevision {
+        // Current can hold a replacement document before output accepts it.
+        // Its progress reset must not seek the previously accepted live video,
+        // including when a later appearance/audio edit refreshes that program.
+        if let session, documentRevision == nil || documentRevision == session.documentRevision,
+           session.videoSeekRevision != seekRevision {
             seekRevision = session.videoSeekRevision
             program.seek(to: CMTime(seconds: session.videoSeekTarget, preferredTimescale: 600))
         }
     }
     private func stopProgram() {
+        if let program { ndiVideoFrames.stop(player: program) }
         programGeneration = UUID(); durationTask?.cancel(); durationTask = nil
         program?.pause()
         if let timeObserver { program?.removeTimeObserver(timeObserver) }
@@ -130,7 +149,9 @@ final class OutputMediaRuntime {
             let key = backgroundKey(profile, url: url)
             wanted[key] = (url, (wanted[key]?.1 ?? false) || showing)
         }
-        for key in Array(backgrounds.keys) where wanted[key] == nil { backgrounds.removeValue(forKey: key) }
+        for key in Array(backgrounds.keys) where wanted[key] == nil {
+            if let resource = backgrounds.removeValue(forKey: key) { ndiVideoFrames.stop(player: resource.player) }
+        }
         for (key, value) in wanted {
             if backgrounds[key] == nil { backgrounds[key] = BackgroundResource(url: value.0) }
             backgrounds[key]?.setPlayback(value.1)
@@ -138,6 +159,7 @@ final class OutputMediaRuntime {
     }
     var backgroundResourceCount: Int { backgrounds.count }
     func stop() {
+        ndiVideoFrames.stop()
         stopProgram(); backgrounds.removeAll()
         for task in bookmarkTasks.values { task.cancel() }
         bookmarkTasks.removeAll(); requestedBookmarks.removeAll(); backgroundURLs.removeAll()

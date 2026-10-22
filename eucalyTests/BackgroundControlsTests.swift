@@ -25,14 +25,14 @@ final class BackgroundControlsTests: XCTestCase {
 
     func testToggleBackgroundVisualDoesNotAffectSlidesVisibility() async {
         let result = await MainActor.run { () -> (slidesVisible: Bool, backgroundVisibleAfter: Bool) in
-            let session = PresentationSession()
+            let fixture = LocalOutputHarness(); defer { fixture.stop() }
+            let session = fixture.session
             let tempURL = URL(fileURLWithPath: NSTemporaryDirectory())
                 .appendingPathComponent("eucaly-test-bg-toggle.jpg")
             FileManager.default.createFile(atPath: tempURL.path, contents: Data([0x00]), attributes: nil)
 
             session.setBackgroundVisual(tempURL)
-            session.isPresenting = true
-            session.areSlidesVisible = true
+            session.showSlides()
 
             session.toggleBackgroundVisualVisibility()
 
@@ -45,14 +45,14 @@ final class BackgroundControlsTests: XCTestCase {
 
     func testToggleBackgroundVisualWhenPresentingTogglesVisibility() async {
         let result = await MainActor.run { () -> (firstVisible: Bool, secondVisible: Bool) in
-            let session = PresentationSession()
+            let fixture = LocalOutputHarness(); defer { fixture.stop() }
+            let session = fixture.session
             let tempURL = URL(fileURLWithPath: NSTemporaryDirectory())
                 .appendingPathComponent("eucaly-test-bg-toggle2.jpg")
             FileManager.default.createFile(atPath: tempURL.path, contents: Data([0x00]), attributes: nil)
 
             session.setBackgroundVisual(tempURL)
-            session.isPresenting = true
-            session.areSlidesVisible = false
+            session.showSlides(); session.hideSlides()
 
             session.toggleBackgroundVisualVisibility()
             let firstVisible = session.isBackgroundVisualVisible

@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import AppKit
+import CoreGraphics
 
 @MainActor
 final class PreviewSelectionState: ObservableObject {
@@ -9,6 +10,12 @@ final class PreviewSelectionState: ObservableObject {
 
 @MainActor
 final class PresentationFlowController: ObservableObject {
+    nonisolated enum PreviewSource: Equatable {
+        case none
+        case file(URL)
+        case window(CGWindowID)
+        case lyrics
+    }
     struct PreviewDocumentState {
         var slides: [Slide]
         var pdfSource: PDFSlideSource?
@@ -37,6 +44,7 @@ final class PresentationFlowController: ObservableObject {
     }
 
     @Published private(set) var previewDocument: PreviewDocumentState?
+    @Published var previewSource: PreviewSource = .none
     @Published var isCurrentCollapsed: Bool = true
     let previewSelection = PreviewSelectionState()
 
@@ -113,6 +121,7 @@ final class PresentationFlowController: ObservableObject {
 
     func clearPreviewDocument() {
         previewDocument = nil
+        previewSource = .none
         previewSelection.selectedSlideID = nil
     }
 
@@ -136,11 +145,13 @@ final class PresentationFlowController: ObservableObject {
     func setCurrentSlides(
         _ slides: [Slide],
         in session: PresentationSession,
+        lyricsSourceURL: URL? = nil,
         preferredSelection: Slide.ID? = nil,
         preferredSelectionIndex: Int? = nil
     ) {
         session.setSlides(
             slides,
+            lyricsSourceURL: lyricsSourceURL,
             preferredSelection: preferredSelection,
             preferredSelectionIndex: preferredSelectionIndex
         )
@@ -167,34 +178,12 @@ final class PresentationFlowController: ObservableObject {
         session.selectCurrentSlide(slideID)
     }
 
-    func selectCurrentSlideForPresentationStart(in session: PresentationSession) {
-        if let selection = session.currentSlideID,
-           session.containsSlide(id: selection) {
-            return
-        }
-        session.currentSlideID = session.firstSlideID
-    }
-
     func toggleSlidesVisibility(in session: PresentationSession) {
-        if session.outputCoordinator.isPresenting && session.outputCoordinator.visible {
-            session.outputCoordinator.hide()
-            return
+        let wasPresenting = session.isPresenting
+        session.toggleSlidesVisibility()
+        if !wasPresenting && session.isPresenting {
+            isCurrentCollapsed = false
         }
-        if session.isPresenting {
-            if session.areSlidesVisible {
-                session.hideSlides()
-            } else {
-                selectCurrentSlideForPresentationStart(in: session)
-                session.showSlides()
-            }
-            return
-        }
-
-        guard session.hasProjectionContent else { return }
-
-        selectCurrentSlideForPresentationStart(in: session)
-        session.showSlides()
-        isCurrentCollapsed = false
     }
 
     func hideSlides(in session: PresentationSession) {

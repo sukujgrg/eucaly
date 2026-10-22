@@ -13,6 +13,25 @@ final class OutputProfileStore: ObservableObject {
     private let persistence: OutputProfilePersistence?
     private var quickControlsGeneration: UInt64 = 0
 
+    var reusableProfiles: [OutputProfile] { document.profiles.filter(\.isReusable) }
+
+    func profileRemovalProblem(_ id: UUID) -> String? {
+        guard recoveryNotice == nil else { return recoveryNotice }
+        guard let profile = profile(id) else { return "This profile no longer exists." }
+        guard !profile.isBuiltIn else { return "Built-in profiles cannot be removed." }
+        guard !document.destinations.contains(where: { $0.profileID == id }) else {
+            return "Choose another appearance for every output using this profile, including disabled outputs, before removing it."
+        }
+        return nil
+    }
+
+    @discardableResult
+    func removeProfile(_ id: UUID) -> Bool {
+        guard profileRemovalProblem(id) == nil else { return false }
+        edit { $0.profiles.removeAll { $0.id == id } }
+        return profile(id) == nil
+    }
+
     struct QuickEditTarget: Equatable {
         let destinationID: UUID
         fileprivate let generation: UInt64
@@ -38,7 +57,7 @@ final class OutputProfileStore: ObservableObject {
     }
     func canCustomizeProfile(for destinationID: UUID) -> Bool {
         guard recoveryNotice == nil, let destination = document.destinations.first(where: { $0.id == destinationID }),
-              let profile = profile(destination.profileID), profile.isNative else { return false }
+              let profile = profile(destination.profileID) else { return false }
         return isExclusiveCustomization(profile, for: destinationID) || document.profiles.count < 128
     }
     /// Output-level editing is independent even when its reusable profile is
@@ -50,7 +69,7 @@ final class OutputProfileStore: ObservableObject {
     }
     func editDestinationProfile(_ destinationID: UUID, _ change: (inout OutputProfile) -> Void) {
         guard let destination = document.destinations.first(where: { $0.id == destinationID }),
-              var profile = profile(destination.profileID), profile.isNative else { return }
+              var profile = profile(destination.profileID) else { return }
         let original = profile
         change(&profile)
         guard profile != original else { return }
@@ -83,16 +102,21 @@ final class OutputProfileStore: ObservableObject {
         return self.profile(profile.id) == profile ? profile.id : nil
     }
 
-    init(defaults: UserDefaults? = nil, monitor: ProjectionMonitorTarget? = nil) {
+    init(defaults: UserDefaults? = nil, monitor: ProjectionMonitorTarget? = nil,
+         retirementCleanup: OutputRetirementCleanup? = nil) {
         self.defaults = defaults
-        persistence = defaults.map { OutputProfilePersistence(defaults: $0) }
+        persistence = defaults.map { OutputProfilePersistence(defaults: $0, cleanup: retirementCleanup) }
         let fallback = OutputProfileMigration.migrate(defaults: defaults, monitor: monitor)
-        if let data = defaults?.data(forKey: Self.key) {
+        if let data = persistence?.load(documentKey: Self.key) {
             do {
                 guard data.count <= 1_048_576 else { throw StoreError.invalid }
-                let saved = try JSONDecoder().decode(OutputProfileDocument.self, from: data)
-                guard saved.isValid else { throw StoreError.invalid }
-                document = OutputProfileMigration.retireLegacyPresets(in: saved)
+                let saved = try OutputLegacyMigration.decode(data)
+                document = saved
+                if let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   (root["version"] as? Int ?? 0) < 6,
+                   defaults?.data(forKey: "outputProfilesWorkspaceMigrationBackup") == nil {
+                    defaults?.set(data, forKey: "outputProfilesWorkspaceMigrationBackup")
+                }
                 let defaultsRevision = defaults?.integer(forKey: Self.defaultsRevisionKey) ?? 0
                 if defaultsRevision < 1 {
                     // Upgrade the untouched built-in background once. Subsequent
@@ -105,7 +129,7 @@ final class OutputProfileStore: ObservableObject {
                 }
                 // Revision 2 also saves the removal of compatibility-decoded
                 // scripture roles and typography overrides in version 3 files.
-                if document != saved || defaultsRevision < Self.currentDefaultsRevision { persist() }
+                persist()
             } catch {
                 document = Self.salvageAssignments(data, fallback: fallback)
                 recoveryNotice = "Saved output settings could not be read. The original data is retained; choose Recover Settings to save a fresh configuration."
@@ -116,49 +140,43 @@ final class OutputProfileStore: ObservableObject {
         }
     }
     private static func salvageAssignments(_ data: Data, fallback: OutputProfileDocument) -> OutputProfileDocument {
-        guard data.count <= 1_048_576, let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let rows = object["destinations"] as? [[String: Any]], rows.count <= 16 else { return fallback }
         var result = fallback
+        for index in result.destinations.indices { result.destinations[index].enabled = false }
+        guard data.count <= 1_048_576, let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rows = object["destinations"] as? [[String: Any]], rows.count <= 16 else { return result }
         var recovered: [OutputDestinationConfiguration] = []
         for row in rows {
-            guard let encoded = try? JSONSerialization.data(withJSONObject: row),
+            guard let native = OutputLegacyMigration.nativeRow(row),
+                  let encoded = try? JSONSerialization.data(withJSONObject: native),
                   var destination = try? JSONDecoder().decode(OutputDestinationConfiguration.self, from: encoded),
                   !recovered.contains(where: { $0.id == destination.id }) else { continue }
             if !result.profiles.contains(where: { $0.id == destination.profileID }) {
                 result.profiles.append(.init(id: destination.profileID, name: "Recovered profile", kind: .audience))
             }
+            if !result.workspaces.contains(where: { $0.id == destination.workspaceID }) { destination.workspaceID = nil }
             destination.enabled = false // Recovery never starts a partially understood output.
             recovered.append(destination)
         }
-        if !recovered.isEmpty {
-            result.destinations = recovered
-            result.defaultDestinationID = object.keys.contains("defaultDestinationID")
-                ? (object["defaultDestinationID"] as? String).flatMap(UUID.init(uuidString:)) : recovered.first?.id
-            if !recovered.contains(where: { $0.id == result.defaultDestinationID }) { result.defaultDestinationID = nil }
-        }
+        result.destinations = recovered
+        result.defaultDestinationID = object.keys.contains("defaultDestinationID")
+            ? (object["defaultDestinationID"] as? String).flatMap(UUID.init(uuidString:))
+            : (rows.first?["id"] as? String).flatMap(UUID.init(uuidString:))
+        if !recovered.contains(where: { $0.id == result.defaultDestinationID }) { result.defaultDestinationID = nil }
         return result.isValid ? result : fallback
     }
     private enum StoreError: Error { case invalid }
     func profile(_ id: UUID) -> OutputProfile? { document.profiles.first { $0.id == id } }
     func assignmentProblem(for destination: OutputDestinationConfiguration) -> String? {
         guard destination.enabled else { return nil }
-        if profile(destination.profileID)?.kind == .altViewMedia {
-            guard destination.srt?.isValid == true, destination.srt?.receiverID != nil, let source = destination.sourceAudienceID,
-                  document.destinations.contains(where: { $0.id == source && profile($0.profileID)?.kind == .audience }) else {
-                return "Choose an Audience output and choose a paired AltView receiver before enabling it."
+        if let ndi = destination.ndi {
+            guard ndi.isValid else { return "Choose a valid NDI source name and the supported 1920 × 1080, 30 fps format." }
+            if let other = document.destinations.first(where: { $0.id != destination.id && $0.enabled && $0.ndi?.normalizedName == ndi.normalizedName }) {
+                return "This NDI source name is used by \(other.name). Choose a different name."
             }
-        }
-        if let id = destination.srt?.receiverID,
-           let other = document.destinations.first(where: { $0.id != destination.id && $0.enabled && $0.srt?.receiverID == id }) {
-            return "This receiver’s Media input is used by \(other.name). Disable that Media output or choose another receiver."
         }
         if let target = destination.monitor,
            let other = document.destinations.first(where: { $0.id != destination.id && $0.enabled && $0.monitor?.identity == target.identity }) {
             return "This monitor is used by \(other.name). Disable that output or choose a different monitor."
-        }
-        if let target = destination.receiver,
-           let other = document.destinations.first(where: { $0.id != destination.id && $0.enabled && $0.receiver?.receiverID == target.receiverID }) {
-            return "This receiver is used by \(other.name). Disable that output or choose a different receiver."
         }
         return nil
     }
@@ -179,52 +197,35 @@ final class OutputProfileStore: ObservableObject {
         return nil
     }
     func selectProfile(_ profileID: UUID, for destinationID: UUID) {
-        guard let profile = profile(profileID) else { return }
+        guard profile(profileID) != nil else { return }
         edit { doc in
             guard let i = doc.destinations.firstIndex(where: { $0.id == destinationID }) else { return }
             doc.destinations[i].profileID = profileID
-            if profile.isNative {
-                doc.destinations[i].destination = doc.destinations[i].savedMonitor.map(OutputDestination.monitor) ?? .none
-            } else {
-                doc.destinations[i].destination = doc.destinations[i].savedReceiver.map(OutputDestination.altView) ?? .none
-            }
         }
     }
     @discardableResult
-    func assignReceiver(_ target: OutputReceiverTarget?, to id: UUID) -> String? {
+    func setNDISettings(_ settings: NDIOutputSettings, for destinationID: UUID) -> String? {
         guard recoveryNotice == nil else { return recoveryNotice }
-        guard var destination = document.destinations.first(where: { $0.id == id }),
-              profile(destination.profileID)?.kind == .altView else { return "This AltView output no longer exists." }
-        destination.destination = target.map(OutputDestination.altView) ?? .none
+        guard settings.isValid else { return "Use a source name of up to 120 UTF-8 bytes without control characters or \\ / : * ? \" < > |." }
+        guard var destination = document.destinations.first(where: { $0.id == destinationID && $0.ndi != nil }) else { return "This NDI output no longer exists." }
+        destination.ndi = settings
         if let problem = assignmentProblem(for: destination) { return problem }
         edit { doc in
-            guard let i = doc.destinations.firstIndex(where: { $0.id == id }),
-                  doc.profiles.first(where: { $0.id == doc.destinations[i].profileID })?.kind == .altView else { return }
-            doc.destinations[i].destination = target.map(OutputDestination.altView) ?? .none
-            doc.destinations[i].savedReceiver = target
+            if let index = doc.destinations.firstIndex(where: { $0.id == destinationID }) { doc.destinations[index] = destination }
         }
         return nil
-    }
-    var conflictingReceiverIDs: Set<UUID> {
-        let assigned = document.destinations.filter { $0.enabled && $0.receiver != nil }
-        let grouped = Dictionary(grouping: assigned, by: { $0.receiver!.receiverID })
-        return Set(grouped.values.filter { $0.count > 1 }.flatMap { $0.map(\.id) })
-    }
-    var conflictingMediaDestinationIDs: Set<UUID> {
-        let assigned = document.destinations.filter { $0.enabled && $0.srt?.receiverID != nil }
-        let grouped = Dictionary(grouping: assigned, by: { $0.srt!.receiverID! })
-        return Set(grouped.values.filter { $0.count > 1 }.flatMap { $0.map(\.id) })
     }
     var conflictingDestinationIDs: Set<UUID> {
         let assigned = document.destinations.filter { $0.enabled && $0.monitor != nil }
         let grouped = Dictionary(grouping: assigned, by: { $0.monitor!.identity })
-        return Set(grouped.values.filter { $0.count > 1 }.flatMap { $0.map(\.id) })
+        let ndi = Dictionary(grouping: document.destinations.filter { $0.enabled && $0.ndi != nil }, by: { $0.ndi!.normalizedName })
+        return Set((grouped.values.filter { $0.count > 1 } + ndi.values.filter { $0.count > 1 }).flatMap { $0.map(\.id) })
     }
     var monitorConflictNotice: String? {
-        let conflicts = conflictingDestinationIDs.union(conflictingReceiverIDs).union(conflictingMediaDestinationIDs)
+        let conflicts = conflictingDestinationIDs
         guard !conflicts.isEmpty else { return nil }
         let names = document.destinations.filter { conflicts.contains($0.id) }.map(\.name).joined(separator: ", ")
-        return "\(names) share a destination. Choose a different monitor or AltView receiver for each enabled output."
+        return "\(names) share a destination. Choose a different monitor or NDI source name for each enabled output."
     }
     var audience: OutputProfile {
         if let destination = document.destinations.first, let profile = profile(destination.profileID), profile.kind == .audience { return profile }
@@ -237,6 +238,7 @@ final class OutputProfileStore: ObservableObject {
     func edit(_ action: (inout OutputProfileDocument) -> Void) {
         var next = document; action(&next)
         if !next.destinations.contains(where: { $0.id == next.defaultDestinationID }) { next.defaultDestinationID = nil }
+        if !next.destinations.contains(where: { $0.id == next.backgroundAudioDestinationID && $0.ndi != nil }) { next.backgroundAudioDestinationID = nil }
         guard next.isValid, next != document else { return }
         let previousDefault = defaultDestination
         let nextDefault = next.destinations.first { $0.id == next.defaultDestinationID }
@@ -245,17 +247,12 @@ final class OutputProfileStore: ObservableObject {
             quickControlsGeneration &+= 1
         }
         let outputChanged = next.destinations != document.destinations || next.profiles != document.profiles
+            || next.backgroundAudioDestinationID != document.backgroundAudioDestinationID
         document = next
         if outputChanged { mirrorAudiencePreferences() }
         persist()
         // Default selection is an editing preference, never a lifecycle event.
         if outputChanged { for action in Array(observers.values) { action() } }
-    }
-    func importLegacyAudienceBackground() {
-        guard let defaults else { return }
-        var audience = self.audience
-        audience.background.bookmark = defaults.string(forKey: "backgroundVisualBookmark").flatMap { $0.isEmpty ? nil : $0 }
-        update(audience)
     }
     private func mirrorAudiencePreferences() {
         guard let defaults, recoveryNotice == nil else { return }
@@ -276,11 +273,17 @@ final class OutputProfileStore: ObservableObject {
         if let original = defaults?.data(forKey: Self.key) { defaults?.set(original, forKey: "outputProfilesRecoveryBackup") }
         recoveryNotice = nil; persist()
     }
+    func clearDestinationBackground(_ destinationID: UUID) {
+        let keepsKey = document.destinations.first { $0.id == destinationID }?.ndi != nil
+        editDestinationProfile(destinationID) { $0.clearBackground(preservingKeyColour: keepsKey) }
+    }
     func clearBackgrounds() {
         edit { doc in
-            let ids = Set(doc.destinations.filter(\.enabled).map(\.profileID))
-            for index in doc.profiles.indices where ids.contains(doc.profiles[index].id) && doc.profiles[index].isNative {
-                doc.profiles[index].clearBackground()
+            let enabled = doc.destinations.filter(\.enabled)
+            let ids = Set(enabled.map(\.profileID))
+            let keys = Set(enabled.filter { $0.ndi != nil }.map(\.profileID))
+            for index in doc.profiles.indices where ids.contains(doc.profiles[index].id) {
+                doc.profiles[index].clearBackground(preservingKeyColour: keys.contains(doc.profiles[index].id))
             }
         }
     }
@@ -295,21 +298,32 @@ final class OutputProfileStore: ObservableObject {
 }
 
 /// Foundation guarantees UserDefaults is thread-safe. This narrow boundary only
-/// accepts value snapshots and serializes encoding/writes on its own queue;
-/// UI state and actor-isolated settings keys never enter the queued closures.
+/// accepts value snapshots. All stores share one read/write order, so migration
+/// or restoration cannot read ahead of a pending edit for the same defaults
+/// domain and then re-save an older snapshot. UI state never enters the queue.
 nonisolated private final class OutputProfilePersistence: @unchecked Sendable {
     private let defaults: UserDefaults
-    private let queue = DispatchQueue(label: "com.suku.eucaly.output-profiles")
-    init(defaults: UserDefaults) { self.defaults = defaults }
+    private let cleanup: OutputRetirementCleanup?
+    private static let queue = DispatchQueue(label: "com.suku.eucaly.output-profiles")
+    init(defaults: UserDefaults, cleanup: OutputRetirementCleanup?) { self.defaults = defaults; self.cleanup = cleanup }
+    func load(documentKey: String) -> Data? {
+        // Restoration must follow pending saves too. Reading UserDefaults on
+        // the caller's queue can restore and then re-save an older snapshot.
+        Self.queue.sync { defaults.data(forKey: documentKey) }
+    }
     func save(_ document: OutputProfileDocument, documentKey: String, revisionKey: String, defaultsRevision: Int) {
-        queue.async { [self] in
+        Self.queue.async { [self] in
             guard let data = try? JSONEncoder().encode(document) else { return }
             defaults.set(data, forKey: documentKey)
             defaults.set(defaultsRevision, forKey: revisionKey)
+            guard defaults.data(forKey: documentKey) == data,
+                  (try? JSONDecoder().decode(OutputProfileDocument.self, from: data)) == document,
+                  document.isValid else { return }
+            cleanup?.schedule()
         }
     }
-    func flush() { queue.sync {} }
+    func flush() { Self.queue.sync {} }
     func waitForPersistence() async {
-        await withCheckedContinuation { continuation in queue.async { continuation.resume() } }
+        await withCheckedContinuation { continuation in Self.queue.async { continuation.resume() } }
     }
 }

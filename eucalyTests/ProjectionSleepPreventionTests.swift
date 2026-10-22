@@ -117,13 +117,15 @@ final class ProjectionSleepPreventionTests: XCTestCase {
             inventory.displays = unavailable
             session.projectionDisplays.refresh()
             XCTAssertFalse(session.isPresenting)
-        XCTAssertNil(session.outputCoordinator.snapshot.source, "Display loss must publish the completed ownership transaction")
+            XCTAssertNil(session.outputCoordinator.ownership.source, "Display loss must revoke publication permission")
+            XCTAssertFalse(session.outputCoordinator.snapshot.visible)
             XCTAssertEqual(recorder.ended, recorder.begun.map { ObjectIdentifier($0) })
             let started = recorder.begun.count
             inventory.displays = [actual]
             session.projectionDisplays.refresh()
             XCTAssertFalse(session.isPresenting)
-        XCTAssertNil(session.outputCoordinator.snapshot.source, "Display loss must publish the completed ownership transaction")
+            XCTAssertNil(session.outputCoordinator.ownership.source, "Reconnect alone must not resume publication")
+            XCTAssertFalse(session.outputCoordinator.snapshot.visible)
             XCTAssertEqual(recorder.begun.count, started, "Reconnect alone must not hold a sleep activity.")
         }
         XCTAssertEqual(recorder.begun.count, 3)

@@ -1,4 +1,5 @@
 import XCTest
+import SQLite3
 @testable import eucaly
 
 final class LibraryTextSearchIndexTests: XCTestCase {
@@ -12,7 +13,7 @@ final class LibraryTextSearchIndexTests: XCTestCase {
             contents: "Be Thou my vision"
         )
 
-        _ = await index.rebuild(with: [fileURL])
+        _ = try await index.syncFixtureFiles([fileURL], root: directoryURL)
 
         let twoChar = await index.search(query: "be")
         let paddedTwoChar = await index.search(query: "  be  ")
@@ -41,7 +42,7 @@ final class LibraryTextSearchIndexTests: XCTestCase {
             contents: "nothing relevant"
         )
 
-        _ = await index.rebuild(with: [filenameMatchURL, contentMatchURL, nonMatchURL])
+        _ = try await index.syncFixtureFiles([filenameMatchURL, contentMatchURL, nonMatchURL], root: directoryURL)
         let results = await index.search(query: "bea")
 
         XCTAssertTrue(containsResult(results, url: filenameMatchURL))
@@ -64,7 +65,7 @@ final class LibraryTextSearchIndexTests: XCTestCase {
             contents: "unrelated lyrics"
         )
 
-        _ = await index.rebuild(with: [hyphenURL, otherURL])
+        _ = try await index.syncFixtureFiles([hyphenURL, otherURL], root: directoryURL)
         let results = await index.search(query: "be-thou")
 
         XCTAssertTrue(containsResult(results, url: hyphenURL))
@@ -84,13 +85,78 @@ final class LibraryTextSearchIndexTests: XCTestCase {
             name: "welcome-loop.mp4"
         )
 
-        _ = await index.rebuild(with: [pdfURL, videoURL])
+        _ = try await index.syncFixtureFiles([pdfURL, videoURL], root: directoryURL)
 
         let pdfResults = await index.search(query: "ser")
         let videoResults = await index.search(query: "wel")
 
         XCTAssertTrue(containsResult(pdfResults, url: pdfURL))
         XCTAssertTrue(containsResult(videoResults, url: videoURL))
+    }
+
+    func testScopedSearchLimitsAfterExcludingPreviousRootAndAudioMatches() async throws {
+        let (index, directoryURL) = try makeIndex()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let root = directoryURL.appendingPathComponent("Library_%", isDirectory: true)
+        let previousRoot = directoryURL.appendingPathComponent("Library_%-backup", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: previousRoot, withIntermediateDirectories: true)
+        for index in 0..<300 {
+            _ = try writeTextFile(in: previousRoot, name: "song-\(index).txt", contents: "mercy")
+            _ = try writeBinaryFile(in: root, name: "mercy-\(index).mp3")
+        }
+        let target = try writeTextFile(
+            in: root,
+            name: "target's_%song.txt",
+            contents: String(repeating: "ordinary ", count: 700) + "mercy"
+        )
+        let scanner = LibraryFileScannerService()
+        _ = await index.syncLibraryMetadata(root: previousRoot, discoveredFiles: try scanner.discoverFiles(in: previousRoot))
+        let metadata = await index.syncLibraryMetadata(root: root, discoveredFiles: try scanner.discoverFiles(in: root))
+        let previewFiles = metadata.filter { $0.kind.isPreviewLibraryItem }.map(\.url)
+
+        let unscoped = await index.search(query: "mercy")
+        XCTAssertEqual(unscoped.count, 250)
+        XCTAssertFalse(containsResult(unscoped, url: target), "The fixture must put the current song below stronger out-of-scope matches")
+        let scoped = await index.search(query: "mercy", scopeFiles: previewFiles)
+        XCTAssertEqual(scoped.map(\.url), [target.standardizedFileURL])
+
+        // Even without the retained root, audio-only filename rows must not
+        // consume the Preview library's result budget.
+        _ = await index.syncLibraryMetadata(root: previousRoot, discoveredFiles: [])
+        let audioDominated = await index.search(query: "mercy")
+        XCTAssertEqual(audioDominated.count, 250)
+        XCTAssertFalse(containsResult(audioDominated, url: target))
+        let scopedWithAudio = await index.search(query: "mercy", scopeFiles: previewFiles)
+        XCTAssertEqual(scopedWithAudio.map(\.url), [target.standardizedFileURL])
+    }
+
+    func testScopedSearchReplacesScopeAndPreservesUnscopedSearch() async throws {
+        let (index, directoryURL) = try makeIndex()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let first = try writeTextFile(in: directoryURL, name: "first.txt", contents: "Amazing grace")
+        let second = try writeTextFile(in: directoryURL, name: "second.txt", contents: "Amazing grace")
+        _ = try await index.syncFixtureFiles([first, second], root: directoryURL)
+        let equivalentFirst = directoryURL.appendingPathComponent(".").appendingPathComponent(first.lastPathComponent)
+
+        let firstResults = await index.search(query: "amazing gra", scopeFiles: [first, equivalentFirst])
+        let secondResults = await index.search(query: "amazing gra", scopeFiles: [second])
+        let emptyResults = await index.search(query: "amazing gra", scopeFiles: [])
+        let unscoped = await index.search(query: "amazing gra")
+        XCTAssertEqual(firstResults.map(\.url), [first.standardizedFileURL])
+        XCTAssertEqual(secondResults.map(\.url), [second.standardizedFileURL])
+        XCTAssertTrue(emptyResults.isEmpty)
+        XCTAssertEqual(Set(unscoped.map(\.url)), Set([first, second].map(\.standardizedFileURL)))
+    }
+
+    func testScopedSearchDoesNotUseOneSQLParameterPerLibraryFile() async throws {
+        let (index, directoryURL) = try makeIndex()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let target = try writeTextFile(in: directoryURL, name: "song.txt", contents: "Amazing grace")
+        _ = try await index.syncFixtureFiles([target], root: directoryURL)
+        let largeScope = (0..<40_000).map { directoryURL.appendingPathComponent("song-\($0).txt") } + [target]
+        let results = await index.search(query: "amazing", scopeFiles: largeScope)
+        XCTAssertEqual(results.map(\.url), [target.standardizedFileURL])
     }
 
     func testMultiTokenSearchUsesPhraseMatchingWithFinalTokenPrefix() async throws {
@@ -108,7 +174,7 @@ final class LibraryTextSearchIndexTests: XCTestCase {
             contents: "we sing thou be together"
         )
 
-        _ = await index.rebuild(with: [phraseMatchURL, reverseOrderURL])
+        _ = try await index.syncFixtureFiles([phraseMatchURL, reverseOrderURL], root: directoryURL)
         let results = await index.search(query: "be thou")
 
         XCTAssertTrue(containsResult(results, url: phraseMatchURL))
@@ -130,7 +196,7 @@ final class LibraryTextSearchIndexTests: XCTestCase {
             contents: "Onnum venda bhayappedenda"
         )
 
-        _ = await index.rebuild(with: [partialPhraseURL, separatedTermsURL])
+        _ = try await index.syncFixtureFiles([partialPhraseURL, separatedTermsURL], root: directoryURL)
         let results = await index.search(query: "Onnum bha")
 
         XCTAssertTrue(containsResult(results, url: partialPhraseURL))
@@ -155,7 +221,7 @@ final class LibraryTextSearchIndexTests: XCTestCase {
             """
         )
 
-        _ = await index.rebuild(with: [fileURL])
+        _ = try await index.syncFixtureFiles([fileURL], root: directoryURL)
         let results = await index.search(query: "above")
 
         let result = try XCTUnwrap(results.first { $0.url.standardizedFileURL == fileURL.standardizedFileURL })
@@ -191,7 +257,7 @@ final class LibraryTextSearchIndexTests: XCTestCase {
             """
         )
 
-        _ = await index.rebuild(with: [fileURL])
+        _ = try await index.syncFixtureFiles([fileURL], root: directoryURL)
         let results = await index.search(query: "first")
 
         let result = try XCTUnwrap(results.first { $0.url.standardizedFileURL == fileURL.standardizedFileURL })
@@ -208,7 +274,7 @@ final class LibraryTextSearchIndexTests: XCTestCase {
         XCTAssertFalse(result.snippet.contains("Third slide line one"))
     }
 
-    func testRebuildIndexesFilenameForAllFilesButOnlyIndexesEligibleTxtContent() async throws {
+    func testMetadataSyncIndexesFilenameForAllFilesButOnlyIndexesEligibleTxtContent() async throws {
         let (index, directoryURL) = try makeIndex()
         defer { try? FileManager.default.removeItem(at: directoryURL) }
 
@@ -228,7 +294,7 @@ final class LibraryTextSearchIndexTests: XCTestCase {
             contents: oversizedContent + " oversizeunique"
         )
 
-        let inserted = await index.rebuild(with: [includedURL, pdfURL, oversizedURL])
+        let inserted = try await index.syncFixtureFiles([includedURL, pdfURL, oversizedURL], root: directoryURL)
         let includedResults = await index.search(query: "uniquecontent")
         let pdfFilenameResults = await index.search(query: "ser")
         let oversizedFilenameResults = await index.search(query: "too")
@@ -239,31 +305,6 @@ final class LibraryTextSearchIndexTests: XCTestCase {
         XCTAssertTrue(containsResult(pdfFilenameResults, url: pdfURL))
         XCTAssertTrue(containsResult(oversizedFilenameResults, url: oversizedURL))
         XCTAssertFalse(containsResult(oversizedResults, url: oversizedURL))
-    }
-
-    func testRebuildReplacesExistingIndexContent() async throws {
-        let (index, directoryURL) = try makeIndex()
-        defer { try? FileManager.default.removeItem(at: directoryURL) }
-
-        let oldURL = try writeTextFile(
-            in: directoryURL,
-            name: "old.txt",
-            contents: "legacytokenvalue"
-        )
-        let newURL = try writeTextFile(
-            in: directoryURL,
-            name: "new.txt",
-            contents: "freshuniquetoken"
-        )
-
-        _ = await index.rebuild(with: [oldURL])
-        _ = await index.rebuild(with: [newURL])
-
-        let oldResults = await index.search(query: "legacytokenvalue")
-        let newResults = await index.search(query: "freshuniquetoken")
-
-        XCTAssertFalse(containsResult(oldResults, url: oldURL))
-        XCTAssertTrue(containsResult(newResults, url: newURL))
     }
 
     func testSyncLibraryMetadataReturnsPreviewAndAudioMetadata() async throws {
@@ -535,6 +576,23 @@ final class LibraryTextSearchIndexTests: XCTestCase {
         XCTAssertEqual(cached.map(\.url), [audioURL.standardizedFileURL, songURL.standardizedFileURL])
         XCTAssertEqual(cached.first { $0.url == songURL.standardizedFileURL }?.title, "Cached Title")
         XCTAssertEqual(cached.first { $0.url == audioURL.standardizedFileURL }?.kind, .audio)
+    }
+
+    func testReleasingIndexClosesItsSuccessfulSQLiteConnection() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("eucaly-index-lifetime-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let closed = expectation(description: "SQLite connection closes after its index is released")
+        await openTemporaryIndex(at: directory.appendingPathComponent("search.sqlite"), onClose: { result in
+            XCTAssertEqual(result, SQLITE_OK)
+            closed.fulfill()
+        })
+        await fulfillment(of: [closed], timeout: 2)
+    }
+
+    private func openTemporaryIndex(at url: URL, onClose: @escaping @Sendable (Int32) -> Void) async {
+        let index = LibraryTextSearchIndex(databaseURL: url, onConnectionClosed: onClose)
+        _ = await index.cachedLibraryMetadata(root: url.deletingLastPathComponent())
     }
 
     private func makeIndex() throws -> (LibraryTextSearchIndex, URL) {

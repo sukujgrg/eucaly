@@ -5,13 +5,11 @@ import CoreGraphics
 enum SidebarSelection: Hashable {
     case library(URL)
     case playlist(UUID)
-    case web(URL)
     case window(CGWindowID)
 }
 
 private enum SidebarSectionTint {
     case library
-    case web
     case playlist
     case windows
     case audio
@@ -20,8 +18,6 @@ private enum SidebarSectionTint {
         switch self {
         case .library:
             Color(nsColor: .systemTeal)
-        case .web:
-            Color(nsColor: .systemIndigo)
         case .playlist:
             Color(nsColor: .systemGreen)
         case .windows:
@@ -50,7 +46,6 @@ struct SidebarView: View {
     let playlistItems: [PlaylistSidebarItem]
     let libraryRootURL: URL?
     let captureWindows: [ScreenCaptureManager.CapturedWindow]
-    let webpageURLs: [URL]
     let libraryScrollRequest: LibraryScrollRequest?
     let selectedPlaylistEntryIDs: Set<UUID>
     let sidebarSelection: SidebarSelection?
@@ -60,7 +55,6 @@ struct SidebarView: View {
     @Binding var windowCaptureFrameRate: Int
 
     let displayName: (URL) -> String
-    let titleForWebpage: (URL) -> String
     let onImportToLibrary: () -> Void
     let onRetryLibraryLoad: () -> Void
     let onImportToAudio: () -> Void
@@ -76,16 +70,11 @@ struct SidebarView: View {
     let onApplyBackgroundAudioVolume: (Double) -> Void
     let onSeekBackgroundAudio: (Double) -> Void
     let onSelectionRequest: (SidebarSelection?, Set<UUID>) -> Bool
-    let onOpenWebpageAddress: (String) -> Bool
-    let onRemoveWebpage: (URL) -> Void
     let onPickWindow: () -> Void
     let onClearSelectedWindow: () -> Void
 
     @AppStorage("sidebar.librarySectionExpanded")
     private var isLibrarySectionExpanded = true
-
-    @AppStorage("sidebar.webSectionExpanded")
-    private var isWebSectionExpanded = true
 
     @AppStorage("sidebar.playlistSectionExpanded")
     private var isPlaylistSectionExpanded = true
@@ -98,10 +87,6 @@ struct SidebarView: View {
 
     @AppStorage("sidebar.libraryGrouping")
     private var libraryGrouping = LibraryGrouping.kind
-
-    @State private var webpageAddressDraft: String = ""
-
-    @State private var webpageAddressError: String? = nil
 
     @State private var libraryExpansionState = SidebarOutlineExpansionState.empty
 
@@ -155,17 +140,6 @@ struct SidebarView: View {
                         isExpanded: $isAudioSectionExpanded
                     ) {
                         audioControls(maxListHeight: audioListMaxHeight)
-                    }
-
-                    sectionDivider
-
-                    sidebarSection(
-                        "Web",
-                        systemImage: "globe",
-                        tint: .web,
-                        isExpanded: $isWebSectionExpanded
-                    ) {
-                        webControls(maxListHeight: standardListMaxHeight)
                     }
 
                     if isWindowCaptureSupported {
@@ -318,92 +292,6 @@ struct SidebarView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func webControls(maxListHeight: CGFloat) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                TextField("https://example.com or localhost:8000", text: $webpageAddressDraft)
-                    .textFieldStyle(.roundedBorder)
-                    .submitLabel(.go)
-                    .onSubmit(submitWebpageAddress)
-
-                Button("Open") {
-                    submitWebpageAddress()
-                }
-                .sidebarActionStyle(primary: true)
-                .disabled(webpageAddressDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-
-            Text("Enter a URL to load it into Preview and save it here. Local server addresses default to http://.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            if let webpageAddressError {
-                Text(webpageAddressError)
-                    .font(.caption2)
-                    .foregroundStyle(.red)
-            }
-
-            if webpageURLs.isEmpty {
-                Text("No saved webpages")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            } else {
-                webpageList(maxHeight: maxListHeight)
-            }
-        }
-    }
-
-    private func webpageList(maxHeight: CGFloat) -> some View {
-        SidebarOutlineView(
-            contentRevision: AnyHashable(webpageURLs.map(\.absoluteString)),
-            modelBuilder: {
-                SidebarOutlineModel(
-                    roots: webpageURLs.map { url in
-                        SidebarOutlineItem(
-                            id: .web(url),
-                            title: titleForWebpage(url),
-                            accessoryAction: .remove,
-                            contextActions: [.copyURL, .remove]
-                        )
-                    }
-                )
-            },
-            selectedItemIDs: selectedWebItemID.map { [$0] } ?? [],
-            primarySelectedItemID: selectedWebItemID,
-            expansionStore: outlineExpansionStore,
-            navigationSection: .web,
-            navigationCoordinator: outlineNavigationCoordinator,
-            allowsEmptySelection: true,
-            onSelectionChange: { _, primaryID in
-                guard primaryID != nil else { return onSelectionRequest(nil, []) }
-                guard case .web(let url) = primaryID else { return false }
-                return onSelectionRequest(.web(url), [])
-            },
-            onAction: { itemID, action in
-                guard case .web(let url) = itemID else { return }
-                switch action {
-                case .remove:
-                    onRemoveWebpage(url)
-                case .copyURL:
-                    copyWebpageURL(url)
-                case .addToPlaylist, .revealInFinder:
-                    break
-                }
-            }
-        )
-        .frame(height: outlineHeight(rowCount: webpageURLs.count, maximum: maxHeight))
-    }
-
-    private var selectedWebItemID: SidebarOutlineItemID? {
-        guard case .web(let url) = sidebarSelection else { return nil }
-        return .web(url)
-    }
-
-    private func copyWebpageURL(_ url: URL) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(url.absoluteString, forType: .string)
     }
 
     private var playlistControls: some View {
@@ -718,7 +606,7 @@ struct SidebarView: View {
                     onAddLibraryItemToPlaylist(url)
                 case .revealInFinder:
                     NSWorkspace.shared.activateFileViewerSelecting([url])
-                case .remove, .copyURL:
+                case .remove:
                     break
                 }
             },
@@ -812,18 +700,6 @@ struct SidebarView: View {
 
     private func outlineHeight(rowCount: Int, maximum: CGFloat) -> CGFloat {
         min(maximum, max(26, CGFloat(rowCount) * 26))
-    }
-
-    private func submitWebpageAddress() {
-        let candidate = webpageAddressDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !candidate.isEmpty else { return }
-
-        if onOpenWebpageAddress(candidate) {
-            webpageAddressDraft = ""
-            webpageAddressError = nil
-        } else {
-            webpageAddressError = "Enter a valid http(s) URL or local server address."
-        }
     }
 }
 

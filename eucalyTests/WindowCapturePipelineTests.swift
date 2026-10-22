@@ -6,6 +6,26 @@ import IOSurface
 import ScreenCaptureKit
 
 final class WindowCapturePipelineTests: XCTestCase {
+    func testPickerCompletionKeepsRequestingWorkspaceAndRejectsDuplicateResults() throws {
+        var routing = WindowCapturePickerRouting()
+        let owner = UUID(), request = routing.begin(workspaceID: owner)
+        let result = try XCTUnwrap(routing.complete(request, windowID: 42))
+        XCTAssertEqual(result.workspaceID, owner)
+        XCTAssertEqual(result.windowID, 42)
+        XCTAssertNil(routing.complete(request, windowID: 43))
+    }
+
+    func testNewPickerRequestAndCancellationRejectOlderAsyncSelections() throws {
+        var routing = WindowCapturePickerRouting()
+        let old = routing.begin(workspaceID: UUID())
+        let owner = UUID(), newer = routing.begin(workspaceID: owner)
+        XCTAssertNil(routing.complete(old, windowID: 1))
+        XCTAssertEqual(try XCTUnwrap(routing.complete(newer, windowID: 2)).workspaceID, owner)
+        let canceled = routing.begin(workspaceID: owner)
+        routing.cancel()
+        XCTAssertNil(routing.complete(canceled, windowID: 3))
+    }
+
     func testFrameRateNormalizationAllowsSupportedValues() {
         XCTAssertEqual(WindowCaptureFrameRate.normalized(24), 24)
         XCTAssertEqual(WindowCaptureFrameRate.normalized(30), 30)

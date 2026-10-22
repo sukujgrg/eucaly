@@ -4,7 +4,40 @@ import AppKit
 import CoreGraphics
 import CoreVideo
 
-@available(macOS 14.0, *)
+/// The system picker can change application/window focus while it is open.
+/// Keep the requesting workspace through asynchronous resolution and reject
+/// completions superseded by a newer request or cancellation.
+nonisolated struct WindowCapturePickerRouting {
+    struct Request: Equatable, Sendable {
+        let id = UUID()
+        let workspaceID: UUID
+    }
+    struct Selection: Sendable {
+        let workspaceID: UUID
+        let windowID: CGWindowID
+    }
+    private(set) var current: Request?
+    @discardableResult mutating func begin(workspaceID: UUID) -> Request {
+        let request = Request(workspaceID: workspaceID)
+        current = request
+        return request
+    }
+    mutating func complete(_ request: Request, windowID: CGWindowID) -> Selection? {
+        guard current == request else { return nil }
+        current = nil
+        return Selection(workspaceID: request.workspaceID, windowID: windowID)
+    }
+    mutating func cancel() { current = nil }
+}
+
+/// Operator notices stay on controls, including when the affected source is
+/// shared by several outputs/workspaces. Program rendering never shows them.
+nonisolated struct WindowCaptureIssue: Sendable {
+    let workspaceID: UUID?
+    let windowID: CGWindowID?
+    let message: String
+}
+
 final class ScreenCaptureManager: NSObject, ObservableObject {
     static let shared = ScreenCaptureManager()
 
@@ -15,14 +48,24 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
         let start: Task<Void, Error>
         let generation: UUID
     }
+    private struct SelectionRelease {
+        let generation: UUID
+        let isRetained: @MainActor (CGWindowID) -> Bool
+    }
 
     private let sampleQueue = DispatchQueue(label: "eucaly.window-capture.sample", qos: .userInitiated)
     @MainActor var preferredFrameRate: Int = 60
     @MainActor private var activeStreams: [CGWindowID: ActiveCapture] = [:]
     @MainActor private var captureFilters: [CGWindowID: SCContentFilter] = [:]
     @MainActor @Published var windows: [CapturedWindow] = []
-    @MainActor let windowPickerSelections = PassthroughSubject<CGWindowID, Never>()
+    @MainActor let windowPickerSelections = PassthroughSubject<WindowCapturePickerRouting.Selection, Never>()
+    @MainActor let issues = PassthroughSubject<WindowCaptureIssue, Never>()
+    @MainActor private var pickerRouting = WindowCapturePickerRouting()
+    @MainActor private var pickerReplacementProblem: (@MainActor () -> String?)?
+    @MainActor private var selectionGeneration = UUID()
+    @MainActor private var pendingSelectionReleases: [CGWindowID: SelectionRelease] = [:]
     @MainActor private var availabilityMonitorTask: Task<Void, Never>?
+    private let captureConsumerCount: (@MainActor (CGWindowID) -> Int)?
     private var pickerConfigured = false
     private var pickerObserverRegistered = false
 
@@ -36,34 +79,104 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
         let frame: CGRect
     }
 
-    private override init() {
+    override init() {
+        captureConsumerCount = nil
+        super.init()
+    }
+
+    /// Isolated lifetime checks can provide consumer counts without opening a
+    /// picker or constructing a permission-requiring SCStream.
+    init(captureConsumerCount: @escaping @MainActor (CGWindowID) -> Int) {
+        self.captureConsumerCount = captureConsumerCount
         super.init()
     }
 
     // MARK: - Picker
     @MainActor
-    func presentWindowPicker() {
+    @discardableResult
+    func presentWindowPicker(workspaceID: UUID,
+                             replacementProblem: @escaping @MainActor () -> String? = { nil }) -> Bool {
+        // Opening the single-stream picker may replace system approval. Protect
+        // accepted output before presenting it, rather than discovering the
+        // conflict after it has already interrupted another workspace.
+        if let message = replacementProblem() {
+            issues.send(.init(workspaceID: workspaceID, windowID: nil, message: message))
+            return false
+        }
+        beginPickerRequest(workspaceID: workspaceID, replacementProblem: replacementProblem)
         configurePickerIfNeeded()
         SCContentSharingPicker.shared.present(using: .window)
+        return true
     }
 
     @MainActor
-    func clearWindows() {
-        windows = []
-        captureFilters = [:]
-        stopAvailabilityMonitorIfIdle()
-        deactivatePickerIfIdle()
+    @discardableResult
+    func beginPickerRequest(workspaceID: UUID,
+                            replacementProblem: @escaping @MainActor () -> String? = { nil }) -> WindowCapturePickerRouting.Request {
+        selectionGeneration = UUID()
+        pendingSelectionReleases.removeAll()
+        pickerReplacementProblem = replacementProblem
+        return pickerRouting.begin(workspaceID: workspaceID)
     }
 
     @MainActor
-    func clearWindow(windowID: CGWindowID) {
-        removePickedWindow(windowID: windowID)
-        if activeStreams[windowID] != nil {
-            Task { @MainActor in
-                try? await stopCapture(windowID: windowID)
-                deactivatePickerIfIdle()
-            }
+    var pendingPickerRequest: WindowCapturePickerRouting.Request? { pickerRouting.current }
+
+    @MainActor
+    func acceptsPickerSelection(for request: WindowCapturePickerRouting.Request?) -> Bool {
+        guard let request, pickerRouting.current == request else { return false }
+        if let message = pickerReplacementProblem?() {
+            cancelPickerRequest()
+            deactivatePickerIfIdle()
+            issues.send(.init(workspaceID: request.workspaceID, windowID: nil, message: message))
+            return false
         }
+        return true
+    }
+
+    @MainActor
+    private func cancelPickerRequest() {
+        pickerRouting.cancel()
+        pickerReplacementProblem = nil
+    }
+
+    @MainActor
+    private func reportCaptureFailure(_ error: Error, windowID: CGWindowID) {
+        issues.send(.init(workspaceID: nil, windowID: windowID,
+                          message: "The picked window could not be captured: \(error.localizedDescription) Pick the window again after releasing its current output."))
+    }
+
+    @MainActor
+    func releaseUnusedWindowSelection(isRetained: @escaping @MainActor (CGWindowID) -> Bool) {
+        // Pane cleanup is not cancellation of another workspace's pending pick.
+        guard pickerRouting.current == nil else { return }
+        for windowID in windows.map(\.windowID) {
+            if isRetained(windowID) {
+                pendingSelectionReleases[windowID] = nil
+                continue
+            }
+            pendingSelectionReleases[windowID] = SelectionRelease(generation: selectionGeneration, isRetained: isRetained)
+            captureConsumersDidChange(windowID: windowID)
+        }
+    }
+
+    @MainActor
+    func captureConsumersDidChange(windowID: CGWindowID) {
+        guard let request = pendingSelectionReleases[windowID] else { return }
+        guard request.generation == selectionGeneration, pickerRouting.current == nil else {
+            pendingSelectionReleases[windowID] = nil
+            return
+        }
+        guard !request.isRetained(windowID) else {
+            pendingSelectionReleases[windowID] = nil
+            return
+        }
+        // A departing view may still own a live consumer until SwiftUI finishes
+        // dismantling it. Its last release retries this decision synchronously.
+        let actualConsumers = activeStreams[windowID]?.fanout.consumerCount ?? 0
+        guard actualConsumers == 0, (captureConsumerCount?(windowID) ?? 0) == 0 else { return }
+        pendingSelectionReleases[windowID] = nil
+        removePickedWindow(windowID: windowID)
     }
 
     // MARK: - Stream Management
@@ -76,7 +189,10 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
         if let existing = activeStreams[windowID] {
             existing.fanout.add(ownerID, output: outputHandler)
             do { try await existing.start.value } catch {
-                if activeStreams[windowID]?.generation == existing.generation { activeStreams.removeValue(forKey: windowID) }
+                if activeStreams[windowID]?.generation == existing.generation {
+                    activeStreams.removeValue(forKey: windowID)
+                    if !(error is CancellationError) { reportCaptureFailure(error, windowID: windowID) }
+                }
                 throw error
             }
             guard activeStreams[windowID]?.generation == existing.generation else { throw CancellationError() }
@@ -84,6 +200,7 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
         }
 
         guard let filter = captureFilters[windowID] else {
+            reportCaptureFailure(ScreenCaptureError.windowNotFound, windowID: windowID)
             throw ScreenCaptureError.windowNotFound
         }
 
@@ -112,12 +229,19 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
         let fanout = SharedCaptureOutput()
         fanout.add(ownerID, output: outputHandler)
-        try stream.addStreamOutput(fanout, type: .screen, sampleHandlerQueue: sampleQueue)
+        do { try stream.addStreamOutput(fanout, type: .screen, sampleHandlerQueue: sampleQueue) }
+        catch {
+            if !(error is CancellationError) { reportCaptureFailure(error, windowID: windowID) }
+            throw error
+        }
         let generation = UUID()
         let start = Task { try await stream.startCapture() }
         activeStreams[windowID] = ActiveCapture(stream: stream, fanout: fanout, start: start, generation: generation)
         do { try await start.value } catch {
-            if activeStreams[windowID]?.generation == generation { activeStreams.removeValue(forKey: windowID) }
+            if activeStreams[windowID]?.generation == generation {
+                activeStreams.removeValue(forKey: windowID)
+                if !(error is CancellationError) { reportCaptureFailure(error, windowID: windowID) }
+            }
             throw error
         }
         guard activeStreams[windowID]?.generation == generation else { throw CancellationError() }
@@ -135,6 +259,9 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
         // Remove before awaiting. Late stop callbacks cannot remove a new stream.
         activeStreams.removeValue(forKey: windowID)
         activeCapture.fanout.removeAll()
+        // Recheck retained workspace content before yielding to stream shutdown.
+        // Nothing after the await can clear a newly picked window or stream.
+        captureConsumersDidChange(windowID: windowID)
         _ = try? await activeCapture.start.value
         try await activeCapture.stream.stopCapture()
         stopAvailabilityMonitorIfIdle()
@@ -150,15 +277,6 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
             try? await capture.stream.stopCapture()
         }
         stopAvailabilityMonitorIfIdle()
-    }
-
-    @MainActor
-    func clearWindowSelectionAndDeactivatePicker() async {
-        await stopAllCaptures()
-        windows = []
-        captureFilters = [:]
-        stopAvailabilityMonitorIfIdle()
-        deactivatePickerIfIdle()
     }
 
     @MainActor
@@ -183,7 +301,12 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
     }
 
     @MainActor
-    private func updatePickedWindows(_ pickedWindows: [CapturedWindow], filter: SCContentFilter) async {
+    private func updatePickedWindows(_ pickedWindows: [CapturedWindow], filter: SCContentFilter,
+                                     request: WindowCapturePickerRouting.Request?) async {
+        guard acceptsPickerSelection(for: request) else { return }
+        selectionGeneration = UUID()
+        let generation = selectionGeneration
+        pendingSelectionReleases.removeAll()
         windows = pickedWindows
 
         var nextFilters: [CGWindowID: SCContentFilter] = [:]
@@ -192,13 +315,19 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
         }
         captureFilters = nextFilters
 
-        if let pickedWindow = pickedWindows.first {
-            windowPickerSelections.send(pickedWindow.windowID)
+        if let request, let pickedWindow = pickedWindows.first,
+           let selection = pickerRouting.complete(request, windowID: pickedWindow.windowID) {
+            pickerReplacementProblem = nil
+            windowPickerSelections.send(selection)
+        } else {
+            cancelPickerRequest()
         }
 
         let pickedWindowIDs = Set(pickedWindows.map(\.windowID))
-        let staleActiveWindowIDs = activeStreams.keys.filter { !pickedWindowIDs.contains($0) }
-        for windowID in staleActiveWindowIDs {
+        let staleCaptures = activeStreams.filter { !pickedWindowIDs.contains($0.key) }
+        for (windowID, capture) in staleCaptures {
+            guard selectionGeneration == generation else { return }
+            guard activeStreams[windowID]?.generation == capture.generation else { continue }
             try? await stopCapture(windowID: windowID)
         }
 
@@ -208,6 +337,7 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
 
     @MainActor
     private func removePickedWindow(windowID: CGWindowID) {
+        pendingSelectionReleases[windowID] = nil
         windows.removeAll { $0.windowID == windowID }
         captureFilters.removeValue(forKey: windowID)
         stopAvailabilityMonitorIfIdle()
@@ -240,6 +370,7 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
     @MainActor
     private func deactivatePickerIfIdle() {
         guard windows.isEmpty && activeStreams.isEmpty else { return }
+        guard pickerRouting.current == nil else { return }
         guard pickerConfigured else { return }
         SCContentSharingPicker.shared.isActive = false
         pickerConfigured = false
@@ -247,6 +378,7 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
 
     @MainActor
     private func pruneUnavailableWindows() async {
+        let generation = selectionGeneration
         let trackedIDs = Set(windows.map(\.windowID)).union(activeStreams.keys)
         guard !trackedIDs.isEmpty else {
             stopAvailabilityMonitorIfIdle()
@@ -257,6 +389,9 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
         guard !missingIDs.isEmpty else { return }
 
         for id in missingIDs {
+            guard selectionGeneration == generation else { return }
+            issues.send(.init(workspaceID: nil, windowID: id,
+                              message: "The picked window is no longer available. Release its current output, then pick a window again."))
             removePickedWindow(windowID: id)
             if activeStreams[id] != nil {
                 try? await stopCapture(windowID: id)
@@ -271,11 +406,8 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
         return !info.isEmpty
     }
 
-    private func resolvePickedWindows(from filter: SCContentFilter) async -> [CapturedWindow] {
-        if #available(macOS 15.2, *) {
-            return filter.includedWindows.compactMap(Self.capturedWindow(from:))
-        }
-        return []
+    private func resolvePickedWindows(from filter: SCContentFilter) -> [CapturedWindow] {
+        filter.includedWindows.compactMap { Self.capturedWindow(from: $0) }
     }
 
     private static func capturedWindow(from window: SCWindow) -> CapturedWindow? {
@@ -327,35 +459,42 @@ enum ScreenCaptureError: LocalizedError {
     }
 }
 
-@available(macOS 14.0, *)
 extension ScreenCaptureManager: SCContentSharingPickerObserver {
     func contentSharingPicker(_ picker: SCContentSharingPicker, didCancelFor stream: SCStream?) {
         // Keep previous picked window list on cancel.
         Task { @MainActor in
+            cancelPickerRequest()
             deactivatePickerIfIdle()
         }
     }
 
     func contentSharingPicker(_ picker: SCContentSharingPicker, didUpdateWith filter: SCContentFilter, for stream: SCStream?) {
-        Task {
-            let pickedWindows = await resolvePickedWindows(from: filter)
-            await updatePickedWindows(pickedWindows, filter: filter)
+        Task { @MainActor in
+            let request = pickerRouting.current
+            let pickedWindows = resolvePickedWindows(from: filter)
+            await updatePickedWindows(pickedWindows, filter: filter, request: request)
         }
     }
 
     func contentSharingPickerStartDidFailWithError(_ error: any Error) {
         Task { @MainActor in
-            clearWindows()
+            // A failed new pick must preserve the app-shared source that other
+            // workspaces already have in Preview, Current or a live output.
+            let workspaceID = pickerRouting.current?.workspaceID
+            cancelPickerRequest()
+            issues.send(.init(workspaceID: workspaceID, windowID: nil,
+                              message: ScreenCaptureError.pickerFailed(error).localizedDescription))
+            deactivatePickerIfIdle()
         }
         NSLog("ScreenCapture picker failed to start: %@", error.localizedDescription)
     }
 }
 
-@available(macOS 14.0, *)
 extension ScreenCaptureManager: SCStreamDelegate {
     func stream(_ stream: SCStream, didStopWithError error: any Error) {
         Task { @MainActor in
             if let stoppedWindowID = activeStreams.first(where: { $0.value.stream === stream })?.key {
+                reportCaptureFailure(error, windowID: stoppedWindowID)
                 activeStreams.removeValue(forKey: stoppedWindowID)
                 removePickedWindow(windowID: stoppedWindowID)
             }

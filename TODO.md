@@ -1,23 +1,28 @@
 # Follow-up work
 
-## AltView pairing: migrate to provisioned data-protection Keychain
+## NDI production qualification
 
-- [ ] Migrate AltView pairing credentials and pinned receiver identities to a properly provisioned data-protection Keychain, coordinating the rollout with ViewTheWord. The current login Keychain fallback fixes persistence in signed builds without the required entitlements; Apple's preferred long-term implementation is the data-protection Keychain.
-- [ ] Configure the app's Keychain entitlements and matching development and Developer ID distribution profiles through the existing build/release pipeline. Signing with the Developer account alone does not authorize Keychain access groups. Preserve arm64, macOS 14, hardened runtime, and eucaly's unsandboxed access; verify entitlements and the embedded distribution profile in the exported app.
-- [ ] Migrate existing login Keychain pairings without requiring users to pair again. Preserve service/destination identity and receiver pins; verify the protected write and read before removing a legacy item. Handle interrupted migration and replacement so an older protected item cannot override newer credentials. Retain compatible reads during rollout.
-- [ ] Keep Keychain work off the UI thread. Keep locked, denied, corrupt, and failed migration errors visible; preserve usable saved credentials and session-only recovery. Never store pairing secrets in app preferences, app files, or logs.
-- [ ] Cover migration, interruption, pairing replacement, per-receiver isolation, and failure recovery in regression tests. Verify a Developer ID signed build on another Mac: save, quit/relaunch, reconnect without a code, replace pairing, and update through Sparkle without losing pairing.
-- [ ] Update `docs/altview.md` and `docs/releasing.md` with provisioning, migration, and validation requirements. Retire the login Keychain write fallback only after the supported builds and migration path have been verified.
+The current implementation uses the separately installed NDI runtime, isolated
+helpers and 1920×1080 at 30 fps. The obsolete AltView pairing-provisioning and SRT
+stabilization tasks are retired. Their history and source recovery are recorded
+in [the restoration note](docs/altview-lyrics-restoration-note.md).
 
-References: [Apple's Mac Keychain guidance](https://developer.apple.com/documentation/technotes/tn3137-on-mac-keychains) and [distribution signing and provisioning](https://developer.apple.com/documentation/xcode/creating-distribution-signed-code-for-the-mac).
+- [ ] Complete the two-hour moving video/audio session with simultaneous generic sources,
+  both without a native monitor and alongside native projection. Record source,
+  submitted, received and displayed rates separately, audio drift, memory,
+  CPU/GPU load, queue occupancy and UI responsiveness.
+- [ ] Qualify macOS and Windows receivers, alpha composition and chroma keying,
+  the actual HDMI/audio devices, minimum supported macOS and lowest supported
+  Apple Silicon hardware. An Apple TV receiver remains separate work.
+- [ ] Exercise network interruption, local-network permission denial, display
+  sleep/wake, unplug/replug, quit/update restart and missing-runtime behavior on
+  isolated test installations. Do not move the maintainer's runtime for testing.
+- [ ] Finish signed/notarized receiver qualification and required SDK product
+  EULA/distribution review before releasing NDI. No NDI runtime is bundled.
+- [ ] Compare GPU UYVY/UYVA conversion against the current BGRA path only after
+  measuring colour/alpha parity and CPU/memory-bandwidth cost.
+- [ ] Qualify 50 and 60 fps separately after 30 fps passes the equipment gates.
+  Former SRT cadence measurements do not qualify NDI; higher rates stay disabled.
 
-## AltView Media: remaining 60 fps drops at 20 ms
-
-- [ ] Eliminate the remaining drops in the 1080p60 localhost pipeline at the receiver's saved **20 ms recovery** setting. The 18 October 2026 Release fixture measured **59.87 decoded fps / 59.73 displayed fps**, **four native drops in 30 seconds**, and a **33.333 ms maximum PTS gap**. Sender/receiver mailbox drops, renderer overload flushes and audio rebuffers were all zero. This remains open; it is not a zero-drop 60 fps pass.
-- [ ] Correlate capture events and presentation ticks with hardware encoder output, transport/decode delivery and native display deadlines. Identify where the missing motion frames originate; the current measurements do not establish SRT recovery latency as the cause.
-- [ ] Profile desktop-load sensitivity and source/preview visibility separately. A run with additional desktop activity measured **52.52 displayed fps, 100 native drops and one audio underrun**. Record focus/occlusion and competing capture/render work alongside each sample.
-- [ ] Validate the real paired eucaly → AltView workflow with the preview visible, then assigned HDMI and audible program audio. The existing fixture uses production classes, private windows and a silent program-audio bus.
-- [ ] Acceptance: sustain changing 1080p60 content at **20 ms** through repeated longer localhost runs, with stable 16.667 ms presentation spacing, no unexplained doubled-frame gaps, zero native/mailbox drops, zero overload flushes and zero audio rebuffers. Include idle-to-motion transitions and representative desktop load; retain the selected recovery setting and adaptive Audience update behavior.
-- [ ] Preserve the verified baselines: **60.00 displayed fps with zero drops at 80 ms**, and the supplied **4K30 countdown at 30.03 displayed fps with zero drops at 20 ms**. Keep source frame rate, decoded rate and native presentation rate distinct in results.
-
-Evidence: [measurement details](../AltView/docs/media.md#countdown-cadence-verification-2026-10-18), [60 fps / 20 ms report](../AltView/build/media-cadence/60fps-isolated-20ms.json), [60 fps / 80 ms report](../AltView/build/media-cadence/60fps-final-release.json), and [original countdown / 20 ms report](../AltView/build/media-cadence/original-isolated-20ms.json). The fixture is run with AltView's `scripts/verify-media-cadence.py --recovery-ms 20`; see its help for the video, duration and report arguments.
+See [the NDI plan](docs/ndi-output-plan.md#equipment-and-sustained-operation) for
+acceptance criteria and [runtime setup](docs/ndi-runtime.md) for receiver discovery.

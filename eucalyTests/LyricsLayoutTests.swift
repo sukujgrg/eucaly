@@ -153,14 +153,18 @@ final class LyricsLayoutRenderingTests: XCTestCase {
         preferences.set("columns", forKey: "presentationLyricsLayout")
         preferences.set(1.0, forKey: "presentationPaddingScale")
         preferences.set(1.0, forKey: "presentationFontScale")
-        let session = PresentationSession()
+        let fixture = LocalOutputHarness(); defer { fixture.stop() }
+        let session = fixture.session
+        fixture.outputs.profiles.editDestinationProfile(fixture.nativeRow) { $0.layout = "columns" }
         session.setSlides([slide])
+        session.showSlides()
         let displaySize = CGSize(width: 960, height: 270)
 
         func cardView(displaySize: CGSize) -> some View {
             SlideGridCellView(slide: slide, itemWidth: 320, itemHeight: 210,
                               isSelected: false, allowsPDFThumbnailRendering: false, onTap: {})
                 .environment(\.lyricsProjectionSize, displaySize)
+                .environment(\.audienceOutputProfile, fixture.outputs.profile(for: fixture.nativeRow))
                 .defaultAppStorage(preferences)
         }
         let largeDisplay = CGSize(width: 1920, height: 1080)
@@ -183,9 +187,10 @@ final class LyricsLayoutRenderingTests: XCTestCase {
         XCTAssertLessThan(host.fittingSize.height, warningHeight, "Unaffected cards must not reserve a warning row.")
 
         let projection = try render(
-            PresentationView().environmentObject(session).defaultAppStorage(preferences),
+            OutputCompositionView(coordinator: fixture.outputs, destinationID: fixture.nativeRow),
             size: displaySize, name: "Audience slide without operator warning"
         )
+        XCTAssertNotNil(whiteBounds(in: projection, xRange: 0..<projection.pixelsWide), "The actual output must contain the accepted lyrics.")
         XCTAssertFalse(hasOrangePixels(in: projection))
         XCTAssertEqual(session.currentSlideID, slide.id)
         XCTAssertEqual(session.slides.first?.lines, slide.lines)
@@ -238,19 +243,26 @@ final class LyricsLayoutRenderingTests: XCTestCase {
         defer { preferences.removePersistentDomain(forName: suiteName) }
         preferences.set("columns", forKey: "presentationLyricsLayout")
         preferences.set("left", forKey: "presentationTextAlignment")
-        let session = PresentationSession()
+        let fixture = LocalOutputHarness(); defer { fixture.stop() }
+        let session = fixture.session
         session.setSlides([slide])
+        session.showSlides()
 
         for position in PresentationVerticalPosition.allCases {
             preferences.set(position.rawValue, forKey: "presentationVerticalPosition")
+            fixture.outputs.profiles.editDestinationProfile(fixture.nativeRow) {
+                $0.layout = "columns"; $0.alignment = "left"; $0.position = position.rawValue
+            }
             let projection = try render(
-                PresentationView().environmentObject(session).defaultAppStorage(preferences),
+                OutputCompositionView(coordinator: fixture.outputs, destinationID: fixture.nativeRow),
                 size: CGSize(width: 960, height: 360),
                 name: "Projection columns — \(position.title)"
             )
             let thumbnailSize = CGSize(width: 320, height: 180)
             let thumbnail = try render(
-                LyricsThumbnailView(slide: slide, size: thumbnailSize).defaultAppStorage(preferences),
+                LyricsThumbnailView(slide: slide, size: thumbnailSize)
+                    .environment(\.audienceOutputProfile, fixture.outputs.profile(for: fixture.nativeRow))
+                    .defaultAppStorage(preferences),
                 size: thumbnailSize,
                 name: "Thumbnail columns — \(position.title)"
             )
@@ -343,8 +355,10 @@ final class LyricsLayoutRenderingTests: XCTestCase {
         defer { preferences.removePersistentDomain(forName: suiteName) }
         preferences.set("left", forKey: "presentationTextAlignment")
         preferences.set("top", forKey: "presentationVerticalPosition")
-        let session = PresentationSession()
+        let fixture = LocalOutputHarness(); defer { fixture.stop() }
+        let session = fixture.session
         session.setSlides([slide])
+        session.showSlides()
         let thumbnailSize = CGSize(width: 320, height: 180)
 
         for layout in PresentationLyricsLayout.allCases {
@@ -353,13 +367,18 @@ final class LyricsLayoutRenderingTests: XCTestCase {
             var thumbnailBounds: [CGRect] = []
             for padding in [0.0, 2.0] {
                 preferences.set(padding, forKey: "presentationPaddingScale")
+                fixture.outputs.profiles.editDestinationProfile(fixture.nativeRow) {
+                    $0.layout = layout.rawValue; $0.alignment = "left"; $0.position = "top"; $0.padding = padding
+                }
                 let projection = try render(
-                    PresentationView().environmentObject(session).defaultAppStorage(preferences),
+                    OutputCompositionView(coordinator: fixture.outputs, destinationID: fixture.nativeRow),
                     size: CGSize(width: 960, height: 540),
                     name: "Projection \(layout.title) — padding \(Int(padding * 100))%"
                 )
                 let thumbnail = try render(
-                    LyricsThumbnailView(slide: slide, size: thumbnailSize).defaultAppStorage(preferences),
+                    LyricsThumbnailView(slide: slide, size: thumbnailSize)
+                        .environment(\.audienceOutputProfile, fixture.outputs.profile(for: fixture.nativeRow))
+                        .defaultAppStorage(preferences),
                     size: thumbnailSize,
                     name: "Thumbnail \(layout.title) — padding \(Int(padding * 100))%"
                 )
@@ -390,19 +409,26 @@ final class LyricsLayoutRenderingTests: XCTestCase {
         preferences.set("left", forKey: "presentationTextAlignment")
         preferences.set("top", forKey: "presentationVerticalPosition")
         preferences.set(0, forKey: "presentationPaddingScale")
-        let session = PresentationSession()
+        let fixture = LocalOutputHarness(); defer { fixture.stop() }
+        let session = fixture.session
         let thumbnailSize = CGSize(width: 320, height: 180)
+        fixture.outputs.profiles.editDestinationProfile(fixture.nativeRow) {
+            $0.layout = "columns"; $0.alignment = "left"; $0.position = "top"; $0.padding = 0
+        }
 
         for (source, columnStarts) in fixtures {
             let slide = try XCTUnwrap(LyricsParser.parseDocument(source).slides.first)
             session.setSlides([slide])
+            session.showSlides()
             let projection = try render(
-                PresentationView().environmentObject(session).defaultAppStorage(preferences),
+                OutputCompositionView(coordinator: fixture.outputs, destinationID: fixture.nativeRow),
                 size: CGSize(width: 960, height: 360),
                 name: "Projection column widths — \(columnStarts)"
             )
             let thumbnail = try render(
-                LyricsThumbnailView(slide: slide, size: thumbnailSize).defaultAppStorage(preferences),
+                LyricsThumbnailView(slide: slide, size: thumbnailSize)
+                    .environment(\.audienceOutputProfile, fixture.outputs.profile(for: fixture.nativeRow))
+                    .defaultAppStorage(preferences),
                 size: thumbnailSize,
                 name: "Thumbnail column widths — \(columnStarts)"
             )

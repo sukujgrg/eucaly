@@ -6,6 +6,29 @@ import ScreenCaptureKit
 
 @MainActor
 final class OutputRenderingTests: XCTestCase {
+    func testUnavailableCaptureIsNeutralOnProgramOutputAndExplainedInControls() throws {
+        func bitmap(operatorMessages: Bool) throws -> NSBitmapImageRep {
+            let view = NSHostingView(rootView: WindowCaptureSlideView(windowID: CGWindowID.max,
+                                                                      showsOperatorMessages: operatorMessages))
+            view.frame = CGRect(x: 0, y: 0, width: 640, height: 360)
+            view.layoutSubtreeIfNeeded()
+            let result = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+            view.cacheDisplay(in: view.bounds, to: result)
+            return result
+        }
+        let output = try bitmap(operatorMessages: false), controls = try bitmap(operatorMessages: true)
+        func containsVisibleContent(_ bitmap: NSBitmapImageRep) -> Bool {
+            (0..<bitmap.pixelsHigh).contains { y in
+                (0..<bitmap.pixelsWide).contains { x in
+                    guard let colour = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { return false }
+                    return max(colour.redComponent, colour.greenComponent, colour.blueComponent) > 0.1
+                }
+            }
+        }
+        XCTAssertFalse(containsVisibleContent(output), "Audience output must remain a neutral frame")
+        XCTAssertTrue(containsVisibleContent(controls), "Controls must retain the operator explanation")
+    }
+
     func testClearCommandsKeepLowerThirdKeyOnRenderedCanvasAndRetainCurrent() throws {
         let monitor = ProjectionMonitor(id: 1, identity: UUID().uuidString, name: "Lower Third", frame: CGRect(x: 0, y: 0, width: 640, height: 360))
         let displays = ProjectionDisplayManager(displays: { [monitor] })
@@ -26,7 +49,7 @@ final class OutputRenderingTests: XCTestCase {
             swatch.cacheDisplay(in: swatch.bounds, to: expectedBitmap)
             let expectedPixel = try XCTUnwrap(expectedBitmap.colorAt(x: 5, y: 5)?.usingColorSpace(.sRGB))
             for clearAll in [false, true] {
-                var profile = try XCTUnwrap(store.profile(OutputProfile.lowerThirdID))
+                var profile = try XCTUnwrap(outputs.profile(for: destinationID))
                 profile.background.colour = colour; profile.background.bookmark = "selected visual"
                 store.update(profile)
                 session.showSlides()
@@ -37,7 +60,7 @@ final class OutputRenderingTests: XCTestCase {
                 XCTAssertEqual(session.currentSlide?.id, currentID)
                 XCTAssertTrue(outputs.isOpen(destinationID), "Clear keeps the output canvas open")
                 XCTAssertEqual(session.backgroundAudioURL == nil, clearAll)
-                XCTAssertNil(store.profile(OutputProfile.lowerThirdID)?.background.bookmark)
+                XCTAssertNil(outputs.profile(for: destinationID)?.background.bookmark)
                 let view = NSHostingView(rootView: OutputCompositionView(coordinator: outputs, destinationID: destinationID))
                 view.frame = monitor.frame; view.layoutSubtreeIfNeeded()
                 let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
@@ -300,6 +323,7 @@ final class OutputRenderingTests: XCTestCase {
         outputs.stop()
         XCTAssertNil(outputs.media.program)
         XCTAssertEqual(b.backgroundAudioPlaybackState, .playing, "Stop output retains independent audio")
+        outputs.focusWorkspace(b)
         outputs.clearAudio()
         XCTAssertNil(b.backgroundAudioURL)
     }
@@ -329,10 +353,7 @@ final class OutputSettingsRenderingTests: XCTestCase {
     func testNativeSettingsRenderForVisualReview() throws {
         let displays = ProjectionDisplayManager(displays: { [] })
         let outputs = OutputCoordinator(profiles: OutputProfileStore(), displays: displays)
-        let router = AltViewOutputRouter(store: outputs.profiles, senderID: UUID())
-        router.start(coordinator: outputs, discover: false)
-        defer { router.shutdown() }
-        let controller = ManageOutputsController(coordinator: outputs, router: router)
+        let controller = ManageOutputsController(coordinator: outputs)
         let view = controller.view
         view.frame = CGRect(x: 0, y: 0, width: 820, height: 650)
         view.layoutSubtreeIfNeeded()
