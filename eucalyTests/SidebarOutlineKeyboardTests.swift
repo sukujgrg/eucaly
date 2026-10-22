@@ -157,6 +157,89 @@ final class SidebarOutlineKeyboardTests: XCTestCase {
         XCTAssertTrue(fixture.recorder.requests.isEmpty)
     }
 
+    func testNativeGroupRowTitleBlankAndDisclosureClicksToggleOnceWithoutAcceptingSource() async throws {
+        let fixture = SidebarKeyboardFixture(selectsFirstLeaf: true)
+        defer { fixture.close() }
+        try await fixture.settle()
+        let outline = fixture.controller.outlineView
+        outline.collapseItem(fixture.outer)
+        let row = outline.row(forItem: fixture.outer)
+        let cell = try XCTUnwrap(outline.view(atColumn: 0, row: row, makeIfNecessary: true) as? NSTableCellView)
+        let title = try XCTUnwrap(cell.textField)
+        let titleX = title.convert(title.bounds, to: outline).midX
+        let trailingX = outline.frameOfCell(atColumn: 0, row: row).maxX - 12
+
+        try fixture.click(row: row, x: titleX)
+        XCTAssertTrue(outline.isItemExpanded(fixture.outer), "The group title shares its disclosure action")
+        try fixture.click(row: row, x: trailingX)
+        XCTAssertFalse(outline.isItemExpanded(fixture.outer), "Blank space in the group row shares its disclosure action")
+        // AppKit tracks same-point double clicks using elapsed wall time. This
+        // pause makes the repeated click a separate single-click gesture.
+        try await Task.sleep(for: .seconds(NSEvent.doubleClickInterval + 0.05))
+        try fixture.click(row: row, x: trailingX)
+        XCTAssertTrue(outline.isItemExpanded(fixture.outer), "A repeated row click toggles once")
+        try fixture.click(row: row, x: titleX)
+        XCTAssertFalse(outline.isItemExpanded(fixture.outer))
+
+        let disclosure = outline.frameOfOutlineCell(atRow: row)
+        XCTAssertFalse(disclosure.isEmpty)
+        try fixture.click(row: row, x: disclosure.midX)
+        XCTAssertTrue(outline.isItemExpanded(fixture.outer), "The native disclosure button must not be toggled twice")
+        try await Task.sleep(for: .seconds(NSEvent.doubleClickInterval + 0.05))
+        try fixture.click(row: row, x: disclosure.midX)
+        XCTAssertFalse(outline.isItemExpanded(fixture.outer))
+        XCTAssertEqual(fixture.focusedID, fixture.outer.id)
+        XCTAssertEqual(fixture.recorder.accepted, fixture.firstLeaf.id)
+        XCTAssertTrue(fixture.recorder.requests.isEmpty)
+        XCTAssertEqual(fixture.session.slides.map(\.id), [fixture.currentSlideID])
+    }
+
+    func testNativeGroupRowDoubleClickKeepsSingleDisclosureActivation() async throws {
+        let fixture = SidebarKeyboardFixture()
+        defer { fixture.close() }
+        try await fixture.settle()
+        let outline = fixture.controller.outlineView
+        try fixture.click(row: 0, x: 100, clickCount: 1)
+        XCTAssertTrue(outline.isItemExpanded(fixture.outer))
+        try fixture.click(row: 0, x: 100, clickCount: 2)
+        XCTAssertTrue(outline.isItemExpanded(fixture.outer), "The double action must not undo the first click's disclosure")
+        XCTAssertTrue(fixture.recorder.requests.isEmpty)
+        XCTAssertNil(fixture.recorder.accepted)
+        XCTAssertEqual(fixture.session.slides.map(\.id), [fixture.currentSlideID])
+    }
+
+    func testDetachedNativeGroupRowActionsRemainInert() async throws {
+        let fixture = SidebarKeyboardFixture()
+        defer { fixture.close() }
+        try await fixture.settle()
+        let outline = fixture.controller.outlineView
+        try fixture.click(row: 0, x: 100)
+        XCTAssertTrue(outline.isItemExpanded(fixture.outer))
+        let action = try XCTUnwrap(outline.action)
+        let target = try XCTUnwrap(outline.target)
+        fixture.controller.detach()
+        let expandedAfterDetach = outline.isItemExpanded(fixture.outer)
+        XCTAssertTrue(NSApp.sendAction(action, to: target, from: outline))
+        try fixture.click(row: 0, x: 100)
+        XCTAssertEqual(outline.isItemExpanded(fixture.outer), expandedAfterDetach)
+        XCTAssertTrue(fixture.recorder.requests.isEmpty)
+        XCTAssertNil(fixture.recorder.accepted)
+        XCTAssertEqual(fixture.session.slides.map(\.id), [fixture.currentSlideID])
+    }
+
+    func testNativeAudioLeafDoubleClickRunsItsDefaultActionOnce() async throws {
+        let audioID = SidebarOutlineItemID.audio(URL(fileURLWithPath: "/sidebar-keyboard-fixture/track.mp3"))
+        let fixture = SidebarKeyboardFixture(roots: [SidebarOutlineItem(id: audioID, title: "Track")])
+        defer { fixture.close() }
+        try await fixture.settle()
+        try fixture.click(row: 0, x: 100, clickCount: 1)
+        XCTAssertEqual(fixture.recorder.accepted, audioID)
+        XCTAssertTrue(fixture.recorder.defaultActions.isEmpty, "Single leaf selection never activates playback")
+        try fixture.click(row: 0, x: 100, clickCount: 2)
+        XCTAssertEqual(fixture.recorder.defaultActions, [audioID], "Native leaf double actions remain independent from group disclosure")
+        XCTAssertEqual(fixture.session.slides.map(\.id), [fixture.currentSlideID])
+    }
+
     func testNativePointerModifierSelectionUsesLastSelectedRowAndRejectsAtomically() async throws {
         let ids = (0..<4).map { _ in UUID() }
         let roots = ids.map {
@@ -171,6 +254,7 @@ final class SidebarOutlineKeyboardTests: XCTestCase {
         XCTAssertEqual(fixture.recorder.accepted, .playlist(ids[0]))
         try fixture.click(row: 3, modifiers: .command)
         XCTAssertEqual(fixture.recorder.accepted, .playlist(ids[3]))
+        XCTAssertTrue(fixture.recorder.defaultActions.isEmpty)
         let acceptedRows = fixture.controller.outlineView.selectedRowIndexes
         XCTAssertEqual(acceptedRows, IndexSet([0, 2, 3]))
 
@@ -220,6 +304,7 @@ private final class SidebarKeyboardRecorder {
     var accepted: SidebarOutlineItemID?
     var selected: Set<SidebarOutlineItemID> = []
     var actions: [SidebarOutlineItemID] = []
+    var defaultActions: [SidebarOutlineItemID] = []
 }
 
 @MainActor
@@ -251,6 +336,7 @@ private final class SidebarKeyboardFixture {
     var controller: SidebarOutlineController!
     var revision = 1
     var scrollRequest: SidebarOutlineScrollRequest?
+    private var pointerEventNumber = 0
 
     init(selectsFirstLeaf: Bool = false, roots: [SidebarOutlineItem]? = nil, allowsMultipleSelection: Bool = false) {
         let first = SidebarOutlineItem(id: .library(URL(fileURLWithPath: "/sidebar-keyboard-fixture/first.txt")), title: "First")
@@ -308,7 +394,7 @@ private final class SidebarKeyboardFixture {
                 recorder.selected = ids
                 recorder.accepted = primary
                 return true
-            },
+            }, onDefaultAction: { [recorder] in recorder.defaultActions.append($0) },
             onAction: { [recorder] item, _ in recorder.actions.append(item) })
     }
 
@@ -319,13 +405,20 @@ private final class SidebarKeyboardFixture {
         window.sendEvent(event)
     }
 
-    func click(row: Int, modifiers: NSEvent.ModifierFlags = []) throws {
+    func click(row: Int, x: CGFloat = 60, clickCount: Int = 1, modifiers: NSEvent.ModifierFlags = []) throws {
+        // Disclosure changes the content-sized scroll view synchronously but
+        // schedules ancestor layout. Resolve it before choosing window points.
+        window.contentView?.layoutSubtreeIfNeeded()
         let outline = controller.outlineView
-        let point = outline.convert(NSPoint(x: 60, y: outline.rect(ofRow: row).midY), to: nil)
+        let point = outline.convert(NSPoint(x: x, y: outline.rect(ofRow: row).midY), to: nil)
+        let timestamp = ProcessInfo.processInfo.systemUptime
+        pointerEventNumber += 2
         let down = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: modifiers,
-            timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+            timestamp: timestamp, windowNumber: window.windowNumber, context: nil,
+            eventNumber: pointerEventNumber, clickCount: clickCount, pressure: 1))
         let up = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseUp, location: point, modifierFlags: modifiers,
-            timestamp: 0.01, windowNumber: window.windowNumber, context: nil, eventNumber: 2, clickCount: 1, pressure: 0))
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
+            eventNumber: pointerEventNumber + 1, clickCount: clickCount, pressure: 0))
         // A table may consume mouse-up inside native tracking. Queue it first,
         // then dispatch it ourselves only if AppKit leaves it for the event loop.
         NSApplication.shared.postEvent(up, atStart: true)

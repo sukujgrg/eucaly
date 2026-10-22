@@ -363,6 +363,9 @@ and items. Native Right/Left expansion and parent navigation preserve Preview
 while containers hold focus; leaf changes still pass normal selection approval.
 Passive configuration/progress updates retain the operator's container focus and
 collapsed state. Audio selection and playback remain independent.
+Library group titles and blank row space share the disclosure action. A group
+click changes expansion only, with no duplicate toggle from native arrow or
+double-click handling.
 
 The Profiles list separates reusable profiles, assigned output appearances and
 unused saved appearances using customization metadata and actual references, never
