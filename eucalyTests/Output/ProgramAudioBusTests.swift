@@ -4,6 +4,75 @@ import AVFoundation
 
 @MainActor
 final class ProgramAudioBusTests: XCTestCase {
+    func testBoundedHistoryRetainsNewPrefixAcrossRepeatedLoopRewinds() async throws {
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2))
+        // Exercise both independent storage bounds. The old tail fills either
+        // eight MiB or 512 packets before each fresh prefix is admitted.
+        for (oldPacketCount, oldPacketFrames) in [(8, ProgramAudioBus.maximumBufferedBytes / 8 / 8), (512, 1024)] {
+            let recorded = RecordedProgramAudio(), id = UUID()
+            let bus = ProgramAudioBus { recorded.offer(.audio($0, $1)) }
+            defer { bus.stop(); recorded.finish() }
+            var optionalClock: CMTimebase?
+            XCTAssertEqual(CMTimebaseCreateWithSourceClock(allocator: kCFAllocatorDefault,
+                sourceClock: CMClockGetHostTimeClock(), timebaseOut: &optionalClock), noErr)
+            let clock = try XCTUnwrap(optionalClock)
+            let oldPCM = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(oldPacketFrames)))
+            oldPCM.frameLength = AVAudioFrameCount(oldPacketFrames)
+            for channel in 0..<2 { oldPCM.floatChannelData![channel].initialize(repeating: 0.125, count: oldPacketFrames) }
+            let tailStart: Int64 = 100_000
+            let oldInputs = (0..<oldPacketCount).map { index in
+                ProgramAudioBus.Input(oldPCM, at: CMTime(value: tailStart + Int64(index * oldPacketFrames), timescale: 48000))
+            }
+            var previousBlock: Int64?
+            func checkBlock(at sample: Int64, expected: Float) async throws {
+                let deadline = ProcessInfo.processInfo.systemUptime + 2
+                while ProcessInfo.processInfo.systemUptime < deadline {
+                    try await Task.sleep(for: .milliseconds(5))
+                    var found = false
+                    for entry in recorded.drain() {
+                        guard case .audio(let pcm, let time) = entry else { continue }
+                        if let previousBlock { XCTAssertEqual(time.sampleTime - previousBlock, 960) }
+                        previousBlock = time.sampleTime
+                        if time.sampleTime == sample {
+                            found = true
+                            for channel in 0..<2 {
+                                let data = try XCTUnwrap(pcm.floatChannelData?[channel])
+                                XCTAssertTrue((0..<960).allSatisfy { abs(data[$0] - expected) < 0.000001 },
+                                              "A newly decoded loop prefix must survive bounded-cache eviction")
+                            }
+                        }
+                    }
+                    if found { return }
+                }
+                XCTFail("The continuous mixer did not deliver the expected loop block")
+                throw NSError(domain: "ProgramAudioLoopRewind", code: 1)
+            }
+            for iteration in 1...3 {
+                XCTAssertTrue(bus.append(oldInputs, id: id))
+                let prefix = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 960))
+                prefix.frameLength = 960
+                let value = Float(iteration) * 0.25
+                for channel in 0..<2 { prefix.floatChannelData![channel].initialize(repeating: value, count: 960) }
+                XCTAssertTrue(bus.append([.init(prefix, at: .zero)], id: id))
+                let now = CMClockGetTime(CMClockGetHostTimeClock()).convertScale(48000, method: .roundHalfAwayFromZero).value
+                let start = CMTime(value: (now / 960 + 6) * 960, timescale: 48000)
+                XCTAssertEqual(CMTimebaseSetRateAndAnchorTime(clock, rate: 1, anchorTime: .zero, immediateSourceTime: start), noErr)
+                bus.setPlaybackClock(clock, gain: 1, id: id)
+                if iteration == 1 { bus.start(at: start) }
+                try await checkBlock(at: start.value, expected: value)
+
+                // Retaining the newest prefix must not flush the recent tail
+                // needed by a queued block from the preceding loop interval.
+                let tailNow = CMClockGetTime(CMClockGetHostTimeClock()).convertScale(48000, method: .roundHalfAwayFromZero).value
+                let tailHost = CMTime(value: (tailNow / 960 + 6) * 960, timescale: 48000)
+                let tailPosition = CMTime(value: tailStart + Int64((oldPacketCount - 1) * oldPacketFrames), timescale: 48000)
+                XCTAssertEqual(CMTimebaseSetRateAndAnchorTime(clock, rate: 1, anchorTime: tailPosition, immediateSourceTime: tailHost), noErr)
+                bus.setPlaybackClock(clock, gain: 1, id: id)
+                try await checkBlock(at: tailHost.value, expected: 0.125)
+            }
+        }
+    }
+
     func testLocalSilenceAndMonitorTogglesPreserveIndependentProgramAudio() async throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("program-audio-monitor-\(UUID()).caf")
         defer { try? FileManager.default.removeItem(at: url) }

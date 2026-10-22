@@ -161,7 +161,12 @@ admission immediately and cancels decoding asynchronously. Decoder failures reti
 only affected outputs through the existing inline failure/Retry path.
 
 The mixer retains media timestamps and bounded clock history across mute,
-pause/resume and preroll. Discontinuity detection uses actual adjacent asset
+pause/resume and preroll. A stopped clock's final media position closes the
+preceding running interval, preserving pending audio even when an EOF notification
+arrives before the next render. Its 8 MiB / 512-segment history stays sorted by
+media position for lookup and evicts by admission age, so a freshly decoded loop
+beginning survives ahead of an older retained tail. Discontinuity detection uses
+actual adjacent asset
 ranges, rather than inferring their duration from PCM frame counts. Adjacent
 ranges preserve converter state; gaps and overlaps re-anchor it at the supplied
 timestamp. PCM already matching the mixer's format retains its immutable copied

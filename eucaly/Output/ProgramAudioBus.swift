@@ -46,19 +46,22 @@ nonisolated final class ProgramAudioBus: @unchecked Sendable {
     private struct Segment {
         let start: Int64
         let buffer: AVAudioPCMBuffer
+        let admission: UInt64
         var offset = 0
         var count: Int
         var end: Int64 { start + Int64(count) }
-        init(start: Int64, buffer: AVAudioPCMBuffer, offset: Int = 0, count: Int? = nil) {
-            self.start = start; self.buffer = buffer; self.offset = offset; self.count = count ?? Int(buffer.frameLength)
+        init(start: Int64, buffer: AVAudioPCMBuffer, admission: UInt64, offset: Int = 0, count: Int? = nil) {
+            self.start = start; self.buffer = buffer; self.admission = admission
+            self.offset = offset; self.count = count ?? Int(buffer.frameLength)
         }
         func slice(_ begin: Int64, _ end: Int64) -> Self {
-            .init(start: begin, buffer: buffer, offset: offset + Int(begin - start), count: Int(end - begin))
+            .init(start: begin, buffer: buffer, admission: admission, offset: offset + Int(begin - start), count: Int(end - begin))
         }
     }
     private let queue = DispatchQueue(label: "eucaly.program-audio", qos: .userInitiated)
     private let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)!
     private var segments: [UUID: [Segment]] = [:]
+    private var nextAdmission: UInt64 = 0
     private var gains: [UUID: Float] = [:]
     private var backgroundInputs: Set<UUID> = []
     private struct Conversion {
@@ -128,12 +131,10 @@ nonisolated final class ProgramAudioBus: @unchecked Sendable {
         let now = CMClockGetTime(CMClockGetHostTimeClock()).convertScale(48000, method: .roundHalfAwayFromZero).value
         // AVPlayer can report its explicit pause before its item timebase has
         // stopped. Close that interval immediately without muting the already
-        // accepted samples preceding it. A stopped timebase also supplies its
-        // actual transition anchor, which can precede a delayed notification.
+        // accepted samples preceding it.
         let pausing = paused && rate != 0
         let hostAnchor = pausing ? Double(now) : host.seconds * 48000
         let mediaAnchor = media.seconds * 48000 + (pausing ? (Double(now) - host.seconds * 48000) * rate : 0)
-        let stoppedAt = rate == 0 ? min(now, host.convertScale(48000, method: .roundHalfAwayFromZero).value) : now
         let value = PlaybackClock(start: now, hostAnchor: hostAnchor, mediaAnchor: mediaAnchor, rate: paused ? 0 : rate, gain: gain)
         queue.async { [self] in
             if gain == 0 { silenced.insert(id) } else { silenced.remove(id) }
@@ -141,7 +142,17 @@ nonisolated final class ProgramAudioBus: @unchecked Sendable {
             if let last = history.last {
                 let sameMapping = abs(last.mediaSample(now) - clock.mediaSample(now)) <= 1
                 if last.rate == clock.rate, last.gain == clock.gain, sameMapping { return }
-                if last.rate > 0, clock.rate == 0 { clock.start = stoppedAt }
+                if last.rate > 0, clock.rate == 0 {
+                    // A hierarchical AVPlayer timebase can report an old host
+                    // anchor together with its final stopped media position.
+                    // Map that position through the previous running interval;
+                    // trusting the stopped host anchor can erase a whole short
+                    // clip before its last mixer block has been rendered.
+                    let end = last.hostAnchor + (clock.mediaAnchor - last.mediaAnchor) / last.rate
+                    if end.isFinite, end >= Double(last.start), end <= Double(now) + 1 {
+                        clock.start = min(now, Int64(end.rounded()))
+                    }
+                }
                 clock.start = max(last.start, clock.start)
                 if last.start == clock.start { history.removeLast() }
             }
@@ -226,7 +237,8 @@ nonisolated final class ProgramAudioBus: @unchecked Sendable {
             }
             if output.frameLength > 0 {
                 let start = state.outputEnd
-                let replacement = Segment(start: start, buffer: output)
+                let replacement = Segment(start: start, buffer: output, admission: nextAdmission)
+                nextAdmission &+= 1
                 // Decoders can preroll overlapping ranges after resume/seek.
                 // Replace only the overlap, preserving the unplayed prefix/tail.
                 if packets.last.map({ $0.end > replacement.start }) == true {
@@ -246,12 +258,15 @@ nonisolated final class ProgramAudioBus: @unchecked Sendable {
             }
         } while conversion == .haveData
         conversions[id] = state
-        // PCM packet sizes vary. Bound storage by memory, while retaining a
-        // decoded preroll batch regardless of how the tap divided its samples.
+        // Keep lookup ordered by asset position, but evict by admission age.
+        // After a loop/seek, new prefix PCM sorts before retained old tail PCM;
+        // dropping the lowest timestamp would repeatedly discard that prefix.
+        // Recent tail packets still survive for pending pre-rewind blocks.
         let bytesPerFrame = MemoryLayout<Float>.stride * Int(format.channelCount)
         var bufferedBytes = packets.reduce(0) { $0 + Int($1.buffer.frameLength) * bytesPerFrame }
         while !packets.isEmpty && (packets.count > 512 || bufferedBytes > Self.maximumBufferedBytes) {
-            bufferedBytes -= Int(packets.removeFirst().buffer.frameLength) * bytesPerFrame
+            guard let oldest = packets.indices.min(by: { packets[$0].admission < packets[$1].admission }) else { break }
+            bufferedBytes -= Int(packets.remove(at: oldest).buffer.frameLength) * bytesPerFrame
         }
         segments[id] = packets
     }

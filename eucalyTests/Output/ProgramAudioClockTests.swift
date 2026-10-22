@@ -4,6 +4,37 @@ import AVFoundation
 
 @MainActor
 final class ProgramAudioClockTests: XCTestCase {
+    func testStoppedHostAnchorCannotEraseShortPrerolledProgrammeBeforeItsFirstRender() async throws {
+        var optionalClock: CMTimebase?
+        XCTAssertEqual(CMTimebaseCreateWithSourceClock(allocator: kCFAllocatorDefault,
+            sourceClock: CMClockGetHostTimeClock(), timebaseOut: &optionalClock), noErr)
+        let clock = try XCTUnwrap(optionalClock), recorded = PausedTailSamples(), id = UUID()
+        let bus = ProgramAudioBus { recorded.consume($0, at: $1) }
+        defer { bus.stop() }
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2))
+        let pcm = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1024))
+        pcm.frameLength = 1024
+        for channel in 0..<2 { pcm.floatChannelData![channel].initialize(repeating: 0.25, count: 1024) }
+        XCTAssertTrue(bus.append([.init(pcm, at: .zero)], id: id))
+        let startedAt = CMClockGetTime(CMClockGetHostTimeClock()).convertScale(48000, method: .roundHalfAwayFromZero)
+        XCTAssertEqual(CMTimebaseSetRateAndAnchorTime(clock, rate: 1,
+            anchorTime: CMTime(value: -480, timescale: 48000), immediateSourceTime: startedAt), noErr)
+        bus.setPlaybackClock(clock, gain: 1, id: id)
+        try await Task.sleep(for: .milliseconds(40))
+
+        // AVPlayer's hierarchical timebase can retain the pre-play host anchor
+        // at EOF while reporting the truthful final media position. The mixer
+        // has not rendered yet, so erasing its running interval loses all PCM.
+        XCTAssertEqual(CMTimebaseSetRateAndAnchorTime(clock, rate: 0,
+            anchorTime: CMTime(value: 1024, timescale: 48000), immediateSourceTime: startedAt), noErr)
+        bus.setPlaybackClock(clock, gain: 1, id: id)
+        bus.start(at: startedAt)
+        let expectedEnd = startedAt.value + 480 + 1024
+        try await wait { recorded.lastBlockStart >= expectedEnd + 960 }
+        XCTAssertEqual(recorded.audibleFrames, 1024, "Every short-clip sample must survive EOF before the next render")
+        XCTAssertEqual(recorded.lastAudibleSample, expectedEnd - 1)
+    }
+
     func testDelayedStoppedClockSnapshotUsesItsActualPauseAnchor() async throws {
         var optionalClock: CMTimebase?
         XCTAssertEqual(CMTimebaseCreateWithSourceClock(allocator: kCFAllocatorDefault,
