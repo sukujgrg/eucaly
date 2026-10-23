@@ -73,17 +73,21 @@ Failure and teardown are per destination and never block the UI on SDK calls.
 
 ## Dependencies and persistence
 
-OMT SDK 1.0.0.19 is pinned under `Vendor/OMT`. Its MIT notices and file hashes
-are recorded alongside the unmodified upstream libraries. The C header has one
-documented, ABI-equivalent function-prototype correction in `PATCHES.md`. Xcode embeds
+OMT SDK 1.0.0.19+eucaly.1 is pinned under `Vendor/OMT`. The arm64 transport
+runtime is built from pinned upstream source with the two local sender repairs
+in `PATCHES.md`; the VMX codec remains unchanged. Source commits, patches,
+toolchain, dependency and file hashes are recorded in `provenance.json`, with
+rebuild instructions in `BUILDING.md`. MIT and NativeAOT notices are retained.
+The C header also has an ABI-equivalent function-prototype correction. Xcode embeds
 and signs the libraries in `Contents/Frameworks/OMT`, and copies the notices to
 `Contents/Resources/OMT`. The helper loads only those bundle paths and validates
 their signing identity in production. A per-helper temporary SDK storage folder
 isolates settings and logs from other OMT applications. Users need no separate
 OMT SDK, .NET installation or `libomtnet.dll`.
 
-The app and helper remain arm64-only. The supplied third-party universal
-libraries retain their arm64 slices, like the prebuilt Sparkle dependencies.
+The app, helper and source-built OMT transport runtime remain arm64-only. The
+unchanged universal VMX codec retains its arm64 slice, like the prebuilt Sparkle
+dependencies.
 NDI continues to load its separately installed, signature-verified vendor
 runtime; `libndi` is never bundled.
 
@@ -193,7 +197,105 @@ frames and 958 enqueued frames over approximately 61 seconds, while the video
 socket's configured 64 KiB send queue was full. Audio remained continuous and
 codec time averaged approximately 6.2 ms per offered frame. This locates the
 observed loss at SDK admission; it does not establish a buffer-size repair or
-prove the network's sustainable capacity. The bundled SDK remains unchanged.
-Mixed-load cadence remains an open qualification concern; thresholds and quality
+prove the network's sustainable capacity. This observation prompted the local SDK
+repairs described below. Mixed-load cadence remains an open qualification
+concern; thresholds and quality
 have not been relaxed. Decoded network reception does not establish physical
 panel latency, speaker output or audible continuity.
+
+### Local SDK sender repairs and measured limits
+
+`1.0.0.19+eucaly.1` builds the arm64 transport runtime from the pinned upstream
+managed/native commits in `Vendor/OMT/provenance.json`. Two source patches are
+retained in `Vendor/OMT/patches`, with rebuilding and regression instructions in
+`Vendor/OMT/BUILDING.md`:
+
+- Request a 512 KiB kernel send buffer per TCP channel, replacing 64 KiB. This
+  applies to audio and metadata as well as video. The four encoded async slots
+  remain per channel; raw pixels are still consumed synchronously. The nominal
+  extra kernel capacity is 448 KiB per socket. Bounded memory does not guarantee
+  bounded delay when a peer stops reading.
+- Return the exact rented async slot when the socket is null or
+  `Socket.SendAsync` throws synchronously, then preserve the existing exception
+  path. The narrow catch excludes completion handling, preventing a second slot
+  return. Successful synchronous/asynchronous ownership is unchanged.
+
+The actual upstream pool class failed the null/disposed-socket regression before
+that ownership repair (three of four slots remained). The patched class passed
+null/disposed socket, bounded byte-identical small/large transfers and peer-reset
+cases. This does not exhaust every completion/disposal race. The source-built
+64 KiB, 256 KiB and combined 512 KiB variants each passed the four existing real
+SDK loopback/teardown integration tests. The VMX codec, quality and wire format
+are unchanged; the package retains the upstream MIT license plus the NativeAOT
+runtime's license and third-party notices. No upstream repository was pushed.
+
+The device comparison used one M1 Mac mini, the supplied 4K countdown through the
+real shared program player, one Apple TV OMT receiver and a full-bandwidth remote
+NDI receiver. The sender used Wi-Fi and an optimized Debug test host. Public
+kernel socket telemetry confirmed actual 64/256 KiB send-buffer high-water marks
+and full video queues under mixed load; audio queues were measured separately.
+Source-built variants used the same pinned source/toolchain, with the buffer
+patch isolated before adding the independently tested slot-ownership repair.
+These are finite network/decoder measurements, not a wired production benchmark
+or physical HDMI/speaker observation.
+
+| OMT transport variant | TV measurement duration | TV video admission rate | Audio timing observations |
+| --- | ---: | ---: | --- |
+| Source-built 64 KiB | 185 s | 19.0433 fps | 2 timestamp discontinuities, 7 short-horizon packets |
+| Source-built 256 KiB | 180 s | 29.6996 fps | 0 timestamp discontinuities, 2 short-horizon packets |
+| 512 KiB plus slot repair | 1,255 s | 29.8980 fps | 0 timestamp discontinuities or late packets, 2 short-horizon packets |
+
+These unequal-duration receiver runs are not interchangeable with the matched
+source interval: over approximately 110 seconds at the same movie positions,
+SDK admission rejected 1,496 frames with 64 KiB and 34 with 256 KiB. A subsequent
+256 KiB loaded sample found the video queue full in 26.77% of samples, motivating
+the 512 KiB request. SDK admissions and decoded receiver counts remain separate.
+
+The 512 KiB functional phase passed 13 source checks across lyrics, PDF, image,
+video, private Preview, Hide/Show and workspace transfers. Transfers retained
+sender identities. Injecting a crash and explicitly retrying each protocol
+recovered that destination while preserving its companion. Those deliberate
+fault gaps are excluded from the later clean run.
+
+The clean 512 KiB TV run had one connection attempt, no corrupt frames, five
+native decoder drops (0.01338%), no pool stalls or ingress coalescing, and stable
+48.67–53.78 MiB receiver memory. Video lead changed from 117.19 to 114.91 ms;
+audio lead changed from 225.06 to 253.01 ms. The separate 1,300-second NDI run
+received 38,927 video frames and 64,999 audio blocks with no SDK drops, invalid
+PCM, capture errors or audio timestamp gaps. Its 731 near-silent blocks
+(both channel RMS values below 1e-7) all fall inside the five source EOF/rewind
+intervals. The live source recorded 727 exact-zero blocks there; 14 retained
+source blocks match receiver timecodes exactly and contain zero PCM. An offline
+audio-only decode found 2.773 seconds of zero samples across the movie's tail
+and head, with audio covering its full 313-second video duration. Decoder/block
+alignment and unrecorded live clock history prevent full packet attribution or
+a gapless-loop claim. No transport-generated silence was established; timestamp
+continuity alone does not establish audible quality.
+
+The strict clean-run gate **failed**: 29.8980 fps is below the unchanged 29.9 fps
+threshold, and two audio packets had less than the requested horizon. No audible
+dropout was established. A controlled observer-on/paused/on comparison retained
+the same helpers and receiver instance; equal interior receiver windows measured
+29.9378 / 29.9385 / 29.9307 fps. Pausing only the test launcher did not materially
+improve cadence, so no timer or observer workaround was added. Sustained mixed
+load, worst-case queue delay, physical delivery and audible quality remain open
+qualification items; neither thresholds nor quality were relaxed.
+
+The source finished explicitly before its authorized cutoff: all owned helpers
+exited, no outputs remained active, and no unexpected router failures or source
+invariant violations were recorded. Raw source/observer evidence is retained
+under `build/OMTProductionStress-20261024/sdk-buffer-comparison`; receiver evidence
+is retained by OMTReceiver's `Eucaly-Clean512k` and `Eucaly-ObserverABA512k` runs.
+
+Final integration checks for the local SDK package passed: `make test` executed
+1,010 XCTest cases with six expected opt-in skips and no failures, plus one Swift
+Testing case, seven feed tests and 103 release workflow tests. This includes the
+four OMT real-SDK round-trip/teardown cases and the existing NDI SDK cases against
+the integrated package. `make build` archived/exported the signed app; deep/strict
+signature verification passed with normal macOS trust access. All nine unique
+Mach-O binaries contain arm64, the packaged transport's executable text matches
+the tested candidate, and packaged provenance/license bytes match the repository.
+Finite signed-helper load checks reported `OMT 1.0.0.19+eucaly.1 (bundled)` and
+installed NDI 6.3.2.0 without publishing a source. Independent integrated review
+found no actionable defects. These checks do not turn the recorded device
+qualification failure into a pass.

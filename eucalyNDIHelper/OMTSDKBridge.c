@@ -75,7 +75,7 @@ bool eucaly_omt_create_sender(eucaly_omt *omt, const char *name) {
     OMTSenderInfo information = {0};
     snprintf(information.ProductName, sizeof(information.ProductName), "%s", "eucaly");
     snprintf(information.Manufacturer, sizeof(information.Manufacturer), "%s", "eucaly");
-    snprintf(information.Version, sizeof(information.Version), "%s", "OMT 1.0.0.19");
+    snprintf(information.Version, sizeof(information.Version), "%s", "OMT 1.0.0.19+eucaly.1");
     omt->send_information(omt->sender, &information);
     int size = omt->send_address(omt->sender, omt->source, (int)sizeof(omt->source));
     return size > 1 && size <= (int)sizeof(omt->source) && memchr(omt->source, 0, sizeof(omt->source));

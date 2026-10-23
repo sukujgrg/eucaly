@@ -8,7 +8,7 @@ final class OMTRuntime {
     private let storage: URL
     private let ownsStorage: Bool
     private var closed = false
-    static let version = "OMT 1.0.0.19 (bundled)"
+    static let version = "OMT 1.0.0.19+eucaly.1 (bundled)"
 
     init() throws {
         let executable = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()

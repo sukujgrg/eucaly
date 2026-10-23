@@ -1,38 +1,43 @@
 # Bundled Open Media Transport SDK
 
-Pinned SDK: **1.0.0.19**, from the
-[official release](https://github.com/openmediatransport/libomtnet/releases/tag/v1.0.0.19).
-`provenance.json` records the download archive, retained files and SHA-256 hashes.
-`PATCHES.md` records the ABI-neutral C header correction.
+Bundled SDK: **1.0.0.19+eucaly.1**, based on upstream **1.0.0.19** with two
+documented local sender repairs.
+The source-built `libomt.dylib` is arm64, matching eucaly and its helper.
+`libvmx.dylib` remains the unchanged universal upstream codec. The base archive,
+source commits, toolchain, patches and retained-file hashes are recorded in
+`provenance.json`. See `PATCHES.md` and `BUILDING.md` before rebuilding.
 
-Only the separately supervised output helper loads these libraries after an
-explicit Start/Show/Retry. The main application does not link or load OMT.
-The helper uses the bundled copies in `Contents/Frameworks/OMT`, verifies their
-application signing identity, and isolates SDK settings and logs for that child.
-The parent removes that temporary storage after normal or forced retirement.
+Only an explicitly started, separately supervised helper loads these libraries.
+The main application loads neither OMT nor NDI. Packaged libraries are signed
+with the app identity and verified before loading. Each helper isolates its SDK
+settings/logs; exact-child retirement releases its process-lifetime NativeAOT
+runtime. No separate .NET installation is needed to run eucaly. NDI continues
+using its independent vendor-installed runtime.
 
-The SDK's `libomt.dylib` is a NativeAOT library. A separate .NET installation and
-`libomtnet.dll` are unnecessary. `libvmx.dylib` supplies VMX software encoding.
-The app ships the universal upstream libraries, verifies the arm64 slices and
-signs the packaged copies with the app identity. App and helper remain arm64.
-Do not replace dependencies or change runtime library search paths during a
-live sender's lifetime. NDI continues using its independent external runtime.
+The local build requests a 512 KiB kernel send buffer per TCP channel and keeps
+four encoded async slots per channel. The request applies to video, audio and
+metadata connections. It adds nominally 448 KiB per socket over upstream's
+64 KiB request; bounded storage does not guarantee bounded network delay under
+a stalled peer. Encoding quality, wire format and raw-buffer consumption rules
+are unchanged. SDK enqueue counts do not prove socket completion or decoded
+receiver delivery. Connection counts describe TCP channels, not receiver devices.
 
-The upstream MIT licence is retained in `LICENSE.txt` and copied into the app.
-Open Media Transport and associated marks belong to their respective owners.
+Output remains progressive SDR Rec.709 1920x1080 at 30/1 fps, UYVY or
+straight-alpha UYVA, Medium VMX quality and stereo 48 kHz planar Float32 audio.
+Picked-window sharing remains native-only. Do not replace a live helper's
+libraries or search paths.
 
-The initial output is progressive SDR Rec.709 1920×1080 at 30/1 fps, using
-UYVY or straight-alpha UYVA, fixed Medium VMX quality and stereo 48 kHz planar
-Float32 audio. Submission counts establish SDK calls, not receiver delivery.
-SDK connection counts are TCP channels, so one physical receiver can have
-more than one connection. Window capture is outside this release's network
-output capability.
+`LICENSE.txt` retains the upstream MIT license and the source-built NativeAOT
+runtime's supplied license/third-party notices. The existing build copies the
+notices and provenance into the signed app. Open Media Transport and associated
+marks belong to their owners. No upstream repository has been pushed.
 
-With a signed local build, the helper supports a read-only library check:
+A finite read-only load check is available with the installed signed helper:
 
 ```sh
 "$HOME/Applications/eucaly.app/Contents/Helpers/eucalyNDIHelper" --check-omt-runtime
 ```
 
-Use a finite process deadline for automated checks, as initialization runs
-third-party code. This command creates no source or output window.
+It creates no source or window. Use a finite process deadline in automation.
+Receiver and physical qualification results are documented in
+[`docs/omt-runtime.md`](../../docs/omt-runtime.md); source-build provenance is not qualification evidence.
