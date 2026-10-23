@@ -6,6 +6,46 @@ import Darwin
 
 @MainActor
 final class NDIHelperTests: XCTestCase {
+    func testUnexpectedExitMessageConciselyDistinguishesExitFromSignal() {
+        let exited = NDIHelperSupervisor.unexpectedExitMessage(reason: .exit, status: 70)
+        let signalled = NDIHelperSupervisor.unexpectedExitMessage(reason: .uncaughtSignal, status: SIGPIPE)
+        XCTAssertEqual(exited, "Output helper exited (exit status 70)")
+        XCTAssertEqual(signalled, "Output helper exited (uncaught signal \(SIGPIPE))")
+    }
+    func testClosedSocketWriteReturnsEPIPEAndTheSameHelperContinuesRendering() async throws {
+        let generation = UUID(), ready = expectation(description: "ready without a network SDK")
+        let frame = expectation(description: "render after closed socket")
+        let helper = NDIHelperSupervisor { event in
+            switch event {
+            case .ready(let id): XCTAssertEqual(id, generation); ready.fulfill()
+            case .frame(let id, let revision, let surface):
+                XCTAssertEqual(id, generation); XCTAssertEqual(revision, 1)
+                XCTAssertTrue(NDIHelperWire.valid(surface)); frame.fulfill()
+            case .failed(_, let reason): XCTFail(reason)
+            default: break
+            }
+        }
+        defer { helper.stop() }
+        helper.start(generation: generation) // renderOnly; loads neither SDK.
+        await fulfillment(of: [ready], timeout: 5)
+        let initialPID = await helper.diagnosticProcessIdentifier(generation: generation)
+        let pid = try XCTUnwrap(initialPID)
+        let brokenPipe = expectation(description: "raw socket write returned -1 with EPIPE")
+        helper.injectFault("broken-pipe") { brokenPipe.fulfill() }
+        await fulfillment(of: [brokenPipe], timeout: 2)
+        let afterWritePID = await helper.diagnosticProcessIdentifier(generation: generation)
+        XCTAssertEqual(afterWritePID, pid, "A disconnected peer must retain the exact helper process")
+        guard afterWritePID == pid else { await helper.stopAndWait(); return }
+        let ping = expectation(description: "control responds after closed socket")
+        helper.ping { ping.fulfill() }
+        helper.render(request(generation))
+        await fulfillment(of: [ping, frame], timeout: 5)
+        let afterRenderPID = await helper.diagnosticProcessIdentifier(generation: generation)
+        XCTAssertEqual(afterRenderPID, pid)
+        await helper.stopAndWait()
+        let retiredPID = await helper.diagnosticProcessIdentifier(generation: generation)
+        XCTAssertNil(retiredPID)
+    }
     func testTimedOutMachSendsReleaseOnlyReturnedCopiedRights() throws {
         let inbox = eucaly_mach_port_create(), first = eucaly_mach_port_create(), second = eucaly_mach_port_create()
         defer { for port in [inbox, first, second] { eucaly_mach_receive_destroy(port) } }

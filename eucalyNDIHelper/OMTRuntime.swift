@@ -109,6 +109,16 @@ enum NetworkHelperRuntime {
         case .omt(let runtime): eucaly_omt_connections(runtime.handle)
         }
     }
+    /// Called only by the existing SDK-video worker, never the status/control
+    /// queue. Snapshot totals retain the vendor's first-channel/reset limits.
+    var omtVideoStatistics: OMTVideoSDKStatistics? {
+        guard case .omt(let runtime) = self else { return nil }
+        var value = eucaly_omt_video_statistics()
+        eucaly_omt_get_video_statistics(runtime.handle, &value)
+        return .init(framesEnqueued: value.frames_enqueued, framesDropped: value.frames_dropped,
+            bytesEnqueued: value.bytes_enqueued, codecMilliseconds: value.codec_milliseconds,
+            zeroReturnCalls: value.zero_return_calls)
+    }
     func sendVideo(_ bytes: UnsafeMutableRawPointer, format: NDIVideoPixelFormat, timecode: Int64) {
         switch self {
         case .ndi(let runtime):

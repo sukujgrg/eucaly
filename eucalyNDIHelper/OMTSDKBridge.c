@@ -17,6 +17,8 @@ struct eucaly_omt {
     int (*send_address)(omt_send_t *, char *, int);
     int (*send)(omt_send_t *, OMTMediaFrame *);
     int (*connections)(omt_send_t *);
+    void (*video_statistics)(omt_send_t *, OMTStatistics *);
+    uint64_t zero_video_returns; // Confined to the SDK video-owner queue.
     void (*shutdown)(void);
     void (*settings_string)(const char *, const char *);
     void (*logging_callback)(OMTLoggingCallback);
@@ -50,6 +52,7 @@ eucaly_omt *eucaly_omt_open(const char *path, const char *codec_path, char *erro
     LOAD(send_address, "omt_send_getaddress");
     LOAD(send, "omt_send");
     LOAD(connections, "omt_send_connections");
+    LOAD(video_statistics, "omt_send_getvideostatistics");
     LOAD(shutdown, "omt_shutdown");
     LOAD(settings_string, "omt_settings_set_string");
     LOAD(logging_callback, "omt_setloggingcallback");
@@ -97,7 +100,9 @@ int eucaly_omt_send_video(eucaly_omt *omt, void *bytes, int width, int height,
     frame.Timestamp = timecode;
     frame.Data = bytes;
     frame.DataLength = stride * height + (surface_format == 0x55595641 ? width * height : 0);
-    return omt->send(omt->sender, &frame);
+    int offered = omt->send(omt->sender, &frame);
+    if (offered == 0) omt->zero_video_returns += 1;
+    return offered;
 }
 int eucaly_omt_send_audio(eucaly_omt *omt, const void *bytes, int64_t sample_time) {
     OMTMediaFrame frame = {0};
@@ -106,6 +111,17 @@ int eucaly_omt_send_audio(eucaly_omt *omt, const void *bytes, int64_t sample_tim
     frame.Timestamp = (sample_time / 48000) * 10000000 + ((sample_time % 48000) * 10000000) / 48000;
     frame.Data = (void *)bytes; frame.DataLength = 2 * 960 * (int)sizeof(float);
     return omt->send(omt->sender, &frame);
+}
+void eucaly_omt_get_video_statistics(eucaly_omt *omt, eucaly_omt_video_statistics *statistics) {
+    OMTStatistics vendor = {0};
+    omt->video_statistics(omt->sender, &vendor);
+    // These are enqueue counters. Socket completion/errors occur later. The
+    // SDK's interval fields reset on query, so export cumulative fields only.
+    statistics->frames_enqueued = vendor.Frames;
+    statistics->frames_dropped = vendor.FramesDropped;
+    statistics->bytes_enqueued = vendor.BytesSent;
+    statistics->codec_milliseconds = vendor.CodecTime;
+    statistics->zero_return_calls = omt->zero_video_returns;
 }
 void eucaly_omt_close(eucaly_omt *omt) {
     if (!omt) return;

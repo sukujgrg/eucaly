@@ -16,6 +16,18 @@ int eucaly_omt_connections(eucaly_omt *omt);
 int eucaly_omt_send_video(eucaly_omt *omt, void *bytes, int width, int height,
                           int stride, uint32_t surface_format, int64_t timecode);
 int eucaly_omt_send_audio(eucaly_omt *omt, const void *planar_pcm, int64_t sample_time);
+// SDK-video-owner queue only. Vendor counters describe the FIRST connected
+// video channel, not delivery or all clients; they reset with channel changes.
+// Drops include exhausted async pools and oversized frames. Zero returns also
+// include no subscribers and remain sender-lifetime observations, not errors.
+typedef struct {
+    int64_t frames_enqueued;
+    int64_t frames_dropped;
+    int64_t bytes_enqueued;
+    int64_t codec_milliseconds;
+    uint64_t zero_return_calls;
+} eucaly_omt_video_statistics;
+void eucaly_omt_get_video_statistics(eucaly_omt *omt, eucaly_omt_video_statistics *statistics);
 void eucaly_omt_close(eucaly_omt *omt);
 
 #if DEBUG

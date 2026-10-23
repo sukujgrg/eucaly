@@ -179,6 +179,18 @@ nonisolated struct NDIHelperConfiguration: Codable, Sendable {
     }
 }
 
+/// Vendor totals for the first connected OMT video channel. Enqueued frames
+/// and bytes are not socket completions or receiver delivery. Channel changes
+/// can reset them; with no video channel the SDK returns zero-valued totals.
+nonisolated struct OMTVideoSDKStatistics: Codable, Sendable {
+    var framesEnqueued: Int64
+    var framesDropped: Int64 // Async-pool exhaustion or oversized-frame rejection.
+    var bytesEnqueued: Int64
+    var codecMilliseconds: Int64 // SDK encoder time; not GPU composition time.
+    var zeroReturnCalls: UInt64 // Sender-lifetime; also counts no subscribers.
+    var isValid: Bool { [framesEnqueued, framesDropped, bytesEnqueued, codecMilliseconds].allSatisfy { $0 >= 0 } }
+}
+
 nonisolated struct NDIHelperStatus: Codable, Sendable {
     var runtimeVersion = ""
     var sourceName = ""
@@ -201,6 +213,7 @@ nonisolated struct NDIHelperStatus: Codable, Sendable {
     var slowCadence = false
     var videoFormat: NDIVideoPixelFormat? = nil
     var processCPUSeconds: Double? = nil // Debug qualification; not a codec-only measurement.
+    var omtVideoStatistics: OMTVideoSDKStatistics? = nil
     #if DEBUG
     var audioCallInProgress: Bool? = nil
     var videoCallInProgress: Bool? = nil
@@ -211,6 +224,7 @@ nonisolated struct NDIHelperStatus: Codable, Sendable {
          audioSubmissionAgeMilliseconds, maximumAudioSubmissionAgeMilliseconds,
          audioSubmissionMilliseconds, maximumAudioSubmissionMilliseconds].compactMap { $0 }
             .allSatisfy { $0.isFinite && $0 >= 0 && $0 <= 1_000_000_000 }
+            && (omtVideoStatistics?.isValid ?? true)
     }
     var performanceNotice: String? {
         if slowCadence, let fps = effectiveFramesPerSecond {

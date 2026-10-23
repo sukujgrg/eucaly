@@ -146,3 +146,54 @@ no remaining actionable defects.
 Physical Apple TV picture/sound, measured end-to-end A/V latency and sustained
 mixed-protocol performance were not tested in this implementation task. The four
 skips are the separately opted-in NDI stress/diagnostic and AAC stress cases.
+
+## Coordinated device checks, 24 October 2026
+
+The opt-in `scripts/test-omt-production-stress.py` fixture drives the real
+OutputCoordinator, accepted Current, shared player/audio bus, compositor and
+per-destination helpers with isolated in-memory settings. It never restores the
+operator's library or outputs. Its initial source holds one supplied movie;
+explicit, run-ID-fenced commands control subsequent phases. The dated fixture
+enforces the authorized 05:30 Sydney cutoff and retains checkpoints, exact child
+identities, process samples and command acknowledgements under
+`build/OMTProductionStress-20261024`. The receiver project owns Apple TV and
+remote NDI measurements. This optimized Debug host is not a signed Release
+performance measurement.
+
+Remote NDI attachment reproduced a helper exit twice while OMT continued. The
+second run retained the actual OS cause: uncaught SIGPIPE (13). Helper startup
+now ignores SIGPIPE before either SDK loads, allowing a closed stream write to
+return EPIPE to its owner. Other failures, SDK results and buffer ownership stay
+checked. A real closed-socket regression failed before the repair; afterward,
+the same helper returned EPIPE, answered control, rendered and shut down. The
+post-repair remote NDI checks decoded both video and stereo PCM, including a
+disconnect/reconnect on the same sender. Exact exit identities are retained in
+system diagnostics; operator status shows the concise exit reason.
+
+The follow-up `make test` run passed 1,010 XCTest cases with six expected opt-in
+skips, plus the Swift Testing case, seven feed tests and 103 release workflow
+tests. The additional skips are the explicitly coordinated LAN source and
+machine-specific supplied-input diagnostic. Independent review of the repair,
+statistics and isolated fixtures found no actionable issues.
+
+Sender API calls are not delivery counts. Optional `omtVideoStatistics` exposes
+the pinned SDK's first connected video channel: enqueued frames/bytes, rejected
+frames and sender codec time. Rejections include a full four-slot async send
+pool or an oversized frame. Channel totals can reset when clients change;
+bytes include metadata, and codec time belongs to the sender. The separate
+sender-lifetime zero-return count also includes calls with no video subscriber.
+None of these observations proves socket completion or receiver delivery.
+
+The first five-minute Apple TV baseline met its configured checks. Subsequent
+same-instance comparisons exposed lower OMT receipt cadence with a full-bandwidth
+remote NDI receiver connected, followed by recovery after it disconnected.
+Source call counts, receiver counts and kernel socket telemetry are retained
+separately. In a matched loaded interval, the SDK reported 872 rejected video
+frames and 958 enqueued frames over approximately 61 seconds, while the video
+socket's configured 64 KiB send queue was full. Audio remained continuous and
+codec time averaged approximately 6.2 ms per offered frame. This locates the
+observed loss at SDK admission; it does not establish a buffer-size repair or
+prove the network's sustainable capacity. The bundled SDK remains unchanged.
+Mixed-load cadence remains an open qualification concern; thresholds and quality
+have not been relaxed. Decoded network reception does not establish physical
+panel latency, speaker output or audible continuity.

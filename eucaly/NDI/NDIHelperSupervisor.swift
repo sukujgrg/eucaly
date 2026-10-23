@@ -1,10 +1,12 @@
 import Foundation
 import IOSurface
 import Security
+import OSLog
 
 /// Owns the exact launched Process until exit. All launch, IPC and termination
 /// work happens off the UI thread. Each destination gets its own instance.
 nonisolated final class NDIHelperSupervisor: @unchecked Sendable {
+    private static let logger = Logger(subsystem: "com.suku.eucaly", category: "network-helper")
     enum Event: Sendable {
         case ready(UUID), frame(UUID, UInt64, IOSurface), rendered(UUID, UInt64)
         case status(UUID, NDIHelperStatus), failed(UUID, String), exited(UUID)
@@ -99,11 +101,21 @@ nonisolated final class NDIHelperSupervisor: @unchecked Sendable {
                     process.environment = environment
                 }
                 process.terminationHandler = { [self] ended in
+                    // Snapshot the exact child's OS result before cleanup
+                    // releases Process. A generic exit loses the distinction
+                    // between an SDK signal and an explicit helper exit code.
+                    let pid = ended.processIdentifier
+                    let reason = ended.terminationReason
+                    let status = ended.terminationStatus
+                    let diagnostic = Self.unexpectedExitMessage(reason: reason, status: status)
                     queue.async { [self] in
                         guard self.process === ended, self.generation == generation else { return }
                         let unexpected = !stopping
+                        if unexpected {
+                            Self.logger.error("Unexpected output helper exit: pid=\(pid, privacy: .public) generation=\(generation.uuidString, privacy: .public) terminationReason=\(reason.rawValue, privacy: .public) terminationStatus=\(status, privacy: .public)")
+                        }
                         cleanUp()
-                        if unexpected { event(.failed(generation, "Output helper exited")) }
+                        if unexpected { event(.failed(generation, diagnostic)) }
                         event(.exited(generation))
                     }
                 }
@@ -139,6 +151,15 @@ nonisolated final class NDIHelperSupervisor: @unchecked Sendable {
                 }
             }
         }
+    }
+    static func unexpectedExitMessage(reason: Process.TerminationReason, status: Int32) -> String {
+        let result: String
+        switch reason {
+        case .exit: result = "exit status \(status)"
+        case .uncaughtSignal: result = "uncaught signal \(status)"
+        @unknown default: result = "termination reason \(reason.rawValue), status \(status)"
+        }
+        return "Output helper exited (\(result))"
     }
     private func accepts(_ message: NDIMachMessage) -> Bool {
         !stopping && message.packet.generation == generation && process?.isRunning == true
@@ -433,6 +454,19 @@ nonisolated final class NDIHelperSupervisor: @unchecked Sendable {
         for waiter in waiters { waiter.resume() }
     }
     #if DEBUG
+    /// Observe only this supervisor's exact current child, on its owner queue.
+    /// Qualification never blocks the main actor or discovers helpers by name.
+    func diagnosticProcessIdentifier(generation expected: UUID) async -> Int32? {
+        await withCheckedContinuation { continuation in
+            queue.async { [self] in
+                guard generation == expected, let process, process.isRunning else {
+                    continuation.resume(returning: nil); return
+                }
+                continuation.resume(returning: process.processIdentifier)
+            }
+        }
+    }
+
     func injectFault(_ fault: String, completion: @escaping @Sendable () -> Void) {
         debugRequest(.fault, detail: fault, completion: completion)
     }

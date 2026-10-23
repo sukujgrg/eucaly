@@ -7,6 +7,42 @@ import IOSurface
 /// the actual SDK and codec on loopback; no operator library or live TV is used.
 @MainActor
 final class OMTSDKIntegrationTests: XCTestCase {
+    func testVideoStatisticsDistinguishNoClientCallsFromEnqueuedFrames() async throws {
+        let log = OMTEvents(), received = OMTEvents(), id = UUID(), probeID = UUID()
+        let sender = NDIHelperSupervisor(event: log.record), probe = NDIHelperSupervisor(event: received.record)
+        defer { sender.stop(); probe.stop() }
+        sender.start(generation: id, configuration: .init(purpose: .sender, sourceName: "eucaly OMT statistics \(id)", technology: .omt))
+        try await ready(log)
+        let source = try XCTUnwrap(log.state.status?.sourceName)
+        sender.renderMedia(.init(request: .init(generation: id, revision: 1, colour: .chromaGreen), foreground: nil, background: nil))
+        try await until("no-client OMT zero-return observations") { (log.state.status?.omtVideoStatistics?.zeroReturnCalls ?? 0) >= 3 }
+        let noClient = try XCTUnwrap(log.state.status?.omtVideoStatistics)
+        XCTAssertEqual(log.state.status?.connections, 0)
+        XCTAssertEqual(noClient.framesEnqueued, 0); XCTAssertEqual(noClient.bytesEnqueued, 0)
+        XCTAssertEqual(noClient.framesDropped, 0, "No subscriber is not a pool rejection")
+        XCTAssertTrue(noClient.isValid); try healthy(log)
+        probe.start(generation: probeID, configuration: .init(purpose: .loopbackProbe, sourceName: source, technology: .omt))
+        try await ready(received)
+        probe.render(request(probeID, revision: 1))
+        try await until("decoded OMT video with enqueue counters") {
+            received.state.picture != nil && (log.state.status?.omtVideoStatistics?.framesEnqueued ?? 0) > 0
+        }
+        let connected = try XCTUnwrap(log.state.status?.omtVideoStatistics)
+        XCTAssertGreaterThan(connected.bytesEnqueued, 0)
+        XCTAssertGreaterThanOrEqual(connected.zeroReturnCalls, noClient.zeroReturnCalls)
+        XCTAssertTrue(log.state.status?.validMetrics == true)
+        await probe.stopAndWait()
+        try await until("disconnected OMT channel and further zero returns") {
+            log.state.status?.connections == 0 && (log.state.status?.omtVideoStatistics?.zeroReturnCalls ?? 0) > connected.zeroReturnCalls
+        }
+        let disconnected = try XCTUnwrap(log.state.status?.omtVideoStatistics)
+        XCTAssertEqual(disconnected.framesEnqueued, 0, "SDK channel counters can reset on disconnect")
+        XCTAssertEqual(disconnected.bytesEnqueued, 0)
+        XCTAssertEqual(log.state.readyCount, 1); XCTAssertEqual(log.state.status?.sourceName, source)
+        try healthy(log); try healthy(received)
+        await sender.stopAndWait()
+    }
+
     func testPackedLyricsAlphaChromaAndClearReachTheSameOMTConnection() async throws {
         let sendLog = OMTEvents(), receiveLog = OMTEvents(), id = UUID(), probeID = UUID()
         let sender = NDIHelperSupervisor(event: sendLog.record), probe = NDIHelperSupervisor(event: receiveLog.record)
@@ -42,6 +78,9 @@ final class OMTSDKIntegrationTests: XCTestCase {
         _ = try await receive { $0.maximumAlpha == 0 }
         XCTAssertEqual(sendLog.state.readyCount, 1); XCTAssertEqual(receiveLog.state.readyCount, 1)
         XCTAssertEqual(sendLog.state.status?.sourceName, source)
+        // The decoded replacement can arrive before the sender's next status
+        // heartbeat. Compare the format only after that status covers it.
+        try await until("fresh cleared alpha submission status") { (sendLog.state.status?.lastTimecode ?? -1) >= timecode }
         XCTAssertEqual(sendLog.state.status?.videoFormat, .uyva)
         try await until("OMT connection status") { (sendLog.state.status?.connections ?? 0) > 0 }
         XCTAssertGreaterThan(sendLog.state.status?.connections ?? 0, 0)

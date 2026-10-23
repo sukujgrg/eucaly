@@ -217,10 +217,12 @@ final class NDISubmissionWorker: @unchecked Sendable {
         submittedPicture = current
         borrowed = runtime.borrowsVideoAfterReturn ? current : nil
         let connections = runtime.connections
+        let omtStatistics = runtime.omtVideoStatistics
         lock.lock(); report.submittedFrames &+= 1; report.lastTimecode = Int64(timecode)
         report.effectiveFramesPerSecond = metrics.framesPerSecond
         report.slowCadence = metrics.slowCadence; report.frameAgeMilliseconds = metrics.frameAgeMilliseconds
         report.submissionMilliseconds = Double(finished - started) / 1_000_000
+        report.omtVideoStatistics = omtStatistics
         report.connections = max(0, Int(connections)); lock.unlock()
     }
     func stop(colour: OutputColour, completion: @escaping @Sendable (NDIHelperShutdown) -> Void) {

@@ -1,5 +1,12 @@
 import AppKit
 import IOSurface
+import Darwin
+
+// A receiver can disconnect during either SDK's socket write. Let that write
+// return EPIPE so the SDK can handle its connection failure, rather than
+// terminating this destination's helper. Set the process policy before SDK
+// loading, runtime checks, bootstrap or service worker creation.
+_ = Darwin.signal(SIGPIPE, SIG_IGN)
 
 /// A separate instance per destination. Only an explicit sender configuration
 /// loads the SDK. Control remains independent of render and submission work.
@@ -110,8 +117,13 @@ final class HelperService: @unchecked Sendable {
             pong(packet.token)
         case .fault:
             #if DEBUG
-            guard let value = packet.detail, ["stall", "crash", "sdk-stall", "sdk-crash", "audio-stall"].contains(value) else {
+            guard let value = packet.detail, ["stall", "crash", "sdk-stall", "sdk-crash", "audio-stall", "broken-pipe"].contains(value) else {
                 fail("Unknown test fault"); return
+            }
+            if value == "broken-pipe" {
+                guard exerciseBrokenPipe() else { return }
+                pong(packet.token)
+                return
             }
             fault = value
             sender?.injectFault(value)
@@ -142,6 +154,33 @@ final class HelperService: @unchecked Sendable {
             fail("Unexpected control message")
         }
     }
+
+    #if DEBUG
+    /// A real closed stream exercises the helper's process signal policy. The
+    /// acknowledgement proves write returned EPIPE, rather than hiding the
+    /// error or merely delivering a synthetic signal.
+    private func exerciseBrokenPipe() -> Bool {
+        var sockets: [Int32] = [-1, -1]
+        guard Darwin.socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets) == 0 else {
+            fail("Broken-pipe diagnostic could not create its socket pair"); return false
+        }
+        defer {
+            _ = Darwin.close(sockets[0])
+            if sockets[1] >= 0 { _ = Darwin.close(sockets[1]) }
+        }
+        guard Darwin.close(sockets[1]) == 0 else {
+            fail("Broken-pipe diagnostic could not close its peer"); return false
+        }
+        sockets[1] = -1
+        var byte: UInt8 = 1
+        let result = Darwin.write(sockets[0], &byte, 1)
+        let error = errno
+        guard result == -1, error == EPIPE else {
+            fail("Broken-pipe diagnostic expected EPIPE, received write \(result), errno \(error)"); return false
+        }
+        return true
+    }
+    #endif
 
     private func prepare() {
         switch configuration.purpose {
