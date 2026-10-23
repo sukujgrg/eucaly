@@ -1172,6 +1172,8 @@ private final class OutputSettingsFixture {
         controller = ManageOutputsController(coordinator: outputs)
         window = NSWindow(contentRect: .init(x: -10000, y: -10000, width: 820, height: 650),
             styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        // This offscreen host checks native controls, not window transforms.
+        window.animationBehavior = .none
         window.isReleasedWhenClosed = false
         window.contentViewController = controller
         window.orderBack(nil); window.layoutIfNeeded()

@@ -11,11 +11,32 @@ The app uses a hybrid filesystem/SQLite model:
 - files remain the source of truth and can be edited directly
 - SQLite stores derived metadata and full-text rows for fast startup/search
 - refresh reconciles SQLite with the current filesystem state
+- workspaces share one index actor and connection, while query, scope and selected
+  result stay private to each workspace
 
 ## User Behavior
+- `Cmd+F` or Edit > Find > Search Library opens the active workspace's library
+  search, including from the lyrics editor. Repeating it focuses and selects the
+  existing query without restarting the search or resetting the selected result.
+- Escape dismisses library search and restores the previous editor or control,
+  including its text selection. Search and result activation never replace Current;
+  files open in Preview. The former `Shift+Cmd+O` shortcut is removed.
+- Edit > Find > Find in Lyrics is a separate native AppKit Find command for the
+  focused lyrics editor, without a shortcut. `Cmd+G`, `Shift+Cmd+G` and `Cmd+E`
+  retain native next match, previous match and Use Selection for Find behavior;
+  they do not navigate library results or search the library query field.
 - Search starts only when query length is `>= 3` characters.
 - Query is debounced (about `220ms`) to reduce unnecessary recomputation.
-- Clearing query returns the full current library list.
+- An empty library search query exposes its actions without starting a file query.
+- Library actions and file results share one keyboard selection; section
+  headings stay outside selection. Arrow keys traverse available entries and
+  Return activates the selected action or opens the selected file in Preview.
+- Search status covers both debounce and query execution. An empty-result message
+  appears only after the current query completes; cancelled or superseded queries
+  cannot overwrite a newer query's results or status.
+- Intervening keyboard selection survives query completion when the entry remains
+  available. Dismissal invalidates pending requests and retires native actions;
+  late results or retained controls cannot activate a closed library search.
 
 ## Query Semantics
 - Single-word query: prefix match (for example, `bea` matches `beautiful`).
@@ -27,13 +48,15 @@ This is intentional to avoid overly broad results from token-only matching.
 - Index backend: SQLite FTS5 via `SQLite3` (system library, no third-party package).
 - Every indexed library URL contributes its `filename`.
 - `.txt` files contribute `content` only when they are `<= 10KB`.
+- Lyrics labels and Save filename suggestions use one shared naming rule. The shared parser's authored title, including `#title:`, is kept without showing the marker. Without an authored title, both use the first six words of the first primary lyric line. Section and companion headings are excluded; filenames additionally sanitize characters that are unsuitable in a filename.
+- Title extraction uses at most the first 8KB for both disk reads and supplied contents. Authored titles retain their full text within that source budget.
 - Library metadata is cached in SQLite so startup can show the last synced library list before the filesystem scan finishes.
-- Unchanged files reuse cached titles/search rows based on path, file size, and modification time.
+- Unchanged files reuse cached titles/search rows based on path, file size, and modification time. A per-row title format version refreshes older title labels once without reindexing unchanged full-text content; startup cache reads do not read source files. Temporarily unreadable legacy sources keep their saved title and pending title version until a later successful refresh.
 - Index table stores:
   - `filename`
   - `content`
   - `path` (unindexed)
-- Metadata table stores path, root, relative sort key, display title, file kind, size, modification time, and source flags.
+- Metadata table stores path, root, relative sort key, display title and its format version, file kind, size, modification time, and source flags.
 
 ## How SQLite FTS5 Works Here
 
@@ -49,14 +72,22 @@ In code this is created once with:
 
 ### 2) Sync strategy
 On library refresh/reload:
-1. Begin transaction
-2. Walk supported files under the library root off the main thread
+1. Walk supported files under the library root off the main thread
+2. Begin transaction
 3. Reuse cached metadata and FTS rows for unchanged files
 4. Re-index new or modified files
 5. Remove metadata and FTS rows for deleted files
 6. Commit transaction
 
 This keeps index state aligned with the filesystem without reading every lyrics file on every launch.
+The shared actor owns discovery through commit without yielding, so an older
+workspace inventory cannot commit after a later save's refresh. Cancellation
+rolls back an uncommitted transaction. A failed index update returns filesystem
+metadata for browsing and an explicit failure for the existing Library Retry
+notice; it is not reported as successful full-text indexing. Retry reconciles
+from the current files. An unrelated connection holding the database may cause
+that reported failure, but the app's workspace refreshes no longer compete for
+separate writer connections.
 
 ### 3) Query building
 User input is transformed before SQL `MATCH`:
@@ -101,6 +132,7 @@ Note:
 ## Implementation Pointers
 - Search UI/state orchestration:
   - `/Users/suku/Swift/eucaly/eucaly/ContentView.swift`
-  - `/Users/suku/Swift/eucaly/eucaly/SidebarView.swift`
+  - `/Users/suku/Swift/eucaly/eucaly/SidebarViewController.swift`
+  - `/Users/suku/Swift/eucaly/eucaly/SidebarOutlineView.swift`
 - Index backend:
   - `/Users/suku/Swift/eucaly/eucaly/LibraryTextSearchIndex.swift`

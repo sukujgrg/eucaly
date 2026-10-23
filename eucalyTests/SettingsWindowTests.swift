@@ -320,6 +320,8 @@ private final class NativeSettingsFixture {
         let general = GeneralSettingsController(updates: updates, defaults: defaults,
             readCacheStats: { cache.stats }, clearCache: { cache.clears += 1 })
         controller = SettingsWindowController(outputs: outputs, workspaces: workspaces, updates: updates, defaults: defaults, general: general)
+        // Keep native lifecycle/editing behavior without offscreen transforms.
+        controller.window?.animationBehavior = .none
         controller.window?.setFrameOrigin(.init(x: -10000, y: -10000))
     }
     func close() {

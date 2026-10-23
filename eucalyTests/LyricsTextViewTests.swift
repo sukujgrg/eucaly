@@ -5,6 +5,113 @@ import XCTest
 
 @MainActor
 final class LyricsTextViewTests: XCTestCase {
+    func testNativeLyricsFindRoutesDocumentAndFindBarKeysWithoutSearchingOtherFields() async throws {
+        let fixture = try Fixture(text: "grace and peace grace")
+        defer { fixture.close() }
+        let previousApplication = NSWorkspace.shared.frontmostApplication
+        defer {
+            if previousApplication?.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+                previousApplication?.activate(options: [.activateIgnoringOtherApps])
+            }
+        }
+        let previousMenu = NSApp.mainMenu
+        let board = NSPasteboard(name: .find)
+        let savedFindItems = (board.pasteboardItems ?? []).map { source in
+            let copy = NSPasteboardItem()
+            for type in source.types {
+                if let data = source.data(forType: type) { copy.setData(data, forType: type) }
+            }
+            return copy
+        }
+        defer {
+            NSApp.mainMenu = previousMenu
+            board.clearContents()
+            if !savedFindItems.isEmpty { board.writeObjects(savedFindItems) }
+        }
+        let app = AppDelegate()
+        let menus = AppMenuController(app: app)
+        NSApp.mainMenu = menus.mainMenu
+        let find = try XCTUnwrap(menus.mainMenu.item(withTitle: "Edit")?.submenu?.item(withTitle: "Find")?.submenu)
+        let show = try XCTUnwrap(find.item(withTitle: "Find in Lyrics…"))
+        let next = try XCTUnwrap(find.item(withTitle: "Find Next"))
+        let previous = try XCTUnwrap(find.item(withTitle: "Find Previous"))
+        let useSelection = try XCTUnwrap(find.item(withTitle: "Use Selection for Find"))
+        let libraryRequests = NativeFindLibraryRequests()
+        let observation = NotificationCenter.default.addObserver(forName: .showLibrarySearch, object: nil, queue: nil) { _ in
+            MainActor.assumeIsolated { libraryRequests.count += 1 }
+        }
+        defer { NotificationCenter.default.removeObserver(observation) }
+        try await activateNativeSearchTestWindow(fixture.window)
+        XCTAssertTrue(fixture.window.makeFirstResponder(fixture.view))
+        XCTAssertTrue(fixture.window.isKeyWindow)
+        fixture.view.setSelectedRange(.init(location: 0, length: 5))
+
+        func press(_ key: String, modifiers: NSEvent.ModifierFlags = .command) throws {
+            let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers,
+                timestamp: 0, windowNumber: fixture.window.windowNumber, context: nil,
+                characters: modifiers.contains(.shift) ? key.uppercased() : key,
+                charactersIgnoringModifiers: key, isARepeat: false, keyCode: key == "e" ? 14 : 5))
+            XCTAssertTrue(menus.mainMenu.performKeyEquivalent(with: event))
+        }
+
+        XCTAssertTrue((NSApp.target(forAction: try XCTUnwrap(next.action)) as? LyricsTextView) === fixture.view)
+        try press("e")
+        try press("g")
+        XCTAssertEqual(fixture.view.selectedRange(), .init(location: 16, length: 5))
+        try press("g", modifiers: [.command, .shift])
+        XCTAssertEqual(fixture.view.selectedRange(), .init(location: 0, length: 5))
+
+        find.performActionForItem(at: find.index(of: show))
+        let scroll = try XCTUnwrap(fixture.view.enclosingScrollView)
+        guard scroll.isFindBarVisible,
+              let findEditor = fixture.window.firstResponder as? NSTextView,
+              findEditor !== fixture.view, findEditor.isFieldEditor else {
+            XCTFail("Find in Lyrics must open and focus the real native find bar before query input")
+            return
+        }
+        findEditor.insertText("grace", replacementRange: .init(location: 0, length: findEditor.string.utf16.count))
+        fixture.view.setSelectedRange(.init(location: 0, length: 5))
+        XCTAssertTrue((NSApp.target(forAction: try XCTUnwrap(next.action)) as? LyricsTextView) === fixture.view,
+            "The native find bar must keep routing match navigation to its lyrics document")
+        try press("g")
+        XCTAssertEqual(fixture.view.selectedRange(), .init(location: 16, length: 5))
+        try press("g", modifiers: [.command, .shift])
+        XCTAssertEqual(fixture.view.selectedRange(), .init(location: 0, length: 5))
+
+        let query = NSSearchField(frame: .init(x: 10, y: 10, width: 240, height: 28))
+        query.stringValue = "library query"
+        fixture.window.contentView?.addSubview(query)
+        XCTAssertTrue(fixture.window.makeFirstResponder(query))
+        find.update()
+        for item in [show, next, previous, useSelection] {
+            XCTAssertFalse(item.isEnabled, "Lyrics find commands must be disabled in a library query field")
+        }
+        let selection = fixture.view.selectedRange()
+        fixture.view.performLyricsFindAction(next)
+        XCTAssertEqual(fixture.view.selectedRange(), selection)
+        XCTAssertEqual(query.stringValue, "library query")
+
+        XCTAssertTrue(fixture.window.makeFirstResponder(fixture.view))
+        let settings = NSWindow(contentRect: .init(x: 0, y: 0, width: 280, height: 100),
+            styleMask: .titled, backing: .buffered, defer: false)
+        settings.isReleasedWhenClosed = false
+        defer { settings.close() }
+        let settingsField = NSTextField(frame: .init(x: 10, y: 10, width: 240, height: 28))
+        settings.contentView?.addSubview(settingsField)
+        try await activateNativeSearchTestWindow(settings)
+        XCTAssertTrue(settings.makeFirstResponder(settingsField))
+        find.update()
+        for item in [show, next, previous, useSelection] {
+            XCTAssertFalse(item.isEnabled, "A key Settings field cannot fall back to the main lyrics window")
+        }
+        fixture.view.performLyricsFindAction(next)
+        XCTAssertEqual(fixture.view.selectedRange(), selection)
+        XCTAssertEqual(fixture.draft, "grace and peace grace")
+        XCTAssertFalse(fixture.undo.canUndo, "Finding text must not edit lyrics")
+        XCTAssertEqual(libraryRequests.count, 0)
+        scroll.isFindBarVisible = false
+    }
+
     func testWordBridgeQuoteEntitiesAreCleanBeforeInsertionAndStayOneUndoablePaste() throws {
         let original = "Existing தமிழ் lyrics"
         let fixture = try Fixture(text: original)
@@ -307,3 +414,6 @@ final class LyricsTextViewTests: XCTestCase {
         }
     }
 }
+
+@MainActor
+private final class NativeFindLibraryRequests { var count = 0 }

@@ -8,6 +8,7 @@ struct ImageSlideView: View {
     var contentMode: ProjectionImageContentMode = .fit
     var showsLoadingIndicator = true
     var retainsPreviousImageWhileLoading = false
+    var contentIdentity: ProjectionImageContentIdentity?
     @Environment(\.displayScale) private var displayScale
     @StateObject private var presentation = ProjectionImagePresentation()
 
@@ -17,7 +18,8 @@ struct ImageSlideView: View {
                 url: url,
                 pointSize: proxy.size,
                 displayScale: displayScale,
-                contentMode: contentMode
+                contentMode: contentMode,
+                contentIdentity: contentIdentity
             )
             ZStack {
                 backgroundColour
@@ -55,6 +57,7 @@ final class ProjectionImagePresentation: ObservableObject {
 
     private struct LoadedImage {
         let url: URL
+        let contentIdentity: ProjectionImageContentIdentity?
         let image: CGImage
     }
 
@@ -64,7 +67,8 @@ final class ProjectionImagePresentation: ObservableObject {
 
     func image(for request: ProjectionImageRequest?, retainingPreviousImage: Bool) -> CGImage? {
         guard let loadedImage,
-              retainingPreviousImage || loadedImage.url == request?.cacheURL else { return nil }
+              retainingPreviousImage || (loadedImage.url == request?.cacheURL
+                && loadedImage.contentIdentity == request?.contentIdentity) else { return nil }
         return loadedImage.image
     }
 
@@ -74,7 +78,7 @@ final class ProjectionImagePresentation: ObservableObject {
             try await Task.sleep(for: .milliseconds(80))
             let image = try await loader.image(for: request)
             try Task.checkCancellation()
-            loadedImage = LoadedImage(url: request.cacheURL, image: image)
+            loadedImage = LoadedImage(url: request.cacheURL, contentIdentity: request.contentIdentity, image: image)
             failedRequest = nil
         } catch is CancellationError {
             // SwiftUI cancels the request when its size, source, or visibility changes.

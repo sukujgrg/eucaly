@@ -1,6 +1,6 @@
 import Foundation
 
-/// Shared comparison rules for the parser, section styling and Format action.
+/// Shared comparison rules for parsing, section styling and Normalize Formatting.
 /// The comparison view is deliberately stricter than cleanup of lyric content.
 nonisolated enum LyricsTextSyntax {
     static func markerText(_ text: String) -> String {
@@ -38,21 +38,35 @@ nonisolated enum LyricsTextSyntax {
     }
 
     static func format(_ text: String) -> String {
-        let lines = LyricsTextSanitizer.clean(text).split(separator: "\n", omittingEmptySubsequences: false)
+        let sourceLines = LyricsTextSanitizer.normalizeLineEndings(text).components(separatedBy: "\n")
+        // Credit paragraphs and their terminating blank have parser meaning.
+        // Keep that suffix intact, including any ignored text after the credits.
+        let footerStart = LyricsCopyrightParser.footer(in: sourceLines)?.startIndex
+        let body = sourceLines.prefix(footerStart ?? sourceLines.count).joined(separator: "\n")
+        let lines = LyricsTextSanitizer.clean(body).components(separatedBy: "\n")
+        // A blank after a companion heading can separate unheaded slides.
+        // Reuse the parser's source spans rather than guessing those boundaries.
+        let stanzaStarts = Set(LyricsParser.stanzaRangesForCleanup(lines, protected: []).map(\.lowerBound))
         var output: [String] = []
         var pendingBlank = false
-        for source in lines {
-            let line = String(source).trimmingCharacters(in: .whitespaces)
+        for (index, source) in lines.enumerated() {
+            let line = source.trimmingCharacters(in: .whitespaces)
             if isBlank(line) { pendingBlank = !output.isEmpty; continue }
 
             let separator = isSeparator(line)
             let header = LyricsSectionCatalog.canonicalHeaderLine(line)
                 ?? LyricsSectionCatalog.canonicalCompanionHeaderLine(line)
-            if !output.isEmpty, pendingBlank || separator || header != nil || output.last == "---" {
+            let followsHeading = output.last.map { LyricsSectionCatalog.isHeading($0) } ?? false
+            let keepsBlank = pendingBlank && (!followsHeading || stanzaStarts.contains(index))
+            if !output.isEmpty, keepsBlank || separator || header != nil || output.last == "---" {
                 output.append("")
             }
             output.append(separator ? "---" : header ?? line)
             pendingBlank = false
+        }
+        if let footerStart {
+            if !output.isEmpty { output.append("") }
+            output.append(contentsOf: sourceLines[footerStart...])
         }
         return output.joined(separator: "\n")
     }

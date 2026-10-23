@@ -9,12 +9,14 @@ public struct ContentView: View {
     private let workspaceCommands: OutputWorkspaceCommands
     @State private var hasInitializedControls = false
     @State private var importPanel = LibraryImportPanelController()
+    @State private var fileTrashController = LibraryFileTrashController()
     @State private var importRequestID: UUID?
     @State private var importCancellation: LibraryImportCancellation?
     @State private var isImporting = false
     @State private var importSelectionGeneration = UUID()
     @State private var lyricsEditor = LyricsEditorSession()
     @State private var lyricsEditorFocusController = PlainTextEditorFocusController()
+    @State private var lyricsCleanupController = LyricsCleanupController()
     @StateObject private var session: PresentationSession
     @ObservedObject private var outputProfiles: OutputProfileStore
     @ObservedObject private var projectionDisplays: ProjectionDisplayManager
@@ -39,10 +41,8 @@ public struct ContentView: View {
     @State private var newFileWarning: String? = nil
     @State private var sidebarSelection: SidebarSelection? = nil
     @State private var selectedAudioURL: URL? = nil
-    @State private var previewLoadToken = UUID()
-    @State private var pendingPreviewSource: PreviewSource? = nil
-    @State private var previewLoadError: String? = nil
     @State private var librarySearch = LibrarySearchModel()
+    @State private var librarySearchCommandRouter = LibrarySearchCommandRouter()
     @State private var libraryScrollRequest: LibraryScrollRequest?
     @State private var isLibrarySearchPresented: Bool = false
     @State private var libraryLoadTask: Task<Void, Never>? = nil
@@ -79,8 +79,9 @@ public struct ContentView: View {
     private typealias PreviewSource = PresentationFlowController.PreviewSource
     private var previewSource: PreviewSource {
         get { flow.previewSource }
-        nonmutating set { flow.previewSource = newValue }
     }
+    private var previewLoadToken: UUID { flow.previewLoadToken }
+    private var previewLoadError: String? { flow.previewLoadError }
     private var currentLyricsSourceURL: URL? { session.currentLyricsSourceURL }
 
     private enum EditorExitAction: Equatable {
@@ -142,6 +143,10 @@ public struct ContentView: View {
 
     public var body: some View {
         rootSplitView
+            .onChange(of: lyricsEditor.documentID) { _, _ in lyricsCleanupController.cancel() }
+            .onChange(of: lyricsEditor.isEditing) { _, isEditing in
+                if !isEditing { lyricsCleanupController.cancel() }
+            }
             .safeAreaInset(edge: .top, spacing: 0) {
                 VStack(spacing: 0) {
                     OutputIssueBanner(session: session, manageOutputs: showOutputSettings)
@@ -170,7 +175,9 @@ public struct ContentView: View {
             .environment(\.audienceOutputProfile, session.outputCoordinator.thumbnailProfile(workspace: session.outputSourceID))
             .background(
                 OutputWorkspaceCloseConfirmation(commands: workspaceCommands, shouldClose: confirmMainWindowClose,
-                                                 willClose: handleControlsWillClose)
+                                                 willClose: handleControlsWillClose,
+                                                 editorFileURL: { lyricsEditor.isEditing ? lyricsEditor.sourceURL : nil },
+                                                 didRemoveFile: handleRemovedLibraryFile)
                     .frame(width: 0, height: 0)
             )
     }
@@ -201,6 +208,7 @@ public struct ContentView: View {
             if isLibrarySearchPresented {
                 LibrarySearchOverlayContainerView(
                     model: librarySearch,
+                    commandRouter: librarySearchCommandRouter,
                     currentSelectedURL: currentSelectedURL,
                     displayName: { displayName(for: $0) },
                     onRunAction: runLibrarySearchAction,
@@ -232,6 +240,9 @@ public struct ContentView: View {
         .onChange(of: libraryRootPath) { _, _ in
             refreshLibraryRootAccess()
         }
+        .onChange(of: playlistStore.entries) { _, _ in
+            reconcilePlaylistSelection()
+        }
         .onChange(of: backgroundVisualBookmark) { _, _ in
             let bookmark = backgroundVisualBookmark
             deferSessionChange { session.outputCoordinator.setBackgroundVisualBookmark(bookmark, for: session) }
@@ -242,6 +253,12 @@ public struct ContentView: View {
         }
         .onChange(of: session.backgroundAudioURL) { _, newValue in
             selectedAudioURL = newValue?.standardizedFileURL
+        }
+        .onChange(of: libraryRevision) { _, _ in
+            guard let selected = selectedAudioURL?.standardizedFileURL,
+                  !backgroundAudioLibraryFiles.contains(where: { $0.standardizedFileURL == selected }) else { return }
+            importSelectionGeneration = UUID()
+            selectedAudioURL = session.backgroundAudioURL?.standardizedFileURL
         }
         .onChange(of: session.backgroundAudioPlaybackState) { _, _ in
             importSelectionGeneration = UUID()
@@ -266,6 +283,8 @@ public struct ContentView: View {
     }
 
     private func handleControlsWillClose() {
+        lyricsCleanupController.cancel()
+        fileTrashController.cancel()
         importPanel.cancel()
         cancelFileImport()
         cancelPreviewLoad()
@@ -309,7 +328,7 @@ public struct ContentView: View {
 
     @ViewBuilder
     private var sidebarPane: some View {
-        SidebarView(
+        SidebarView(configuration: SidebarConfiguration(
             session: session,
             isWindowCaptureSupported: isWindowCaptureSupported,
             libraryFiles: previewLibraryFiles,
@@ -323,18 +342,16 @@ public struct ContentView: View {
             libraryScrollRequest: libraryScrollRequest,
             selectedPlaylistEntryIDs: selectedPlaylistEntryIDs,
             sidebarSelection: sidebarSelection,
-            selectedAudioURL: Binding(get: { selectedAudioURL }, set: { selection in
-                importSelectionGeneration = UUID()
-                selectedAudioURL = selection
-            }),
-            backgroundAudioLoop: $backgroundAudioLoop,
-            backgroundAudioVolumeDraft: $backgroundAudioVolumeDraft,
-            windowCaptureFrameRate: $windowCaptureFrameRate,
+            selectedAudioURL: selectedAudioURL,
+            backgroundAudioLoop: backgroundAudioLoop,
+            backgroundAudioVolumeDraft: backgroundAudioVolumeDraft,
+            windowCaptureFrameRate: windowCaptureFrameRate,
             displayName: { displayName(for: $0) },
             onImportToLibrary: importFilesToLibrary,
             onRetryLibraryLoad: refreshLibrary,
             onImportToAudio: importAudioToLibrary,
             onAddLibraryItemToPlaylist: addLibraryItemToPlaylist,
+            onMoveFileToTrash: moveLibraryFileToTrash,
             onRemovePlaylistItem: removePlaylistItem,
             onRemoveSelectedFromPlaylist: removeSelectedFromPlaylist,
             onMovePlaylistUp: moveSelectedPlaylistEntriesUp,
@@ -352,8 +369,15 @@ public struct ContentView: View {
                 )
             },
             onPickWindow: pickWindowForPreview,
-            onClearSelectedWindow: clearSelectedWindowFromSidebar
-        )
+            onClearSelectedWindow: clearSelectedWindowFromSidebar,
+            setSelectedAudioURL: { selection in
+                importSelectionGeneration = UUID()
+                selectedAudioURL = selection
+            },
+            setBackgroundAudioLoop: { backgroundAudioLoop = $0 },
+            setBackgroundAudioVolumeDraft: { backgroundAudioVolumeDraft = $0 },
+            setWindowCaptureFrameRate: { windowCaptureFrameRate = $0 }
+        ))
 
     }
 
@@ -371,11 +395,11 @@ public struct ContentView: View {
                 Button {
                     presentLibrarySearch()
                 } label: {
-                    Label("Command Palette", systemImage: "magnifyingglass")
+                    Label("Search Library", systemImage: "magnifyingglass")
                 }
                 .labelStyle(.iconOnly)
                 .buttonStyle(.bordered)
-                .help("Open the command palette")
+                .help("Search Library (⌘F)")
             }
         }
 
@@ -416,26 +440,14 @@ public struct ContentView: View {
 
     private func handleCaptureWindowsUpdate(_ windows: [ScreenCaptureManager.CapturedWindow]) {
         guard isWindowCaptureSupported else { return }
-        if windows.isEmpty {
-            if case .window = sidebarSelection {
-                setSidebarSelectionWithoutLoading(nil)
-            }
-            if flow.previewSlides.contains(where: { $0.captureWindowID != nil }) {
-                clearPreviewDocument()
-            }
-            return
-        }
+        let windowIDs = Set(windows.map(\.windowID))
         if case .window(let currentID) = sidebarSelection,
-           windows.contains(where: { $0.windowID == currentID }) {
-            return
-        }
-        if case .window = sidebarSelection {
+           !windowIDs.contains(currentID) {
             setSidebarSelectionWithoutLoading(nil)
-            if flow.previewSlides.contains(where: { $0.captureWindowID != nil }) {
-                cancelPreviewLoad()
-                previewLoadError = nil
-                flow.clearPreviewDocument()
-            }
+        }
+        if flow.clearUnavailableWindowPreview(availableWindowIDs: windowIDs) {
+            lyricsEditor.invalidatePreview()
+            releaseWindowCaptureSelectionIfUnused()
         }
     }
 
@@ -539,6 +551,7 @@ public struct ContentView: View {
                 editorID: lyricsEditor.documentID,
                 saveButtonTitle: saveButtonTitle,
                 canSave: canSaveEditorContent,
+                canPreviewDraft: lyricsEditor.canPreviewDraft,
                 focusController: lyricsEditorFocusController,
                 onAction: handleEditorAction
             ),
@@ -575,7 +588,7 @@ public struct ContentView: View {
     }
 
     private var saveButtonTitle: String {
-        editorSourceURL == nil ? "Save As..." : "Save"
+        editorSourceURL == nil ? "Save As…" : "Save"
     }
 
     private var canSaveEditorContent: Bool {
@@ -589,9 +602,15 @@ public struct ContentView: View {
             requestEditorExit(.closeEditor)
         case .save:
             _ = saveEditorDraft()
+        case .previewDraft:
+            guard hasActiveEditorPane, lyricsEditor.canPreviewDraft else { return }
+            _ = syncEditorDraftToPreview()
         case .format:
             formatEditorDraft()
+        case .cleanUp:
+            cleanUpEditorDraft()
         case .clear:
+            guard hasActiveEditorPane, !lyricsEditor.draft.isEmpty else { return }
             if !lyricsEditorFocusController.clearLyrics() { lyricsEditor.clearDraft() }
             clearPreviewDocument()
         }
@@ -599,6 +618,7 @@ public struct ContentView: View {
 
     @discardableResult
     private func requestEditorExit(_ action: EditorExitAction) -> Bool {
+        lyricsCleanupController.cancel()
         importSelectionGeneration = UUID()
         guard lyricsEditor.isEditing else {
             performEditorExit(action)
@@ -685,12 +705,13 @@ public struct ContentView: View {
         }
     }
 
+    @discardableResult
     private func commitCurrentSlides(
         _ slides: [Slide],
         lyricsSourceURL: URL? = nil,
         preferredSelection: Slide.ID? = nil,
         preferredSelectionIndex: Int? = nil
-    ) {
+    ) -> Bool {
         flow.setCurrentSlides(
             slides,
             in: session,
@@ -700,11 +721,12 @@ public struct ContentView: View {
         )
     }
 
+    @discardableResult
     private func commitCurrentPDFSource(
         _ source: PDFSlideSource,
         preferredSelection: Slide.ID? = nil,
         preferredSelectionIndex: Int? = nil
-    ) {
+    ) -> Bool {
         flow.setCurrentPDFSource(
             source,
             in: session,
@@ -715,8 +737,6 @@ public struct ContentView: View {
 
     private func clearPreviewDocument() {
         let clearedWindowFromPreview = flow.previewSlides.contains { $0.captureWindowID != nil }
-        cancelPreviewLoad()
-        previewLoadError = nil
         flow.clearPreviewDocument()
         lyricsEditor.invalidatePreview()
         if clearedWindowFromPreview {
@@ -746,14 +766,16 @@ public struct ContentView: View {
 
     private func handleLoadPreviewToCurrent() {
         guard canLoadPreviewToCurrent else { return }
-        session.setCurrentResourceScope(securityScopedRoot)
+        guard flow.referencedFileURLs.allSatisfy({ permitFileUse($0) }),
+              permitFileUse(lyricsEditor.isEditing ? lyricsEditor.sourceURL : nil) else { return }
 
         if lyricsEditor.isEditing {
-            commitCurrentSlides(
+            guard commitCurrentSlides(
                 flow.previewSlides,
                 lyricsSourceURL: lyricsEditor.sourceURL,
                 preferredSelection: flow.previewSelectionID
-            )
+            ) else { return }
+            session.setCurrentResourceScope(securityScopedRoot)
             flow.isCurrentCollapsed = false
             focusedDetailTarget = .currentThumbnails
             session.requestCurrentProjection()
@@ -762,17 +784,18 @@ public struct ContentView: View {
 
         guard !flow.previewIsEmpty else { return }
         if let pdfSource = flow.previewPDFSource {
-            commitCurrentPDFSource(
+            guard commitCurrentPDFSource(
                 pdfSource,
                 preferredSelection: flow.previewSelectionID
-            )
+            ) else { return }
         } else {
-            commitCurrentSlides(
+            guard commitCurrentSlides(
                 flow.previewSlides,
                 lyricsSourceURL: previewLyricsSourceURL(),
                 preferredSelection: flow.previewSelectionID
-            )
+            ) else { return }
         }
+        session.setCurrentResourceScope(securityScopedRoot)
         clearPreviewDocument()
         flow.isCurrentCollapsed = false
         isEditorPreviewAreaCollapsed = true
@@ -781,11 +804,11 @@ public struct ContentView: View {
     }
 
     private var canLoadPreviewToCurrent: Bool {
-        guard !isPreviewLoading, previewLoadError == nil else { return false }
+        guard flow.canLoadPreview else { return false }
         if lyricsEditor.isEditing {
-            return lyricsEditor.isPreviewSynchronized && !flow.previewIsEmpty
+            return lyricsEditor.isPreviewSynchronized
         }
-        return !flow.previewIsEmpty
+        return true
     }
 
     private var loadToCurrentHelp: String {
@@ -796,7 +819,9 @@ public struct ContentView: View {
             return "Resolve the Preview load error before loading to Current."
         }
         if lyricsEditor.isEditing && !lyricsEditor.isPreviewSynchronized {
-            return "Save or Format the lyrics to update Preview before loading to Current."
+            return lyricsEditor.hasLoadableDraft
+                ? "Choose Preview Draft to update Preview before loading to Current."
+                : "Add lyrics, then choose Preview Draft before loading to Current."
         }
         return "Load Preview into Current."
     }
@@ -960,12 +985,44 @@ public struct ContentView: View {
         isImporting = false
     }
 
+    private func moveLibraryFileToTrash(_ url: URL) {
+        guard let root = libraryRootURL, let window = workspaceCommands.window else { return }
+        let isCurrent = {
+            workspaceCommands.window === window
+                && libraryRootURL?.standardizedFileURL == root.standardizedFileURL
+                && markdownFiles.contains { $0.standardizedFileURL == url.standardizedFileURL }
+        }
+        guard isCurrent() else { return }
+        newFileWarning = nil
+        fileTrashController.present(url: url, under: root, for: window, workspace: workspaceCommands,
+                                    knownFileURLs: Set(markdownFiles),
+                                    isCurrent: isCurrent, reportError: { newFileWarning = $0 })
+    }
+
+    private func handleRemovedLibraryFile(_ candidate: LibraryFileActionService.Candidate) {
+        guard libraryRootURL?.standardizedFileURL == candidate.rootURL.standardizedFileURL
+                || markdownFiles.contains(where: candidate.matches) else { return }
+        importSelectionGeneration = UUID()
+        if case .library(let url) = sidebarSelection, candidate.matches(url) {
+            setSidebarSelectionWithoutLoading(nil)
+        }
+        if let selectedAudioURL, candidate.matches(selectedAudioURL) { self.selectedAudioURL = nil }
+        // Current and active editors were checked before admission. The core
+        // has already retired only this source's accepted/pending Preview.
+        refreshLibrary()
+    }
+
+    private func permitFileUse(_ url: URL?) -> Bool {
+        guard let url, let problem = session.outputCoordinator.fileAdmissionProblem(for: url) else { return true }
+        newFileWarning = problem
+        return false
+    }
+
     private func loadMarkdownFiles(
         from folder: URL,
         refreshSearchResults: Bool = false
     ) {
         let previousSearchScopeFiles = librarySearch.scopeFilesSnapshot
-        let scanner = libraryFileScanner
         let index = librarySearch.index
 
         libraryLoadTask?.cancel()
@@ -982,9 +1039,9 @@ public struct ContentView: View {
             }
             guard !Task.isCancelled else { return }
 
-            let discoveredFiles: [LibraryDiscoveredFileModel]
+            let syncResult: LibraryTextSearchIndex.MetadataSyncResult
             do {
-                discoveredFiles = try scanner.discoverFiles(in: folder)
+                syncResult = try await index.refreshLibraryMetadata(root: folder)
             } catch is CancellationError {
                 return
             } catch {
@@ -997,12 +1054,6 @@ public struct ContentView: View {
                         failedRoot: folder
                     ) {
                         applyLibraryMetadata([], for: folder)
-                        librarySearch.applySearchResults(
-                            [],
-                            query: librarySearch.trimmedQuery,
-                            currentSelectedURL: currentSelectedURL,
-                            preferFirstResult: true
-                        )
                     }
                     libraryLoadFailure = failure
                     isLibraryLoading = false
@@ -1012,40 +1063,17 @@ public struct ContentView: View {
             }
             guard !Task.isCancelled else { return }
 
-            let metadata = await index.syncLibraryMetadata(
-                root: folder,
-                discoveredFiles: discoveredFiles
-            )
-            guard !Task.isCancelled else { return }
-
-            let currentQuery = await MainActor.run {
-                librarySearch.trimmedQuery
-            }
-
-            let refreshedResults: [LibraryTextSearchIndex.SearchResult]
-            if currentQuery.count >= LibrarySearchModel.minimumCharacterCount {
-                refreshedResults = await index.search(
-                    query: currentQuery,
-                    scopeFiles: metadata.filter { $0.kind.isPreviewLibraryItem }.map(\.url)
-                )
-            } else {
-                refreshedResults = []
-            }
-            guard !Task.isCancelled else { return }
+            let metadata = syncResult.metadata
 
             await MainActor.run {
                 guard !Task.isCancelled else { return }
                 let searchScopeFiles = applyLibraryMetadata(metadata, for: folder)
                 isLibraryLoading = false
                 librarySearch.setIndexing(false)
+                libraryLoadFailure = syncResult.failure.map { LibraryLoadFailure(url: folder, error: $0) }
 
                 if refreshSearchResults || !haveSameStandardizedURLs(previousSearchScopeFiles, searchScopeFiles) {
-                    librarySearch.applySearchResults(
-                        refreshedResults,
-                        query: currentQuery,
-                        currentSelectedURL: currentSelectedURL,
-                        preferFirstResult: true
-                    )
+                    librarySearch.refreshSearch(currentSelectedURL: currentSelectedURL)
                 }
             }
         }
@@ -1090,11 +1118,20 @@ public struct ContentView: View {
     }
 
     private func loadSelectedFile(url: URL) {
+        guard permitFileUse(url) else { return }
         let source = PreviewSource.file(url)
         let token = beginPreviewLoad(to: source)
         newFileWarning = nil
         let kind = LibraryFileKind(url: url)
         DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try LibraryFileAdmission.requireReadableRegularFile(at: url)
+            } catch {
+                DispatchQueue.main.async {
+                    failPreviewLoad(token: token, source: source)
+                }
+                return
+            }
             switch kind {
             case .pdf:
                 guard let pageCount = PDFSlideCatalog.pageCount(for: url) else {
@@ -1209,6 +1246,7 @@ public struct ContentView: View {
     }
 
     private func refreshLibraryRootAccess() {
+        fileTrashController.cancel()
         cancelFileImport()
         importPanel.cancel()
         if libraryRootPath.isEmpty {
@@ -1261,21 +1299,22 @@ public struct ContentView: View {
     }
 
     private func updateBackgroundVisualSelection(_ url: URL?) {
-        let didChangeAccess = securityScopedBackgroundVisual != url
-        if didChangeAccess {
-            securityScopedBackgroundVisual?.stopAccessingSecurityScopedResource()
-        }
-        securityScopedBackgroundVisual = url
-        if didChangeAccess, let url {
-            _ = url.startAccessingSecurityScopedResource()
-        }
+        guard permitFileUse(url) else { return }
         deferSessionChange {
+            guard permitFileUse(url) else { return }
+            let didChangeAccess = securityScopedBackgroundVisual != url
+            if didChangeAccess {
+                securityScopedBackgroundVisual?.stopAccessingSecurityScopedResource()
+            }
+            securityScopedBackgroundVisual = url
+            if didChangeAccess, let url { _ = url.startAccessingSecurityScopedResource() }
             session.setBackgroundVisual(url)
         }
     }
 
     private func updateLibraryRootAccess(_ url: URL?) {
         guard securityScopedRoot != url else { return }
+        fileTrashController.cancel()
         securityScopedRoot?.stopAccessingSecurityScopedResource()
         securityScopedRoot = url
         if let url {
@@ -1304,19 +1343,23 @@ public struct ContentView: View {
     }
 
     private func applyBackgroundAudioSelection(_ url: URL?, autoplay: Bool) {
+        guard permitFileUse(url) else { return }
         session.setBackgroundAudioLoop(backgroundAudioLoop)
         session.setBackgroundAudioVolume(backgroundAudioVolume)
         session.setBackgroundAudio(url: url, autoplay: autoplay)
     }
 
     private func restoreBackgroundAudioSelection(_ url: URL?) {
-        updateBackgroundAudioAccess(url)
+        guard permitFileUse(url) else { return }
         deferSessionChange {
+            guard permitFileUse(url) else { return }
+            updateBackgroundAudioAccess(url)
             applyBackgroundAudioSelection(url, autoplay: false)
         }
     }
 
     private func selectBackgroundAudio(_ url: URL) {
+        guard permitFileUse(url) else { return }
         importSelectionGeneration = UUID()
         updateBackgroundAudioAccess(url)
         applyBackgroundAudioSelection(url, autoplay: true)
@@ -1352,6 +1395,7 @@ public struct ContentView: View {
         }
         ensurePlaylistDirectory(in: root)
         playlistStore.load(fromRoot: root)
+        reconcilePlaylistSelection()
         folderURL = root
         loadMarkdownFiles(
             from: root,
@@ -1379,10 +1423,15 @@ public struct ContentView: View {
 
     @MainActor
     private func presentLibrarySearch() {
+        if isLibrarySearchPresented {
+            librarySearchCommandRouter.focusExistingSearch()
+            return
+        }
         InterfaceMotion.search.animate(reduceMotion: reduceMotion) {
             isLibrarySearchPresented = true
         }
-        librarySearch.syncSelectedResult(
+        librarySearch.refreshSearch(currentSelectedURL: currentSelectedURL)
+        librarySearch.syncSelection(
             currentSelectedURL: currentSelectedURL,
             preferFirstResult: true
         )
@@ -1390,6 +1439,7 @@ public struct ContentView: View {
 
     @MainActor
     private func dismissLibrarySearch() {
+        librarySearch.cancelDebounce()
         InterfaceMotion.search.animate(reduceMotion: reduceMotion) {
             isLibrarySearchPresented = false
         }
@@ -1469,16 +1519,29 @@ public struct ContentView: View {
     }
 
     private func loadPlaylists() {
-        guard playlistStore.load(fromRoot: libraryRootURL) else {
+        let loaded = playlistStore.load(fromRoot: libraryRootURL)
+        reconcilePlaylistSelection()
+        guard loaded else {
             newFileWarning = playlistStore.lastError
             return
         }
-        selectedPlaylistEntryIDs = selectedPlaylistEntryIDs.intersection(Set(playlistStore.entries.map(\.id)))
-        if let selectedPlaylistEntryID,
-           !playlistStore.entries.contains(where: { $0.id == selectedPlaylistEntryID }) {
-            setSidebarSelectionWithoutLoading(nil)
-        }
         rebuildDisplayNames(for: playlistResolvedURLs)
+    }
+
+    private func reconcilePlaylistSelection() {
+        let reconciled = PlaylistSelectionReconciliation(
+            selectedIDs: selectedPlaylistEntryIDs,
+            primaryID: selectedPlaylistEntryID,
+            availableIDs: Set(playlistStore.entries.map(\.id))
+        )
+        if selectedPlaylistEntryIDs != reconciled.selectedIDs {
+            selectedPlaylistEntryIDs = reconciled.selectedIDs
+        }
+        if case .playlist = sidebarSelection, reconciled.primaryID == nil {
+            // Removing a saved row retires its sidebar identity, not its accepted
+            // Preview or an editor draft. Surviving highlights remain selected.
+            sidebarSelection = nil
+        }
     }
 
     private func addLibraryItemToPlaylist(_ source: URL) {
@@ -1497,35 +1560,32 @@ public struct ContentView: View {
     }
 
     private func removeSelectedFromPlaylist() {
+        reconcilePlaylistSelection()
         guard !selectedPlaylistEntryIDs.isEmpty else { return }
         guard playlistStore.remove(ids: selectedPlaylistEntryIDs) else {
             newFileWarning = playlistStore.lastError
             return
         }
         newFileWarning = nil
-        if selectedPlaylistEntryID != nil {
-            setSidebarSelectionWithoutLoading(nil)
-        } else {
-            selectedPlaylistEntryIDs = []
-        }
         loadPlaylists()
     }
 
     private func removePlaylistItem(_ id: UUID) {
+        reconcilePlaylistSelection()
+        guard playlistStore.entries.contains(where: { $0.id == id }) else { return }
         guard playlistStore.remove(ids: [id]) else {
             newFileWarning = playlistStore.lastError
             return
         }
         newFileWarning = nil
-        selectedPlaylistEntryIDs.remove(id)
-        if selectedPlaylistEntryID == id {
-            setSidebarSelectionWithoutLoading(nil)
-        }
         loadPlaylists()
     }
 
     private func moveSelectedPlaylistEntriesUp() {
-        guard !selectedPlaylistEntryIDs.isEmpty else { return }
+        reconcilePlaylistSelection()
+        let availability = PlaylistMoveAvailability(
+            selectedIDs: selectedPlaylistEntryIDs, orderedIDs: playlistStore.entries.map(\.id))
+        guard availability.canMoveUp else { return }
         guard playlistStore.moveUp(ids: selectedPlaylistEntryIDs) else {
             newFileWarning = playlistStore.lastError
             return
@@ -1535,7 +1595,10 @@ public struct ContentView: View {
     }
 
     private func moveSelectedPlaylistEntriesDown() {
-        guard !selectedPlaylistEntryIDs.isEmpty else { return }
+        reconcilePlaylistSelection()
+        let availability = PlaylistMoveAvailability(
+            selectedIDs: selectedPlaylistEntryIDs, orderedIDs: playlistStore.entries.map(\.id))
+        guard availability.canMoveDown else { return }
         guard playlistStore.moveDown(ids: selectedPlaylistEntryIDs) else {
             newFileWarning = playlistStore.lastError
             return
@@ -1599,6 +1662,7 @@ public struct ContentView: View {
         _ selection: SidebarSelection?,
         playlistEntryIDs: Set<UUID> = []
     ) -> Bool {
+        guard permitSidebarSelection(selection) else { return false }
         // An explicit same-file selection also supersedes import auto-opening.
         importSelectionGeneration = UUID()
         let request = SidebarSelectionRequest(
@@ -1628,10 +1692,19 @@ public struct ContentView: View {
     }
 
     private func commitSidebarSelection(_ request: SidebarSelectionRequest) {
+        guard permitSidebarSelection(request.selection) else { return }
         sidebarSelection = request.selection
         selectedPlaylistEntryIDs = request.playlistEntryIDs
         guard let selection = request.selection else { return }
         applySidebarSelection(selection)
+    }
+
+    private func permitSidebarSelection(_ selection: SidebarSelection?) -> Bool {
+        switch selection {
+        case .library(let url): return permitFileUse(url)
+        case .playlist(let id): return permitFileUse(playlistStore.resolvedURL(for: id))
+        default: return true
+        }
     }
 
     private func applySidebarSelection(_ selection: SidebarSelection) {
@@ -1640,11 +1713,14 @@ public struct ContentView: View {
             selectedPlaylistEntryIDs = []
             loadSelectedFile(url: url)
         case .playlist(let id):
-            guard let url = playlistStore.resolvedURL(for: id) else { return }
             if selectedPlaylistEntryIDs.isEmpty {
                 selectedPlaylistEntryIDs = [id]
             }
-            loadSelectedFile(url: url)
+            let hadWindowPreview = flow.previewSlides.contains { $0.captureWindowID != nil }
+            if !flow.previewPlaylistEntry(id, from: playlistStore, loadFile: loadSelectedFile) {
+                lyricsEditor.invalidatePreview()
+                if hadWindowPreview { releaseWindowCaptureSelectionIfUnused() }
+            }
         case .window(let windowID):
             loadWindowPreview(for: windowID)
         }
@@ -1668,8 +1744,13 @@ public struct ContentView: View {
 
     private func saveEditorDraft() -> Bool {
         guard lyricsEditor.isEditing else { return false }
+        guard permitFileUse(editorSourceURL) else { return false }
         guard lyricsEditor.hasLoadableDraft else {
             newFileWarning = "Add some content before saving lyrics."
+            return false
+        }
+        guard lyricsEditorFocusController.committedLyrics() == lyricsEditor.draft else {
+            newFileWarning = "Finish composing the current text before saving lyrics."
             return false
         }
         if editorSourceURL != nil, !lyricsEditor.isDirty {
@@ -1694,7 +1775,7 @@ public struct ContentView: View {
 
         let panel = NSSavePanel()
         panel.directoryURL = baseDir
-        panel.nameFieldStringValue = suggestedFileName(from: lyricsEditor.draft) + ".txt"
+        panel.nameFieldStringValue = LyricsFileNaming.suggestedFileName(from: lyricsEditor.draft) + ".txt"
         panel.allowedContentTypes = [UTType.plainText]
         panel.allowsOtherFileTypes = false
         let saveDelegate = NewLyricsSavePanelDelegate(libraryRootURL: libraryRootURL)
@@ -1706,6 +1787,7 @@ public struct ContentView: View {
         do {
             // The selected URL is also the native panel's overwrite-confirmed target.
             let fileURL = try NewLyricsSavePolicy.validatedDestination(url, libraryRootURL: libraryRootURL)
+            guard permitFileUse(fileURL) else { return false }
             let parentDir = fileURL.deletingLastPathComponent()
             let rootURL = libraryRootURL
             let didAccessRoot = rootURL?.startAccessingSecurityScopedResource() ?? false
@@ -1737,28 +1819,44 @@ public struct ContentView: View {
         }
     }
 
-    private func suggestedFileName(from text: String) -> String {
-        let lines = LyricsTextSanitizer.normalizeLineEndings(text)
-            .split(separator: "\n", omittingEmptySubsequences: true)
-            .map { String($0).trimmingCharacters(in: .whitespaces) }
-        guard let first = lines.first(where: { !LyricsTextSyntax.isBlank($0) }) else { return "Untitled" }
-        return sanitizedFileName(LyricsTextSyntax.explicitTitle(first) ?? first)
-    }
-
-    private func sanitizedFileName(_ raw: String) -> String {
-        let invalid = CharacterSet(charactersIn: "/:\\?%*|\"<>")
-        let cleaned = raw.components(separatedBy: invalid).joined(separator: " ")
-        let collapsed = cleaned.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
-        return collapsed.isEmpty ? "Untitled" : collapsed
+    private func cleanUpEditorDraft() {
+        guard hasActiveEditorPane, let window = workspaceCommands.window,
+              window.isVisible, window.attachedSheet == nil else { return }
+        guard let source = lyricsEditorFocusController.committedLyrics(), source == lyricsEditor.draft else {
+            newFileWarning = "Finish composing the current text before cleaning up lyrics."
+            return
+        }
+        guard !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let documentID = lyricsEditor.documentID
+        let sourceURL = editorSourceURL
+        lyricsCleanupController.present(source: source, documentID: documentID, sourceFileName: sourceURL?.lastPathComponent, for: window,
+            isCurrent: { [weak window] in
+                hasActiveEditorPane && lyricsEditor.documentID == documentID && lyricsEditor.draft == source
+                    && editorSourceURL == sourceURL
+                    && window?.isVisible == true && workspaceCommands.window === window
+            }, apply: { proposed in
+                guard hasActiveEditorPane, lyricsEditor.documentID == documentID, lyricsEditor.draft == source,
+                      editorSourceURL == sourceURL else {
+                    return false
+                }
+                return lyricsEditorFocusController.applyLyricsCleanup(proposed, replacing: source)
+            })
     }
 
     private func formatEditorDraft() {
-        guard !isCurrentSelectionMediaFile, lyricsEditorFocusController.formatLyrics() else { return }
-        _ = syncEditorDraftToPreview()
+        guard hasActiveEditorPane else { return }
+        do {
+            if try LyricsEditorDraftActions.normalizeFormatting(editor: lyricsEditor, focus: lyricsEditorFocusController) {
+                newFileWarning = nil
+            }
+        } catch {
+            newFileWarning = error.localizedDescription
+        }
     }
 
     private func saveCurrentFile() -> Bool {
         guard !isCurrentSelectionMediaFile, let url = editorSourceURL else { return false }
+        guard permitFileUse(url) else { return false }
         let documentID = lyricsEditor.documentID
         let draft = lyricsEditor.draft
         let baseline = lyricsEditor.savedText
@@ -1767,6 +1865,7 @@ public struct ContentView: View {
             controlsWindow != nil && workspaceCommands.window === controlsWindow
                 && lyricsEditor.isEditing && lyricsEditor.documentID == documentID
                 && lyricsEditor.sourceURL == url && lyricsEditor.draft == draft && lyricsEditor.savedText == baseline
+                && session.outputCoordinator.fileAdmissionProblem(for: url) == nil
         }
         do {
             guard try LyricsFileSave.save(draft, replacing: baseline, at: url, isStillCurrent: isStillCurrent,
@@ -1801,25 +1900,18 @@ public struct ContentView: View {
 
     @discardableResult
     private func syncEditorDraftToPreview() -> Bool {
-        guard lyricsEditor.hasLoadableDraft else {
-            newFileWarning = "Add some content before loading lyrics."
+        guard hasActiveEditorPane else { return false }
+        do {
+            guard try LyricsEditorDraftActions.updatePreview(
+                editor: &lyricsEditor, focus: lyricsEditorFocusController, flow: flow
+            ) else { return false }
+            isEditorPreviewAreaCollapsed = false
+            newFileWarning = nil
+            return true
+        } catch {
+            newFileWarning = error.localizedDescription
             return false
         }
-
-        let preferredSelectionIndex = currentPreviewSelectionIndex()
-        let fileName = lyricsEditor.sourceURL?.lastPathComponent
-        let document = LyricsParser.parseDocument(lyricsEditor.draft, fileName: fileName)
-        guard !document.slides.isEmpty else {
-            newFileWarning = "These lyrics do not contain a slide to load."
-            return false
-        }
-
-        let source = lyricsEditor.sourceURL.map(PreviewSource.file) ?? .lyrics
-        setPreviewSource(source)
-        setPreviewSlides(document.slides, preferredSelectionIndex: preferredSelectionIndex)
-        lyricsEditor.markPreviewed()
-        newFileWarning = nil
-        return true
     }
 
     private func restoreSavedEditorPreview() {
@@ -1891,63 +1983,36 @@ public struct ContentView: View {
 
     @discardableResult
     private func beginPreviewLoad(to source: PreviewSource) -> UUID {
-        let token = UUID()
-        previewLoadToken = token
-        pendingPreviewSource = source
-        previewLoadError = nil
-        return token
-    }
-
-    private func previewTransitionIsCurrent(token: UUID, source: PreviewSource) -> Bool {
-        previewLoadToken == token && pendingPreviewSource == source
+        flow.beginPreviewLoad(to: source)
     }
 
     @discardableResult
     private func completePreviewLoad(token: UUID, source: PreviewSource) -> Bool {
-        guard previewTransitionIsCurrent(token: token, source: source) else { return false }
-        pendingPreviewSource = nil
-        previewSource = source
-        previewLoadError = nil
-        return true
+        if case .file(let url) = source, !permitFileUse(url) {
+            if flow.previewLoadToken == token { flow.cancelPreviewLoad() }
+            return false
+        }
+        return flow.completePreviewLoad(token: token, source: source)
     }
 
     private func failPreviewLoad(token: UUID, source: PreviewSource) {
-        guard previewTransitionIsCurrent(token: token, source: source) else { return }
         let clearedWindowFromPreview = flow.previewSlides.contains { $0.captureWindowID != nil }
-        pendingPreviewSource = nil
-        flow.clearPreviewDocument()
-        previewLoadError = "Couldn’t load \(previewSourceName(source))."
+        guard flow.failPreviewLoad(token: token, source: source) else { return }
         if clearedWindowFromPreview {
             releaseWindowCaptureSelectionIfUnused()
         }
     }
 
     private func setPreviewSource(_ source: PreviewSource) {
-        cancelPreviewLoad()
-        previewSource = source
-        previewLoadError = nil
-    }
-
-    private func previewSourceName(_ source: PreviewSource) -> String {
-        switch source {
-        case .file(let url):
-            return url.lastPathComponent
-        case .window:
-            return "the selected window"
-        case .lyrics:
-            return "the lyrics draft"
-        case .none:
-            return "the selected item"
-        }
+        flow.setPreviewSource(source)
     }
 
     private func cancelPreviewLoad() {
-        previewLoadToken = UUID()
-        pendingPreviewSource = nil
+        flow.cancelPreviewLoad()
     }
 
     private var isPreviewLoading: Bool {
-        pendingPreviewSource != nil
+        flow.isPreviewLoading
     }
 
     private var editorSourceURL: URL? {
@@ -1965,6 +2030,7 @@ public struct ContentView: View {
     }
 
     private func startLyricsEditing(url: URL) {
+        guard permitFileUse(url) else { return }
         guard let contents = try? String(contentsOf: url, encoding: .utf8) else {
             newFileWarning = "Could not open lyrics for editing."
             return
@@ -1986,6 +2052,7 @@ public struct ContentView: View {
     }
 
     private func startCurrentLyricsEditing(url: URL) {
+        guard permitFileUse(url) else { return }
         guard let contents = try? String(contentsOf: url, encoding: .utf8) else {
             newFileWarning = "Could not open lyrics for editing."
             return
@@ -2008,12 +2075,6 @@ public struct ContentView: View {
         }
         return url
     }
-
-    private func currentPreviewSelectionIndex() -> Int? {
-        guard let previewSelectionID = flow.previewSelectionID else { return nil }
-        return flow.previewSlideIndex(for: previewSelectionID)
-    }
-
 
 }
 

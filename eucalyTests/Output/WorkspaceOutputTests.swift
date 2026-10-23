@@ -6,6 +6,45 @@ import Combine
 
 @MainActor
 final class WorkspaceOutputTests: XCTestCase {
+    func testNativeImageIdentityUsesOnlyAcceptedWorkspaceLoadAcrossPrivateAndRejectedChanges() async throws {
+        let f = Fixture(); defer { f.outputs.stopAllOutputs() }
+        let url = URL(fileURLWithPath: "/tmp/accepted-native-identity.png")
+        func image() -> Slide {
+            .init(index: 0, lines: [], label: "Image", videoURL: nil, pdfURL: nil, pdfPageIndex: nil, imageURL: url)
+        }
+        f.a.setSlides([image()]); f.a.showSlides()
+        let accepted = try XCTUnwrap(ProjectionImageContentIdentity(snapshot: f.outputs.snapshot(for: f.network)))
+        XCTAssertEqual(accepted.workspaceID, f.a.outputSourceID)
+        XCTAssertEqual(accepted.documentRevision, f.a.documentRevision)
+        f.store.editDestinationProfile(f.network) { $0.position = "top" }
+        XCTAssertEqual(ProjectionImageContentIdentity(snapshot: f.outputs.snapshot(for: f.network)), accepted,
+                       "Appearance revisions cannot become image-load identities.")
+
+        XCTAssertTrue(f.outputs.moveOutput(f.online, to: f.b))
+        f.b.setSlides([image()]); f.b.showSlides()
+        let peer = try XCTUnwrap(ProjectionImageContentIdentity(snapshot: f.outputs.snapshot(for: f.online)))
+        XCTAssertEqual(peer.documentRevision, accepted.documentRevision)
+        XCTAssertNotEqual(peer, accepted, "Equal counters from different workspaces must stay isolated.")
+
+        f.a.hideSlides()
+        f.a.setSlides([image()])
+        await settle()
+        XCTAssertNotEqual(f.a.documentRevision, accepted.documentRevision)
+        XCTAssertEqual(ProjectionImageContentIdentity(snapshot: f.outputs.snapshot(for: f.network)), accepted,
+                       "Hidden accepted media must not adopt the private Current's revision.")
+        f.a.showSlides()
+        let reloaded = try XCTUnwrap(ProjectionImageContentIdentity(snapshot: f.outputs.snapshot(for: f.network)))
+        XCTAssertNotEqual(reloaded, accepted)
+        XCTAssertEqual(ProjectionImageContentIdentity(snapshot: f.outputs.snapshot(for: f.online)), peer)
+
+        f.outputs.closeOutput(f.house)
+        f.a.setSlides([pickedWindow()]); f.a.requestCurrentProjection()
+        await settle()
+        XCTAssertEqual(ProjectionImageContentIdentity(snapshot: f.outputs.snapshot(for: f.network)), reloaded,
+                       "Rejected NDI-only content cannot invalidate the accepted image identity.")
+        XCTAssertNotEqual(f.a.documentRevision, reloaded.documentRevision)
+    }
+
     func testPendingPickerBlocksCapturedWindowStartWithoutBlockingOtherNativeContent() async throws {
         let manager = ScreenCaptureManager()
         let monitor = ProjectionMonitor(id: 1, identity: UUID().uuidString, name: "House",

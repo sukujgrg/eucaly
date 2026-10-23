@@ -40,6 +40,7 @@ class CacheManager: ObservableObject {
     private let diskIOQueue: OperationQueue
     private nonisolated let diskCacheURL: URL
     private var cacheGeneration: UInt64 = 0
+    var currentGeneration: UInt64 { cacheGeneration }
 
     // File modification tracking
     private var fileModificationDates: [String: Date] = [:]
@@ -70,15 +71,16 @@ class CacheManager: ObservableObject {
     // MARK: - Thumbnail Caching (Images, Videos, PDFs)
 
     /// Async variant that avoids disk decode work on the main actor.
-    func getCachedThumbnailAsync(for url: URL, type: ThumbnailType, pageIndex: Int? = nil, size: CGSize? = nil) async -> NSImage? {
-        let cacheKey = makeCacheKey(url: url, type: type, pageIndex: pageIndex, size: size)
+    func getCachedThumbnailAsync(for url: URL, type: ThumbnailType, pageIndex: Int? = nil,
+                                 size: CGSize? = nil, sourceRevision: ThumbnailSourceRevision? = nil) async -> NSImage? {
+        let cacheKey = makeCacheKey(url: url, type: type, pageIndex: pageIndex, size: size, sourceRevision: sourceRevision)
         let generation = cacheGeneration
-        let freshness = await thumbnailFreshness(url: url, cacheKey: cacheKey)
+        let freshness = await thumbnailFreshness(url: url, cacheKey: cacheKey, sourceRevision: sourceRevision)
         guard generation == cacheGeneration else { return nil }
 
         switch freshness {
         case .modified:
-            invalidateThumbnail(for: url, type: type, pageIndex: pageIndex, size: size)
+            invalidateThumbnail(for: url, type: type, pageIndex: pageIndex, size: size, sourceRevision: sourceRevision)
             return nil
         case .unverifiable:
             return nil
@@ -115,11 +117,12 @@ class CacheManager: ObservableObject {
         type: ThumbnailType,
         pageIndex: Int? = nil,
         size: CGSize? = nil,
-        sourceModificationDate: Date? = nil
+        sourceModificationDate: Date? = nil,
+        sourceRevision: ThumbnailSourceRevision? = nil
     ) {
-        let cacheKey = makeCacheKey(url: url, type: type, pageIndex: pageIndex, size: size)
+        let cacheKey = makeCacheKey(url: url, type: type, pageIndex: pageIndex, size: size, sourceRevision: sourceRevision)
 
-        if let modDate = sourceModificationDate ?? fileModificationDate(url: url) {
+        if let modDate = sourceRevision?.modificationDate ?? sourceModificationDate ?? fileModificationDate(url: url) {
             fileModificationDates[cacheKey] = modDate
             scheduleSaveFileModificationDates()
         }
@@ -132,8 +135,9 @@ class CacheManager: ObservableObject {
     }
 
     /// Invalidate thumbnail when file changes
-    func invalidateThumbnail(for url: URL, type: ThumbnailType, pageIndex: Int? = nil, size: CGSize? = nil) {
-        let cacheKey = makeCacheKey(url: url, type: type, pageIndex: pageIndex, size: size)
+    func invalidateThumbnail(for url: URL, type: ThumbnailType, pageIndex: Int? = nil,
+                             size: CGSize? = nil, sourceRevision: ThumbnailSourceRevision? = nil) {
+        let cacheKey = makeCacheKey(url: url, type: type, pageIndex: pageIndex, size: size, sourceRevision: sourceRevision)
         memoryImageCache.removeObject(forKey: cacheKey as NSString)
         memoryCacheKeys.remove(cacheKey)
         fileModificationDates.removeValue(forKey: cacheKey)
@@ -151,7 +155,8 @@ class CacheManager: ObservableObject {
         case image, video, pdf
     }
 
-    private func makeCacheKey(url: URL, type: ThumbnailType, pageIndex: Int?, size: CGSize?) -> String {
+    private func makeCacheKey(url: URL, type: ThumbnailType, pageIndex: Int?, size: CGSize?,
+                              sourceRevision: ThumbnailSourceRevision?) -> String {
         let standardizedPath = url.standardizedFileURL.path
         let pagePart = pageIndex.map(String.init) ?? "-"
         let sizePart = size.map { ThumbnailCacheSizing.sizePart(from: $0) } ?? "auto"
@@ -161,7 +166,11 @@ class CacheManager: ObservableObject {
         } else {
             rawKey = "\(type.rawValue)|\(standardizedPath)|\(pagePart)|\(sizePart)"
         }
-        let digest = SHA256.hash(data: Data(rawKey.utf8))
+        // Revision-aware media callers cannot reuse an old file's pixels after
+        // an atomic replacement that preserves its date and length. Existing
+        // PDF/general callers retain their original keys and date validation.
+        let revisionKey = sourceRevision.map { "|media-source-v1|\($0.cacheKeyPart)" } ?? ""
+        let digest = SHA256.hash(data: Data((rawKey + revisionKey).utf8))
         let hash = digest.map { String(format: "%02x", $0) }.joined()
         return "\(type.rawValue)_\(hash).png"
     }
@@ -196,7 +205,8 @@ class CacheManager: ObservableObject {
         case unverifiable
     }
 
-    private func thumbnailFreshness(url: URL, cacheKey: String) async -> ThumbnailFreshness {
+    private func thumbnailFreshness(url: URL, cacheKey: String,
+                                    sourceRevision: ThumbnailSourceRevision?) async -> ThumbnailFreshness {
 #if DEBUG
         if treatFreshnessAsUnverifiableForTests {
             return .unverifiable
@@ -207,6 +217,11 @@ class CacheManager: ObservableObject {
         }
         guard diskIOQueue.operationCount < maxQueuedDiskIOCount else {
             return .unverifiable
+        }
+        if let sourceRevision {
+            let current = await performOnDiskIOQueue { ThumbnailSourceRevision.current(for: url) }
+            guard let current, current == sourceRevision else { return .modified }
+            return current.modificationDate == cachedDate ? .fresh : .modified
         }
         let path = url.path
         let currentDate: Date? = await performOnDiskIOQueue {

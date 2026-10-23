@@ -12,6 +12,9 @@ extension LibraryTextSearchIndex {
                 modificationTime: values.contentModificationDate?.timeIntervalSince1970 ?? 0,
                 relativeSortKey: LibraryRootPath.relativeSortKey(for: url, root: root))
         }
-        return syncLibraryMetadata(root: root, discoveredFiles: discovered).count
+        let result = syncLibraryMetadata(root: root, discoveredFiles: discovered)
+        if let failure = result.failure { throw failure }
+        guard result.isIndexed else { throw CancellationError() }
+        return result.metadata.count
     }
 }

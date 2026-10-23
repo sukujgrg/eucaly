@@ -120,6 +120,44 @@ final class OutputWorkspaceWindows: ObservableObject {
     func rename(_ id: UUID) { controllers[id]?.renameWorkspace() }
     func manageWorkspaces() { showWorkspaceSettings() }
 
+    /// Query existing controls' current editor closures; do not save a second
+    /// editor/source index or create closed controls to ask about a file.
+    var referencedFileURLs: Set<URL> {
+        var urls = outputs.referencedFileURLs
+        for controller in controllers.values {
+            if let url = controller.commands.editingFileURL { urls.insert(url.standardizedFileURL) }
+        }
+        return urls
+    }
+    func fileRemovalProblem(matchingFile matches: (URL) -> Bool) -> String? {
+        for record in profiles.document.workspaces {
+            if let url = controllers[record.id]?.commands.editingFileURL, matches(url) {
+                return "This file is open for editing in \(record.name). Close its editor before moving it to the Trash."
+            }
+        }
+        return outputs.fileRemovalProblem(matchingFile: matches)
+    }
+    func beginFileRemoval(at url: URL, requesterWorkspaceID: UUID,
+                          matchingFile: @escaping (URL) -> Bool) -> OutputCoordinator.FileRemovalAdmission {
+        // Confirmation can run a nested event loop. Recheck every live editor
+        // and retained program immediately before reserving, without yielding.
+        if let problem = fileRemovalProblem(matchingFile: matchingFile) { return .blocked(problem) }
+        return outputs.beginFileRemoval(at: url, requesterWorkspaceID: requesterWorkspaceID, matchingFile: matchingFile)
+    }
+    @discardableResult
+    func finishFileRemoval(_ reservation: OutputCoordinator.FileRemovalReservation,
+                           candidate: LibraryFileActionService.Candidate, removed: Bool, resultingURL: URL? = nil) -> Bool {
+        guard outputs.finishFileRemoval(reservation, removed: removed, resultingURL: resultingURL) else { return false }
+        if removed {
+            // The requesting controls may have closed. Notify every remaining
+            // owner with the prepared identity so aliased selections retire too.
+            for controller in Array(controllers.values) {
+                controller.commands.closeConfirmation?.fileWasRemoved(candidate)
+            }
+        }
+        return true
+    }
+
     @discardableResult
     func deleteWorkspace(_ id: UUID) -> String? {
         if let problem = outputs.workspaceDeletionProblem(id) { return problem }
@@ -143,6 +181,7 @@ final class OutputWorkspaceWindows: ObservableObject {
         let badge = tabBadges.badge(for: id)
         let session = outputs.session(workspace: id)
         let commands = OutputWorkspaceCommands(keyWindow: keyWindow)
+        commands.workspaceWindows = self
         let content: NSViewController
         if let contentFactory {
             content = contentFactory(session, commands)

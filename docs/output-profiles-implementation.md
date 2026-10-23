@@ -58,13 +58,23 @@ keep their badges after deletion; new workspaces reuse available badges. Legacy
 saved workspaces above four remain available and share the four-badge palette.
 Closing controls releases their private view consumers; reopening uses the same
 app-owned session and Preview flow while live output continues. Native Settings
-remain one app-owned window. Quick Open and Refresh Library target only the active
-controls window, and native Edit-menu actions retain the macOS responder chain.
+remain one app-owned window. Search Library (`Cmd+F`) and Refresh Library target
+only the active controls window. Find in Lyrics is a separate native Edit > Find
+command; text matching and editing retain the macOS responder chain. See
+`SEARCH.md` for keyboard and focus behavior.
 Preview source identity belongs to its retained flow, and Current's lyrics file URL
 belongs to its session, so reopening retains Preview and Edit Current support. Closing cancels private pending Preview loads before releasing controls.
 The native close callback owns controls cleanup; hiding a tab does not release its
 library access or cancel its private preparation. Initial view setup runs once per
 controls window.
+
+Lyrics editing keeps draft changes separate from Preview acceptance. Clean Up Lyrics
+and Text Tools → Normalize Formatting make native undoable draft edits only.
+Preview Draft parses the committed draft into that workspace's Preview without
+rewriting it or saving the source file. Save also refreshes Preview after writing;
+Load to Current remains explicit. Clear Draft clears the draft and Preview, and
+native Undo restores only the text. Preview Draft remains available after Undo
+even when the restored draft matches the saved file and Save is disabled.
 
 **Manage Workspaces…** in the Workspace menu and workspace toolbar opens the
 **Workspaces** toolbar tab in the app's shared native AppKit Settings window.
@@ -191,12 +201,33 @@ Clearing one pane releases a picked window only after every workspace's Preview,
 Current and accepted snapshot has released it and its last capture consumer has
 detached. Pending picker requests remain intact, and old teardown work cannot
 retire a newer selection or stream.
+Frame-rate edits update the existing stream configuration and all attached consumer
+gates. Configuration work is serialized and coalesces to the latest requested rate
+within that stream's generation; teardown invalidates pending work. Changing the
+rate does not recreate the stream or invoke the picker.
 Every native layer receives the same explicit full-canvas geometry.
 
 Images, PDFs, video and picked windows use the existing native media boundary in
 all appearance profiles. Unsupported NDI-only content cannot replace an accepted live program.
 With native companions it can present locally while NDI submits replacement empty/key
 frames. A transfer to unsupported Current is rejected before ownership changes.
+
+Native PDF views render the immutable source retained by the accepted output
+snapshot, as NDI already does. Current preparation owns a separate bounded source
+cache. Rejected Current changes and later file replacement/deletion cannot reopen
+or replace an accepted PDF. Page navigation retains its native document; explicit
+same-path acceptance replaces it using the new accepted source identity.
+
+Native foreground images carry the accepted snapshot's workspace UUID and document
+revision through the view request, displayed-image identity and decode cache. An
+explicit accepted Load therefore refreshes bytes even when a file rewrite preserves
+its path, timestamp, size and inode. Appearance/layout refreshes reuse that identity;
+prepared or rejected Current changes cannot replace it. Background images retain
+their separate previous-frame policy and do not inherit a foreground load identity.
+Image/video thumbnail requests carry the decoded file's captured revision into
+their cache key. Source replacement and cache-clear generations are revalidated
+before displaying or inserting a completion, so old pixels cannot borrow a new
+file's freshness metadata. PDF thumbnail requests retain their existing cache path.
 
 Physical monitor reservations and enabled NDI source-name uniqueness are enforced
 across all workspaces. Disabled rows retain overlapping assignments. Rejected
@@ -321,6 +352,69 @@ choices use document validation; fields commit on Return/editing end. Thumbnails
 have separate sizing and use a representative assigned workspace profile and canvas.
 Readability checks use each destination's actual workspace snapshot and remain
 operator-only. Settings visibility, resizing, drafts and NSFontPanel remain native.
+
+An AppKit sidebar controller owns section layout, disclosure, controls and UI
+subscriptions, with a thin bridge to the SwiftUI workspace. Section headers have
+equal outer gutters and padding inside their hover highlight. Section actions
+share one compact action row per section, the content gutter, spacing and small
+native controls. Library and Audio use matching import icons with descriptive
+accessibility labels and tooltips. Native outline sizing
+includes source-list edge space; collapsed contents stay outside row traversal and
+visible section headers remain keyboard accessible. Playlist editing and audio
+transport use consistent control groups;
+Window capture settings use a native menu beside Pick/Replace Window and Clear,
+with a checked frame-rate choice and an accessible current value.
+Audio volume and playback-position sliders expose explicit accessibility names and
+useful values. Incoming state stays passive; UI teardown does not stop playback,
+capture or outputs.
+
+Sidebar arrow navigation reaches visible section headers, hierarchy containers
+and items. Native Right/Left expansion and parent navigation preserve Preview
+while containers hold focus; leaf changes still pass normal selection approval.
+Passive configuration/progress updates retain the operator's container focus and
+collapsed state. Audio selection and playback remain independent.
+When a list loses its last row, focus inside that list returns to its visible
+section header; inventory changes preserve focus elsewhere. Defined Space/Return
+actions run once per press; source Return follows click approval, and arrows repeat.
+Collapsed, detached or removed controls and retained row/menu actions cannot
+issue commands for an unavailable source.
+Library group titles and blank row space share the disclosure action. Every
+ordinary click toggles expansion, including rapid clicks classified as double or
+triple clicks. Native arrow clicks toggle once; group disclosure never changes
+Preview or Current.
+Clicking a selected source explicitly requests Preview again, including after
+Load to Current or a failed load. Each physical click asks selection approval
+once; Audio retains its separate double-click playback action.
+
+Library and Audio file rows advertise a native context menu, including Reveal in
+Finder and confirmed Move to Trash. Secondary/Control-click targets its row
+without selecting or playing it; keyboard and accessibility invocation target the
+focused selection. Retained actions recheck current inventory and visibility.
+Playlist Remove continues to remove only its saved entry.
+Trash requires a supported regular file inside the selected library and retains
+its scoped access and verified identity through confirmation and queued work.
+Open editors, every workspace's Current and accepted filesystem media, and selected
+or retained playback/background resources prevent removal. Accepted copied lyrics
+have no remaining source-file dependency after Current changes. An app-owned reservation
+rejects new acceptance of that file while native Trash runs off-main; closing the
+requesting controls cannot release admitted filesystem work early. Failure keeps
+the source, selection and Preview usable. Success retires only matching Preview
+and pending loads, refreshes open libraries/search and leaves Playlist rows as
+missing. There is no permanent-delete fallback. The existing unsandboxed app and
+write-capable folder bookmarks need no additional project entitlement.
+Pending bookmark and picker acquisitions carry request-lifetime fences, including
+the actual native Trash result URL; a late completion cannot reopen a removed
+source. Unknown background resolutions defer while removal is admitted. Completion
+retries only the exact unrelated or failed intents, without refreshing other programs.
+
+Missing Playlist selections clear stale Preview content, reject superseded file
+loads and show an unavailable-file notice; the saved row remains removable.
+Removing a row preserves the other selected Playlist identities in every open
+workspace without accepting a replacement source. Move controls reflect the
+current selection's available direction. Picker updates retire only obsolete
+window Preview content, preserving a newer pending file selection.
+Explicit file loads recheck readable regular-file availability on the loading
+queue; stale scan entries fail through the same guarded Preview transition.
 
 The Profiles list separates reusable profiles, assigned output appearances and
 unused saved appearances using customization metadata and actual references, never

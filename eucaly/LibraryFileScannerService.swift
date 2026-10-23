@@ -105,13 +105,19 @@ nonisolated struct LibraryDiscoveredFileModel: Sendable {
 }
 
 nonisolated struct LibraryFileScannerService: Sendable {
-    static let titleLineByteLimit = 8192
+    static let titleLineByteLimit = LyricsFileNaming.sourceByteLimit
 
     func displayNames(for urls: [URL]) -> [URL: String] {
         buildDisplayNames(for: urls)
     }
 
     static func displayTitle(for url: URL, kind: LibraryFileKind, contents: String? = nil) -> String {
+        readableDisplayTitle(for: url, kind: kind, contents: contents) ?? url.lastPathComponent
+    }
+
+    /// A readable empty/no-primary document has a valid filename fallback.
+    /// Nil means the source could not be opened or read, not an empty document.
+    static func readableDisplayTitle(for url: URL, kind: LibraryFileKind, contents: String? = nil) -> String? {
         switch kind {
         case .pdf, .image, .video, .audio, .unsupported:
             return url.lastPathComponent
@@ -119,17 +125,21 @@ nonisolated struct LibraryFileScannerService: Sendable {
             break
         }
 
-        let firstLine: String?
+        let source: String?
         if let contents {
-            firstLine = firstNonEmptyLine(in: contents)
+            source = contents
         } else {
-            firstLine = firstNonEmptyLine(from: url)
+            source = titleSource(from: url)
         }
+        guard let source else { return nil }
+        return LyricsFileNaming.title(from: source, fileName: url.lastPathComponent) ?? url.lastPathComponent
+    }
 
-        if let firstLine {
-            return formattedTitle(firstLine)
-        }
-        return url.lastPathComponent
+    /// Older metadata cached the complete title-marker line as the label.
+    /// Correct those labels without reading source files or changing filenames.
+    static func displayTitle(for url: URL, kind: LibraryFileKind, cachedTitle: String) -> String {
+        guard kind == .txt else { return cachedTitle }
+        return LyricsFileNaming.legacyCachedTitle(cachedTitle, fileName: url.lastPathComponent)
     }
 
     /// An empty result means a successful scan with no supported files.
@@ -211,66 +221,18 @@ nonisolated struct LibraryFileScannerService: Sendable {
         return names
     }
 
-    private static func firstNonEmptyLine(from url: URL) -> String? {
+    private static func titleSource(from url: URL) -> String? {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
 
         var buffer = Data()
-        var bytesRead = 0
-        while bytesRead < titleLineByteLimit {
-            let chunk = (try? handle.read(upToCount: min(256, titleLineByteLimit - bytesRead))) ?? Data()
-            if chunk.isEmpty {
-                break
+        do {
+            while buffer.count < titleLineByteLimit {
+                let chunk = try handle.read(upToCount: titleLineByteLimit - buffer.count) ?? Data()
+                if chunk.isEmpty { break }
+                buffer.append(chunk)
             }
-            bytesRead += chunk.count
-            buffer.append(chunk)
-
-            while let newlineIndex = buffer.firstIndex(where: { $0 == 0x0A || $0 == 0x0D }) {
-                let line = validUTF8Prefix(buffer.prefix(upTo: newlineIndex))
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                if !line.isEmpty {
-                    return line
-                }
-                buffer.removeSubrange(..<indexAfterNewline(in: buffer, at: newlineIndex))
-            }
-        }
-
-        return firstNonEmptyLine(in: validUTF8Prefix(buffer.prefix(titleLineByteLimit)))
-    }
-
-    private static func indexAfterNewline(in buffer: Data, at newlineIndex: Data.Index) -> Data.Index {
-        let nextIndex = buffer.index(after: newlineIndex)
-        if buffer[newlineIndex] == 0x0D,
-           nextIndex < buffer.endIndex,
-           buffer[nextIndex] == 0x0A {
-            return buffer.index(after: nextIndex)
-        }
-        return nextIndex
-    }
-
-    private static func validUTF8Prefix<Bytes: DataProtocol>(_ bytes: Bytes) -> String {
-        var end = bytes.count
-        while end > 0 {
-            let prefix = bytes.prefix(end)
-            if let text = String(data: Data(prefix), encoding: .utf8) {
-                return text
-            }
-            end -= 1
-        }
-        return ""
-    }
-
-    private static func firstNonEmptyLine(in text: String) -> String? {
-        text.replacingOccurrences(of: "\r\n", with: "\n")
-            .split(separator: "\n", omittingEmptySubsequences: true)
-            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-            .first { !$0.isEmpty }
-    }
-
-    private static func formattedTitle(_ rawTitle: String) -> String {
-        let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        let letters = title.unicodeScalars.filter { CharacterSet.letters.contains($0) }
-        guard !letters.isEmpty, title == title.localizedLowercase else { return title }
-        return title.localizedCapitalized
+        } catch { return nil }
+        return LyricsFileNaming.sourcePrefix(buffer)
     }
 }

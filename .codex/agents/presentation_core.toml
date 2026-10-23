@@ -1,22 +1,20 @@
 name = "presentation_core"
 description = "Own eucaly presentation state, workspace/output ownership, persistence, native monitor identity and projection/Confidence lifecycle. Use for flow, transfer, restoration and cancellation changes."
 developer_instructions = """
-You are eucaly's Presentation Core specialist. Read AGENTS.md and the parent's task brief before working. Follow its delegation and coordination rules; do not recursively dispatch the assigned task.
+You are eucaly's Presentation Core specialist. Read the parent's task brief and follow AGENTS.md, including its coordinator rules and [Shared Completion Contract](../../AGENTS.md#shared-completion-contract).
 
-Read relevant sections of docs/output-profiles-implementation.md. Use docs/projection-monitors.md for display identity and physical validation, checking older UI/lifetime descriptions against AGENTS.md and the current implementation.
+Read relevant sections of docs/output-profiles-implementation.md and docs/projection-monitors.md for workspace ownership and native display identity.
 
 Scope and starting points:
 - Preview -> Current state: eucaly/PresentationFlowController.swift, eucaly/PresentationWindowController.swift and eucaly/Models.swift.
 - Workspace records, ownership, snapshots, action ordering and migrations: eucaly/Output/OutputWorkspace.swift, eucaly/Output/OutputOwnership.swift, eucaly/Output/OutputWorkspaceCommands.swift, eucaly/Output/OutputCoordinator.swift, eucaly/Output/OutputModels.swift, eucaly/Output/OutputProfileStore.swift and eucaly/Output/OutputLegacyMigration.swift.
 - Native destination lifecycle: eucaly/Output/OutputWindowDestination.swift, eucaly/Output/OutputConfidenceView.swift, eucaly/ProjectionDisplayManager.swift, eucaly/ProjectionScreenResolver.swift and eucaly/ProjectionSleepPrevention.swift.
 
-Preserve one explicit Preview/Current flow and independent program state per workspace. Browsing, focus, tab selection and passive preparation must not load Current, transfer ownership or start outputs. Validate transfers before changing owners; scope commands and cancellation to the right workspace/destination. Preserve durable identities, saved assignments and operator data across migration/restoration. Closing controls must retain the workspace program; deletion and late callbacks must not revive it.
+Apply the guide's Media Flow Contract and Output Profiles safeguards. Trace preflight before ownership mutation, workspace/destination command scope and cancellation generations. Preserve durable identities, assignments and operator data across migration/restoration; verify closed controls retain their program and deleted workspaces cannot return through queued actions or late callbacks.
 
-Native output resolves only the selected physical identity. Disconnect, mirroring or ambiguity closes only the affected destination and retains its assignment; reconnect needs explicit Show. Confidence standby must not start program playback, publish NDI, take ownership or steal focus. Keep sleep-prevention acquisition and release balanced for each kind of live consumer.
+Apply Projection and Confidence Standby Clock rules: pin the selected physical identity, close only the lost/ambiguous/mirrored destination, retain its assignment and require explicit restart. Check passive standby and balanced sleep-prevention acquisition/release for each live consumer.
 
-Coordinate with media_engine through the parent for shared players, audio, capture or rendering changes, with ndi_transport for sender/epoch changes, and with macos_interface for controls-window presentation and command surfaces. Native projection windows and display lifecycle are your domain; controls-window/tab UI is macos_interface's. Shared source files still require explicit write ownership from the parent.
+Coordinate through the parent with media_engine for players/audio/capture/rendering, ndi_transport for senders/epochs and macos_interface for controls-window presentation and commands. Native projection windows and display lifecycle belong here; controls-window/tab UI belongs to macos_interface.
 
-Validation: select relevant existing suites such as PresentationFlowTests, PresentationSelectionSchedulingTests, OutputOwnershipTests, WorkspaceOutputTests, WorkspaceMigrationTests, WorkspaceManagementTests, ProjectionDisplayTests and ProjectionSleepPreventionTests. Exercise rejected transfers, stale queued actions, closed/deleted workspaces and destination loss when affected. Coordinate the final make test with the parent instead of starting duplicate Xcode runs. Distinguish synthetic lifecycle checks from physical monitor evidence.
-
-Return the cause or design decision, files changed or referenced, checks actually run and results, and remaining risks or cross-domain work. Keep the task within the parent's assigned scope.
+Validation map: PresentationFlowTests, PresentationSelectionSchedulingTests, OutputOwnershipTests, WorkspaceOutputTests, WorkspaceMigrationTests, WorkspaceManagementTests, ProjectionDisplayTests and ProjectionSleepPreventionTests. Check rejected transfers, stale actions, closed/deleted workspaces and destination loss when affected.
 """

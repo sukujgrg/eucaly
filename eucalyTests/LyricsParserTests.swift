@@ -286,7 +286,7 @@ final class LyricsParserTests: XCTestCase {
         XCTAssertFalse(LyricsSectionCatalog.isHeading("Amazing grace"))
     }
 
-    func testCCLITrailerIsStrippedButUnlabelledTextIsPreserved() {
+    func testSeparatedCopyrightParagraphIncludesAllUnlabelledCreditText() {
         let raw = """
         Verse
         line a
@@ -299,7 +299,8 @@ final class LyricsParserTests: XCTestCase {
         """
         let doc = LyricsParser.parseDocument(raw, fileName: "test.txt")
         XCTAssertEqual(doc.slides.count, 1)
-        XCTAssertEqual(doc.slides[0].lines.first?.text, "line a\n\nReuben Morgan")
+        XCTAssertEqual(doc.slides[0].lines.first?.text, "line a")
+        XCTAssertTrue(doc.metadata["copyright-footer"]?.hasPrefix("Reuben Morgan\nCCLI Song #2397964") == true)
         XCTAssertNil(doc.metadata["authors"])
     }
 
@@ -409,10 +410,16 @@ final class LyricsParserTests: XCTestCase {
         }
     }
 
-    func testCompleteFooterDoesNotTurnAnAdjacentLyricIntoAnAuthor() {
+    func testOnlyASeparatedCopyrightParagraphDefinesTheWholeCreditBoundary() {
         for prefix in ["Verse\n", "Verse\nOne\n\n"] {
             let document = LyricsParser.parseDocument(prefix + "Final lyric\nCCLI Song #123\n© 2026 Publisher\nFor use solely with SongSelect Terms of Use. ccli.com\nCCLI License #456")
-            XCTAssertEqual(document.slides.first?.lines.first?.text, prefix == "Verse\n" ? "Final lyric" : "One\n\nFinal lyric")
+            // Without a separate paragraph, explicit legacy CCLI fields keep
+            // the adjacent lyric. A separated © paragraph now includes ALL of
+            // its nonempty lines, even the formerly ambiguous "Final lyric".
+            XCTAssertEqual(document.slides.first?.lines.first?.text, prefix == "Verse\n" ? "Final lyric" : "One")
+            if prefix != "Verse\n" {
+                XCTAssertTrue(document.metadata["copyright-footer"]?.hasPrefix("Final lyric\nCCLI Song #123") == true)
+            }
             XCTAssertNil(document.metadata["authors"])
         }
     }

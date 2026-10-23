@@ -8,7 +8,7 @@
 import AppKit
 import Combine
 
-enum AppLaunchContext {
+nonisolated enum AppLaunchContext {
     static let isRunningTests = NSClassFromString("XCTestCase") != nil
 }
 

@@ -462,13 +462,113 @@ final class ProjectionImageLoaderTests: XCTestCase {
         XCTAssertNil(presentation.failedRequest)
     }
 
+    func testExplicitImageLoadsRefreshMetadataPreservingRewritesAndRemainWorkspacePrivate() async throws {
+        let url = directoryURL.appendingPathComponent("accepted.png")
+        let stamp = Date(timeIntervalSince1970: 1_700_000_000)
+        try writePaddedImage(to: url, color: CGColor(red: 1, green: 0, blue: 0, alpha: 1), date: stamp)
+        let originalAttributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        let a = UUID(), b = UUID()
+        let firstIdentity = ProjectionImageContentIdentity(workspaceID: a, documentRevision: 1)
+        let nextIdentity = ProjectionImageContentIdentity(workspaceID: a, documentRevision: 2)
+        let peerIdentity = ProjectionImageContentIdentity(workspaceID: b, documentRevision: 1)
+        let recorder = DecodeRecorder()
+        let loader = ProjectionImageLoader { value in
+            recorder.record(value.url)
+            return try ProjectionImageDecoder.decode(value)
+        }
+        let firstRequest = try request(url, size: CGSize(width: 256, height: 256), identity: firstIdentity)
+        let first = try await loader.image(for: firstRequest)
+        XCTAssertGreaterThan(try pixel(in: first)[0], 240)
+
+        try writePaddedImage(to: url, color: CGColor(red: 0, green: 0, blue: 1, alpha: 1), date: stamp)
+        let replacementAttributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        for key in [FileAttributeKey.size, .modificationDate, .systemFileNumber] {
+            XCTAssertEqual(originalAttributes[key] as? NSObject, replacementAttributes[key] as? NSObject)
+        }
+        let resized = try request(url, identity: firstIdentity)
+        let unchanged = try await loader.image(for: resized)
+        XCTAssertTrue(first === unchanged, "Ordinary composition and smaller geometry retain the accepted bytes.")
+
+        let peerRequest = try request(url, identity: peerIdentity)
+        let peer = try await loader.image(for: peerRequest)
+        let nextRequest = try request(url, identity: nextIdentity)
+        let next = try await loader.image(for: nextRequest)
+        XCTAssertGreaterThan(try pixel(in: peer)[2], 240)
+        XCTAssertGreaterThan(try pixel(in: next)[2], 240)
+        XCTAssertFalse(peer === next, "Equal document revisions in different workspaces are different loads.")
+        let retainedFirst = try await loader.image(for: firstRequest)
+        XCTAssertTrue(first === retainedFirst, "Another workspace/load cannot prune the retained accepted picture.")
+        XCTAssertEqual(recorder.urls.count, 3)
+        XCTAssertNotEqual(firstRequest, nextRequest)
+        XCTAssertEqual(Set([firstRequest, nextRequest, peerRequest]).count, 3)
+    }
+
+    @MainActor
+    func testForegroundDoesNotShowPreviousExplicitLoadButKeepsSameLoadDuringResize() async throws {
+        let url = directoryURL.appendingPathComponent("identity.png")
+        try writeImage(to: url)
+        let workspace = UUID()
+        let accepted = ProjectionImageContentIdentity(workspaceID: workspace, documentRevision: 1)
+        let replacement = ProjectionImageContentIdentity(workspaceID: workspace, documentRevision: 2)
+        let presentation = ProjectionImagePresentation(loader: ProjectionImageLoader())
+        let original = try request(url, identity: accepted)
+        await presentation.loadImage(for: original)
+        let image = try XCTUnwrap(presentation.image(for: original, retainingPreviousImage: false))
+        let resize = try request(url, size: CGSize(width: 512, height: 512), identity: accepted)
+        XCTAssertTrue(presentation.image(for: resize, retainingPreviousImage: false) === image)
+        let next = try request(url, identity: replacement)
+        XCTAssertNil(presentation.image(for: next, retainingPreviousImage: false), "The previous load is not the newly accepted source.")
+        XCTAssertTrue(presentation.image(for: next, retainingPreviousImage: true) === image,
+                      "Background retention remains an explicit independent policy.")
+        await presentation.loadImage(for: next)
+        XCTAssertNotNil(presentation.image(for: next, retainingPreviousImage: false))
+    }
+
+    func testRevisionPruningDoesNotDiscardAnotherAcceptedImageLoad() async throws {
+        let url = directoryURL.appendingPathComponent("private.png")
+        let originalDate = Date(timeIntervalSince1970: 1_700_000_000)
+        try writePaddedImage(to: url, color: CGColor(red: 1, green: 0, blue: 0, alpha: 1), date: originalDate)
+        let owner = ProjectionImageContentIdentity(workspaceID: UUID(), documentRevision: 1)
+        let peer = ProjectionImageContentIdentity(workspaceID: UUID(), documentRevision: 1)
+        let loader = ProjectionImageLoader()
+        let ownerRequest = try request(url, identity: owner), peerRequest = try request(url, identity: peer)
+        _ = try await loader.image(for: ownerRequest)
+        let retainedPeer = try await loader.image(for: peerRequest)
+        try writePaddedImage(to: url, color: CGColor(red: 0, green: 0, blue: 1, alpha: 1), date: originalDate.addingTimeInterval(10))
+        _ = try await loader.image(for: ownerRequest)
+        try FileManager.default.setAttributes([.modificationDate: originalDate], ofItemAtPath: url.path)
+        let peerAgain = try await loader.image(for: peerRequest)
+        XCTAssertTrue(retainedPeer === peerAgain, "Pruning an owner's obsolete source revision must preserve another accepted load's cache.")
+    }
+
+    private func writePaddedImage(to url: URL, color: CGColor, date: Date) throws {
+        let data = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(data as CFMutableData, UTType.png.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, try makeImage(width: 64, height: 32, color: color), nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        var padded = data as Data
+        XCTAssertLessThan(padded.count, 8192)
+        padded.append(Data(repeating: 0, count: 8192 - padded.count))
+        if FileManager.default.fileExists(atPath: url.path) {
+            let handle = try FileHandle(forWritingTo: url)
+            defer { try? handle.close() }
+            try handle.truncate(atOffset: 0)
+            try handle.write(contentsOf: padded)
+        } else {
+            try padded.write(to: url, options: .atomic)
+        }
+        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: url.path)
+    }
+
     private func request(
         _ url: URL,
         size: CGSize = CGSize(width: 100, height: 100),
         scale: CGFloat = 1,
-        mode: ProjectionImageContentMode = .fit
+        mode: ProjectionImageContentMode = .fit,
+        identity: ProjectionImageContentIdentity? = nil
     ) throws -> ProjectionImageRequest {
-        try XCTUnwrap(ProjectionImageRequest(url: url, pointSize: size, displayScale: scale, contentMode: mode))
+        try XCTUnwrap(ProjectionImageRequest(url: url, pointSize: size, displayScale: scale, contentMode: mode,
+                                           contentIdentity: identity))
     }
 
     private func writeImage(

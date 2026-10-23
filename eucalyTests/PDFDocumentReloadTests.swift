@@ -81,7 +81,7 @@ final class PDFDocumentReloadTests: XCTestCase {
                            "A retained prior snapshot remains bound to its original bytes")
             let native = makeView()
             try displayCurrent(in: native, session: session)
-            XCTAssertTrue(native.document === session.pdfDocumentCache.document(for: url))
+            XCTAssertEqual(native.document?.pageCount, 2)
         }
     }
 
@@ -100,7 +100,7 @@ final class PDFDocumentReloadTests: XCTestCase {
             let originalPixel = pixel(try await preparedFrame(prepared, source: acceptedA, page: 1))
             try writePDF(to: url, pageCount: 3)
             b.setPDFSlideSource(.init(url: url, pageCount: 3))
-            XCTAssertEqual(a.pdfDocumentRevision, b.pdfDocumentRevision)
+            XCTAssertEqual(a.documentRevision, b.documentRevision)
             XCTAssertTrue(outputs.moveOutput(destination, to: b))
             let acceptedB = try XCTUnwrap(outputs.snapshot(for: destination).acceptedPDF)
             XCTAssertFalse(acceptedA === acceptedB)
@@ -128,12 +128,12 @@ final class PDFDocumentReloadTests: XCTestCase {
             try displayCurrent(in: view, session: session)
             let original = try XCTUnwrap(view.document)
             let originalSlideID = session.currentSlideID
-            let originalRevision = session.pdfDocumentRevision
+            let originalRevision = session.documentRevision
 
             try writePDF(to: url, pageCount: 2)
             session.setSlides(PDFSlideCatalog.slides(url: url, pageCount: 2))
             XCTAssertEqual(session.currentSlideID, originalSlideID, "PDF slide identity stays stable for the same path/page")
-            XCTAssertNotEqual(session.pdfDocumentRevision, originalRevision)
+            XCTAssertNotEqual(session.documentRevision, originalRevision)
             try displayCurrent(in: view, session: session)
 
             XCTAssertFalse(view.document === original, "An existing native PDFView must replace its same-URL document after explicit Load")
@@ -160,10 +160,10 @@ final class PDFDocumentReloadTests: XCTestCase {
             XCTAssertEqual(reloaded.pageCount, 3)
             XCTAssertEqual(reloaded.index(for: try XCTUnwrap(view.currentPage)), 2)
 
-            let revision = session.pdfDocumentRevision
+            let revision = session.documentRevision
             session.selectCurrentSlide(PDFSlideCatalog.stableSlideID(url: url, pageIndex: 1))
             try displayCurrent(in: view, session: session)
-            XCTAssertEqual(session.pdfDocumentRevision, revision, "Ordinary page navigation is not a source reload")
+            XCTAssertEqual(session.documentRevision, revision, "Ordinary page navigation is not a source reload")
             XCTAssertTrue(view.document === reloaded)
             XCTAssertEqual(reloaded.index(for: try XCTUnwrap(view.currentPage)), 1)
         }
@@ -183,14 +183,14 @@ final class PDFDocumentReloadTests: XCTestCase {
             let aView = makeView()
             try displayCurrent(in: aView, session: a)
             let accepted = try XCTUnwrap(aView.document)
-            let acceptedRevision = a.pdfDocumentRevision
+            let acceptedRevision = a.documentRevision
 
             try writePDF(to: url, pageCount: 2)
             b.setPDFSlideSource(.init(url: url, pageCount: 2))
-            XCTAssertEqual(a.pdfDocumentRevision, b.pdfDocumentRevision, "Different workspaces may have equal load counters")
+            XCTAssertEqual(a.documentRevision, b.documentRevision, "Different workspaces may have equal load counters")
             let movedView = makeView()
             try displayCurrent(in: movedView, session: a)
-            XCTAssertTrue(movedView.document === accepted)
+            XCTAssertEqual(movedView.document?.pageCount, 1)
             try displayCurrent(in: movedView, session: b)
             XCTAssertEqual(movedView.document?.pageCount, 2)
             XCTAssertFalse(movedView.document === accepted, "A destination transferred to another workspace must use that workspace's document")
@@ -199,9 +199,9 @@ final class PDFDocumentReloadTests: XCTestCase {
             let reopenedAView = makeView()
             try displayCurrent(in: aView, session: a)
             try displayCurrent(in: reopenedAView, session: a)
-            XCTAssertEqual(a.pdfDocumentRevision, acceptedRevision)
+            XCTAssertEqual(a.documentRevision, acceptedRevision)
             XCTAssertTrue(aView.document === accepted)
-            XCTAssertTrue(reopenedAView.document === accepted, "Closing/reopening a view must retain the workspace's accepted source")
+            XCTAssertEqual(reopenedAView.document?.pageCount, 1, "A new native view must use the workspace's accepted bytes")
             XCTAssertEqual(accepted.pageCount, 1)
 
             a.setPDFSlideSource(.init(url: url, pageCount: 2))
@@ -211,18 +211,19 @@ final class PDFDocumentReloadTests: XCTestCase {
         }
     }
 
-    func testDocumentCacheEvictsTheLeastRecentlyUsedOfThreeSources() throws {
+    func testAcceptedSourceCacheEvictsTheLeastRecentlyUsedOfThreeSources() throws {
         try withTemporaryDirectory { directory in
             let urls = (0..<4).map { directory.appendingPathComponent("source-\($0).pdf") }
             for url in urls { try writePDF(to: url, pageCount: 1) }
-            let cache = PDFDocumentCache()
-            let first = try XCTUnwrap(cache.document(for: urls[0]))
-            let second = try XCTUnwrap(cache.document(for: urls[1]))
-            XCTAssertNotNil(cache.document(for: urls[2]))
-            XCTAssertTrue(cache.document(for: urls[0]) === first)
-            XCTAssertNotNil(cache.document(for: urls[3]))
-            XCTAssertTrue(cache.document(for: urls[0]) === first)
-            XCTAssertFalse(cache.document(for: urls[1]) === second, "A fourth source must evict the least-recently-used entry")
+            let cache = AcceptedPDFSourceCache()
+            let first = try XCTUnwrap(cache.prepareAcceptedSource(for: urls[0]))
+            let second = try XCTUnwrap(cache.prepareAcceptedSource(for: urls[1]))
+            XCTAssertNotNil(cache.prepareAcceptedSource(for: urls[2]))
+            XCTAssertTrue(cache.prepareAcceptedSource(for: urls[0]) === first)
+            XCTAssertNotNil(cache.prepareAcceptedSource(for: urls[3]))
+            XCTAssertTrue(cache.prepareAcceptedSource(for: urls[0]) === first)
+            XCTAssertNil(cache.acceptedSource(for: urls[1]), "Eviction removes only the cache's reference")
+            XCTAssertFalse(cache.prepareAcceptedSource(for: urls[1]) === second, "A fourth source must evict the least-recently-used entry")
         }
     }
 
@@ -264,8 +265,9 @@ final class PDFDocumentReloadTests: XCTestCase {
 
     private func displayCurrent(in view: PDFSlideNSView, session: PresentationSession) throws {
         let slide = try XCTUnwrap(session.currentSlide)
-        view.display(url: try XCTUnwrap(slide.pdfURL), pageIndex: try XCTUnwrap(slide.pdfPageIndex),
-                     revision: session.pdfDocumentRevision, cache: session.pdfDocumentCache)
+        let url = try XCTUnwrap(slide.pdfURL)
+        view.display(source: try XCTUnwrap(session.pdfDocumentCache.acceptedSource(for: url)),
+                     pageIndex: try XCTUnwrap(slide.pdfPageIndex))
         view.layoutSubtreeIfNeeded()
     }
 

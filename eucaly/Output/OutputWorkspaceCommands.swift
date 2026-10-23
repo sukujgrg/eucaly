@@ -166,15 +166,41 @@ final class OutputWorkspaceCommands {
     init(keyWindow: @escaping @MainActor () -> NSWindow? = { NSApp.keyWindow }) { self.keyWindow = keyWindow }
     weak var window: NSWindow?
     weak var closeConfirmation: (any OutputWorkspaceCloseConfirming)?
+    weak var workspaceWindows: OutputWorkspaceWindows?
     var isActive: Bool { window != nil && window === keyWindow() }
+    var editingFileURL: URL? { closeConfirmation?.editingFileURL }
+    var referencedFileURLs: Set<URL> { workspaceWindows?.referencedFileURLs ?? [] }
+    func fileRemovalProblem(matchingFile: (URL) -> Bool) -> String? {
+        guard let workspaceWindows else { return "These workspace controls are no longer available." }
+        return workspaceWindows.fileRemovalProblem(matchingFile: matchingFile)
+    }
+    func beginFileRemoval(at url: URL, matchingFile: @escaping (URL) -> Bool) -> OutputCoordinator.FileRemovalAdmission {
+        guard let workspaceWindows, let window = window as? OutputWorkspaceWindow,
+              let workspaceID = window.workspaceSession?.outputSourceID else {
+            return .blocked("These workspace controls are no longer available.")
+        }
+        return workspaceWindows.beginFileRemoval(at: url, requesterWorkspaceID: workspaceID, matchingFile: matchingFile)
+    }
+    @discardableResult
+    func finishFileRemoval(_ reservation: OutputCoordinator.FileRemovalReservation,
+                           candidate: LibraryFileActionService.Candidate, removed: Bool, resultingURL: URL? = nil) -> Bool {
+        workspaceWindows?.finishFileRemoval(reservation, candidate: candidate, removed: removed, resultingURL: resultingURL) ?? false
+    }
     func confirmClose() -> Bool { closeConfirmation?.confirmClose() ?? true }
     func controlsWillClose() { closeConfirmation?.controlsWillClose() }
 }
 
 @MainActor
 protocol OutputWorkspaceCloseConfirming: AnyObject {
+    var editingFileURL: URL? { get }
+    func fileWasRemoved(_ candidate: LibraryFileActionService.Candidate)
     func confirmClose() -> Bool
     func controlsWillClose()
+}
+
+extension OutputWorkspaceCloseConfirming {
+    var editingFileURL: URL? { nil }
+    func fileWasRemoved(_ candidate: LibraryFileActionService.Candidate) {}
 }
 
 /// Provides the current editor's close decision to the native window controller,
@@ -183,22 +209,32 @@ struct OutputWorkspaceCloseConfirmation: NSViewRepresentable {
     let commands: OutputWorkspaceCommands
     let shouldClose: () -> Bool
     var willClose: () -> Void = {}
+    var editorFileURL: () -> URL? = { nil }
+    var didRemoveFile: (LibraryFileActionService.Candidate) -> Void = { _ in }
     func makeNSView(context: Context) -> ConfirmationView {
         let view = ConfirmationView(frame: .zero)
         view.shouldClose = shouldClose
         view.willClose = willClose
+        view.editorFileURL = editorFileURL
+        view.didRemoveFile = didRemoveFile
         commands.closeConfirmation = view
         return view
     }
     func updateNSView(_ view: ConfirmationView, context: Context) {
         view.shouldClose = shouldClose
         view.willClose = willClose
+        view.editorFileURL = editorFileURL
+        view.didRemoveFile = didRemoveFile
         commands.closeConfirmation = view
     }
 
     final class ConfirmationView: NSView, OutputWorkspaceCloseConfirming {
         var shouldClose: () -> Bool = { true }
         var willClose: () -> Void = {}
+        var editorFileURL: () -> URL? = { nil }
+        var didRemoveFile: (LibraryFileActionService.Candidate) -> Void = { _ in }
+        var editingFileURL: URL? { editorFileURL() }
+        func fileWasRemoved(_ candidate: LibraryFileActionService.Candidate) { didRemoveFile(candidate) }
         func confirmClose() -> Bool { shouldClose() }
         func controlsWillClose() { willClose() }
     }

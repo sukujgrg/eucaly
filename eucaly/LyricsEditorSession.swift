@@ -24,6 +24,10 @@ nonisolated struct LyricsEditorSession: Equatable {
         hasLoadableDraft && previewedText == draft
     }
 
+    var canPreviewDraft: Bool {
+        hasLoadableDraft && !isPreviewSynchronized
+    }
+
     mutating func beginNew() {
         documentID = UUID()
         sourceURL = nil

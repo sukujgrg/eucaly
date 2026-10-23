@@ -83,7 +83,27 @@ final class PresentationSession: NSObject, ObservableObject {
 
     private var currentResourceScope: URL?
     private var audioResourceScope: URL?
+    var referencedFileURLs: Set<URL> {
+        var urls = Set(Self.sourceFileURLs(in: slides, lyricsSourceURL: currentLyricsSourceURL).map(\.standardizedFileURL))
+        for url in [pdfSlideSource?.url, backgroundVisualURL, backgroundAudioURL, currentResourceScope, audioResourceScope,
+                    (backgroundAudioPlayer?.currentItem?.asset as? AVURLAsset)?.url].compactMap({ $0 }) {
+            urls.insert(url.standardizedFileURL)
+        }
+        return urls
+    }
+
+    private static func sourceFileURLs(in slides: [Slide], lyricsSourceURL: URL?) -> [URL] {
+        var urls = slides.flatMap { [$0.videoURL, $0.pdfURL, $0.imageURL].compactMap { $0 } }
+        if !slides.isEmpty, let lyricsSourceURL { urls.append(lyricsSourceURL) }
+        return urls
+    }
+
+    private func canAcquireFile(_ url: URL?) -> Bool {
+        url.map { outputCoordinator.fileAdmissionProblem(for: $0) == nil } ?? true
+    }
+
     func setCurrentResourceScope(_ url: URL?) {
+        guard canAcquireFile(url) else { return }
         guard currentResourceScope != url else { return }
         currentResourceScope?.stopAccessingSecurityScopedResource(); currentResourceScope = nil
         if let url, url.startAccessingSecurityScopedResource() { currentResourceScope = url }
@@ -109,10 +129,7 @@ final class PresentationSession: NSObject, ObservableObject {
     private var currentThumbnailColumnCount: Int = 1
     private var currentDocumentRevision: UInt64 = 0
     var documentRevision: UInt64 { currentDocumentRevision }
-    // A page's stable slide ID does not change when its source is reloaded.
-    // Native PDF views also need this workspace's explicit-load identity.
-    var pdfDocumentRevision: UInt64 { documentRevision }
-    let pdfDocumentCache = PDFDocumentCache()
+    let pdfDocumentCache = AcceptedPDFSourceCache()
     private var pendingNavigationCount = 0
     private var navigationActionOrder: UInt64?
     private var navigationGeneration = UUID()
@@ -242,12 +259,14 @@ final class PresentationSession: NSObject, ObservableObject {
         return FileManager.default.fileExists(atPath: url.path)
     }
 
+    @discardableResult
     func setSlides(
         _ slides: [Slide],
         lyricsSourceURL: URL? = nil,
         preferredSelection: Slide.ID? = nil,
         preferredSelectionIndex: Int? = nil
-    ) {
+    ) -> Bool {
+        guard Self.sourceFileURLs(in: slides, lyricsSourceURL: lyricsSourceURL).allSatisfy({ canAcquireFile($0) }) else { return false }
         currentDocumentRevision &+= 1
         pdfDocumentCache.clear()
         let preservedSelection = preferredSelection ?? currentSlideID
@@ -265,13 +284,16 @@ final class PresentationSession: NSObject, ObservableObject {
         }
         if let url = currentSlide?.pdfURL { pdfDocumentCache.prepareAcceptedSource(for: url) }
         resetVideoPlaybackProgress()
+        return true
     }
 
+    @discardableResult
     func setPDFSlideSource(
         _ source: PDFSlideSource,
         preferredSelection: Slide.ID? = nil,
         preferredSelectionIndex: Int? = nil
-    ) {
+    ) -> Bool {
+        guard canAcquireFile(source.url) else { return false }
         currentDocumentRevision &+= 1
         pdfDocumentCache.clear()
         slides = []
@@ -289,6 +311,7 @@ final class PresentationSession: NSObject, ObservableObject {
         }
         pdfDocumentCache.prepareAcceptedSource(for: source.url)
         resetVideoPlaybackProgress()
+        return true
     }
 
     func clearSlides() {
@@ -430,25 +453,32 @@ final class PresentationSession: NSObject, ObservableObject {
         outputCoordinator.refreshMedia()
     }
 
-    func setBackgroundVisual(_ url: URL?) {
+    @discardableResult
+    func setBackgroundVisual(_ url: URL?) -> Bool {
+        guard canAcquireFile(url) else { return false }
         backgroundVisualURL = url
         isBackgroundVisualVisible = (url != nil)
+        return true
     }
 
-    func setBackgroundAudio(url: URL?, autoplay: Bool) {
-        guard outputCoordinator.profiles.document.workspaces.contains(where: { $0.id == outputSourceID }) else { return }
+    @discardableResult
+    func setBackgroundAudio(url: URL?, autoplay: Bool) -> Bool {
+        guard outputCoordinator.profiles.document.workspaces.contains(where: { $0.id == outputSourceID }),
+              canAcquireFile(url) else { return false }
         if backgroundAudioURL == url {
             if autoplay {
                 playBackgroundAudio()
             }
-            return
+            return true
         }
         backgroundAudioURL = url
         configureBackgroundAudioPlayer(for: url, autoplay: autoplay)
+        return true
     }
 
     func playBackgroundAudio() {
-        guard outputCoordinator.profiles.document.workspaces.contains(where: { $0.id == outputSourceID }) else { return }
+        guard outputCoordinator.profiles.document.workspaces.contains(where: { $0.id == outputSourceID }),
+              canAcquireFile(backgroundAudioURL) else { return }
         backgroundAudioHasStandaloneLocalRoute = outputCoordinator.canPlayStandaloneBackgroundAudio(workspace: outputSourceID)
         outputCoordinator.claimBackgroundAudio(self)
         backgroundAudioGeneration = UUID()
@@ -525,6 +555,7 @@ final class PresentationSession: NSObject, ObservableObject {
     }
 
     private func configureBackgroundAudioPlayer(for url: URL?, autoplay: Bool) {
+        guard canAcquireFile(url) else { return }
         backgroundAudioGeneration = UUID()
         backgroundAudioPlayer?.pause()
         removeBackgroundAudioTimeObserver()
@@ -607,10 +638,8 @@ final class PresentationSession: NSObject, ObservableObject {
 }
 
 struct PDFSlideView: NSViewRepresentable {
-    let url: URL
+    let source: AcceptedPDFSource?
     let pageIndex: Int
-    let documentRevision: UInt64
-    let documentCache: PDFDocumentCache
 
     func makeNSView(context: Context) -> PDFSlideNSView {
         let view = PDFSlideNSView(frame: .zero)
@@ -623,19 +652,14 @@ struct PDFSlideView: NSViewRepresentable {
     }
 
     private func update(_ view: PDFSlideNSView) {
-        view.display(url: url, pageIndex: pageIndex, revision: documentRevision, cache: documentCache)
+        view.display(source: source, pageIndex: pageIndex)
     }
 }
 
-/// A page change reuses its accepted document. An explicit Current load changes
-/// the revision, even when its URL and page-derived slide identity are unchanged.
+/// Native output owns a parsed view of accepted immutable bytes. It never
+/// reopens a path or consults private Current's preparation cache.
 final class PDFSlideNSView: PDFView {
-    private struct Source: Equatable {
-        let url: URL
-        let revision: UInt64
-    }
-    private var displayedSource: Source?
-    private weak var displayedCache: PDFDocumentCache?
+    private var displayedSourceID: UUID?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -657,63 +681,52 @@ final class PDFSlideNSView: PDFView {
         displaysAsBook = false
     }
 
-    func display(url: URL, pageIndex: Int, revision: UInt64, cache: PDFDocumentCache) {
-        let source = Source(url: url.standardizedFileURL, revision: revision)
-        if displayedSource != source || displayedCache !== cache {
-            document = cache.document(for: url)
-            displayedSource = source
-            displayedCache = cache
+    func display(source: AcceptedPDFSource?, pageIndex: Int) {
+        if displayedSourceID != source?.id {
+            document = source.flatMap { PDFDocument(data: $0.data) }
+            displayedSourceID = source?.id
         }
         if let page = document?.page(at: pageIndex) { go(to: page) }
     }
 }
 
-/// Each prepared workspace retains at most three native documents. Reloading or
-/// clearing its Current cannot invalidate another workspace's accepted PDF.
+/// Explicit Load validates and retains at most three immutable sources per
+/// workspace. Accepted output snapshots keep their own source after this clears.
 @MainActor
-final class PDFDocumentCache {
-    private struct Entry {
-        let document: PDFDocument
-        let source: AcceptedPDFSource
-    }
-    private let maxCachedDocuments = 3
-    private var documents: [URL: Entry] = [:]
+final class AcceptedPDFSourceCache {
+    private let maxCachedSources = 3
+    private var sources: [URL: AcceptedPDFSource] = [:]
     private var accessOrder: [URL] = []
 
     init() {}
 
-    func document(for url: URL) -> PDFDocument? {
+    @discardableResult
+    func prepareAcceptedSource(for url: URL) -> AcceptedPDFSource? {
         let key = url.standardizedFileURL
-        if let cached = documents[key] {
+        if let cached = sources[key] {
             touch(key)
-            return cached.document
+            return cached
         }
 
-        guard let source = AcceptedPDFSource(url: key), let document = PDFDocument(data: source.data) else { return nil }
-        while documents.count >= maxCachedDocuments, let oldest = accessOrder.first {
-            documents.removeValue(forKey: oldest)
+        guard let source = AcceptedPDFSource(url: key), PDFDocument(data: source.data) != nil else { return nil }
+        while sources.count >= maxCachedSources, let oldest = accessOrder.first {
+            sources.removeValue(forKey: oldest)
             accessOrder.removeAll { $0 == oldest }
         }
 
-        documents[key] = Entry(document: document, source: source)
+        sources[key] = source
         touch(key)
-        return document
-    }
-
-    @discardableResult
-    func prepareAcceptedSource(for url: URL) -> AcceptedPDFSource? {
-        guard document(for: url) != nil else { return nil }
-        return acceptedSource(for: url)
+        return source
     }
 
     // Acceptance and publication only look up the source captured by explicit
     // Load. They must never reopen a path while an accepted PDF is on output.
     func acceptedSource(for url: URL) -> AcceptedPDFSource? {
-        documents[url.standardizedFileURL]?.source
+        sources[url.standardizedFileURL]
     }
 
     func clear() {
-        documents.removeAll()
+        sources.removeAll()
         accessOrder.removeAll()
     }
 

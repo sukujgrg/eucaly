@@ -240,7 +240,10 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
             let editor: OutputProfileEditor
             if let profileForm { editor = profileForm; editor.selectProfile(id) }
             else {
-                editor = OutputProfileEditor(store: store, profileID: id)
+                editor = OutputProfileEditor(store: store, profileID: id,
+                    makeFileAcquisitionGuard: { [weak coordinator] url in
+                        coordinator?.makeFileAcquisitionGuard(for: url) ?? { _ in .removed }
+                    })
                 profileForm = editor
                 addChild(editor); outputSettingsPin(editor.view, to: detailHost)
             }

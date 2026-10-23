@@ -23,6 +23,35 @@ nonisolated enum OutputReadiness: String, Codable, Sendable {
 /// program state, action ordering and playback belong to a durable workspace.
 @MainActor
 final class OutputCoordinator: ObservableObject {
+    struct FileRemovalReservation: Equatable {
+        let id: UUID
+        let requesterWorkspaceID: UUID
+        let url: URL
+    }
+    enum FileRemovalAdmission {
+        case admitted(FileRemovalReservation)
+        case blocked(String)
+    }
+    enum FileAcquisitionAdmission: Equatable {
+        case allowed
+        case deferred(UUID)
+        case removed
+    }
+    /// A request retains its own successful-removal fences only until its
+    /// asynchronous completion or cancellation releases the returned guard.
+    private final class FileAcquisitionTicket {
+        let knownURL: URL?
+        var completedRemovals: [(URL) -> Bool] = []
+        init(knownURL: URL?) { self.knownURL = knownURL }
+    }
+    private final class WeakFileAcquisitionTicket {
+        weak var value: FileAcquisitionTicket?
+        init(_ value: FileAcquisitionTicket) { self.value = value }
+    }
+    private struct PendingFileRemoval {
+        let reservation: FileRemovalReservation
+        let matches: (URL) -> Bool
+    }
     let profiles: OutputProfileStore
     let displays: ProjectionDisplayManager
     let ndi: any NDIOutputDriving
@@ -47,7 +76,9 @@ final class OutputCoordinator: ObservableObject {
     private var dismissedNDIPerformance: Set<UUID> = []
     private var dismissedNDIFailures: [UUID: String] = [:]
     private var issues: [UUID: String] = [:]
-    private enum IssueReason { case presentation, background, assignment(UUID, ProjectionMonitorTarget), disconnected, transfer, capture }
+    private var pendingFileRemoval: PendingFileRemoval?
+    private var fileAcquisitionTickets: [WeakFileAcquisitionTicket] = []
+    private enum IssueReason { case presentation, background, assignment(UUID, ProjectionMonitorTarget), disconnected, transfer, capture, fileAction }
     private var issueReasons: [UUID: IssueReason] = [:]
     @Published private(set) var focusedWorkspaceID: UUID?
     @Published private(set) var revision: UInt64 = 0
@@ -147,6 +178,140 @@ final class OutputCoordinator: ObservableObject {
     }
     func preparedSession(workspace id: UUID) -> PresentationSession? { programs[id]?.session }
     func preparedMedia(workspace id: UUID) -> OutputMediaRuntime? { programs[id]?.media }
+    /// Read retained owners directly. File preparation uses this snapshot to
+    /// resolve aliases off-main; asking about a file must never prepare controls,
+    /// sessions, media or output destinations.
+    var referencedFileURLs: Set<URL> {
+        var urls: Set<URL> = []
+        for ticket in fileAcquisitionTickets.compactMap(\.value) {
+            if let url = ticket.knownURL { urls.insert(url) }
+        }
+        for state in programs.values {
+            urls.formUnion(state.flow.referencedFileURLs)
+            urls.formUnion(acceptedFileURLs(in: state))
+            urls.formUnion(state.media.referencedFileURLs)
+            if let session = state.session {
+                urls.formUnion(session.referencedFileURLs)
+            }
+        }
+        if let audioSession { urls.formUnion(audioSession.referencedFileURLs) }
+        return Set(urls.map(\.standardizedFileURL))
+    }
+    /// Preview is removable, but Current, accepted output and selected/retained
+    /// backgrounds remain protected even when controls or outputs are closed.
+    func fileRemovalProblem(matchingFile matches: (URL) -> Bool) -> String? {
+        if pendingFileRemoval != nil { return "Another file is being moved to the Trash. Wait for it to finish." }
+        for record in profiles.document.workspaces {
+            guard let state = programs[record.id] else { continue }
+            if let session = state.session, currentFileURLs(in: session).contains(where: matches) {
+                return "This file is loaded in Current in \(record.name). Clear Current before moving it to the Trash."
+            }
+            if acceptedFileURLs(in: state).contains(where: matches) {
+                return "An output in \(record.name) retains this file. Clear that workspace’s program before moving it to the Trash."
+            }
+            if let session = state.session, backgroundFileURLs(in: session).contains(where: matches) {
+                return "This file is selected as a background in \(record.name). Clear that background before moving it to the Trash."
+            }
+            if let session = state.session, session.referencedFileURLs.contains(where: matches) {
+                return "This file is still in use in \(record.name). Clear its source before moving it to the Trash."
+            }
+            if state.media.retainsFile(where: matches) {
+                return "Playback in \(record.name) retains this file. Clear its source before moving it to the Trash."
+            }
+        }
+        if let audioSession, audioSession.referencedFileURLs.contains(where: matches) {
+            return "This file is selected as background audio. Clear that audio before moving it to the Trash."
+        }
+        return nil
+    }
+    /// Call synchronously after native confirmation and fresh editor/read-set
+    /// checks. The matcher is immutable, prepared off-main by the file service.
+    func beginFileRemoval(at url: URL, requesterWorkspaceID: UUID,
+                          matchingFile matches: @escaping (URL) -> Bool) -> FileRemovalAdmission {
+        guard profiles.document.workspaces.contains(where: { $0.id == requesterWorkspaceID }) else {
+            return .blocked("This workspace is no longer available.")
+        }
+        if let problem = fileRemovalProblem(matchingFile: matches) { return .blocked(problem) }
+        let reservation = FileRemovalReservation(id: UUID(), requesterWorkspaceID: requesterWorkspaceID, url: url)
+        pendingFileRemoval = .init(reservation: reservation, matches: matches)
+        return .admitted(reservation)
+    }
+    /// Acceptance is fenced throughout the native operation, including while
+    /// its requesting controls close or its workspace is deleted.
+    func fileAdmissionProblem(for url: URL) -> String? {
+        guard pendingFileRemoval?.matches(url) == true else { return nil }
+        return "This file is being moved to the Trash. Wait for that operation to finish."
+    }
+    /// Create before awaiting bookmark creation/resolution. Unknown sources
+    /// defer during an active removal: their resolved path may already be the
+    /// eventual Trash path, which is unavailable until that operation finishes.
+    func makeFileAcquisitionGuard(for knownURL: URL? = nil) -> (URL) -> FileAcquisitionAdmission {
+        fileAcquisitionTickets.removeAll { $0.value == nil }
+        let ticket = FileAcquisitionTicket(knownURL: knownURL?.standardizedFileURL)
+        fileAcquisitionTickets.append(WeakFileAcquisitionTicket(ticket))
+        return { [weak self, ticket] url in
+            guard let self else { return .removed }
+            if ticket.completedRemovals.contains(where: { matches in
+                matches(url) || ticket.knownURL.map(matches) == true
+            }) { return .removed }
+            guard let pending = self.pendingFileRemoval else { return .allowed }
+            if ticket.knownURL == nil || pending.matches(url) || ticket.knownURL.map(pending.matches) == true {
+                return .deferred(pending.reservation.id)
+            }
+            return .allowed
+        }
+    }
+    func reportFileActionIssue(_ message: String, workspace: UUID) {
+        guard profiles.document.workspaces.contains(where: { $0.id == workspace }) else { return }
+        setIssue(message, workspace: workspace, reason: .fileAction)
+    }
+    @discardableResult
+    func finishFileRemoval(_ reservation: FileRemovalReservation, removed: Bool, resultingURL: URL? = nil) -> Bool {
+        guard let pending = pendingFileRemoval, pending.reservation == reservation else { return false }
+        let sourceMatches = pending.matches
+        let trashURL = resultingURL?.standardizedFileURL
+        let completedMatches: (URL) -> Bool = { url in
+            sourceMatches(url) || trashURL.map { $0 == url.standardizedFileURL } == true
+        }
+        fileAcquisitionTickets.removeAll { $0.value == nil }
+        if removed {
+            // Publish to every still-pending request before reopening admission.
+            // Newly created requests afterward inherit no removal history.
+            for ticket in fileAcquisitionTickets.compactMap(\.value) {
+                ticket.completedRemovals.append(completedMatches)
+            }
+        }
+        pendingFileRemoval = nil
+        for state in Array(programs.values) {
+            if removed { state.flow.removePreviewFile(matching: completedMatches) }
+            if state.media.finishFileRemoval(reservationID: reservation.id, matching: completedMatches, removed: removed) {
+                // Retry only this operation's deferred unrelated/failed intents.
+                // Other workspaces keep their playback untouched.
+                refreshMedia(state, publish: true)
+            }
+        }
+        return true
+    }
+    private func currentFileURLs(in session: PresentationSession) -> Set<URL> {
+        var urls = Set(session.slides.flatMap { Self.fileURLs(in: $0) })
+        if let url = session.pdfSlideSource?.url { urls.insert(url) }
+        if let url = session.currentLyricsSourceURL { urls.insert(url) }
+        return urls
+    }
+    private func backgroundFileURLs(in session: PresentationSession) -> Set<URL> {
+        Set([session.backgroundVisualURL, session.backgroundAudioURL].compactMap { $0 })
+    }
+    private func acceptedFileURLs(in state: OutputWorkspaceProgram) -> Set<URL> {
+        var urls = Set(Self.fileURLs(in: state.snapshot.localMedia))
+        if let url = state.snapshot.acceptedPDF?.url { urls.insert(url) }
+        return urls
+    }
+    private static func fileURLs(in slide: Slide?) -> [URL] {
+        [slide?.videoURL, slide?.pdfURL, slide?.imageURL].compactMap { $0 }
+    }
+    private func fileAdmissionProblem(in session: PresentationSession) -> String? {
+        currentFileURLs(in: session).compactMap { fileAdmissionProblem(for: $0) }.first
+    }
     /// Capture is app-shared, so one pane cannot decide that the picked source
     /// is unused. Inspect retained state only; never prepare sessions or outputs.
     func retainsCapturedWindow(_ windowID: CGWindowID) -> Bool {
@@ -335,6 +500,9 @@ final class OutputCoordinator: ObservableObject {
         guard let row = destination(id), profiles.recoveryNotice == nil,
               profiles.document.workspaces.contains(where: { $0.id == session.outputSourceID }) else { return false }
         guard row.workspaceID != session.outputSourceID else { return true }
+        if let problem = fileAdmissionProblem(in: session) {
+            setIssue(problem, workspace: workspaceID ?? session.outputSourceID, reason: .transfer); return false
+        }
         var proposed = destinations(workspace: session.outputSourceID); proposed.append(row)
         if let slide = session.currentSlide, row.ndi != nil, !OutputContentClassifier.supportsNDI(slide) {
             setIssue("Cannot move \(profiles.destinationLabel(row)) to \(profiles.workspaceName(session.outputSourceID)). NDI supports lyrics, PDFs, images and video files. Choose supported Current content before moving this output.",
@@ -380,6 +548,9 @@ final class OutputCoordinator: ObservableObject {
     func presentLocal(_ session: PresentationSession, show: Bool = true, onlyDestinationID: UUID? = nil,
                       activation: PresentationActivation = .show) -> Bool {
         guard profiles.document.workspaces.contains(where: { $0.id == session.outputSourceID }) else { return false }
+        if let problem = fileAdmissionProblem(in: session) {
+            setIssue(problem, workspace: session.outputSourceID); return false
+        }
         let state = program(session.outputSourceID); cancelRequests(state)
         let rows = destinations(workspace: state.id).filter {
             $0.enabled && (onlyDestinationID == nil || $0.id == onlyDestinationID)
@@ -429,6 +600,7 @@ final class OutputCoordinator: ObservableObject {
     }
     func passiveLocal(_ session: PresentationSession) {
         guard profiles.document.workspaces.contains(where: { $0.id == session.outputSourceID }) else { return }
+        guard fileAdmissionProblem(in: session) == nil else { return }
         let state = program(session.outputSourceID)
         guard state.ownership.source == state.id else { return }
         // A model refresh only updates surviving consumers. A closed native
@@ -653,11 +825,14 @@ final class OutputCoordinator: ObservableObject {
         state.media.updateProgram(slide: state.snapshot.localMedia, session: state.session,
             running: state.started && !live.isEmpty, visible: state.snapshot.visible && playbackReady,
             localAudioEnabled: monitorAudioLocally(workspace: state.id) || live.contains { $0.isMonitorDestination },
-            documentRevision: state.snapshot.documentRevision)
+            documentRevision: state.snapshot.documentRevision,
+            canAcquireFile: { [weak self] in self?.fileAdmissionProblem(for: $0) == nil })
         let active = Set(live.map(\.profileID))
         let workspaceID = state.id
         state.media.syncBackgrounds(profiles: profiles.document.profiles.filter { active.contains($0.id) }, visible: state.snapshot.visible,
-            media: state.snapshot.localMedia.map { OutputContentClassifier.mode(for: $0) == .media } ?? false) { [weak self] in self?.changed(workspace: workspaceID) }
+            media: state.snapshot.localMedia.map { OutputContentClassifier.mode(for: $0) == .media } ?? false,
+            canAcquireFile: { [weak self] in self?.fileAdmissionProblem(for: $0) == nil },
+            makeFileAcquisitionGuard: { [weak self] in self?.makeFileAcquisitionGuard() ?? { _ in .removed } }) { [weak self] in self?.changed(workspace: workspaceID) }
         if publish {
             var document = profiles.document; document.destinations = rows
             ndi.publish(state.snapshot, document: document, media: state.media, audioSession: audioSession)
@@ -701,7 +876,7 @@ final class OutputCoordinator: ObservableObject {
                 // A failed move leaves ownership unchanged. Keep its explanation
                 // in the requesting workspace until retry succeeds or dismissal.
                 message = issues[id]
-            case .capture:
+            case .capture, .fileAction:
                 message = issues[id]
             }
             setIssue(message, workspace: id, reason: reason)

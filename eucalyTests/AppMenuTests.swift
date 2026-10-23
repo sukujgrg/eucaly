@@ -167,6 +167,73 @@ final class AppMenuTests: XCTestCase {
         XCTAssertEqual(file.item(withTitle: "New Workspace Tab")?.keyEquivalent, "t")
         XCTAssertEqual(file.item(withTitle: "New Lyrics")?.keyEquivalent, "n")
         XCTAssertEqual(file.item(withTitle: "Close Window")?.action, #selector(NSWindow.performClose(_:)))
+        XCTAssertNil(file.item(withTitle: "Quick Open…"))
+        XCTAssertFalse(shortcuts.contains { $0.keyEquivalent == "o" && $0.keyEquivalentModifierMask == [.command, .shift] })
+        let find = try XCTUnwrap(edit.item(withTitle: "Find")?.submenu)
+        let search = try XCTUnwrap(find.item(withTitle: "Search Library…"))
+        XCTAssertEqual(search.keyEquivalent, "f")
+        XCTAssertEqual(search.keyEquivalentModifierMask, .command)
+        XCTAssertTrue(search.target === menus)
+        let lyricsFind = try XCTUnwrap(find.item(withTitle: "Find in Lyrics…"))
+        XCTAssertTrue(lyricsFind.keyEquivalent.isEmpty)
+        XCTAssertNil(lyricsFind.target)
+        for (title, key, modifiers) in [("Find Next", "g", NSEvent.ModifierFlags.command),
+                                      ("Find Previous", "g", [.command, .shift]),
+                                      ("Use Selection for Find", "e", .command)] {
+            let item = try XCTUnwrap(find.item(withTitle: title))
+            XCTAssertNil(item.target)
+            XCTAssertEqual(item.action, #selector(LyricsTextView.performLyricsFindAction(_:)))
+            XCTAssertEqual(item.keyEquivalent, key)
+            XCTAssertEqual(item.keyEquivalentModifierMask, modifiers)
+        }
+    }
+
+    func testCommandFDispatchesLibrarySearchAcrossWorkspaceRespondersWithoutChangingCurrent() throws {
+        let hub = LocalOutputHarness(), focus = MenuFocus()
+        let app = AppDelegate()
+        app.outputProfiles = hub.outputs.profiles; app.outputs = hub.outputs
+        app.workspaceWindows = makeWorkspaceWindows(outputs: hub.outputs, keyWindow: { focus.window })
+        defer { for window in app.workspaceWindows.windows.values { window.close() } }
+        let controller = try XCTUnwrap(app.workspaceWindows.open(hub.session.outputSourceID))
+        let window = try XCTUnwrap(controller.window)
+        focus.window = window
+        hub.load("Verse\nKeep Current")
+        let savedSlides = hub.session.slides.map(\.id), action = hub.session.outputActionClock.current
+        let menus = AppMenuController(app: app)
+        let lyrics = LyricsTextView(frame: .init(x: 0, y: 0, width: 200, height: 100))
+        lyrics.string = "Unsaved lyrics draft"
+        let sidebar = NSOutlineView(frame: .init(x: 0, y: 100, width: 100, height: 100))
+        let preview = NSCollectionView(frame: .init(x: 100, y: 100, width: 100, height: 100))
+        let current = NSCollectionView(frame: .init(x: 200, y: 100, width: 100, height: 100))
+        let field = NSSearchField(frame: .init(x: 0, y: 200, width: 200, height: 28))
+        let results = LibrarySearchTableView(frame: .init(x: 0, y: 230, width: 200, height: 100))
+        let responders: [NSView] = [lyrics, sidebar, preview, current, field, results]
+        responders.forEach { window.contentView?.addSubview($0) }
+        let requests = MenuSearchRequests()
+        let observation = NotificationCenter.default.addObserver(forName: .showLibrarySearch, object: nil, queue: nil) { _ in
+            MainActor.assumeIsolated { requests.count += 1 }
+        }
+        defer { NotificationCenter.default.removeObserver(observation) }
+        for responder in responders {
+            XCTAssertTrue(window.makeFirstResponder(responder))
+            if responder === lyrics { lyrics.setSelectedRange(.init(location: 8, length: 0)) }
+            let before = requests.count
+            let key = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+                timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "f",
+                charactersIgnoringModifiers: "f", isARepeat: false, keyCode: 3))
+            XCTAssertTrue(menus.mainMenu.performKeyEquivalent(with: key))
+            XCTAssertEqual(requests.count, before + 1)
+        }
+        XCTAssertEqual(lyrics.string, "Unsaved lyrics draft")
+        XCTAssertEqual(lyrics.selectedRange(), .init(location: 8, length: 0))
+        XCTAssertEqual(hub.session.slides.map(\.id), savedSlides)
+        XCTAssertEqual(hub.session.outputActionClock.current, action)
+        XCTAssertFalse(hub.outputs.isRunning)
+        let oldShortcut = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
+            modifierFlags: [.command, .shift], timestamp: 0, windowNumber: window.windowNumber, context: nil,
+            characters: "O", charactersIgnoringModifiers: "o", isARepeat: false, keyCode: 31))
+        XCTAssertFalse(menus.mainMenu.performKeyEquivalent(with: oldShortcut))
+        XCTAssertEqual(requests.count, responders.count)
     }
 
     func testWorkspaceMenuOpensSavedUUIDsAndNativeNewTabWithoutDuplicatingRecords() throws {
@@ -257,15 +324,16 @@ final class AppMenuTests: XCTestCase {
         app.workspaceWindows = makeWorkspaceWindows(outputs: hub.outputs, keyWindow: { focus.window })
         defer { for window in app.workspaceWindows.windows.values { window.close() } }
         let menus = AppMenuController(app: app)
-        let file = try XCTUnwrap(menus.mainMenu.item(withTitle: "File")?.submenu)
-        let quickOpen = try XCTUnwrap(file.item(withTitle: "Quick Open…"))
-        XCTAssertFalse(menus.validateMenuItem(quickOpen))
+        let edit = try XCTUnwrap(menus.mainMenu.item(withTitle: "Edit")?.submenu)
+        let find = try XCTUnwrap(edit.item(withTitle: "Find")?.submenu)
+        let search = try XCTUnwrap(find.item(withTitle: "Search Library…"))
+        XCTAssertFalse(menus.validateMenuItem(search))
         let controller = try XCTUnwrap(app.workspaceWindows.open(hub.session.outputSourceID))
         focus.window = controller.window
-        XCTAssertTrue(menus.validateMenuItem(quickOpen))
+        XCTAssertTrue(menus.validateMenuItem(search))
         controller.window?.performClose(nil)
         focus.window = nil
-        XCTAssertFalse(menus.validateMenuItem(quickOpen))
+        XCTAssertFalse(menus.validateMenuItem(search))
         menus.menuNeedsUpdate(menus.workspaceMenu)
         let saved = try XCTUnwrap(menus.workspaceMenu.items.first { $0.representedObject as? UUID == hub.session.outputSourceID })
         XCTAssertTrue(menus.validateMenuItem(saved))
@@ -349,3 +417,4 @@ final class AppMenuTests: XCTestCase {
 }
 
 @MainActor private final class MenuFocus { var window: NSWindow? }
+@MainActor private final class MenuSearchRequests { var count = 0 }

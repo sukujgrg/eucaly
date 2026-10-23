@@ -186,7 +186,6 @@ struct WindowCaptureSlideView: View {
         }
 
         error = nil
-        streamOutput.setFrameRate(ScreenCaptureManager.shared.normalizedPreferredFrameRate)
         do {
             _ = try await ScreenCaptureManager.shared.startCapture(
                 windowID: targetWindowID,
@@ -306,7 +305,7 @@ final class WindowCaptureLayerHostView: NSView {
 }
 
 @available(macOS 14.0, *)
-private final class WindowStreamOutput: NSObject, SCStreamOutput {
+private final class WindowStreamOutput: NSObject, SCStreamOutput, WindowCaptureFrameRateConsumer {
     private let frameGateLock = NSLock()
     private let pendingFrameLock = NSLock()
 

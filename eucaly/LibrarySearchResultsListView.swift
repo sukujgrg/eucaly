@@ -8,6 +8,7 @@ final class LibrarySearchCommandRouter {
 
     func register(searchField: NSSearchField) {
         self.searchField = searchField
+        updateFocusCompanion()
     }
 
     func unregister(searchField: NSSearchField) {
@@ -17,10 +18,47 @@ final class LibrarySearchCommandRouter {
     }
 
     func perform(_ selector: Selector, sender: Any?) -> Bool {
+        guard isAttached else { return false }
         guard let command = LibrarySearchNavigationCommand(selector: selector) else {
             return false
         }
         return resultsCoordinator?.perform(command, sender: sender) ?? false
+    }
+
+    var isAttached: Bool { searchField?.window != nil }
+
+    @discardableResult
+    func focusExistingSearch() -> Bool {
+        (searchField as? LibrarySearchField)?.focusForLibrarySearch() ?? false
+    }
+
+    func activateSelection() -> Bool {
+        guard isAttached else { return false }
+        return resultsCoordinator?.activateSelection() ?? false
+    }
+
+    @discardableResult
+    func performPrimaryAction(commitQuery: () -> Void) -> Bool {
+        guard isAttached else { return false }
+        if !activateSelection() { commitQuery() }
+        return true
+    }
+
+    @discardableResult
+    func addSelectionToPlaylist() -> Bool {
+        guard isAttached else { return false }
+        return resultsCoordinator?.addSelectionToPlaylist() ?? false
+    }
+
+    fileprivate func updateFocusCompanion() {
+        (searchField as? LibrarySearchField)?.focusCompanion = resultsCoordinator?.tableView
+    }
+
+    fileprivate func prepareForResultsRemoval(_ tableView: NSTableView) {
+        guard let searchField, let window = tableView.window, searchField.window === window,
+              let responder = window.firstResponder as? NSView,
+              responder === tableView || responder.isDescendant(of: tableView) else { return }
+        window.makeFirstResponder(searchField)
     }
 
     func restoreSearchFocus() {
@@ -28,12 +66,13 @@ final class LibrarySearchCommandRouter {
               !Self.isActivelyEditing(searchField)
         else { return }
 
-        DispatchQueue.main.async { [weak searchField] in
-            guard let searchField,
-                  !Self.isActivelyEditing(searchField)
-            else { return }
-
-            searchField.window?.makeFirstResponder(searchField)
+        guard let window = searchField.window else { return }
+        let initialResponder = window.firstResponder
+        DispatchQueue.main.async { [weak searchField, weak window, weak initialResponder] in
+            guard let searchField, let window, searchField.window === window,
+                  window.firstResponder === initialResponder,
+                  !Self.isActivelyEditing(searchField) else { return }
+            window.makeFirstResponder(searchField)
         }
     }
 
@@ -47,7 +86,7 @@ final class LibrarySearchCommandRouter {
 /// reuse in `NSTableView` prevents large search result sets from rebuilding a
 /// SwiftUI row hierarchy for every keystroke.
 struct LibrarySearchResultsListView: NSViewRepresentable {
-    @Binding var selectedResult: URL?
+    @Binding var selectedEntry: LibrarySearchEntryID?
 
     let commandRouter: LibrarySearchCommandRouter
     let actions: [LibraryCommandPaletteAction]
@@ -55,6 +94,7 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
     let displayName: (URL) -> String
     let onRunAction: (LibraryCommandPaletteAction) -> Void
     let onOpenResult: (URL) -> Void
+    let onClose: () -> Void
     let onAddResultToPlaylist: (URL) -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -62,7 +102,11 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let tableView = NSTableView()
+        Self.makeScrollView(coordinator: context.coordinator, from: self)
+    }
+
+    static func makeScrollView(coordinator: Coordinator, from view: Self) -> NSScrollView {
+        let tableView = LibrarySearchTableView()
         let column = NSTableColumn(identifier: Coordinator.columnIdentifier)
         column.resizingMask = .autoresizingMask
         tableView.addTableColumn(column)
@@ -73,15 +117,30 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
         tableView.allowsEmptySelection = true
         tableView.allowsMultipleSelection = false
         tableView.allowsTypeSelect = false
-        tableView.refusesFirstResponder = true
-        tableView.focusRingType = .none
+        tableView.refusesFirstResponder = false
+        tableView.focusRingType = .default
+        tableView.setAccessibilityLabel("Songs and library actions")
         tableView.backgroundColor = .clear
-        tableView.style = .plain
+        tableView.style = .inset
         tableView.selectionHighlightStyle = .regular
-        tableView.dataSource = context.coordinator
-        tableView.delegate = context.coordinator
-        tableView.target = context.coordinator
+        tableView.dataSource = coordinator
+        tableView.delegate = coordinator
+        tableView.target = coordinator
         tableView.doubleAction = #selector(Coordinator.performClickedRowAction(_:))
+        tableView.defaultActionHandler = { [weak coordinator] in coordinator?.activateSelection() ?? false }
+        tableView.cancelActionHandler = { [weak coordinator] in coordinator?.closeSearch() }
+        tableView.navigationHandler = { [weak coordinator] command in
+            coordinator?.perform(command, sender: nil) ?? false
+        }
+        tableView.menuProvider = { [weak coordinator] row in coordinator?.contextMenu(for: row) }
+        tableView.willRemoveHandler = { [weak coordinator, weak tableView] in
+            guard let tableView else { return }
+            coordinator?.prepareForRemoval(tableView)
+        }
+        let menu = NSMenu()
+        menu.delegate = coordinator
+        menu.autoenablesItems = false
+        tableView.menu = menu
 
         let scrollView = NSScrollView()
         scrollView.documentView = tableView
@@ -92,8 +151,8 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
         scrollView.autohidesScrollers = true
         scrollView.contentInsets = NSEdgeInsets(top: 6, left: 10, bottom: 6, right: 10)
 
-        context.coordinator.tableView = tableView
-        context.coordinator.update(from: self, forceReload: true)
+        coordinator.tableView = tableView
+        coordinator.update(from: view, forceReload: true)
         return scrollView
     }
 
@@ -102,16 +161,12 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
-        coordinator.unregisterCommandRouter()
-        coordinator.tableView?.delegate = nil
-        coordinator.tableView?.dataSource = nil
-        coordinator.tableView?.target = nil
-        coordinator.tableView?.doubleAction = nil
-        coordinator.tableView = nil
+        if let tableView = coordinator.tableView { coordinator.prepareForRemoval(tableView) }
+        coordinator.retire()
     }
 
     @MainActor
-    final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+    final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate {
         static let columnIdentifier = NSUserInterfaceItemIdentifier("LibrarySearchColumn")
         private static let sectionCellIdentifier = NSUserInterfaceItemIdentifier("LibrarySearchSectionCell")
         private static let itemCellIdentifier = NSUserInterfaceItemIdentifier("LibrarySearchItemCell")
@@ -122,16 +177,19 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
         private var rows: [Row] = []
         private var isSynchronizingSelection = false
         private weak var commandRouter: LibrarySearchCommandRouter?
-        private var selectedResult: Binding<URL?> = .constant(nil)
+        private var selectedEntry: Binding<LibrarySearchEntryID?> = .constant(nil)
         private var onRunAction: (LibraryCommandPaletteAction) -> Void = { _ in }
         private var onOpenResult: (URL) -> Void = { _ in }
+        private var onClose: () -> Void = {}
         private var onAddResultToPlaylist: (URL) -> Void = { _ in }
 
         func update(from view: LibrarySearchResultsListView, forceReload: Bool = false) {
+            guard tableView != nil else { return }
             registerCommandRouter(view.commandRouter)
-            selectedResult = view.$selectedResult
+            selectedEntry = view.$selectedEntry
             onRunAction = view.onRunAction
             onOpenResult = view.onOpenResult
+            onClose = view.onClose
             onAddResultToPlaylist = view.onAddResultToPlaylist
 
             let newRows = Self.makeRows(
@@ -146,7 +204,37 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
                 tableView?.reloadData()
                 isSynchronizingSelection = false
             }
-            synchronizeSelection(to: view.selectedResult, reveal: contentChanged)
+            synchronizeSelection(to: view.selectedEntry, reveal: contentChanged)
+        }
+
+        private var hasLiveTable: Bool {
+            guard commandRouter?.isAttached == true,
+                  let tableView, tableView.window != nil else { return false }
+            return tableView.dataSource === self && tableView.delegate === self
+        }
+
+        fileprivate func retire() {
+            unregisterCommandRouter()
+            if let nativeTable = tableView as? LibrarySearchTableView {
+                nativeTable.defaultActionHandler = nil
+                nativeTable.cancelActionHandler = nil
+                nativeTable.navigationHandler = nil
+                nativeTable.menuProvider = nil
+                nativeTable.willRemoveHandler = nil
+            }
+            tableView?.menu?.delegate = nil
+            tableView?.menu = nil
+            tableView?.delegate = nil
+            tableView?.dataSource = nil
+            tableView?.target = nil
+            tableView?.doubleAction = nil
+            tableView = nil
+            rows.removeAll()
+            selectedEntry = .constant(nil)
+            onRunAction = { _ in }
+            onOpenResult = { _ in }
+            onAddResultToPlaylist = { _ in }
+            onClose = {}
         }
 
         func numberOfRows(in tableView: NSTableView) -> Int {
@@ -157,15 +245,19 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
             rows.indices.contains(row) && rows[row].isSelectable
         }
 
+        func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool {
+            rows.indices.contains(row) && rows[row].role == .section
+        }
+
         func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
             if let reused = tableView.makeView(
                 withIdentifier: Self.rowViewIdentifier,
                 owner: self
-            ) as? LibrarySearchRowView {
+            ) as? NSTableRowView {
                 return reused
             }
 
-            let rowView = LibrarySearchRowView()
+            let rowView = NSTableRowView()
             rowView.identifier = Self.rowViewIdentifier
             return rowView
         }
@@ -201,7 +293,7 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
                     systemImage: action.systemImage,
                     showsPlaylistButton: false,
                     onActivate: { [weak self] in
-                        self?.onRunAction(action)
+                        self?.activate(.action(action)) ?? false
                     },
                     onAddToPlaylist: nil
                 )
@@ -213,9 +305,11 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
                     subtitle: snippet,
                     systemImage: "doc.text",
                     showsPlaylistButton: true,
-                    onActivate: nil,
+                    onActivate: { [weak self] in
+                        self?.activate(.result(url)) ?? false
+                    },
                     onAddToPlaylist: { [weak self] in
-                        self?.onAddResultToPlaylist(url)
+                        self?.addToPlaylist(.result(url)) ?? false
                     }
                 )
                 return cell
@@ -223,14 +317,9 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
         }
 
         func tableViewSelectionDidChange(_ notification: Notification) {
-            guard !isSynchronizingSelection,
-                  let tableView,
-                  rows.indices.contains(tableView.selectedRow),
-                  case .result(let url, _, _) = rows[tableView.selectedRow].content
-            else {
-                return
-            }
-            selectedResult.wrappedValue = url
+            guard !isSynchronizingSelection, let tableView else { return }
+            let entry = rows.indices.contains(tableView.selectedRow) ? rows[tableView.selectedRow].entryID : nil
+            if selectedEntry.wrappedValue != entry { selectedEntry.wrappedValue = entry }
         }
 
         fileprivate func registerCommandRouter(_ router: LibrarySearchCommandRouter) {
@@ -239,6 +328,7 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
                 commandRouter = router
             }
             router.resultsCoordinator = self
+            router.updateFocusCompanion()
         }
 
         fileprivate func unregisterCommandRouter() {
@@ -274,15 +364,86 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
         }
 
         private func performDefaultAction(for row: Row) {
-            switch row.content {
-            case .section:
-                break
-            case .action(let action):
-                onRunAction(action)
-            case .result(let url, _, _):
-                selectedResult.wrappedValue = url
-                onOpenResult(url)
+            guard let entry = row.entryID else { return }
+            _ = activate(entry)
+        }
+
+        @discardableResult
+        private func activate(_ entry: LibrarySearchEntryID) -> Bool {
+            guard hasLiveTable, rows.contains(where: { $0.entryID == entry }) else { return false }
+            selectedEntry.wrappedValue = entry
+            switch entry {
+            case .action(let action): onRunAction(action)
+            case .result(let url): onOpenResult(url)
             }
+            return true
+        }
+
+        fileprivate func activateSelection() -> Bool {
+            guard let entry = selectedEntry.wrappedValue else { return false }
+            return activate(entry)
+        }
+
+        fileprivate func closeSearch() {
+            guard hasLiveTable else { return }
+            onClose()
+        }
+
+        fileprivate func prepareForRemoval(_ tableView: NSTableView) {
+            commandRouter?.prepareForResultsRemoval(tableView)
+        }
+
+        @discardableResult
+        private func addToPlaylist(_ entry: LibrarySearchEntryID) -> Bool {
+            guard hasLiveTable, case .result(let url) = entry,
+                  rows.contains(where: { $0.entryID == entry }) else { return false }
+            selectedEntry.wrappedValue = entry
+            onAddResultToPlaylist(url)
+            return true
+        }
+
+        fileprivate func addSelectionToPlaylist() -> Bool {
+            guard let entry = selectedEntry.wrappedValue else { return false }
+            return addToPlaylist(entry)
+        }
+
+        fileprivate func contextMenu(for row: Int) -> NSMenu? {
+            guard let tableView, rows.indices.contains(row), rows[row].isSelectable else { return nil }
+            selectEntryRow(row, in: tableView)
+            guard let menu = tableView.menu else { return nil }
+            menuNeedsUpdate(menu)
+            return menu
+        }
+
+        func menuNeedsUpdate(_ menu: NSMenu) {
+            menu.removeAllItems()
+            guard hasLiveTable, let entry = selectedEntry.wrappedValue,
+                  rows.contains(where: { $0.entryID == entry }) else { return }
+            let title: String
+            switch entry {
+            case .action(let action): title = action.title
+            case .result: title = "Preview"
+            }
+            let activateItem = NSMenuItem(title: title, action: #selector(activateMenuEntry(_:)), keyEquivalent: "")
+            activateItem.target = self
+            activateItem.representedObject = entry
+            menu.addItem(activateItem)
+            if case .result = entry {
+                let addItem = NSMenuItem(title: "Add to Playlist", action: #selector(addMenuEntryToPlaylist(_:)), keyEquivalent: "")
+                addItem.target = self
+                addItem.representedObject = entry
+                menu.addItem(addItem)
+            }
+        }
+
+        @objc private func activateMenuEntry(_ sender: NSMenuItem) {
+            guard let entry = sender.representedObject as? LibrarySearchEntryID else { return }
+            _ = activate(entry)
+        }
+
+        @objc private func addMenuEntryToPlaylist(_ sender: NSMenuItem) {
+            guard let entry = sender.representedObject as? LibrarySearchEntryID else { return }
+            addToPlaylist(entry)
         }
 
         @discardableResult
@@ -290,11 +451,11 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
             _ command: LibrarySearchNavigationCommand,
             sender: Any?
         ) -> Bool {
-            guard let tableView else { return false }
+            guard hasLiveTable, let tableView else { return false }
 
             switch command.operation {
-            case .moveResultSelection(let direction):
-                return moveResultSelection(direction: direction, in: tableView)
+            case .moveSelection(let direction):
+                return moveSelection(direction: direction, in: tableView)
             case .scrollPage(let up):
                 return scrollPage(up: up, sender: sender, tableView: tableView)
             case .scrollToBoundary(let beginning):
@@ -307,21 +468,13 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
             }
         }
 
-        private func moveResultSelection(
-            direction: Int,
-            in tableView: NSTableView
-        ) -> Bool {
-            let resultRows = rows.indices.filter { row in
-                rows[row].role == .result
-            }
-            let currentRow = currentResultRow(in: tableView, resultRows: resultRows)
-            guard let targetRow = LibrarySearchResultNavigator.targetRow(
-                resultRows: resultRows,
-                currentRow: currentRow,
-                direction: direction
+        private func moveSelection(direction: Int, in tableView: NSTableView) -> Bool {
+            let selectableRows = rows.indices.filter { rows[$0].isSelectable }
+            let currentRow = selectedEntry.wrappedValue.flatMap { entry in rows.firstIndex { $0.entryID == entry } }
+            guard let targetRow = LibrarySearchEntryNavigator.targetRow(
+                selectableRows: selectableRows, currentRow: currentRow, direction: direction
             ) else { return false }
-
-            selectResultRow(targetRow, in: tableView)
+            selectEntryRow(targetRow, in: tableView)
             return true
         }
 
@@ -337,57 +490,26 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
             return scrollView.tryToPerform(selector, with: sender)
         }
 
-        private func currentResultRow(
-            in tableView: NSTableView,
-            resultRows: [Int]
-        ) -> Int? {
-            if resultRows.contains(tableView.selectedRow) {
-                return tableView.selectedRow
-            }
-            guard let selectedURL = selectedResult.wrappedValue else { return nil }
-            return resultRows.first { row in
-                guard case .result(let url, _, _) = rows[row].content else { return false }
-                return url == selectedURL
-            }
-        }
-
-        private func selectResultRow(_ row: Int, in tableView: NSTableView) {
-            guard rows.indices.contains(row),
-                  case .result(let url, _, _) = rows[row].content
-            else {
-                return
-            }
-
+        private func selectEntryRow(_ row: Int, in tableView: NSTableView) {
+            guard rows.indices.contains(row), let entry = rows[row].entryID else { return }
             isSynchronizingSelection = true
             tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
             tableView.scrollRowToVisible(row)
             isSynchronizingSelection = false
-            if selectedResult.wrappedValue != url {
-                selectedResult.wrappedValue = url
-            }
+            if selectedEntry.wrappedValue != entry { selectedEntry.wrappedValue = entry }
         }
 
-        private func synchronizeSelection(to url: URL?, reveal: Bool) {
+        private func synchronizeSelection(to entry: LibrarySearchEntryID?, reveal: Bool) {
             guard let tableView else { return }
-            let targetRow = url.flatMap { selectedURL in
-                rows.firstIndex { row in
-                    guard case .result(let rowURL, _, _) = row.content else { return false }
-                    return rowURL == selectedURL
-                }
-            }
-
-            let selectedRow = tableView.selectedRow
-            guard selectedRow != targetRow else {
-                if reveal, let targetRow {
-                    tableView.scrollRowToVisible(targetRow)
-                }
+            let targetRow = entry.flatMap { entry in rows.firstIndex { $0.entryID == entry } }
+            if tableView.selectedRow == (targetRow ?? -1) {
+                if reveal, let targetRow { tableView.scrollRowToVisible(targetRow) }
                 return
             }
-
             isSynchronizingSelection = true
             if let targetRow {
                 tableView.selectRowIndexes(IndexSet(integer: targetRow), byExtendingSelection: false)
-                tableView.scrollRowToVisible(targetRow)
+                if reveal { tableView.scrollRowToVisible(targetRow) }
             } else {
                 tableView.deselectAll(nil)
             }
@@ -427,7 +549,7 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
             if !actions.isEmpty {
                 rows.append(Row(id: .section("actions"), content: .section("Actions", actions.count)))
                 rows.append(contentsOf: actions.map { action in
-                    Row(id: .action(action), content: .action(action))
+                    Row(id: .entry(.action(action)), content: .action(action))
                 })
             }
             if !results.isEmpty {
@@ -435,7 +557,7 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
                 rows.append(contentsOf: results.map { result in
                     let url = result.url.standardizedFileURL
                     return Row(
-                        id: .result(url),
+                        id: .entry(.result(url)),
                         content: .result(url, displayName(url), result.snippet)
                     )
                 })
@@ -456,9 +578,9 @@ nonisolated enum LibrarySearchNavigationCommand: Equatable {
     var operation: LibrarySearchNavigationOperation {
         switch self {
         case .previous:
-            return .moveResultSelection(direction: -1)
+            return .moveSelection(direction: -1)
         case .next:
-            return .moveResultSelection(direction: 1)
+            return .moveSelection(direction: 1)
         case .pageUp:
             return .scrollPage(up: true)
         case .pageDown:
@@ -493,7 +615,7 @@ nonisolated enum LibrarySearchNavigationCommand: Equatable {
 }
 
 nonisolated enum LibrarySearchNavigationOperation: Equatable {
-    case moveResultSelection(direction: Int)
+    case moveSelection(direction: Int)
     case scrollPage(up: Bool)
     case scrollToBoundary(beginning: Bool)
 }
@@ -504,41 +626,40 @@ nonisolated enum LibrarySearchRowRole: Equatable {
     case result
 
     var isSelectable: Bool {
-        self == .result
+        self != .section
     }
 }
 
-nonisolated enum LibrarySearchResultNavigator {
+nonisolated enum LibrarySearchEntryNavigator {
     static func targetRow(
-        resultRows: [Int],
+        selectableRows: [Int],
         currentRow: Int?,
         direction: Int
     ) -> Int? {
-        guard let firstRow = resultRows.first,
-              let lastRow = resultRows.last
+        guard let firstRow = selectableRows.first,
+              let lastRow = selectableRows.last
         else {
             return nil
         }
 
         guard let currentRow,
-              let currentIndex = resultRows.firstIndex(of: currentRow)
+              let currentIndex = selectableRows.firstIndex(of: currentRow)
         else {
             return direction < 0 ? lastRow : firstRow
         }
 
         let targetIndex = min(
-            max(currentIndex + (direction < 0 ? -1 : 1), resultRows.startIndex),
-            resultRows.index(before: resultRows.endIndex)
+            max(currentIndex + (direction < 0 ? -1 : 1), selectableRows.startIndex),
+            selectableRows.index(before: selectableRows.endIndex)
         )
-        return resultRows[targetIndex]
+        return selectableRows[targetIndex]
     }
 }
 
 private struct Row: Hashable {
     enum ID: Hashable {
         case section(String)
-        case action(LibraryCommandPaletteAction)
-        case result(URL)
+        case entry(LibrarySearchEntryID)
     }
 
     enum Content: Hashable {
@@ -561,42 +682,74 @@ private struct Row: Hashable {
         }
     }
 
-    var isSelectable: Bool {
-        role.isSelectable
+    var entryID: LibrarySearchEntryID? {
+        guard case .entry(let entry) = id else { return nil }
+        return entry
     }
+
+    var isSelectable: Bool { role.isSelectable }
 }
 
-private final class LibrarySearchRowView: NSTableRowView {
-    override var isSelected: Bool {
-        didSet {
-            needsDisplay = true
-            updateCellBackgroundStyles()
+final class LibrarySearchTableView: NSTableView {
+    private var needsSelectionRevealAfterLayout = false
+
+    var defaultActionHandler: (() -> Bool)?
+    var cancelActionHandler: (() -> Void)?
+    var navigationHandler: ((LibrarySearchNavigationCommand) -> Bool)?
+    var menuProvider: ((Int) -> NSMenu?)?
+    var willRemoveHandler: (() -> Void)?
+
+    override func scrollRowToVisible(_ row: Int) {
+        // NSViewRepresentable creates the table before its viewport has a size.
+        // Scrolling then leaves the first result underneath its floating heading.
+        guard !visibleRect.isEmpty else {
+            needsSelectionRevealAfterLayout = true
+            needsLayout = true
+            return
         }
+        needsSelectionRevealAfterLayout = false
+        // Reloading results also invalidates the floating heading's geometry.
+        // Finish that layout before AppKit computes the selected row's scroll.
+        layoutSubtreeIfNeeded()
+        super.scrollRowToVisible(row)
     }
 
-    override var interiorBackgroundStyle: NSView.BackgroundStyle {
-        isSelected ? .emphasized : .normal
+    override func layout() {
+        super.layout()
+        guard needsSelectionRevealAfterLayout, !visibleRect.isEmpty else { return }
+        needsSelectionRevealAfterLayout = false
+        // Selection may have changed or disappeared while waiting for a viewport.
+        if selectedRow >= 0 { super.scrollRowToVisible(selectedRow) }
     }
 
-    override func didAddSubview(_ subview: NSView) {
-        super.didAddSubview(subview)
-        (subview as? NSTableCellView)?.backgroundStyle = interiorBackgroundStyle
+    // These selectors are declared by the responder protocol but do not have
+    // superclass implementations. Empty or retired lists simply cannot move.
+    override func moveUp(_ sender: Any?) {
+        _ = navigationHandler?(.previous)
     }
 
-    override func drawSelection(in dirtyRect: NSRect) {
-        guard isSelected else { return }
-        NSColor.controlAccentColor.withAlphaComponent(0.86).setFill()
-        NSBezierPath(
-            roundedRect: bounds.insetBy(dx: 4, dy: 1),
-            xRadius: 8,
-            yRadius: 8
-        ).fill()
+    override func moveDown(_ sender: Any?) {
+        _ = navigationHandler?(.next)
     }
 
-    private func updateCellBackgroundStyles() {
-        for case let cell as NSTableCellView in subviews {
-            cell.backgroundStyle = interiorBackgroundStyle
+    override func keyDown(with event: NSEvent) {
+        if event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty {
+            if (event.keyCode == 36 || event.keyCode == 76), defaultActionHandler?() == true { return }
+            if event.keyCode == 53, let cancelActionHandler {
+                cancelActionHandler()
+                return
+            }
         }
+        super.keyDown(with: event)
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        menuProvider?(row(at: convert(event.locationInWindow, from: nil)))
+    }
+
+    override func removeFromSuperview() {
+        willRemoveHandler?()
+        super.removeFromSuperview()
     }
 }
 
@@ -647,9 +800,8 @@ private final class LibrarySearchItemCellView: NSTableCellView {
     private let titleField = NSTextField(labelWithString: "")
     private let subtitleField = NSTextField(wrappingLabelWithString: "")
     private let playlistButton = LibrarySearchEmbeddedButton()
-    private let activationButton = LibrarySearchEmbeddedButton()
-    private var onAddToPlaylist: (() -> Void)?
-    private var onActivate: (() -> Void)?
+    private var onAddToPlaylist: (() -> Bool)?
+    private var onActivate: (() -> Bool)?
     private var showsPlaylistButton = false
 
     override var backgroundStyle: NSView.BackgroundStyle {
@@ -696,24 +848,13 @@ private final class LibrarySearchItemCellView: NSTableCellView {
         playlistButton.controlSize = .small
         playlistButton.setButtonType(.momentaryPushIn)
         playlistButton.ignoresMultiClick = true
-        playlistButton.refusesFirstResponder = true
-        playlistButton.focusRingType = .none
+        playlistButton.refusesFirstResponder = false
+        playlistButton.focusRingType = .default
         playlistButton.contentTintColor = .controlAccentColor
         playlistButton.toolTip = "Add to Playlist"
         playlistButton.target = self
         playlistButton.action = #selector(performAddToPlaylist)
         addSubview(playlistButton)
-
-        activationButton.translatesAutoresizingMaskIntoConstraints = false
-        activationButton.title = ""
-        activationButton.isBordered = false
-        activationButton.ignoresMultiClick = true
-        activationButton.refusesFirstResponder = true
-        activationButton.focusRingType = .none
-        activationButton.target = self
-        activationButton.action = #selector(performActivation)
-        activationButton.isHidden = true
-        addSubview(activationButton)
 
         NSLayoutConstraint.activate([
             symbolView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
@@ -733,12 +874,7 @@ private final class LibrarySearchItemCellView: NSTableCellView {
             playlistButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             playlistButton.centerYAnchor.constraint(equalTo: centerYAnchor),
             playlistButton.widthAnchor.constraint(equalToConstant: 26),
-            playlistButton.heightAnchor.constraint(equalToConstant: 26),
-
-            activationButton.leadingAnchor.constraint(equalTo: leadingAnchor),
-            activationButton.trailingAnchor.constraint(equalTo: trailingAnchor),
-            activationButton.topAnchor.constraint(equalTo: topAnchor),
-            activationButton.bottomAnchor.constraint(equalTo: bottomAnchor)
+            playlistButton.heightAnchor.constraint(equalToConstant: 26)
         ])
     }
 
@@ -752,8 +888,8 @@ private final class LibrarySearchItemCellView: NSTableCellView {
         subtitle: String,
         systemImage: String,
         showsPlaylistButton: Bool,
-        onActivate: (() -> Void)?,
-        onAddToPlaylist: (() -> Void)?
+        onActivate: (() -> Bool)?,
+        onAddToPlaylist: (() -> Bool)?
     ) {
         titleField.stringValue = title
         titleField.toolTip = title
@@ -765,26 +901,30 @@ private final class LibrarySearchItemCellView: NSTableCellView {
         playlistButton.setAccessibilityHidden(!showsPlaylistButton)
         playlistButton.setAccessibilityLabel("Add \(title) to Playlist")
 
-        let isAction = onActivate != nil
-        activationButton.isHidden = !isAction
-        activationButton.setAccessibilityHidden(!isAction)
-        activationButton.setAccessibilityLabel(isAction ? title : nil)
-        activationButton.setAccessibilityHelp(
-            isAction && !subtitle.isEmpty ? subtitle : nil
-        )
-        titleField.setAccessibilityHidden(isAction)
-        subtitleField.setAccessibilityHidden(isAction)
+        setAccessibilityLabel(title)
+        setAccessibilityHelp(subtitle.isEmpty ? nil : subtitle)
+        var accessibilityActions = [NSAccessibilityCustomAction(name: showsPlaylistButton ? "Preview" : title,
+            target: self, selector: #selector(performAccessibleActivation))]
+        if showsPlaylistButton {
+            accessibilityActions.append(NSAccessibilityCustomAction(name: "Add to Playlist",
+                target: self, selector: #selector(performAccessibleAddToPlaylist)))
+        }
+        setAccessibilityCustomActions(accessibilityActions)
         self.onActivate = onActivate
         self.onAddToPlaylist = onAddToPlaylist
         updateColors()
     }
 
-    @objc private func performActivation() {
-        onActivate?()
+    @objc private func performAccessibleActivation() -> Bool {
+        onActivate?() ?? false
+    }
+
+    @objc private func performAccessibleAddToPlaylist() -> Bool {
+        onAddToPlaylist?() ?? false
     }
 
     @objc private func performAddToPlaylist() {
-        onAddToPlaylist?()
+        _ = onAddToPlaylist?()
     }
 
     private func updateColors() {

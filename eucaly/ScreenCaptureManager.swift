@@ -38,6 +38,113 @@ nonisolated struct WindowCaptureIssue: Sendable {
     let message: String
 }
 
+nonisolated protocol WindowCaptureFrameRateConsumer: AnyObject {
+    func setFrameRate(_ frameRate: Int)
+}
+
+/// One latest-value configuration lane per stream lifetime. Stream startup and
+/// shutdown stay separate from this lane; an update never recreates approval or
+/// changes its consumers. The injected async boundary also permits isolated tests.
+@MainActor
+final class WindowCaptureFrameRateUpdates {
+    @MainActor private final class Capture {
+        private let updateConsumers: @MainActor (Int) -> Void
+        private let applyConfiguration: @MainActor (Int) async throws -> Void
+        private let failure: @MainActor (Error) -> Void
+        private var applied: Int
+        private var requested: Int
+        private var failed: Int?
+        private var started = false
+        private var stopped = false
+        private var task: Task<Void, Never>?
+
+        init(initial: Int, updateConsumers: @escaping @MainActor (Int) -> Void,
+             applyConfiguration: @escaping @MainActor (Int) async throws -> Void,
+             failure: @escaping @MainActor (Error) -> Void) {
+            applied = initial; requested = initial
+            self.updateConsumers = updateConsumers
+            self.applyConfiguration = applyConfiguration
+            self.failure = failure
+        }
+
+        func request(_ value: Int) {
+            guard !stopped, requested != value else { return }
+            requested = value; failed = nil
+            updateConsumers(value)
+            schedule()
+        }
+
+        func didStart() {
+            guard !stopped else { return }
+            started = true; schedule()
+        }
+
+        private func schedule() {
+            guard started, !stopped, task == nil, requested != applied, failed != requested else { return }
+            task = Task { [weak self] in
+                guard let self else { return }
+                await self.drain()
+            }
+        }
+
+        private func drain() async {
+            defer { task = nil; schedule() }
+            while !stopped, requested != applied {
+                let value = requested
+                do {
+                    try await applyConfiguration(value)
+                    guard !stopped else { return }
+                    applied = value
+                } catch {
+                    guard !stopped else { return }
+                    // A superseded request's failure cannot describe the latest
+                    // selection. Try only that latest selection, never a backlog.
+                    if value == requested {
+                        failed = value; failure(error); return
+                    }
+                }
+            }
+        }
+
+        @discardableResult func stop() -> Task<Void, Never>? {
+            stopped = true
+            let pending = task
+            pending?.cancel(); task = nil
+            return pending
+        }
+    }
+
+    private var captures: [UUID: Capture] = [:]
+    private(set) var preferredFrameRate = 60
+
+    func setPreferredFrameRate(_ value: Int) {
+        let rate = WindowCaptureFrameRate.normalized(value)
+        guard preferredFrameRate != rate else { return }
+        preferredFrameRate = rate
+        for capture in captures.values { capture.request(rate) }
+    }
+
+    func add(_ generation: UUID, initialFrameRate: Int,
+             updateConsumers: @escaping @MainActor (Int) -> Void,
+             applyConfiguration: @escaping @MainActor (Int) async throws -> Void,
+             failure: @escaping @MainActor (Error) -> Void) {
+        captures.removeValue(forKey: generation)?.stop()
+        let capture = Capture(initial: initialFrameRate, updateConsumers: updateConsumers,
+                              applyConfiguration: applyConfiguration, failure: failure)
+        captures[generation] = capture
+        capture.request(preferredFrameRate)
+    }
+
+    func didStart(_ generation: UUID) { captures[generation]?.didStart() }
+    @discardableResult func remove(_ generation: UUID) -> Task<Void, Never>? {
+        captures.removeValue(forKey: generation)?.stop()
+    }
+    func removeAll() {
+        for capture in captures.values { capture.stop() }
+        captures.removeAll()
+    }
+}
+
 final class ScreenCaptureManager: NSObject, ObservableObject {
     static let shared = ScreenCaptureManager()
 
@@ -54,7 +161,11 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
     }
 
     private let sampleQueue = DispatchQueue(label: "eucaly.window-capture.sample", qos: .userInitiated)
-    @MainActor var preferredFrameRate: Int = 60
+    @MainActor let frameRateUpdates = WindowCaptureFrameRateUpdates()
+    @MainActor var preferredFrameRate: Int {
+        get { frameRateUpdates.preferredFrameRate }
+        set { frameRateUpdates.setPreferredFrameRate(newValue) }
+    }
     @MainActor private var activeStreams: [CGWindowID: ActiveCapture] = [:]
     @MainActor private var captureFilters: [CGWindowID: SCContentFilter] = [:]
     @MainActor @Published var windows: [CapturedWindow] = []
@@ -190,6 +301,7 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
             existing.fanout.add(ownerID, output: outputHandler)
             do { try await existing.start.value } catch {
                 if activeStreams[windowID]?.generation == existing.generation {
+                    frameRateUpdates.remove(existing.generation)
                     activeStreams.removeValue(forKey: windowID)
                     if !(error is CancellationError) { reportCaptureFailure(error, windowID: windowID) }
                 }
@@ -218,7 +330,7 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
         config.height = max(1, Int((Double(sourceHeight) / scaleDown).rounded(.down)))
         // Display the captured IOSurface directly through Core Animation.
         config.pixelFormat = kCVPixelFormatType_32BGRA
-        let fps = normalizedPreferredFrameRate
+        let fps = preferredFrameRate
         config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
         config.queueDepth = 6
         config.showsCursor = true
@@ -227,7 +339,7 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
         config.preservesAspectRatio = true
 
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
-        let fanout = SharedCaptureOutput()
+        let fanout = SharedCaptureOutput(frameRate: fps)
         fanout.add(ownerID, output: outputHandler)
         do { try stream.addStreamOutput(fanout, type: .screen, sampleHandlerQueue: sampleQueue) }
         catch {
@@ -235,16 +347,28 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
             throw error
         }
         let generation = UUID()
+        frameRateUpdates.add(generation, initialFrameRate: fps, updateConsumers: { [weak fanout] rate in
+            fanout?.setFrameRate(rate)
+        }, applyConfiguration: { rate in
+            config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(rate))
+            try await stream.updateConfiguration(config)
+        }, failure: { [weak self] error in
+            guard let self, self.activeStreams[windowID]?.generation == generation else { return }
+            self.issues.send(.init(workspaceID: nil, windowID: windowID,
+                message: "The picked window's frame rate could not be changed: \(error.localizedDescription) Choose another frame rate or pick the window again."))
+        })
         let start = Task { try await stream.startCapture() }
         activeStreams[windowID] = ActiveCapture(stream: stream, fanout: fanout, start: start, generation: generation)
         do { try await start.value } catch {
             if activeStreams[windowID]?.generation == generation {
+                frameRateUpdates.remove(generation)
                 activeStreams.removeValue(forKey: windowID)
                 if !(error is CancellationError) { reportCaptureFailure(error, windowID: windowID) }
             }
             throw error
         }
         guard activeStreams[windowID]?.generation == generation else { throw CancellationError() }
+        frameRateUpdates.didStart(generation)
         ensureAvailabilityMonitorIfNeeded()
         return stream
     }
@@ -258,6 +382,7 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
         }
         // Remove before awaiting. Late stop callbacks cannot remove a new stream.
         activeStreams.removeValue(forKey: windowID)
+        frameRateUpdates.remove(activeCapture.generation)
         activeCapture.fanout.removeAll()
         // Recheck retained workspace content before yielding to stream shutdown.
         // Nothing after the await can clear a newly picked window or stream.
@@ -271,6 +396,7 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
     func stopAllCaptures() async {
         let captures = Array(activeStreams.values)
         activeStreams.removeAll()
+        frameRateUpdates.removeAll()
         for capture in captures {
             capture.fanout.removeAll()
             _ = try? await capture.start.value
@@ -433,16 +559,6 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
-
-    @MainActor
-    var normalizedPreferredFrameRate: Int {
-        Self.normalizedFrameRate(preferredFrameRate)
-    }
-
-    static func normalizedFrameRate(_ value: Int) -> Int {
-        WindowCaptureFrameRate.normalized(value)
-    }
-
 }
 
 enum ScreenCaptureError: LocalizedError {
@@ -495,6 +611,7 @@ extension ScreenCaptureManager: SCStreamDelegate {
         Task { @MainActor in
             if let stoppedWindowID = activeStreams.first(where: { $0.value.stream === stream })?.key {
                 reportCaptureFailure(error, windowID: stoppedWindowID)
+                if let capture = activeStreams[stoppedWindowID] { frameRateUpdates.remove(capture.generation) }
                 activeStreams.removeValue(forKey: stoppedWindowID)
                 removePickedWindow(windowID: stoppedWindowID)
             }
@@ -509,7 +626,20 @@ extension ScreenCaptureManager: SCStreamDelegate {
 nonisolated final class SharedCaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
     private let lock = NSLock()
     private var outputs: [UUID: SCStreamOutput] = [:]
-    func add(_ id: UUID, output: SCStreamOutput) { lock.lock(); outputs[id] = output; lock.unlock() }
+    private var frameRate: Int
+    init(frameRate: Int = 60) {
+        self.frameRate = WindowCaptureFrameRate.normalized(frameRate)
+        super.init()
+    }
+    func add(_ id: UUID, output: SCStreamOutput) {
+        lock.lock(); outputs[id] = output; let rate = frameRate; lock.unlock()
+        (output as? WindowCaptureFrameRateConsumer)?.setFrameRate(rate)
+    }
+    func setFrameRate(_ value: Int) {
+        let rate = WindowCaptureFrameRate.normalized(value)
+        lock.lock(); frameRate = rate; let consumers = Array(outputs.values); lock.unlock()
+        for consumer in consumers { (consumer as? WindowCaptureFrameRateConsumer)?.setFrameRate(rate) }
+    }
     func remove(_ id: UUID) { lock.lock(); outputs.removeValue(forKey: id); lock.unlock() }
     func removeAll() { lock.lock(); outputs.removeAll(); lock.unlock() }
     var isEmpty: Bool { lock.lock(); defer { lock.unlock() }; return outputs.isEmpty }

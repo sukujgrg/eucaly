@@ -1,5 +1,4 @@
 import AppKit
-import SwiftUI
 
 nonisolated enum SidebarHighlightMetrics {
     static let horizontalInset: CGFloat = 10
@@ -21,6 +20,7 @@ nonisolated enum SidebarOutlineAction: Hashable, Sendable {
     case addToPlaylist
     case remove
     case revealInFinder
+    case moveToTrash
 
     var title: String {
         switch self {
@@ -30,6 +30,8 @@ nonisolated enum SidebarOutlineAction: Hashable, Sendable {
             "Remove"
         case .revealInFinder:
             "Reveal in Finder"
+        case .moveToTrash:
+            "Move to Trash"
         }
     }
 
@@ -41,6 +43,8 @@ nonisolated enum SidebarOutlineAction: Hashable, Sendable {
             "minus"
         case .revealInFinder:
             "folder"
+        case .moveToTrash:
+            "trash"
         }
     }
 }
@@ -142,25 +146,12 @@ nonisolated struct SidebarOutlineModel: Sendable {
     }
 
     static let empty = SidebarOutlineModel(roots: [])
-
-    func visibleRowCount(expandedGroupIDs: Set<String>) -> Int {
-        func countVisibleItems(_ items: [SidebarOutlineItem]) -> Int {
-            items.reduce(into: 0) { count, item in
-                count += 1
-                if let groupID = item.groupID, expandedGroupIDs.contains(groupID) {
-                    count += countVisibleItems(item.children)
-                }
-            }
-        }
-        return countVisibleItems(roots)
-    }
 }
 
 nonisolated enum SidebarOutlineNavigationSection: Int, CaseIterable, Hashable, Sendable {
-    // Background audio owns an independent selection and intentionally is not
-    // part of the primary source-selection traversal.
     case library
     case playlist
+    case audio
     case window
 }
 
@@ -172,32 +163,61 @@ nonisolated enum SidebarOutlineNavigationDirection: Equatable, Sendable {
 @MainActor
 final class SidebarOutlineNavigationCoordinator: NSObject {
     private struct Registration {
-        let id: UUID
-        let hasSelectableRows: () -> Bool
+        let isAvailable: () -> Bool
+        let hasVisibleRows: () -> Bool
+        let focusHeader: () -> Bool
         let focusBoundaryRow: (SidebarOutlineNavigationDirection) -> Bool
     }
 
     private var registrations: [SidebarOutlineNavigationSection: Registration] = [:]
 
     func register(
-        id: UUID,
         for section: SidebarOutlineNavigationSection,
-        hasSelectableRows: @escaping () -> Bool,
+        isAvailable: @escaping () -> Bool,
+        hasVisibleRows: @escaping () -> Bool,
+        focusHeader: @escaping () -> Bool,
         focusBoundaryRow: @escaping (SidebarOutlineNavigationDirection) -> Bool
     ) {
         registrations[section] = Registration(
-            id: id,
-            hasSelectableRows: hasSelectableRows,
+            isAvailable: isAvailable,
+            hasVisibleRows: hasVisibleRows,
+            focusHeader: focusHeader,
             focusBoundaryRow: focusBoundaryRow
         )
     }
 
-    func unregister(id: UUID, for section: SidebarOutlineNavigationSection) {
-        guard registrations[section]?.id == id else { return }
-        registrations.removeValue(forKey: section)
+    func removeAllRegistrations() {
+        registrations.removeAll()
     }
 
-    func move(
+    func focusHeader(in section: SidebarOutlineNavigationSection) -> Bool {
+        guard let registration = registrations[section], registration.isAvailable() else { return false }
+        return registration.focusHeader()
+    }
+
+    func moveFromOutline(
+        from section: SidebarOutlineNavigationSection,
+        direction: SidebarOutlineNavigationDirection,
+        restoreSourceFocus: () -> Void
+    ) -> Bool {
+        if direction == .up { return focusHeader(in: section) }
+        return moveToAdjacentSection(from: section, direction: direction, restoreSourceFocus: restoreSourceFocus)
+    }
+
+    func moveFromHeader(
+        from section: SidebarOutlineNavigationSection,
+        direction: SidebarOutlineNavigationDirection,
+        restoreSourceFocus: () -> Void
+    ) -> Bool {
+        if direction == .down, let registration = registrations[section],
+           registration.isAvailable(), registration.hasVisibleRows() {
+            if !registration.focusBoundaryRow(.down) { restoreSourceFocus() }
+            return true
+        }
+        return moveToAdjacentSection(from: section, direction: direction, restoreSourceFocus: restoreSourceFocus)
+    }
+
+    private func moveToAdjacentSection(
         from section: SidebarOutlineNavigationSection,
         direction: SidebarOutlineNavigationDirection,
         restoreSourceFocus: () -> Void
@@ -213,12 +233,14 @@ final class SidebarOutlineNavigationCoordinator: NSObject {
         }
 
         for candidateSection in candidateSections {
-            guard let registration = registrations[candidateSection] else { continue }
-            guard registration.hasSelectableRows() else { continue }
-            if registration.focusBoundaryRow(direction) {
-                return true
+            guard let registration = registrations[candidateSection], registration.isAvailable() else { continue }
+            let accepted: Bool
+            if direction == .up, registration.hasVisibleRows() {
+                accepted = registration.focusBoundaryRow(.up)
+            } else {
+                accepted = registration.focusHeader()
             }
-            restoreSourceFocus()
+            if !accepted { restoreSourceFocus() }
             return true
         }
         return false
@@ -244,13 +266,11 @@ struct SidebarOutlineExpansionState: Equatable {
     let key: String
     let groupCount: Int
     let expandedGroupCount: Int
-    let visibleContentHeight: CGFloat
 
     static let empty = SidebarOutlineExpansionState(
         key: "",
         groupCount: 0,
-        expandedGroupCount: 0,
-        visibleContentHeight: 0
+        expandedGroupCount: 0
     )
 
     var areAllGroupsCollapsed: Bool {
@@ -262,7 +282,7 @@ final class SidebarOutlineExpansionStore {
     var expandedGroupIDs: [String: Set<String>] = [:]
 }
 
-struct SidebarOutlineView: NSViewRepresentable {
+struct SidebarOutlineConfiguration {
     let contentRevision: AnyHashable
     let expansionKey: String
     let modelBuilder: () -> SidebarOutlineModel
@@ -322,11 +342,18 @@ struct SidebarOutlineView: NSViewRepresentable {
         self.onExpansionStateChange = onExpansionStateChange
     }
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(expansionStore: expansionStore)
-    }
+}
 
-    func makeNSView(context: Context) -> NSScrollView {
+@MainActor
+final class SidebarOutlineController {
+    let scrollView: SidebarOutlineScrollView
+    private let coordinator: Coordinator
+
+    var outlineView: NSOutlineView { scrollView.documentView as! NSOutlineView }
+
+    init(configuration: SidebarOutlineConfiguration) {
+        let coordinator = Coordinator(expansionStore: configuration.expansionStore)
+        self.coordinator = coordinator
         let outlineView = ReusableSidebarNSOutlineView()
         let column = NSTableColumn(identifier: Coordinator.columnIdentifier)
         column.resizingMask = .autoresizingMask
@@ -337,17 +364,19 @@ struct SidebarOutlineView: NSViewRepresentable {
         outlineView.intercellSpacing = .zero
         outlineView.rowSizeStyle = .custom
         outlineView.indentationPerLevel = 8
-        outlineView.allowsEmptySelection = allowsEmptySelection
+        outlineView.allowsEmptySelection = configuration.allowsEmptySelection
         outlineView.allowsTypeSelect = true
         outlineView.focusRingType = .none
         outlineView.backgroundColor = .clear
         outlineView.style = .sourceList
-        outlineView.dataSource = context.coordinator
-        outlineView.delegate = context.coordinator
-        outlineView.target = context.coordinator
+        outlineView.dataSource = coordinator
+        outlineView.delegate = coordinator
+        outlineView.target = coordinator
+        outlineView.action = #selector(Coordinator.performRowClick(_:))
         outlineView.doubleAction = #selector(Coordinator.performDefaultAction(_:))
+        outlineView.observePointerInteractions()
 
-        let scrollView = NSScrollView()
+        let scrollView = SidebarOutlineScrollView()
         scrollView.documentView = outlineView
         scrollView.drawsBackground = false
         scrollView.borderType = .noBorder
@@ -355,39 +384,53 @@ struct SidebarOutlineView: NSViewRepresentable {
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
 
-        context.coordinator.outlineView = outlineView
-        outlineView.groupToggleHandler = { [weak coordinator = context.coordinator] item in
-            coordinator?.toggleGroup(item)
-        }
-        outlineView.spaceActionHandler = { [weak coordinator = context.coordinator] in
+        coordinator.outlineView = outlineView
+        outlineView.spaceActionHandler = { [weak coordinator = coordinator] in
             coordinator?.performSpaceAction() ?? false
         }
-        outlineView.defaultActionHandler = { [weak coordinator = context.coordinator] in
+        outlineView.defaultActionHandler = { [weak coordinator = coordinator] in
             coordinator?.performKeyboardDefaultAction() ?? false
         }
-        outlineView.menuProvider = { [weak coordinator = context.coordinator] row in
+        outlineView.menuProvider = { [weak coordinator = coordinator] row in
             coordinator?.contextMenu(forRow: row)
         }
-        outlineView.boundaryMoveHandler = { [weak coordinator = context.coordinator] direction in
-            coordinator?.moveAcrossBoundary(direction) ?? false
+        outlineView.verticalMoveHandler = { [weak coordinator = coordinator] direction in
+            coordinator?.moveVertically(direction) ?? false
         }
-        context.coordinator.update(from: self, forceReload: true)
-        return scrollView
+        outlineView.containerMoveHandler = { [weak coordinator = coordinator] in
+            coordinator?.moveToParentContainer() ?? false
+        }
+        outlineView.childMoveHandler = { [weak coordinator = coordinator] in
+            coordinator?.moveIntoContainer() ?? false
+        }
+        self.scrollView = scrollView
+        coordinator.update(from: configuration, forceReload: true)
+        scrollView.updateMeasuredHeight()
     }
 
-    func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        context.coordinator.update(from: self)
+    func update(_ configuration: SidebarOutlineConfiguration) {
+        coordinator.update(from: configuration)
+        scrollView.updateMeasuredHeight()
     }
 
-    static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
+    var hasVisibleRows: Bool { coordinator.hasVisibleRows }
+
+    func focusBoundaryRow(for direction: SidebarOutlineNavigationDirection) -> Bool {
+        coordinator.focusBoundaryRow(for: direction)
+    }
+
+    func detach() {
+        coordinator.outlineView?.retirePointerObservation()
         coordinator.outlineView?.delegate = nil
         coordinator.outlineView?.dataSource = nil
-        coordinator.outlineView?.groupToggleHandler = nil
         coordinator.outlineView?.spaceActionHandler = nil
         coordinator.outlineView?.defaultActionHandler = nil
         coordinator.outlineView?.menuProvider = nil
-        coordinator.outlineView?.boundaryMoveHandler = nil
+        coordinator.outlineView?.verticalMoveHandler = nil
+        coordinator.outlineView?.containerMoveHandler = nil
+        coordinator.outlineView?.childMoveHandler = nil
         coordinator.outlineView?.target = nil
+        coordinator.outlineView?.action = nil
         coordinator.outlineView?.doubleAction = nil
         coordinator.detachNavigation()
         coordinator.outlineView = nil
@@ -406,11 +449,13 @@ struct SidebarOutlineView: NSViewRepresentable {
         private var loadedContentRevision: AnyHashable?
         private var expansionKey = ""
         private let expansionStore: SidebarOutlineExpansionStore
-        private let navigationRegistrationID = UUID()
         private weak var navigationCoordinator: SidebarOutlineNavigationCoordinator?
         private var navigationSection: SidebarOutlineNavigationSection?
         private var externalSelectedItemIDs: Set<SidebarOutlineItemID> = []
         private var externalPrimarySelectedItemID: SidebarOutlineItemID?
+        // A container can hold native row focus while Preview retains its last
+        // accepted source. This never becomes a second source selection.
+        private var focusedContainerID: SidebarOutlineItemID?
         private var itemStatuses: [SidebarOutlineItemID: SidebarOutlineItemStatus] = [:]
         private var lastScrollRequestID: UUID?
         private var lastExpansionCommandID: UUID?
@@ -428,7 +473,7 @@ struct SidebarOutlineView: NSViewRepresentable {
             self.expansionStore = expansionStore
         }
 
-        func update(from view: SidebarOutlineView, forceReload: Bool = false) {
+        func update(from view: SidebarOutlineConfiguration, forceReload: Bool = false) {
             onSelectionChange = view.onSelectionChange
             onDefaultAction = view.onDefaultAction
             onSpaceAction = view.onSpaceAction
@@ -436,10 +481,8 @@ struct SidebarOutlineView: NSViewRepresentable {
             onExpansionStateChange = view.onExpansionStateChange
             let itemStatusesChanged = itemStatuses != view.itemStatuses
             itemStatuses = view.itemStatuses
-            updateNavigationRegistration(
-                coordinator: view.navigationCoordinator,
-                section: view.navigationSection
-            )
+            navigationCoordinator = view.navigationCoordinator
+            navigationSection = view.navigationSection
             isSynchronizingSelection = true
             outlineView?.allowsMultipleSelection = view.allowsMultipleSelection
             outlineView?.allowsEmptySelection = view.allowsEmptySelection
@@ -465,12 +508,14 @@ struct SidebarOutlineView: NSViewRepresentable {
             }
 
             applyExpansionCommandIfNeeded(view.expansionCommand)
+            let explicitReveal = view.scrollRequest.map { $0.id != lastScrollRequestID } ?? false
+            if explicitReveal { focusedContainerID = nil }
             synchronizeSelection(
                 to: view.selectedItemIDs,
                 primary: view.primarySelectedItemID,
-                forceReveal: needsReload
+                forceReveal: needsReload || explicitReveal
             )
-            applyScrollRequestIfNeeded(view.scrollRequest, force: needsReload)
+            applyScrollRequestIfNeeded(view.scrollRequest)
         }
 
         func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
@@ -490,7 +535,7 @@ struct SidebarOutlineView: NSViewRepresentable {
         }
 
         func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool {
-            (item as? SidebarOutlineItem)?.groupID == nil
+            item is SidebarOutlineItem
         }
 
         func outlineView(
@@ -498,7 +543,7 @@ struct SidebarOutlineView: NSViewRepresentable {
             typeSelectStringFor tableColumn: NSTableColumn?,
             item: Any
         ) -> String? {
-            guard let item = item as? SidebarOutlineItem, item.groupID == nil else { return nil }
+            guard let item = item as? SidebarOutlineItem else { return nil }
             return item.title
         }
 
@@ -538,7 +583,7 @@ struct SidebarOutlineView: NSViewRepresentable {
                 status: itemStatuses[item.id],
                 accessoryAction: item.accessoryAction
             ) { [weak self] action in
-                self?.onAction(item.id, action)
+                self?.performRowAction(itemID: item.id, action: action, origin: .accessory)
             }
             return cell
         }
@@ -556,6 +601,39 @@ struct SidebarOutlineView: NSViewRepresentable {
             updateExpansionState(for: notification, isExpanded: false)
         }
 
+        func outlineView(_ outlineView: NSOutlineView, shouldCollapseItem item: Any) -> Bool {
+            guard let container = item as? SidebarOutlineItem else { return true }
+            let selectedItems = outlineView.selectedRowIndexes.compactMap {
+                outlineView.item(atRow: $0) as? SidebarOutlineItem
+            }
+            if selectedItems.contains(where: { isDescendant($0, of: container) }) {
+                focusContainer(container)
+            }
+            return true
+        }
+
+        private func isDescendant(_ item: SidebarOutlineItem, of container: SidebarOutlineItem) -> Bool {
+            var parent = model.parentGroupByItemID[item.id]
+            while let candidate = parent {
+                if candidate.id == container.id { return true }
+                parent = model.parentGroupByItemID[candidate.id]
+            }
+            return false
+        }
+
+        private func focusContainer(_ item: SidebarOutlineItem) {
+            guard let outlineView else { return }
+            focusedContainerID = item.id
+            let wasSynchronizing = isSynchronizingSelection
+            isSynchronizingSelection = true
+            defer { isSynchronizingSelection = wasSynchronizing }
+            let row = outlineView.row(forItem: item)
+            if row >= 0 {
+                outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+                outlineView.scrollRowToVisible(row)
+            }
+        }
+
         fileprivate func toggleGroup(_ item: SidebarOutlineItem) {
             guard let outlineView, item.groupID != nil else { return }
             isProcessingExpansion = true
@@ -568,17 +646,75 @@ struct SidebarOutlineView: NSViewRepresentable {
             reportExpansionState()
         }
 
-        @objc fileprivate func performDefaultAction(_ sender: NSOutlineView) {
-            _ = activateDefaultAction(preferClickedRow: true)
+        @objc fileprivate func performRowClick(_ sender: ReusableSidebarNSOutlineView) {
+            handleRowClick(sender, activatesDefaultAction: false)
+        }
+
+        @objc fileprivate func performDefaultAction(_ sender: ReusableSidebarNSOutlineView) {
+            handleRowClick(sender, activatesDefaultAction: true)
+        }
+
+        private func handleRowClick(_ sender: ReusableSidebarNSOutlineView, activatesDefaultAction: Bool) {
+            guard sender === outlineView, sender.window != nil, !sender.isHiddenOrHasHiddenAncestor,
+                  !isSynchronizingSelection, !isProcessingExpansion, sender.clickedRow >= 0,
+                  sender.clickedRow < sender.numberOfRows,
+                  let item = sender.item(atRow: sender.clickedRow) as? SidebarOutlineItem else { return }
+            let event = sender.pointerInteraction?.event
+                ?? NSApp.currentEvent.flatMap { $0.window === sender.window ? $0 : nil }
+            let ordinaryClick = event?.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty ?? false
+            if item.groupID != nil {
+                // The native disclosure button owns its own target/action and
+                // modifier behavior. Only ordinary clicks in the rest of the
+                // group row need this additional disclosure action.
+                guard ordinaryClick, let event,
+                      !sender.frameOfOutlineCell(atRow: sender.clickedRow).contains(
+                        sender.convert(event.locationInWindow, from: nil)
+                      ) else { return }
+                focusContainer(item)
+                toggleGroup(item)
+                return
+            }
+            if ordinaryClick, let interaction = sender.pointerInteraction {
+                if let accepted = interaction.selectionResult {
+                    guard accepted else { return }
+                } else {
+                    // AppKit can skip selection notifications for an unchanged
+                    // row or a double click after a veto. Ask for the clicked
+                    // source once, then update native selection only on approval.
+                    guard requestSelection([item.id], primary: item.id) else { return }
+                    synchronizeSelection(to: externalSelectedItemIDs, primary: externalPrimarySelectedItemID, forceReveal: true)
+                }
+            }
+            if activatesDefaultAction {
+                _ = activateSourceDefaultAction(preferClickedRow: true)
+            }
         }
 
         @discardableResult
         fileprivate func performKeyboardDefaultAction() -> Bool {
-            activateDefaultAction(preferClickedRow: false)
+            guard let outlineView, outlineView.selectedRow >= 0,
+                  let item = outlineView.item(atRow: outlineView.selectedRow) as? SidebarOutlineItem else {
+                return activateSourceDefaultAction(preferClickedRow: false)
+            }
+            if item.groupID != nil {
+                toggleGroup(item)
+                return true
+            }
+            if onDefaultAction != nil {
+                return activateSourceDefaultAction(preferClickedRow: false)
+            }
+            _ = submitCurrentSelection()
+            return true
         }
 
         @discardableResult
         fileprivate func performSpaceAction() -> Bool {
+            if let outlineView, outlineView.selectedRow >= 0,
+               let item = outlineView.item(atRow: outlineView.selectedRow) as? SidebarOutlineItem,
+               item.groupID != nil {
+                toggleGroup(item)
+                return true
+            }
             guard !isSynchronizingSelection,
                   !isProcessingExpansion,
                   let onSpaceAction
@@ -590,7 +726,7 @@ struct SidebarOutlineView: NSViewRepresentable {
             return true
         }
 
-        private func activateDefaultAction(preferClickedRow: Bool) -> Bool {
+        private func activateSourceDefaultAction(preferClickedRow: Bool) -> Bool {
             guard !isSynchronizingSelection,
                   !isProcessingExpansion,
                   let onDefaultAction
@@ -623,14 +759,29 @@ struct SidebarOutlineView: NSViewRepresentable {
             return item.id
         }
 
-        fileprivate func moveAcrossBoundary(_ direction: SidebarOutlineNavigationDirection) -> Bool {
+        fileprivate func moveVertically(_ direction: SidebarOutlineNavigationDirection) -> Bool {
+            if moveAcrossBoundary(direction) { return true }
+            guard let outlineView, outlineView.numberOfRows > 0 else { return false }
+            let targetRow: Int
+            if outlineView.selectedRow >= 0 {
+                let delta = direction == .down ? 1 : -1
+                targetRow = min(max(outlineView.selectedRow + delta, 0), outlineView.numberOfRows - 1)
+            } else {
+                targetRow = direction == .down ? 0 : outlineView.numberOfRows - 1
+            }
+            outlineView.selectRowIndexes(IndexSet(integer: targetRow), byExtendingSelection: false)
+            if outlineView.selectedRow >= 0 { outlineView.scrollRowToVisible(outlineView.selectedRow) }
+            return true
+        }
+
+        private func moveAcrossBoundary(_ direction: SidebarOutlineNavigationDirection) -> Bool {
             guard isAtSelectionBoundary(for: direction),
                   let navigationCoordinator,
                   let navigationSection
             else {
                 return false
             }
-            return navigationCoordinator.move(
+            return navigationCoordinator.moveFromOutline(
                 from: navigationSection,
                 direction: direction,
                 restoreSourceFocus: { [weak self] in
@@ -640,24 +791,63 @@ struct SidebarOutlineView: NSViewRepresentable {
         }
 
         fileprivate func detachNavigation() {
-            if let navigationCoordinator, let navigationSection {
-                navigationCoordinator.unregister(id: navigationRegistrationID, for: navigationSection)
-            }
             navigationCoordinator = nil
             navigationSection = nil
         }
 
+        fileprivate func moveToParentContainer() -> Bool {
+            guard let outlineView, outlineView.window != nil, !outlineView.isHiddenOrHasHiddenAncestor,
+                  outlineView.selectedRowIndexes.count == 1,
+                  let item = outlineView.item(atRow: outlineView.selectedRow) as? SidebarOutlineItem else { return false }
+            if outlineView.isItemExpanded(item) {
+                outlineView.collapseItem(item)
+                return true
+            }
+            if let parent = model.parentGroupByItemID[item.id], outlineView.row(forItem: parent) >= 0 {
+                focusContainer(parent)
+                return true
+            }
+            guard let navigationCoordinator, let navigationSection else { return false }
+            return navigationCoordinator.focusHeader(in: navigationSection)
+        }
+
+        fileprivate func moveIntoContainer() -> Bool {
+            guard let outlineView, outlineView.selectedRowIndexes.count == 1,
+                  let container = outlineView.item(atRow: outlineView.selectedRow) as? SidebarOutlineItem,
+                  container.groupID != nil, let child = container.children.first else { return false }
+            guard outlineView.isItemExpanded(container) else {
+                outlineView.expandItem(container)
+                return true
+            }
+            let row = outlineView.row(forItem: child)
+            guard row >= 0 else { return false }
+            outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            if outlineView.selectedRow >= 0 { outlineView.scrollRowToVisible(outlineView.selectedRow) }
+            return true
+        }
+
         fileprivate func contextMenu(forRow row: Int) -> NSMenu? {
-            guard let outlineView,
+            guard let item = contextMenuItem(forRow: row) else { return nil }
+            let menu = NSMenu()
+            menu.autoenablesItems = false
+            populateContextMenu(menu, for: item)
+            return menu
+        }
+
+        private func contextMenuItem(forRow row: Int) -> SidebarOutlineItem? {
+            guard let outlineView, outlineView.window != nil, !outlineView.isHiddenOrHasHiddenAncestor,
                   row >= 0,
                   let item = outlineView.item(atRow: row) as? SidebarOutlineItem,
                   !item.contextActions.isEmpty
-            else {
-                return nil
-            }
+            else { return nil }
+            return item
+        }
 
-            let menu = NSMenu()
+        private func populateContextMenu(_ menu: NSMenu, for item: SidebarOutlineItem) {
             for action in item.contextActions {
+                if action == .moveToTrash, !menu.items.isEmpty {
+                    menu.addItem(.separator())
+                }
                 let menuItem = NSMenuItem(
                     title: action.title,
                     action: #selector(performContextAction(_:)),
@@ -668,12 +858,25 @@ struct SidebarOutlineView: NSViewRepresentable {
                 menuItem.representedObject = SidebarOutlineMenuAction(itemID: item.id, action: action)
                 menu.addItem(menuItem)
             }
-            return menu
         }
 
         @objc private func performContextAction(_ sender: NSMenuItem) {
             guard let representedAction = sender.representedObject as? SidebarOutlineMenuAction else { return }
-            onAction(representedAction.itemID, representedAction.action)
+            performRowAction(itemID: representedAction.itemID, action: representedAction.action, origin: .contextMenu)
+        }
+
+        private enum RowActionOrigin { case accessory, contextMenu }
+
+        private func performRowAction(itemID: SidebarOutlineItemID, action: SidebarOutlineAction, origin: RowActionOrigin) {
+            guard let outlineView, outlineView.window != nil, !outlineView.isHiddenOrHasHiddenAncestor,
+                  let item = model.itemsByID[itemID], outlineView.row(forItem: item) >= 0 else { return }
+            let allowed: Bool
+            switch origin {
+            case .accessory: allowed = item.accessoryAction == action
+            case .contextMenu: allowed = item.contextActions.contains(action)
+            }
+            guard allowed else { return }
+            onAction(itemID, action)
         }
 
         private func rowCell(in outlineView: NSOutlineView) -> SidebarOutlineRowCellView {
@@ -707,12 +910,25 @@ struct SidebarOutlineView: NSViewRepresentable {
             let selectedItems = selectedRows.compactMap { row in
                 outlineView.item(atRow: row) as? SidebarOutlineItem
             }
-            let proposedIDs = Set(selectedItems.map(\.id))
+            if selectedItems.count == 1, let item = selectedItems.first, item.groupID != nil {
+                focusedContainerID = item.id
+                return true
+            }
+            let proposedIDs = Set(selectedItems.filter { $0.groupID == nil }.map(\.id))
             let primaryID = primarySelectionID(in: outlineView, proposedIDs: proposedIDs)
 
-            if onSelectionChange(proposedIDs, primaryID) {
+            return requestSelection(proposedIDs, primary: primaryID)
+        }
+
+        private func requestSelection(_ proposedIDs: Set<SidebarOutlineItemID>, primary: SidebarOutlineItemID?) -> Bool {
+            let interaction = outlineView?.pointerInteraction
+            interaction?.selectionResult = false
+            let accepted = onSelectionChange(proposedIDs, primary)
+            interaction?.selectionResult = accepted
+            if accepted {
+                focusedContainerID = nil
                 externalSelectedItemIDs = proposedIDs
-                externalPrimarySelectedItemID = primaryID
+                externalPrimarySelectedItemID = primary
                 return true
             } else {
                 synchronizeSelection(
@@ -724,62 +940,27 @@ struct SidebarOutlineView: NSViewRepresentable {
             }
         }
 
-        private func updateNavigationRegistration(
-            coordinator: SidebarOutlineNavigationCoordinator?,
-            section: SidebarOutlineNavigationSection?
-        ) {
-            guard navigationCoordinator !== coordinator || navigationSection != section else { return }
-            detachNavigation()
-            navigationCoordinator = coordinator
-            navigationSection = section
-            if let coordinator, let section {
-                coordinator.register(
-                    id: navigationRegistrationID,
-                    for: section,
-                    hasSelectableRows: { [weak self] in
-                        self?.hasSelectableRows ?? false
-                    },
-                    focusBoundaryRow: { [weak self] direction in
-                        self?.focusBoundaryRow(for: direction) ?? false
-                    }
-                )
-            }
-        }
-
         private func isAtSelectionBoundary(for direction: SidebarOutlineNavigationDirection) -> Bool {
             guard let outlineView else { return false }
-            let selectableRows = selectableRowIndexes(in: outlineView)
-            guard !selectableRows.isEmpty else { return true }
+            guard outlineView.numberOfRows > 0 else { return true }
             guard outlineView.selectedRowIndexes.count == 1 else { return false }
             switch direction {
             case .up:
-                return outlineView.selectedRowIndexes.first == selectableRows.first
+                return outlineView.selectedRow == 0
             case .down:
-                return outlineView.selectedRowIndexes.last == selectableRows.last
+                return outlineView.selectedRow == outlineView.numberOfRows - 1
             }
         }
 
-        private func selectableRowIndexes(in outlineView: NSOutlineView) -> [Int] {
-            (0..<outlineView.numberOfRows).filter { row in
-                guard let item = outlineView.item(atRow: row) as? SidebarOutlineItem else { return false }
-                return item.groupID == nil
-            }
-        }
-
-        var hasSelectableRows: Bool {
-            guard let outlineView else { return false }
-            return (0..<outlineView.numberOfRows).contains { row in
-                guard let item = outlineView.item(atRow: row) as? SidebarOutlineItem else { return false }
-                return item.groupID == nil
-            }
+        var hasVisibleRows: Bool {
+            guard let outlineView, outlineView.window != nil, !outlineView.isHiddenOrHasHiddenAncestor else { return false }
+            return outlineView.numberOfRows > 0
         }
 
         func focusBoundaryRow(for direction: SidebarOutlineNavigationDirection) -> Bool {
-            guard let outlineView else { return false }
-            let selectableRows = selectableRowIndexes(in: outlineView)
-            guard let targetRow = direction == .down ? selectableRows.first : selectableRows.last else {
-                return false
-            }
+            guard let outlineView, outlineView.window != nil, !outlineView.isHiddenOrHasHiddenAncestor else { return false }
+            guard outlineView.numberOfRows > 0 else { return false }
+            let targetRow = direction == .down ? 0 : outlineView.numberOfRows - 1
 
             outlineView.window?.makeFirstResponder(outlineView)
             isSynchronizingSelection = true
@@ -798,10 +979,6 @@ struct SidebarOutlineView: NSViewRepresentable {
             in outlineView: ReusableSidebarNSOutlineView,
             proposedIDs: Set<SidebarOutlineItemID>
         ) -> SidebarOutlineItemID? {
-            if let activeInteractionItemID = outlineView.activeInteractionItemID,
-               proposedIDs.contains(activeInteractionItemID) {
-                return activeInteractionItemID
-            }
             if outlineView.selectedRow >= 0,
                let item = outlineView.item(atRow: outlineView.selectedRow) as? SidebarOutlineItem,
                proposedIDs.contains(item.id) {
@@ -827,6 +1004,15 @@ struct SidebarOutlineView: NSViewRepresentable {
 
             guard forceReveal || selectionChanged else { return }
 
+            if selectionChanged { focusedContainerID = nil }
+            if let focusedContainerID,
+               let item = model.itemsByID[focusedContainerID], item.groupID != nil,
+               outlineView.row(forItem: item) >= 0 {
+                focusContainer(item)
+                return
+            }
+            focusedContainerID = nil
+
             for itemID in selectedItemIDs {
                 expandParentIfNeeded(for: itemID)
             }
@@ -837,34 +1023,51 @@ struct SidebarOutlineView: NSViewRepresentable {
             })
 
             isSynchronizingSelection = true
-            outlineView.selectRowIndexes(selectedRows, byExtendingSelection: false)
+            var primaryRow: Int?
             if let primary,
                let item = model.itemsByID[primary] {
                 let row = outlineView.row(forItem: item)
-                if row >= 0 {
-                    outlineView.scrollRowToVisible(row)
-                }
+                if row >= 0 { primaryRow = row }
             }
+            if let primaryRow, selectedRows.contains(primaryRow) {
+                // AppKit makes the last added row primary. Restore the other
+                // highlights first so reloads and vetoes retain that native lead.
+                var otherRows = selectedRows
+                otherRows.remove(primaryRow)
+                outlineView.selectRowIndexes(otherRows, byExtendingSelection: false)
+                outlineView.selectRowIndexes(IndexSet(integer: primaryRow), byExtendingSelection: true)
+            } else {
+                outlineView.selectRowIndexes(selectedRows, byExtendingSelection: false)
+            }
+            if let primaryRow { outlineView.scrollRowToVisible(primaryRow) }
             isSynchronizingSelection = false
         }
 
-        private func applyScrollRequestIfNeeded(_ request: SidebarOutlineScrollRequest?, force: Bool) {
-            guard let request else { return }
-            guard force || request.id != lastScrollRequestID else { return }
-            lastScrollRequestID = request.id
-
+        private func applyScrollRequestIfNeeded(_ request: SidebarOutlineScrollRequest?) {
+            guard let request, request.id != lastScrollRequestID else { return }
             guard let outlineView, let item = model.itemsByID[request.itemID] else { return }
             expandParentIfNeeded(for: request.itemID)
             let row = outlineView.row(forItem: item)
             guard row >= 0 else { return }
             outlineView.scrollRowToVisible(row)
+            // A request is consumed only after its item exists. Later content
+            // refreshes must preserve disclosure changes made by the operator.
+            lastScrollRequestID = request.id
         }
 
         private func expandParentIfNeeded(for itemID: SidebarOutlineItemID) {
-            guard let outlineView, let parent = model.parentGroupByItemID[itemID] else { return }
-            outlineView.expandItem(parent)
-            if let groupID = parent.groupID {
-                expansionStore.expandedGroupIDs[expansionKey, default: []].insert(groupID)
+            guard let outlineView else { return }
+            var parents: [SidebarOutlineItem] = []
+            var parent = model.parentGroupByItemID[itemID]
+            while let candidate = parent {
+                parents.append(candidate)
+                parent = model.parentGroupByItemID[candidate.id]
+            }
+            for ancestor in parents.reversed() {
+                outlineView.expandItem(ancestor)
+                if let groupID = ancestor.groupID {
+                    expansionStore.expandedGroupIDs[expansionKey, default: []].insert(groupID)
+                }
             }
         }
 
@@ -877,12 +1080,12 @@ struct SidebarOutlineView: NSViewRepresentable {
             case .expandAll:
                 expansionStore.expandedGroupIDs[expansionKey] = Set(model.groupItemsByID.keys)
                 for item in model.roots where item.groupID != nil {
-                    outlineView.expandItem(item)
+                    outlineView.expandItem(item, expandChildren: true)
                 }
             case .collapseAll:
                 expansionStore.expandedGroupIDs[expansionKey] = []
                 for item in model.roots where item.groupID != nil {
-                    outlineView.collapseItem(item)
+                    outlineView.collapseItem(item, collapseChildren: true)
                 }
             }
             isProcessingExpansion = false
@@ -916,6 +1119,7 @@ struct SidebarOutlineView: NSViewRepresentable {
         }
 
         private func reportExpansionState() {
+            (outlineView?.enclosingScrollView as? SidebarOutlineScrollView)?.updateMeasuredHeight()
             let groupIDs = Set(model.groupItemsByID.keys)
             let expandedCount = expansionStore.expandedGroupIDs[expansionKey, default: []]
                 .intersection(groupIDs)
@@ -923,8 +1127,7 @@ struct SidebarOutlineView: NSViewRepresentable {
             let state = SidebarOutlineExpansionState(
                 key: expansionKey,
                 groupCount: groupIDs.count,
-                expandedGroupCount: expandedCount,
-                visibleContentHeight: visibleContentHeight
+                expandedGroupCount: expandedCount
             )
             guard lastReportedExpansionState != state else { return }
             lastReportedExpansionState = state
@@ -949,21 +1152,65 @@ struct SidebarOutlineView: NSViewRepresentable {
                 cell.configureStatus(itemStatuses[item.id])
             }
         }
-
-        private var visibleContentHeight: CGFloat {
-            guard let outlineView, outlineView.numberOfRows > 0 else { return 0 }
-            return ceil(outlineView.rect(ofRow: outlineView.numberOfRows - 1).maxY)
-        }
     }
 }
 
-private final class ReusableSidebarNSOutlineView: NSOutlineView {
-    var groupToggleHandler: ((SidebarOutlineItem) -> Void)?
+/// AppKit supplies source-list row margins as part of the document's measured
+/// height. Keep short lists at that height, and let longer lists scroll within
+/// their section's viewport limit.
+@MainActor
+final class SidebarOutlineScrollView: NSScrollView {
+    var maximumHeight: CGFloat = 240 {
+        didSet { updateMeasuredHeight() }
+    }
+    private lazy var measuredHeight = heightAnchor.constraint(equalToConstant: 0)
+
+    func updateMeasuredHeight() {
+        let height = min(maximumHeight, documentView?.fittingSize.height ?? 0)
+        guard measuredHeight.constant != height || !measuredHeight.isActive else { return }
+        measuredHeight.constant = height
+        measuredHeight.isActive = true
+    }
+
+    override func layout() {
+        super.layout()
+        updateMeasuredHeight()
+    }
+}
+
+private final class ReusableSidebarNSOutlineView: NSOutlineView, NSGestureRecognizerDelegate {
     var spaceActionHandler: (() -> Bool)?
     var defaultActionHandler: (() -> Bool)?
     var menuProvider: ((Int) -> NSMenu?)?
-    var boundaryMoveHandler: ((SidebarOutlineNavigationDirection) -> Bool)?
-    fileprivate var activeInteractionItemID: SidebarOutlineItemID?
+    var verticalMoveHandler: ((SidebarOutlineNavigationDirection) -> Bool)?
+    var containerMoveHandler: (() -> Bool)?
+    var childMoveHandler: (() -> Bool)?
+    private(set) var pointerInteraction: SidebarPointerInteraction?
+    private let pointerObserver = NSClickGestureRecognizer(target: nil, action: nil)
+
+    private var acceptsSidebarInput: Bool {
+        dataSource != nil && window != nil && !isHiddenOrHasHiddenAncestor
+    }
+
+    func observePointerInteractions() {
+        pointerObserver.delaysPrimaryMouseButtonEvents = false
+        pointerObserver.delegate = self
+        addGestureRecognizer(pointerObserver)
+    }
+
+    func retirePointerObservation() {
+        pointerObserver.delegate = nil
+        removeGestureRecognizer(pointerObserver)
+        pointerInteraction = nil
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: NSGestureRecognizer, shouldAttemptToRecognizeWith event: NSEvent) -> Bool {
+        guard gestureRecognizer === pointerObserver, acceptsSidebarInput, event.type == .leftMouseDown else { return false }
+        pointerInteraction = SidebarPointerInteraction(event: event)
+        // Observe the new primary-click stream before native table gestures,
+        // then opt out without recognizing, delaying or preventing their input.
+        return false
+    }
 
     override func setFrameSize(_ newSize: NSSize) {
         let widthChanged = frame.width != newSize.width
@@ -978,18 +1225,42 @@ private final class ReusableSidebarNSOutlineView: NSOutlineView {
     }
 
     override func moveUp(_ sender: Any?) {
-        guard boundaryMoveHandler?(.up) != true else { return }
-        super.moveUp(sender)
+        guard acceptsSidebarInput else { return }
+        _ = verticalMoveHandler?(.up)
     }
 
     override func moveDown(_ sender: Any?) {
-        guard boundaryMoveHandler?(.down) != true else { return }
-        super.moveDown(sender)
+        guard acceptsSidebarInput else { return }
+        _ = verticalMoveHandler?(.down)
+    }
+
+    override func moveLeft(_ sender: Any?) {
+        guard acceptsSidebarInput else { return }
+        _ = containerMoveHandler?()
+    }
+
+    override func moveRight(_ sender: Any?) {
+        guard acceptsSidebarInput else { return }
+        _ = childMoveHandler?()
     }
 
     override func keyDown(with event: NSEvent) {
+        guard acceptsSidebarInput else { return }
+        pointerInteraction = nil
         let disallowedModifiers: NSEvent.ModifierFlags = [.command, .control, .option, .shift]
         if event.modifierFlags.intersection(disallowedModifiers).isEmpty {
+            if event.isARepeat && [UInt16(49), 36, 76].contains(event.keyCode) {
+                // Activation happens once per press; arrow navigation below
+                // keeps AppKit's normal key-repeat behavior.
+                return
+            }
+            if (123...126).contains(event.keyCode) {
+                // NSOutlineView handles arrows internally instead of calling
+                // responder selectors. Route plain arrows through AppKit's key
+                // bindings so hierarchy and section boundaries share commands.
+                interpretKeyEvents([event])
+                return
+            }
             if event.keyCode == 49, spaceActionHandler?() == true {
                 return
             }
@@ -1001,30 +1272,25 @@ private final class ReusableSidebarNSOutlineView: NSOutlineView {
         super.keyDown(with: event)
     }
 
-    override func mouseDown(with event: NSEvent) {
-        let location = convert(event.locationInWindow, from: nil)
-        let clickedRow = row(at: location)
-        if clickedRow >= 0,
-           let item = item(atRow: clickedRow) as? SidebarOutlineItem,
-           item.groupID != nil {
-            window?.makeFirstResponder(self)
-            if event.clickCount == 1 {
-                groupToggleHandler?(item)
-            }
-            return
-        }
-
-        activeInteractionItemID = clickedRow >= 0
-            ? (item(atRow: clickedRow) as? SidebarOutlineItem)?.id
-            : nil
-        defer { activeInteractionItemID = nil }
-        super.mouseDown(with: event)
-    }
-
     override func menu(for event: NSEvent) -> NSMenu? {
         let location = convert(event.locationInWindow, from: nil)
         return menuProvider?(row(at: location))
     }
+
+    override func accessibilityPerformShowMenu() -> Bool {
+        guard acceptsSidebarInput, selectedRow >= 0, menuProvider?(selectedRow) != nil else { return false }
+        // Use AppKit's selected-row anchor and the same event menu provider as
+        // the native keyboard command, independently of the last clicked row.
+        showContextMenuForSelection(nil)
+        return true
+    }
+}
+
+private final class SidebarPointerInteraction {
+    let event: NSEvent
+    var selectionResult: Bool?
+
+    init(event: NSEvent) { self.event = event }
 }
 
 private final class SidebarOutlineMenuAction: NSObject {
@@ -1104,8 +1370,14 @@ private final class SidebarOutlineRowView: NSTableRowView {
     }
 }
 
+/// Row titles are display labels. Let the native outline own their pointer
+/// gestures, including context clicks, while accessibility still reads the text.
+private final class SidebarOutlineLabelField: NSTextField {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
 private final class SidebarOutlineRowCellView: NSTableCellView {
-    private let titleField = NSTextField(labelWithString: "")
+    private let titleField = SidebarOutlineLabelField(labelWithString: "")
     private let statusImageView = NSImageView()
     private let accessoryButton = NSButton()
     private var accessoryAction: SidebarOutlineAction?

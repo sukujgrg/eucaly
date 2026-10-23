@@ -390,6 +390,8 @@ final class WorkspaceManagementTests: XCTestCase {
             windows = makeWorkspaceWindows(outputs: outputs, defaults: defaults)
             settings = SettingsWindowController(outputs: outputs, workspaces: windows,
                 updates: AppUpdateViewModel(driver: WorkspaceUpdateDriver()), defaults: defaults)
+            // Settings commands and editing do not exercise window transforms.
+            settings.window?.animationBehavior = .none
         }
         func close() {
             settings.close()

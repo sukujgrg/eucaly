@@ -1,6 +1,5 @@
 import SwiftUI
 import AppKit
-import AVFoundation
 
 struct VideoThumbnailView: View {
     let url: URL
@@ -77,64 +76,16 @@ struct VideoThumbnailView: View {
             }
             guard !Task.isCancelled else { return }
 
-            if let cached = await CacheManager.shared.getCachedThumbnailAsync(for: url, type: .video, size: requestSize) {
-                guard !Task.isCancelled else { return }
-                thumbnail = cached
-                return
-            }
+            let result = await MediaThumbnailLoader.load(for: url, size: requestSize, kind: .video)
             guard !Task.isCancelled else { return }
-
-            let result = await Task.detached(priority: .userInitiated) {
-                Self.generateVideoThumbnail(url: url, size: requestSize)
-            }.value
-
-            guard !Task.isCancelled else { return }
-            if let result {
-                CacheManager.shared.cacheThumbnail(
-                    result.image,
-                    pngData: result.pngData,
-                    for: url,
-                    type: .video,
-                    size: requestSize
-                )
-                thumbnail = result.image
-            } else {
-                thumbnail = createPlaceholderImage()
+            switch result {
+            case .loaded(let image): thumbnail = image
+            case .sourceChanged:
+                thumbnail = nil
+                scheduleThumbnailLoad()
+            case .failed: thumbnail = createPlaceholderImage()
+            case .cancelled: break
             }
-        }
-    }
-
-    private final class ThumbnailData: @unchecked Sendable {
-        let image: NSImage
-        let pngData: Data
-
-        nonisolated init(image: NSImage, pngData: Data) {
-            self.image = image
-            self.pngData = pngData
-        }
-    }
-
-    private nonisolated static func generateVideoThumbnail(url: URL, size: CGSize) -> ThumbnailData? {
-        let asset = AVURLAsset(url: url)
-        let imageGenerator = AVAssetImageGenerator(asset: asset)
-        imageGenerator.appliesPreferredTrackTransform = true
-        imageGenerator.maximumSize = CGSize(width: size.width * 2, height: size.height * 2)
-        imageGenerator.requestedTimeToleranceBefore = .positiveInfinity
-        imageGenerator.requestedTimeToleranceAfter = .positiveInfinity
-
-        do {
-            // Try to get frame at 0.1 seconds (first frame might be black)
-            let time = CMTime(seconds: 0.1, preferredTimescale: 600)
-            let cgImage = try imageGenerator.copyCGImage(at: time, actualTime: nil)
-            let image = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
-            let bitmap = NSBitmapImageRep(cgImage: cgImage)
-            guard let pngData = bitmap.representation(using: .png, properties: [:]) else {
-                return nil
-            }
-            return ThumbnailData(image: image, pngData: pngData)
-        } catch {
-            print("Failed to generate video thumbnail: \(error.localizedDescription)")
-            return nil
         }
     }
 

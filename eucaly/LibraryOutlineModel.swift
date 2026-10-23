@@ -157,7 +157,7 @@ nonisolated struct LibraryOutlineSnapshot {
                 id: .library(record.url),
                 title: record.title,
                 accessoryAction: .addToPlaylist,
-                contextActions: [.addToPlaylist, .revealInFinder]
+                contextActions: [.addToPlaylist, .revealInFinder, .moveToTrash]
             )
         }
 

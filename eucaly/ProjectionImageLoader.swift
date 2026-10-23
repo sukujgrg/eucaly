@@ -7,6 +7,24 @@ nonisolated enum ProjectionImageContentMode: Hashable, Sendable {
     case fill
 }
 
+/// Identity of bytes accepted by an explicit workspace Load. Geometry and
+/// appearance changes keep this identity, while another workspace owns its own.
+nonisolated struct ProjectionImageContentIdentity: Hashable, Sendable {
+    let workspaceID: UUID
+    let documentRevision: UInt64
+
+    init?(snapshot: OutputContentSnapshot) {
+        guard let workspaceID = snapshot.source else { return nil }
+        self.workspaceID = workspaceID
+        documentRevision = snapshot.documentRevision
+    }
+
+    init(workspaceID: UUID, documentRevision: UInt64) {
+        self.workspaceID = workspaceID
+        self.documentRevision = documentRevision
+    }
+}
+
 nonisolated struct ProjectionImageRequest: Hashable, Sendable {
     // Upward buckets absorb fractional layout changes without undersizing the decode.
     private static let pixelBucketSize: CGFloat = 16
@@ -17,8 +35,10 @@ nonisolated struct ProjectionImageRequest: Hashable, Sendable {
     let pixelWidth: Int
     let pixelHeight: Int
     let contentMode: ProjectionImageContentMode
+    let contentIdentity: ProjectionImageContentIdentity?
 
-    init?(url: URL, pointSize: CGSize, displayScale: CGFloat, contentMode: ProjectionImageContentMode) {
+    init?(url: URL, pointSize: CGSize, displayScale: CGFloat, contentMode: ProjectionImageContentMode,
+          contentIdentity: ProjectionImageContentIdentity? = nil) {
         let width = (pointSize.width * displayScale / Self.pixelBucketSize).rounded(.up) * Self.pixelBucketSize
         let height = (pointSize.height * displayScale / Self.pixelBucketSize).rounded(.up) * Self.pixelBucketSize
         guard displayScale.isFinite, displayScale > 0,
@@ -31,11 +51,13 @@ nonisolated struct ProjectionImageRequest: Hashable, Sendable {
         pixelWidth = Int(width)
         pixelHeight = Int(height)
         self.contentMode = contentMode
+        self.contentIdentity = contentIdentity
     }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.cacheURL == rhs.cacheURL && lhs.pixelWidth == rhs.pixelWidth
             && lhs.pixelHeight == rhs.pixelHeight && lhs.contentMode == rhs.contentMode
+            && lhs.contentIdentity == rhs.contentIdentity
     }
 
     func hash(into hasher: inout Hasher) {
@@ -43,6 +65,7 @@ nonisolated struct ProjectionImageRequest: Hashable, Sendable {
         hasher.combine(pixelWidth)
         hasher.combine(pixelHeight)
         hasher.combine(contentMode)
+        hasher.combine(contentIdentity)
     }
 
     func maximumPixelSize(sourceWidth: Int, sourceHeight: Int, orientation: Int) -> Int? {
@@ -141,6 +164,7 @@ nonisolated final class ProjectionImageLoader: @unchecked Sendable {
 
     private struct CacheKey: Hashable {
         let url: URL
+        let contentIdentity: ProjectionImageContentIdentity?
         let revision: SourceRevision
     }
 
@@ -196,8 +220,12 @@ nonisolated final class ProjectionImageLoader: @unchecked Sendable {
         defer { if scopedAccess { request.url.stopAccessingSecurityScopedResource() } }
 
         let revision = try SourceRevision(url: request.url)
-        let key = CacheKey(url: request.cacheURL, revision: revision)
-        let staleKeys = accessOrder.filter { $0.url == request.cacheURL && $0.revision != revision }
+        let key = CacheKey(url: request.cacheURL, contentIdentity: request.contentIdentity, revision: revision)
+        // Other accepted loads (including hidden/other workspace pictures) must
+        // not be invalidated by this source's replacement or explicit reload.
+        let staleKeys = accessOrder.filter {
+            $0.url == request.cacheURL && $0.contentIdentity == request.contentIdentity && $0.revision != revision
+        }
         staleKeys.forEach(removeCachedImage)
         if let cached = cachedImages[key], cached.satisfies(request) {
             touch(key)

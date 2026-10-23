@@ -42,21 +42,16 @@ final class SidebarOutlineModelTests: XCTestCase {
         let row = snapshot.roots[0]
         XCTAssertEqual(row.id, .library(url.standardizedFileURL))
         XCTAssertEqual(row.accessoryAction, .addToPlaylist)
-        XCTAssertEqual(row.contextActions, [.addToPlaylist, .revealInFinder])
+        XCTAssertEqual(row.contextActions, [.addToPlaylist, .revealInFinder, .moveToTrash])
     }
 
-    func testVisibleRowCountIncludesChildrenOnlyForExpandedGroups() {
-        let firstChild = SidebarOutlineItem(id: .group("child-a"), title: "A")
-        let secondChild = SidebarOutlineItem(id: .group("child-b"), title: "B")
-        let group = SidebarOutlineItem(
-            id: .group("kind:lyrics"),
-            title: "Lyrics",
-            children: [firstChild, secondChild]
-        )
-        let flatRow = SidebarOutlineItem(id: .group("flat"), title: "Flat")
-        let model = SidebarOutlineModel(roots: [group, flatRow])
-
-        XCTAssertEqual(model.visibleRowCount(expandedGroupIDs: []), 2)
-        XCTAssertEqual(model.visibleRowCount(expandedGroupIDs: ["kind:lyrics"]), 4)
+    func testLibraryGroupsDoNotExposeFileContextActions() {
+        let url = URL(fileURLWithPath: "/library/Songs/Song.txt")
+        for grouping in [LibraryGrouping.kind, .folder] {
+            let snapshot = LibraryOutlineSnapshot(urls: [url], grouping: grouping,
+                libraryRootURL: URL(fileURLWithPath: "/library"), displayName: { _ in "Song" })
+            XCTAssertTrue(snapshot.roots.allSatisfy { $0.groupID != nil && $0.contextActions.isEmpty && $0.accessoryAction == nil })
+            XCTAssertEqual(snapshot.fileItemsByURL[url]?.contextActions, [.addToPlaylist, .revealInFinder, .moveToTrash])
+        }
     }
 }
