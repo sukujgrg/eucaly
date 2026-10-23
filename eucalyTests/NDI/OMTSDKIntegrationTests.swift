@@ -7,6 +7,42 @@ import IOSurface
 /// the actual SDK and codec on loopback; no operator library or live TV is used.
 @MainActor
 final class OMTSDKIntegrationTests: XCTestCase {
+    func testAudioZeroReturnsWithoutAnAudioSubscriberPreserveSourceAndControl() async throws {
+        let log = OMTEvents(), video = OMTEvents(), id = UUID(), probeID = UUID()
+        let sender = NDIHelperSupervisor(event: log.record), probe = NDIHelperSupervisor(event: video.record)
+        let pcm = OMTPCMFixture(sender: sender, generation: id)
+        defer { pcm.stop(); sender.stop(); probe.stop() }
+        sender.start(generation: id, configuration: .init(purpose: .sender, sourceName: "eucaly OMT audio zero \(id)", technology: .omt))
+        try await ready(log)
+        let source = try XCTUnwrap(log.state.status?.sourceName)
+        let initialPID = await sender.diagnosticProcessIdentifier(generation: id)
+        let pid = try XCTUnwrap(initialPID)
+        sender.renderMedia(.init(request: .init(generation: id, revision: 1, colour: .chromaGreen), foreground: nil, background: nil))
+        pcm.start()
+        try await until("no-client OMT audio zero returns") { (log.state.status?.omtAudioStatistics?.zeroReturnCalls ?? 0) >= 3 }
+        let noClient = try XCTUnwrap(log.state.status?.omtAudioStatistics)
+        XCTAssertEqual(noClient.sendCalls, noClient.zeroReturnCalls)
+        XCTAssertEqual(noClient.positiveReturnCalls, 0); XCTAssertEqual(noClient.bytesReturned, 0)
+        XCTAssertEqual(noClient.framesEnqueued, 0); XCTAssertEqual(noClient.framesDropped, 0)
+        probe.start(generation: probeID, configuration: .init(purpose: .loopbackProbe, sourceName: source, technology: .omt))
+        try await ready(video)
+        probe.render(request(probeID, revision: 1))
+        try await until("decoded video-only subscriber and continued zero audio returns") {
+            video.state.picture != nil && (log.state.status?.omtAudioStatistics?.zeroReturnCalls ?? 0) > noClient.zeroReturnCalls
+        }
+        let videoOnly = try XCTUnwrap(log.state.status?.omtAudioStatistics)
+        XCTAssertEqual(videoOnly.positiveReturnCalls, 0); XCTAssertEqual(videoOnly.framesEnqueued, 0)
+        XCTAssertEqual(videoOnly.framesDropped, 0, "No audio subscription is not pool rejection")
+        let responsive = expectation(description: "control survives valid audio zero returns")
+        sender.ping { responsive.fulfill() }
+        await fulfillment(of: [responsive], timeout: 1)
+        let continuedPID = await sender.diagnosticProcessIdentifier(generation: id)
+        XCTAssertEqual(continuedPID, pid); XCTAssertEqual(log.state.readyCount, 1)
+        XCTAssertTrue(log.state.status?.validMetrics == true)
+        pcm.stop(); await probe.stopAndWait(); await sender.stopAndWait()
+        try healthy(log); try healthy(video)
+    }
+
     func testVideoStatisticsDistinguishNoClientCallsFromEnqueuedFrames() async throws {
         let log = OMTEvents(), received = OMTEvents(), id = UUID(), probeID = UUID()
         let sender = NDIHelperSupervisor(event: log.record), probe = NDIHelperSupervisor(event: received.record)
@@ -117,6 +153,14 @@ final class OMTSDKIntegrationTests: XCTestCase {
         let initial = try await receiveAudio(left: 0.05, right: -0.025)
         XCTAssertEqual(initial.sampleRate, 48000); XCTAssertEqual(initial.samples, 960)
         XCTAssertEqual(initial.leftRMS, 0.05, accuracy: 0.001); XCTAssertEqual(initial.rightRMS, 0.025, accuracy: 0.001)
+        try await until("OMT audio enqueue observations after decoded PCM") {
+            (sendLog.state.status?.omtAudioStatistics?.positiveReturnCalls ?? 0) > 0
+                && (sendLog.state.status?.omtAudioStatistics?.framesEnqueued ?? 0) > 0
+        }
+        let audioStatistics = try XCTUnwrap(sendLog.state.status?.omtAudioStatistics)
+        XCTAssertGreaterThan(audioStatistics.bytesReturned, 0)
+        XCTAssertGreaterThan(audioStatistics.bytesEnqueued, 0)
+        XCTAssertTrue(audioStatistics.isValid)
         sender.selectContent(epoch: 1)
         pcm.select(epoch: 1, left: -0.1, right: 0)
         sender.renderMedia(.init(request: .init(generation: id, revision: 2, contentEpoch: 1, colour: .init(alpha: 0)), foreground: nil, background: nil))

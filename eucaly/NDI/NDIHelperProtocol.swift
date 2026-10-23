@@ -191,6 +191,21 @@ nonisolated struct OMTVideoSDKStatistics: Codable, Sendable {
     var isValid: Bool { [framesEnqueued, framesDropped, bytesEnqueued, codecMilliseconds].allSatisfy { $0 >= 0 } }
 }
 
+/// First connected AUDIO channel's enqueue totals; resets on channel changes.
+/// Drops include pool/oversize rejects. Bytes may include channel metadata.
+/// Sender-lifetime return totals sum all channels: positive is not all-client
+/// acceptance or wire delivery, and zero is valid without an audio subscriber.
+nonisolated struct OMTAudioSDKStatistics: Codable, Sendable {
+    var framesEnqueued: Int64
+    var framesDropped: Int64
+    var bytesEnqueued: Int64
+    var sendCalls: UInt64
+    var zeroReturnCalls: UInt64
+    var positiveReturnCalls: UInt64
+    var bytesReturned: UInt64
+    var isValid: Bool { [framesEnqueued, framesDropped, bytesEnqueued].allSatisfy { $0 >= 0 } }
+}
+
 nonisolated struct NDIHelperStatus: Codable, Sendable {
     var runtimeVersion = ""
     var sourceName = ""
@@ -200,6 +215,7 @@ nonisolated struct NDIHelperStatus: Codable, Sendable {
     var replacedFrames: UInt64 = 0
     var audioBlocks: UInt64 = 0
     var lastAudioSample: Int64 = 0
+    var lastAudioSDKReturnBytes: Int32? = nil // OMT enqueue sum; NDI void/unknown.
     var audioSubmissionAgeMilliseconds: Double = 0
     var maximumAudioSubmissionAgeMilliseconds: Double = 0
     var audioSubmissionMilliseconds: Double = 0
@@ -214,6 +230,7 @@ nonisolated struct NDIHelperStatus: Codable, Sendable {
     var videoFormat: NDIVideoPixelFormat? = nil
     var processCPUSeconds: Double? = nil // Debug qualification; not a codec-only measurement.
     var omtVideoStatistics: OMTVideoSDKStatistics? = nil
+    var omtAudioStatistics: OMTAudioSDKStatistics? = nil
     #if DEBUG
     var audioCallInProgress: Bool? = nil
     var videoCallInProgress: Bool? = nil
@@ -225,6 +242,7 @@ nonisolated struct NDIHelperStatus: Codable, Sendable {
          audioSubmissionMilliseconds, maximumAudioSubmissionMilliseconds].compactMap { $0 }
             .allSatisfy { $0.isFinite && $0 >= 0 && $0 <= 1_000_000_000 }
             && (omtVideoStatistics?.isValid ?? true)
+            && (omtAudioStatistics?.isValid ?? true)
     }
     var performanceNotice: String? {
         if slowCadence, let fps = effectiveFramesPerSecond {

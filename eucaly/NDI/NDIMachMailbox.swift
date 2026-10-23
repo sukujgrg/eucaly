@@ -124,10 +124,10 @@ nonisolated enum NDIAudioTrace {
     static func record(_ event: String, sample: Int64 = 0, queued: Int = 0, generation: UUID? = nil,
                        source: UUID? = nil, mediaSample: Int64? = nil, frames: Int? = nil,
                        covered: Int? = nil, sampleRate: Double? = nil, leftRMS: Double? = nil, rightRMS: Double? = nil,
-                       rate: Double? = nil, gain: Float? = nil) {
+                       rate: Double? = nil, gain: Float? = nil, sdkReturnBytes: Int32? = nil) {
         sink?.record(event, sample: sample, queued: queued, generation: generation,
             source: source, mediaSample: mediaSample, frames: frames, covered: covered,
-            sampleRate: sampleRate, leftRMS: leftRMS, rightRMS: rightRMS, rate: rate, gain: gain)
+            sampleRate: sampleRate, leftRMS: leftRMS, rightRMS: rightRMS, rate: rate, gain: gain, sdkReturnBytes: sdkReturnBytes)
     }
     static func flush() { sink?.flush() }
     private final class Sink: @unchecked Sendable {
@@ -146,6 +146,7 @@ nonisolated enum NDIAudioTrace {
             let rightRMS: Double?
             let rate: Double?
             let gain: Float?
+            let sdkReturnBytes: Int32? // Raw OMT return; NDI void/unknown stays empty.
         }
         private let lock = NSLock()
         private let queue = DispatchQueue(label: "com.suku.eucaly.ndi.audio-trace", qos: .utility)
@@ -156,7 +157,7 @@ nonisolated enum NDIAudioTrace {
         init?() {
             guard let path = ProcessInfo.processInfo.environment["EUCALY_NDI_AUDIO_TRACE_DIRECTORY"] else { return nil }
             let url = URL(fileURLWithPath: path).appendingPathComponent("audio-trace-\(getpid()).csv")
-            guard FileManager.default.createFile(atPath: url.path, contents: Data("host_nanoseconds,event,sample,queued,generation,source,media_sample,frames,covered,sample_rate,left_rms,right_rms,rate,gain\n".utf8)),
+            guard FileManager.default.createFile(atPath: url.path, contents: Data("host_nanoseconds,event,sample,queued,generation,source,media_sample,frames,covered,sample_rate,left_rms,right_rms,rate,gain,sdk_return_bytes\n".utf8)),
                   let file = try? FileHandle(forWritingTo: url) else { return nil }
             guard (try? file.seekToEnd()) != nil else { try? file.close(); return nil }
             self.file = file
@@ -167,11 +168,11 @@ nonisolated enum NDIAudioTrace {
         }
         func record(_ event: String, sample: Int64, queued: Int, generation: UUID?, source: UUID?,
                     mediaSample: Int64?, frames: Int?, covered: Int?, sampleRate: Double?, leftRMS: Double?, rightRMS: Double?,
-                    rate: Double?, gain: Float?) {
+                    rate: Double?, gain: Float?, sdkReturnBytes: Int32?) {
             let record = Record(now: DispatchTime.now().uptimeNanoseconds, event: event, sample: sample,
                 queued: queued, generation: generation, source: source, mediaSample: mediaSample,
                 frames: frames, covered: covered, sampleRate: sampleRate, leftRMS: leftRMS, rightRMS: rightRMS,
-                rate: rate, gain: gain)
+                rate: rate, gain: gain, sdkReturnBytes: sdkReturnBytes)
             lock.withLock {
                 if pending.count < 8192 { pending.append(record) }
                 else { dropped += 1 }
@@ -185,14 +186,23 @@ nonisolated enum NDIAudioTrace {
                 return (batch, lost)
             }
             guard !batch.isEmpty || lost > 0 else { return }
-            var text = batch.map { row in
-                [String(row.now), row.event, String(row.sample), String(row.queued), row.generation?.uuidString ?? "",
-                 row.source?.uuidString ?? "", row.mediaSample.map(String.init) ?? "", row.frames.map(String.init) ?? "",
-                 row.covered.map(String.init) ?? "", row.sampleRate.map { String($0) } ?? "",
-                 row.leftRMS.map { String($0) } ?? "", row.rightRMS.map { String($0) } ?? "",
-                 row.rate.map { String($0) } ?? "", row.gain.map { String($0) } ?? ""].joined(separator: ",") + "\n"
+            var text = batch.map { row -> String in
+                var fields = [String(row.now), row.event, String(row.sample), String(row.queued)]
+                fields.reserveCapacity(15)
+                fields.append(row.generation?.uuidString ?? "")
+                fields.append(row.source?.uuidString ?? "")
+                fields.append(row.mediaSample.map { String($0) } ?? "")
+                fields.append(row.frames.map { String($0) } ?? "")
+                fields.append(row.covered.map { String($0) } ?? "")
+                fields.append(row.sampleRate.map { String($0) } ?? "")
+                fields.append(row.leftRMS.map { String($0) } ?? "")
+                fields.append(row.rightRMS.map { String($0) } ?? "")
+                fields.append(row.rate.map { String($0) } ?? "")
+                fields.append(row.gain.map { String($0) } ?? "")
+                fields.append(row.sdkReturnBytes.map { String($0) } ?? "")
+                return fields.joined(separator: ",") + "\n"
             }.joined()
-            if lost > 0 { text += "\(DispatchTime.now().uptimeNanoseconds),trace-overflow,0,\(lost),,,,,,,,,,\n" }
+            if lost > 0 { text += "\(DispatchTime.now().uptimeNanoseconds),trace-overflow,0,\(lost),,,,,,,,,,,\n" }
             try? file.write(contentsOf: Data(text.utf8))
         }
         deinit { timer?.cancel(); try? file.close() }

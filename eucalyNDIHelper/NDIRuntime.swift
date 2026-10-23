@@ -175,17 +175,22 @@ final class NDISubmissionWorker: @unchecked Sendable {
             }
         }
         #endif
-        block.pcm.withUnsafeBytes { runtime.sendAudio($0.baseAddress!, sampleTime: block.sampleTime) }
+        let returnedBytes = block.pcm.withUnsafeBytes { runtime.sendAudio($0.baseAddress!, sampleTime: block.sampleTime) }
         let duration = Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000
         #if DEBUG
-        NDIAudioTrace.record("sdk-return", sample: block.sampleTime)
+        NDIAudioTrace.record("sdk-return", sample: block.sampleTime, sdkReturnBytes: returnedBytes)
         #endif
+        // The same audio reader queries enqueue observations after consumption.
+        // SDK return/zero remains an observation; raw-buffer ACK is unchanged.
+        let omtStatistics = runtime.omtAudioStatistics
         lock.lock()
         report.audioBlocks &+= 1; report.lastAudioSample = block.sampleTime
+        report.lastAudioSDKReturnBytes = returnedBytes
         report.audioSubmissionAgeMilliseconds = age
         report.maximumAudioSubmissionAgeMilliseconds = max(report.maximumAudioSubmissionAgeMilliseconds, age)
         report.audioSubmissionMilliseconds = duration
         report.maximumAudioSubmissionMilliseconds = max(report.maximumAudioSubmissionMilliseconds, duration)
+        report.omtAudioStatistics = omtStatistics
         lock.unlock()
         return .submitted
     }

@@ -158,7 +158,7 @@ OutputCoordinator, accepted Current, shared player/audio bus, compositor and
 per-destination helpers with isolated in-memory settings. It never restores the
 operator's library or outputs. Its initial source holds one supplied movie;
 explicit, run-ID-fenced commands control subsequent phases. The dated fixture
-enforces the authorized 05:30 Sydney cutoff and retains checkpoints, exact child
+enforces its dated authorization cutoff and retains checkpoints, exact child
 identities, process samples and command acknowledgements under
 `build/OMTProductionStress-20261024`. The receiver project owns Apple TV and
 remote NDI measurements. This optimized Debug host is not a signed Release
@@ -299,3 +299,112 @@ Finite signed-helper load checks reported `OMT 1.0.0.19+eucaly.1 (bundled)` and
 installed NDI 6.3.2.0 without publishing a source. Independent integrated review
 found no actionable defects. These checks do not turn the recorded device
 qualification failure into a pass.
+
+### Audio warning investigation and SDK admission diagnostics
+
+The two short-horizon admissions in the clean run occurred at 18:00:37–42 and
+18:01:17–22 UTC on October 23. They retained approximately 101 and 94 ms of
+audio lead, respectively, against a 101.333 ms route horizon. Neither was late
+by its presentation timestamp. Source maximum audio submission age and SDK-call
+duration did not increase at either event; the coarse counters alone cannot
+locate those individual delays. The older NDI capture's `receiver_timestamp`
+column is the NDI SDK's sending-side UTC submission timestamp, not receive
+arrival. Remote capture-return gaps also include capture/decoder scheduling;
+the machines' absolute clocks were not calibrated against each other.
+
+The operator renewed device access until 08:58 Sydney on October 24 for a bounded
+investigation. In `audio-warning-trace-01`, adding a second full-bandwidth NDI
+receiver while Apple TV received OMT reproduced sustained horizon violations,
+late audio and bounded receiver audio-queue overruns. Removing only the owned
+NDI probe restored reception while the operator's NDI Monitor stayed open. The
+operator reported audible NDI gaps under load and clean audio after removal.
+A confirmatory GUI-only / extra-probe / GUI-only comparison reproduced the
+interaction with no source, quality, playout-margin or buffer changes.
+
+For that confirmatory comparison, actual NDI UDP media flows changed 1 → 2 → 1.
+Measured NDI transmit throughput averaged 74.04 → 99.73 → 62.52 Mbps; measured
+OMT TCP RTT averaged 12.55 → 108.30 → 10.48 ms. Total interface transmit throughput
+fell during load. This establishes a repeatable load interaction, not which
+radio, access point, OS or vendor queue is the bottleneck; no matched wired test
+was performed. The original two isolated warnings remain distinct from the
+subsequent sustained overload reproduction.
+
+Exact source timestamps from the receiver were matched to application and both
+helper traces. Across the first failure window, each helper handled 6,001
+continuous 960-sample blocks without missing trace events or overflow. OMT's
+largest SDK call was 1.587 ms and largest SDK-return interval 23.176 ms; NDI's
+were 0.352 ms and 23.533 ms. The app's admission-to-IPC delay stayed below
+0.181 ms in the examined warning windows. The receiver's local parse-to-admit
+work was short while packet receive gaps reached hundreds of milliseconds.
+Application handoff and synchronous SDK calls remained timely. That run did not
+record audio return values, so SDK admission rejection and downstream transport
+or receiver acquisition delay remain unresolved; timely calls do not prove that
+each enqueue attempt succeeded.
+
+`lastAudioSDKReturnBytes` and `omtAudioStatistics` now expose that missing
+distinction. OMT's raw audio return is the sum of encoded bytes accepted across
+matching audio channels. Zero is valid without an audio subscriber, including
+a video-only receiver or a connection still handshaking; it can also accompany
+rejection. Positive means at least one channel accepted a frame, not every
+channel or successful delivery. The pinned SDK's audio statistics describe its
+first connected audio channel: frames and bytes enqueued, plus frames rejected
+when the async pool is full or a frame exceeds its bound. Channel counters can
+include metadata and reset or disappear on reconnect; they are not per-PCM loss
+counts. Separate call/zero/positive/returned-byte totals
+last for the sender's lifetime. NDI's void audio API leaves these optional fields
+absent rather than inventing a success result.
+
+Statistics are read on the existing dedicated audio owner while sender teardown
+is fenced. Buffer-consumption acknowledgement, zero-return behavior and source
+failure policy are unchanged. Debug traces add an optional `sdk_return_bytes`
+column, retaining the existing bounded queue and overflow reporting. The
+coordinated fixture opts in with `--audio-trace`; it clears inherited trace
+settings when that flag is absent. A real-SDK regression covers zero returns
+with no audio subscriber and a video-only subscriber while preserving the exact
+helper and control/Stop behavior. The decoded stereo round-trip also requires
+positive returns and channel enqueue statistics. These diagnostics do not fix
+congestion or turn observed receiver failures into a qualification pass.
+
+The second instrumented capture matched the first persistent load warnings at
+source timestamps 192393200000, 192393400000 and 192394000000 (100 ns units).
+Each OMT call returned 7,720 bytes, completing in less than 0.1 ms, with
+SDK-return ages of 35.268–36.664 ms. The receiver measured receive gaps of
+80.593 and 202.361 ms for the first and third blocks, with approximately
+0.65 ms of local receive-to-admission work. These exact blocks had prompt
+SDK enqueue acceptance; their later delay was not a long synchronous sender
+call. Acceptance still means at least one audio channel, not wire completion.
+The original two isolated warnings did not have these per-block observations.
+The combined ±2-second window contained 205 continuous blocks per protocol,
+without missing stages or trace overflow. OMT's return-to-ACK trace interval,
+including the new statistics read and reporting, remained below 0.009 ms.
+
+All 27 retained load-warning blocks, plus five separate startup warnings,
+matched positive 7,720-byte returns. Zero returns began 1.22 seconds after the
+first load warning, following channel removal, so the later zero-return span
+must not be counted as failed live-peer submissions. During subsequent
+reconnection, the SDK's first audio-channel drop count was observed at one and
+then twelve; those are separate channel observations that can reset, not a
+sender-lifetime total or an exact count of receiver losses. Initial enqueue
+acceptance and later admission pressure both occurred in this failure sequence.
+
+No valid socket-queue capture covered the final load peak: the manually aligned
+sampler recorded recovery, and the last automated repeat failed to obtain a
+fresh playing report before launching its NDI probe. Both failures are retained
+as incomplete evidence. Baseline or recovery queue depths cannot establish the
+loaded audio backlog or justify changing the audio socket bound. No additional
+buffer, codec-quality, latency-margin or scheduling changes were made.
+
+Final checks passed for this diagnostics follow-up: 26 focused tests including
+the real SDK, then `make test` with 1,011 XCTest cases, six expected opt-in skips,
+one Swift Testing case, seven feed tests and 103 release workflow tests.
+`make build` archived and exported the signed app. Deep/strict signature
+verification and finite signed-helper OMT/NDI runtime-load checks passed; all
+nine unique packaged Mach-O binaries contain arm64, and both OMT libraries'
+arm64 executable text matches the pinned vendor files after re-signing.
+Independent code review found no actionable defects; a documentation finding
+about attributing delay without enqueue results was resolved and rechecked.
+Python syntax and `git diff --check` passed. Both coordinated source runs ended
+with their exact app/helper processes gone, no source invariant violations or
+unexpected router failures, and no active outputs. Receiver overload failures
+remain failures; these checks establish neither a congestion repair nor full
+production qualification.

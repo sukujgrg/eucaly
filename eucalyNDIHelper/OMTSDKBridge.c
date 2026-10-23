@@ -19,6 +19,9 @@ struct eucaly_omt {
     int (*connections)(omt_send_t *);
     void (*video_statistics)(omt_send_t *, OMTStatistics *);
     uint64_t zero_video_returns; // Confined to the SDK video-owner queue.
+    void (*audio_statistics)(omt_send_t *, OMTStatistics *);
+    // Confined to the dedicated SDK audio-owner reader, independently of video.
+    uint64_t audio_calls, zero_audio_returns, positive_audio_returns, audio_bytes_returned;
     void (*shutdown)(void);
     void (*settings_string)(const char *, const char *);
     void (*logging_callback)(OMTLoggingCallback);
@@ -53,6 +56,7 @@ eucaly_omt *eucaly_omt_open(const char *path, const char *codec_path, char *erro
     LOAD(send, "omt_send");
     LOAD(connections, "omt_send_connections");
     LOAD(video_statistics, "omt_send_getvideostatistics");
+    LOAD(audio_statistics, "omt_send_getaudiostatistics");
     LOAD(shutdown, "omt_shutdown");
     LOAD(settings_string, "omt_settings_set_string");
     LOAD(logging_callback, "omt_setloggingcallback");
@@ -110,7 +114,14 @@ int eucaly_omt_send_audio(eucaly_omt *omt, const void *bytes, int64_t sample_tim
     frame.SampleRate = 48000; frame.Channels = 2; frame.SamplesPerChannel = 960;
     frame.Timestamp = (sample_time / 48000) * 10000000 + ((sample_time % 48000) * 10000000) / 48000;
     frame.Data = (void *)bytes; frame.DataLength = 2 * 960 * (int)sizeof(float);
-    return omt->send(omt->sender, &frame);
+    int offered = omt->send(omt->sender, &frame);
+    omt->audio_calls += 1;
+    if (offered == 0) omt->zero_audio_returns += 1;
+    if (offered > 0) {
+        omt->positive_audio_returns += 1;
+        omt->audio_bytes_returned += (uint64_t)offered;
+    }
+    return offered;
 }
 void eucaly_omt_get_video_statistics(eucaly_omt *omt, eucaly_omt_video_statistics *statistics) {
     OMTStatistics vendor = {0};
@@ -122,6 +133,17 @@ void eucaly_omt_get_video_statistics(eucaly_omt *omt, eucaly_omt_video_statistic
     statistics->bytes_enqueued = vendor.BytesSent;
     statistics->codec_milliseconds = vendor.CodecTime;
     statistics->zero_return_calls = omt->zero_video_returns;
+}
+void eucaly_omt_get_audio_statistics(eucaly_omt *omt, eucaly_omt_audio_statistics *statistics) {
+    OMTStatistics vendor = {0};
+    omt->audio_statistics(omt->sender, &vendor);
+    statistics->frames_enqueued = vendor.Frames;
+    statistics->frames_dropped = vendor.FramesDropped;
+    statistics->bytes_enqueued = vendor.BytesSent;
+    statistics->send_calls = omt->audio_calls;
+    statistics->zero_return_calls = omt->zero_audio_returns;
+    statistics->positive_return_calls = omt->positive_audio_returns;
+    statistics->bytes_returned = omt->audio_bytes_returned;
 }
 void eucaly_omt_close(eucaly_omt *omt) {
     if (!omt) return;

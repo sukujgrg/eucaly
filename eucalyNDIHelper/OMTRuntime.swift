@@ -119,6 +119,17 @@ enum NetworkHelperRuntime {
             bytesEnqueued: value.bytes_enqueued, codecMilliseconds: value.codec_milliseconds,
             zeroReturnCalls: value.zero_return_calls)
     }
+    /// Dedicated audio-owner reader only; never dispatched through video or
+    /// queried from status/control. SDK totals can reset with the first channel.
+    var omtAudioStatistics: OMTAudioSDKStatistics? {
+        guard case .omt(let runtime) = self else { return nil }
+        var value = eucaly_omt_audio_statistics()
+        eucaly_omt_get_audio_statistics(runtime.handle, &value)
+        return .init(framesEnqueued: value.frames_enqueued, framesDropped: value.frames_dropped,
+            bytesEnqueued: value.bytes_enqueued, sendCalls: value.send_calls,
+            zeroReturnCalls: value.zero_return_calls, positiveReturnCalls: value.positive_return_calls,
+            bytesReturned: value.bytes_returned)
+    }
     func sendVideo(_ bytes: UnsafeMutableRawPointer, format: NDIVideoPixelFormat, timecode: Int64) {
         switch self {
         case .ndi(let runtime):
@@ -134,10 +145,12 @@ enum NetworkHelperRuntime {
             _ = eucaly_omt_send_video(runtime.handle, bytes, Int32(NDIHelperWire.width), Int32(NDIHelperWire.height), Int32(format.bytesPerRow), format.rawValue, timecode)
         }
     }
-    func sendAudio(_ bytes: UnsafeRawPointer, sampleTime: Int64) {
+    func sendAudio(_ bytes: UnsafeRawPointer, sampleTime: Int64) -> Int32? {
         switch self {
-        case .ndi(let runtime): eucaly_ndi_send_audio(runtime.handle, bytes, sampleTime)
-        case .omt(let runtime): _ = eucaly_omt_send_audio(runtime.handle, bytes, sampleTime)
+        case .ndi(let runtime):
+            eucaly_ndi_send_audio(runtime.handle, bytes, sampleTime)
+            return nil // NDI's void API supplies no enqueue/delivery result.
+        case .omt(let runtime): return eucaly_omt_send_audio(runtime.handle, bytes, sampleTime)
         }
     }
     func flush() {
