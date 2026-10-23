@@ -33,9 +33,17 @@ final class ProgramAudioLoopTests: XCTestCase {
         defer { NotificationCenter.default.removeObserver(observer) }
         audio.update(targets: [.init(id: destination.id, send: received.record)], music: nil,
             preparing: false, wantsVideo: true, runtime: runtime, session: session)
-        try await until("loop fixture ready") { player.status == .readyToPlay }
-        let prerolled = await player.preroll(atRate: 1)
-        XCTAssertTrue(prerolled)
+        // The owned programme source prerolls the paused player before decoding
+        // its lookahead. Starting another preroll races that preparation.
+        try await until("loop fixture audio ready") {
+            (player.status == .readyToPlay && audio.isVideoSourcePreparedForTests)
+                || player.status == .failed || received.snapshot.failure != nil
+        }
+        guard player.status == .readyToPlay, audio.isVideoSourcePreparedForTests,
+              received.snapshot.failure == nil else {
+            XCTFail("Loop fixture audio could not prepare: \(received.snapshot.failure ?? player.error?.localizedDescription ?? "unknown error")")
+            throw NDIHelperWire.Failure.unavailable
+        }
         let started = LoopProgramAudio.hostSample
         session.videoPaused = false
         try await until("three complete video iterations") { received.snapshot.ends.count >= 3 }

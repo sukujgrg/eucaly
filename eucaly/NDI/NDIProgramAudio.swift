@@ -78,6 +78,9 @@ final class NDIProgramAudio {
          makeBus: @escaping (@escaping ProgramAudioBus.StemDelivery) -> ProgramAudioBus = { ProgramAudioBus(deliverStems: $0) }) {
         distribution = NDIAudioDistribution(musicRoute: musicRoute); self.makeBus = makeBus
     }
+    #if DEBUG
+    var isVideoSourcePreparedForTests: Bool { videoSource?.isPrepared == true }
+    #endif
     func update(targets: [NDIAudioDistribution.Target], music: UUID?, preparing: Bool, wantsVideo: Bool,
                 runtime: OutputMediaRuntime, session: PresentationSession?) {
         self.runtime = wantsVideo ? runtime : nil
