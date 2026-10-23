@@ -99,7 +99,7 @@ struct EditorPaneContainerView: View {
         Menu("Text Tools") {
             Button("Normalize Formatting") { onAction(.format) }
                 .disabled(!hasUsableText)
-                .help("Normalize section headings, blank lines and spacing in the draft. Undo restores the previous text.")
+                .help("Normalize headings and spacing, removing redundant empty lines below headings while preserving slide boundaries. Undo restores the previous text.")
                 .accessibilityIdentifier("LyricsEditor.Format")
             Divider()
             Button("Clear Draft", role: .destructive) { onAction(.clear) }

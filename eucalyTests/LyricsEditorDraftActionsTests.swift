@@ -128,7 +128,7 @@ final class LyricsEditorDraftActionsTests: XCTestCase {
     }
 
     func testNormalizeFormattingIsDraftOnlyAndOneNativeUndoAction() throws {
-        let source = "[Verse 1:]\nOriginal lyrics\n[Translation:]\nமொழிபெயர்ப்பு"
+        let source = "[Verse 1:]\n\nOriginal lyrics\n[Translation:]\n\nமொழிபெயர்ப்பு"
         let fixture = try Fixture(source)
         defer { fixture.close() }
         let previewIDs = fixture.flow.previewSlides.map(\.id)
