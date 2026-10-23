@@ -37,6 +37,7 @@ struct SidebarConfiguration {
     let onRetryLibraryLoad: () -> Void
     let onImportToAudio: () -> Void
     let onAddLibraryItemToPlaylist: (URL) -> Void
+    let onMoveFileToTrash: (URL) -> Void
     let onRemovePlaylistItem: (UUID) -> Void
     let onRemoveSelectedFromPlaylist: () -> Void
     let onMovePlaylistUp: () -> Void

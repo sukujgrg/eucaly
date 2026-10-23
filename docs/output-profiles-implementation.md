@@ -58,8 +58,10 @@ keep their badges after deletion; new workspaces reuse available badges. Legacy
 saved workspaces above four remain available and share the four-badge palette.
 Closing controls releases their private view consumers; reopening uses the same
 app-owned session and Preview flow while live output continues. Native Settings
-remain one app-owned window. Quick Open and Refresh Library target only the active
-controls window, and native Edit-menu actions retain the macOS responder chain.
+remain one app-owned window. Search Library (`Cmd+F`) and Refresh Library target
+only the active controls window. Find in Lyrics is a separate native Edit > Find
+command; text matching and editing retain the macOS responder chain. See
+`SEARCH.md` for keyboard and focus behavior.
 Preview source identity belongs to its retained flow, and Current's lyrics file URL
 belongs to its session, so reopening retains Preview and Edit Current support. Closing cancels private pending Preview loads before releasing controls.
 The native close callback owns controls cleanup; hiding a tab does not release its
@@ -375,6 +377,27 @@ Preview or Current.
 Clicking a selected source explicitly requests Preview again, including after
 Load to Current or a failed load. Each physical click asks selection approval
 once; Audio retains its separate double-click playback action.
+
+Library and Audio file rows advertise a native context menu, including Reveal in
+Finder and confirmed Move to Trash. Secondary/Control-click targets its row
+without selecting or playing it; keyboard and accessibility invocation target the
+focused selection. Retained actions recheck current inventory and visibility.
+Playlist Remove continues to remove only its saved entry.
+Trash requires a supported regular file inside the selected library and retains
+its scoped access and verified identity through confirmation and queued work.
+Open editors, every workspace's Current and accepted filesystem media, and selected
+or retained playback/background resources prevent removal. Accepted copied lyrics
+have no remaining source-file dependency after Current changes. An app-owned reservation
+rejects new acceptance of that file while native Trash runs off-main; closing the
+requesting controls cannot release admitted filesystem work early. Failure keeps
+the source, selection and Preview usable. Success retires only matching Preview
+and pending loads, refreshes open libraries/search and leaves Playlist rows as
+missing. There is no permanent-delete fallback. The existing unsandboxed app and
+write-capable folder bookmarks need no additional project entitlement.
+Pending bookmark and picker acquisitions carry request-lifetime fences, including
+the actual native Trash result URL; a late completion cannot reopen a removed
+source. Unknown background resolutions defer while removal is admitted. Completion
+retries only the exact unrelated or failed intents, without refreshing other programs.
 
 Missing Playlist selections clear stale Preview content, reject superseded file
 loads and show an unavailable-file notice; the saved row remains removable.

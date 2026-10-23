@@ -14,6 +14,17 @@ final class LibrarySearchField: NSSearchField {
     private var previousSelection: [NSValue]?
     private weak var searchEditor: NSText?
 
+    @discardableResult
+    func focusForLibrarySearch() -> Bool {
+        guard let window, window.isKeyWindow, !isHiddenOrHasHiddenAncestor else { return false }
+        // Repeated Search Library commands must not commit or replace IME input.
+        if let editor = currentEditor() as? NSTextView, editor.hasMarkedText() { return true }
+        guard window.makeFirstResponder(self) else { return false }
+        searchEditor = currentEditor()
+        currentEditor()?.selectAll(nil)
+        return true
+    }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         guard needsInitialFocus, let window else { return }

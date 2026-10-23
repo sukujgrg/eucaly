@@ -77,6 +77,16 @@ final class PresentationFlowController: ObservableObject {
         previewSelection.selectedSlideID
     }
 
+    /// Snapshot source paths without resolving files or preparing documents.
+    /// Pending loads count so a prepared file operation can recheck its read set.
+    var referencedFileURLs: Set<URL> {
+        var urls = Set(previewSlides.flatMap { [$0.videoURL, $0.pdfURL, $0.imageURL].compactMap { $0 } })
+        if let url = previewPDFSource?.url { urls.insert(url) }
+        if case .file(let url) = previewSource { urls.insert(url) }
+        if case .file(let url)? = pendingPreviewSource { urls.insert(url) }
+        return Set(urls.map(\.standardizedFileURL))
+    }
+
     var isPreviewLoading: Bool {
         pendingPreviewSource != nil
     }
@@ -140,6 +150,27 @@ final class PresentationFlowController: ObservableObject {
         previewDocument = nil
         previewSource = .none
         previewSelection.selectedSlideID = nil
+    }
+
+    /// Source removal is explicit. Retire only this file's accepted or pending
+    /// Preview; a newer, unrelated load must retain its token and completion.
+    @discardableResult
+    func removePreviewFile(matching matches: (URL) -> Bool) -> Bool {
+        let pendingMatches: Bool
+        if case .file(let url)? = pendingPreviewSource { pendingMatches = matches(url) }
+        else { pendingMatches = false }
+        let sourceMatches: Bool
+        if case .file(let url) = previewSource { sourceMatches = matches(url) }
+        else { sourceMatches = false }
+        let contentMatches = previewPDFSource.map { matches($0.url) } == true
+            || previewSlides.contains { slide in
+                [slide.videoURL, slide.pdfURL, slide.imageURL].compactMap { $0 }.contains(where: matches)
+            }
+        guard pendingMatches || sourceMatches || contentMatches else { return false }
+        if pendingMatches { cancelPreviewLoad() }
+        if sourceMatches || contentMatches { clearPreviewContent() }
+        previewLoadError = nil
+        return true
     }
 
     @discardableResult
@@ -249,13 +280,14 @@ final class PresentationFlowController: ObservableObject {
         previewSelection.selectedSlideID = document.slide(at: nextIndex).id
     }
 
+    @discardableResult
     func setCurrentSlides(
         _ slides: [Slide],
         in session: PresentationSession,
         lyricsSourceURL: URL? = nil,
         preferredSelection: Slide.ID? = nil,
         preferredSelectionIndex: Int? = nil
-    ) {
+    ) -> Bool {
         session.setSlides(
             slides,
             lyricsSourceURL: lyricsSourceURL,
@@ -264,12 +296,13 @@ final class PresentationFlowController: ObservableObject {
         )
     }
 
+    @discardableResult
     func setCurrentPDFSource(
         _ source: PDFSlideSource,
         in session: PresentationSession,
         preferredSelection: Slide.ID? = nil,
         preferredSelectionIndex: Int? = nil
-    ) {
+    ) -> Bool {
         session.setPDFSlideSource(
             source,
             preferredSelection: preferredSelection,

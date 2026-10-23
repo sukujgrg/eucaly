@@ -28,9 +28,12 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
     private var renderedProfile: OutputProfile?
     private var disclosures: [OutputSettingsDisclosure] = []
     private var backgroundColourRow: NSView?
+    private let makeFileAcquisitionGuard: (URL) -> (URL) -> OutputCoordinator.FileAcquisitionAdmission
 
-    init(store: OutputProfileStore, profileID: UUID) {
+    init(store: OutputProfileStore, profileID: UUID,
+         makeFileAcquisitionGuard: @escaping (URL) -> (URL) -> OutputCoordinator.FileAcquisitionAdmission = { _ in { _ in .allowed } }) {
         self.store = store; self.profileID = profileID
+        self.makeFileAcquisitionGuard = makeFileAcquisitionGuard
         super.init(nibName: nil, bundle: nil)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -361,14 +364,23 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
         guard let window = view.window, window.attachedSheet == nil else { return }
         let selectedProfileID = profileID
         let store = store
+        let makeFileAcquisitionGuard = makeFileAcquisitionGuard
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [.image, .movie]
-        panel.beginSheetModal(for: window) { result in
+        panel.beginSheetModal(for: window) { [weak self] result in
             guard result == .OK, let url = panel.url else { return }
-            Task { @MainActor in
+            let fileAcquisitionGuard = makeFileAcquisitionGuard(url)
+            Task { @MainActor [weak self] in
                 let bookmark = await Task.detached { SecurityScopedBookmarks.createBookmark(for: url) }.value
                 guard let bookmark, var profile = store.profile(selectedProfileID) else { return }
+                guard case .allowed = fileAcquisitionGuard(url) else {
+                    if let self, self.profileID == selectedProfileID {
+                        self.validationLabel.stringValue = "The selected file changed while it was being prepared. Choose it again."
+                        self.validationLabel.isHidden = false
+                    }
+                    return
+                }
                 profile.background.bookmark = bookmark
                 store.update(profile)
             }

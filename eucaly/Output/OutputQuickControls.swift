@@ -367,12 +367,20 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         guard let destination = store.enabledDefault(for: target), store.profile(destination.profileID) != nil,
               let window = backgroundButton.window, window.attachedSheet == nil else { return }
         let store = store
+        let outputs = outputs
+        guard let requestingWorkspaceID = workspaceID ?? destination.workspaceID else { return }
         let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [.image, .movie]
         panel.beginSheetModal(for: window) { result in
             guard result == .OK, let url = panel.url else { return }
+            let fileAcquisitionGuard = outputs.makeFileAcquisitionGuard(for: url)
             Task { @MainActor in
                 let bookmark = await Task.detached { SecurityScopedBookmarks.createBookmark(for: url) }.value
+                guard case .allowed = fileAcquisitionGuard(url) else {
+                    outputs.reportFileActionIssue("The selected file changed while it was being prepared. Choose it again.",
+                                                 workspace: requestingWorkspaceID)
+                    return
+                }
                 if let bookmark { store.editDefaultProfile(target) { $0.background.bookmark = bookmark } }
             }
         }

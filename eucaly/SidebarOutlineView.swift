@@ -20,6 +20,7 @@ nonisolated enum SidebarOutlineAction: Hashable, Sendable {
     case addToPlaylist
     case remove
     case revealInFinder
+    case moveToTrash
 
     var title: String {
         switch self {
@@ -29,6 +30,8 @@ nonisolated enum SidebarOutlineAction: Hashable, Sendable {
             "Remove"
         case .revealInFinder:
             "Reveal in Finder"
+        case .moveToTrash:
+            "Move to Trash"
         }
     }
 
@@ -40,6 +43,8 @@ nonisolated enum SidebarOutlineAction: Hashable, Sendable {
             "minus"
         case .revealInFinder:
             "folder"
+        case .moveToTrash:
+            "trash"
         }
     }
 }
@@ -822,16 +827,27 @@ final class SidebarOutlineController {
         }
 
         fileprivate func contextMenu(forRow row: Int) -> NSMenu? {
-            guard let outlineView,
+            guard let item = contextMenuItem(forRow: row) else { return nil }
+            let menu = NSMenu()
+            menu.autoenablesItems = false
+            populateContextMenu(menu, for: item)
+            return menu
+        }
+
+        private func contextMenuItem(forRow row: Int) -> SidebarOutlineItem? {
+            guard let outlineView, outlineView.window != nil, !outlineView.isHiddenOrHasHiddenAncestor,
                   row >= 0,
                   let item = outlineView.item(atRow: row) as? SidebarOutlineItem,
                   !item.contextActions.isEmpty
-            else {
-                return nil
-            }
+            else { return nil }
+            return item
+        }
 
-            let menu = NSMenu()
+        private func populateContextMenu(_ menu: NSMenu, for item: SidebarOutlineItem) {
             for action in item.contextActions {
+                if action == .moveToTrash, !menu.items.isEmpty {
+                    menu.addItem(.separator())
+                }
                 let menuItem = NSMenuItem(
                     title: action.title,
                     action: #selector(performContextAction(_:)),
@@ -842,7 +858,6 @@ final class SidebarOutlineController {
                 menuItem.representedObject = SidebarOutlineMenuAction(itemID: item.id, action: action)
                 menu.addItem(menuItem)
             }
-            return menu
         }
 
         @objc private func performContextAction(_ sender: NSMenuItem) {
@@ -1261,6 +1276,14 @@ private final class ReusableSidebarNSOutlineView: NSOutlineView, NSGestureRecogn
         let location = convert(event.locationInWindow, from: nil)
         return menuProvider?(row(at: location))
     }
+
+    override func accessibilityPerformShowMenu() -> Bool {
+        guard acceptsSidebarInput, selectedRow >= 0, menuProvider?(selectedRow) != nil else { return false }
+        // Use AppKit's selected-row anchor and the same event menu provider as
+        // the native keyboard command, independently of the last clicked row.
+        showContextMenuForSelection(nil)
+        return true
+    }
 }
 
 private final class SidebarPointerInteraction {
@@ -1347,8 +1370,14 @@ private final class SidebarOutlineRowView: NSTableRowView {
     }
 }
 
+/// Row titles are display labels. Let the native outline own their pointer
+/// gestures, including context clicks, while accessibility still reads the text.
+private final class SidebarOutlineLabelField: NSTextField {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
 private final class SidebarOutlineRowCellView: NSTableCellView {
-    private let titleField = NSTextField(labelWithString: "")
+    private let titleField = SidebarOutlineLabelField(labelWithString: "")
     private let statusImageView = NSImageView()
     private let accessoryButton = NSButton()
     private var accessoryAction: SidebarOutlineAction?

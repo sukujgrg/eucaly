@@ -5,7 +5,7 @@ nonisolated enum LyricsParser {
         let normalized = LyricsTextSanitizer.normalizeLineEndings(raw)
         let lines = normalized.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
 
-        let footer = extractCCLIFooter(from: lines)
+        let footer = LyricsCopyrightParser.footer(in: lines)
         var workingLines = footer.map { Array(lines[..<$0.startIndex]) } ?? lines
         var documentMetadata = footer?.metadata ?? [:]
         if let (title, remaining) = extractTopTitle(from: workingLines, fileName: fileName) {
@@ -17,16 +17,70 @@ nonisolated enum LyricsParser {
         return LyricsDocument(slides: slides, metadata: documentMetadata)
     }
 
-    private static func buildSlides(from lines: [String]) -> [Slide] {
-        let usesExplicitSeparators = lines.contains(where: LyricsTextSyntax.isSeparator)
-        let blocks: [[String]]
-        if usesExplicitSeparators {
-            blocks = splitOnSeparator(lines)
-        } else if containsPrimarySectionHeader(lines) {
-            blocks = splitSectionedWithoutSeparators(lines)
-        } else {
-            blocks = splitOnBlankLine(lines)
+    /// Validate a proposed footer boundary using the same title and component
+    /// rules as lyric parsing, without recursively recognizing another footer.
+    static func hasPrimaryLyricsBeforeCopyright(in lines: [String]) -> Bool {
+        let body = extractTopTitle(from: lines, fileName: nil)?.1 ?? lines
+        return buildSlides(from: body).contains { slide in
+            slide.lines.contains { line in
+                line.languageTag.isEmpty && !LyricsTextSyntax.isBlank(line.text)
+            }
         }
+    }
+
+    /// Uses the same title/footer decisions as projection so cleanup cannot
+    /// rewrite licensing information or reinterpret a title as a lyric section.
+    static func protectedLineIndexesForCleanup(_ raw: String, fileName: String? = nil) -> Set<Int> {
+        let lines = LyricsTextSanitizer.normalizeLineEndings(raw)
+            .split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let footer = LyricsCopyrightParser.footer(in: lines)
+        let workingLines = footer.map { Array(lines[..<$0.startIndex]) } ?? lines
+        var protected = Set(footer.map { Array($0.startIndex..<lines.count) } ?? [])
+        if extractTopTitle(from: workingLines, fileName: fileName) != nil,
+           let titleIndex = workingLines.firstIndex(where: { !LyricsTextSyntax.isBlank($0) }) {
+            protected.insert(titleIndex)
+        }
+        return protected
+    }
+
+    /// Returns source spans for the parser's own slide blocks. Cleanup uses
+    /// these boundaries instead of maintaining another section parser.
+    static func stanzaRangesForCleanup(_ lines: [String], protected: Set<Int>) -> [Range<Int>] {
+        let body = lines.enumerated().filter { !protected.contains($0.offset) }
+        let blocks = splitBlocks(from: body.map(\.element))
+        var starts: [Int] = []
+        var cursor = 0
+        for block in blocks {
+            var start: Int?
+            for line in block where !LyricsTextSyntax.isBlank(line) {
+                // Blocks retain every nonblank source line verbatim. Advance
+                // over only lines omitted by the existing separator splitter.
+                while cursor < body.count, body[cursor].element != line { cursor += 1 }
+                if cursor < body.count {
+                    if start == nil { start = body[cursor].offset }
+                    cursor += 1
+                }
+            }
+            if let start { starts.append(start) }
+        }
+        return starts.enumerated().map { index, start in
+            start..<(index + 1 < starts.count ? starts[index + 1] : lines.count)
+        }
+    }
+
+    private static func splitBlocks(from lines: [String]) -> [[String]] {
+        if lines.contains(where: LyricsTextSyntax.isSeparator) {
+            return splitOnSeparator(lines)
+        }
+        if containsPrimarySectionHeader(lines) {
+            return splitSectionedWithoutSeparators(lines)
+        }
+        return splitOnBlankLine(lines)
+    }
+
+
+    private static func buildSlides(from lines: [String]) -> [Slide] {
+        let blocks = splitBlocks(from: lines)
 
         var slides: [Slide] = []
         for block in blocks {
@@ -240,7 +294,7 @@ nonisolated enum LyricsParser {
             return (title, remaining)
         }
         guard !LyricsTextSyntax.isSeparator(firstLine), !LyricsSectionCatalog.isHeading(firstLine),
-              metadataLine(LyricsTextSyntax.markerText(firstLine).trimmingCharacters(in: .whitespaces)) == nil,
+              !LyricsCopyrightParser.isMetadataLine(firstLine),
               let next = lines.indices.dropFirst(first + 1).first(where: { !LyricsTextSyntax.isBlank(lines[$0]) }) else {
             return nil
         }
@@ -258,83 +312,4 @@ nonisolated enum LyricsParser {
         return (firstLine, remaining)
     }
 
-    private struct CCLIFooter {
-        let startIndex: Int
-        let metadata: [String: String]
-    }
-
-    private enum MetadataLine {
-        case song(String), license(String), authors, copyright, rights
-    }
-
-    private static func metadataLine(_ line: String) -> MetadataLine? {
-        let lower = line.lowercased()
-        for (prefix, song) in [("ccli song #", true), ("ccli license #", false)] {
-            if lower.hasPrefix(prefix) {
-                let number = line.dropFirst(prefix.count).trimmingCharacters(in: .whitespaces)
-                guard !number.isEmpty, number.utf8.allSatisfy({ (0x30...0x39).contains($0) }) else { return nil }
-                return song ? .song(number) : .license(number)
-            }
-        }
-        if lower.hasPrefix("authors:") || lower.hasPrefix("author:") { return .authors }
-        if lower.hasPrefix("©"), lower.dropFirst().trimmingCharacters(in: .whitespaces).first?.isNumber == true {
-            return .copyright
-        }
-        if lower == "all rights reserved." || lower == "all rights reserved" { return .rights }
-        if lower.hasPrefix("for use solely with"), lower.contains("songselect"),
-           lower.contains("terms of use") || lower.contains("ccli.com") {
-            return .rights
-        }
-        return nil
-    }
-
-    private static func isCopyrightClaim(_ line: String) -> Bool {
-        let lower = line.lowercased()
-        return lower.hasPrefix("copyright ") || lower.hasPrefix("(admin. by ") || lower.hasPrefix("admin. by ")
-    }
-
-    /// A single validated trailing block owns both metadata and the exact removal range.
-    /// Unknown lines stop the scan; no density threshold or backward author guessing.
-    private static func extractCCLIFooter(from lines: [String]) -> CCLIFooter? {
-        let matching = lines.map { LyricsTextSyntax.markerText($0).trimmingCharacters(in: .whitespaces) }
-        let kinds = matching.map(metadataLine)
-        var start = lines.count
-        while start > 0 {
-            let candidate = start - 1
-            if matching[candidate].isEmpty || kinds[candidate] != nil {
-                start = candidate
-            } else if candidate > 0, case .copyright? = kinds[candidate - 1],
-                      isCopyrightClaim(matching[candidate]) {
-                start = candidate
-            } else {
-                break
-            }
-        }
-        while start < lines.count, matching[start].isEmpty { start += 1 }
-        guard start < lines.count else { return nil }
-
-        var metadata: [String: String] = [:]
-        for index in start..<lines.count {
-            let original = lines[index].trimmingCharacters(in: .whitespaces)
-            switch kinds[index] {
-            case .song(let number): metadata["ccli-songnumber"] = number
-            case .license(let number): metadata["ccli-licensenumber"] = number
-            case .authors:
-                if let colon = original.firstIndex(of: ":") {
-                    metadata["authors"] = original[original.index(after: colon)...].trimmingCharacters(in: .whitespaces)
-                }
-            case .copyright: metadata["copyright"] = original
-            case .rights: metadata["rights"] = original
-            case nil:
-                if !matching[index].isEmpty { metadata["copyright-claim"] = original }
-            }
-        }
-        guard metadata.count >= 2,
-              metadata["ccli-songnumber"] != nil || metadata["ccli-licensenumber"] != nil else { return nil }
-
-        // Unlabelled text before a footer might be either an author or the last
-        // lyric. Keep it. Only an explicit Author(s): line belongs to metadata.
-        guard lines[..<start].contains(where: { !LyricsTextSyntax.isBlank($0) }) else { return nil }
-        return CCLIFooter(startIndex: start, metadata: metadata)
-    }
 }

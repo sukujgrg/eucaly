@@ -27,6 +27,11 @@ final class LibrarySearchCommandRouter {
 
     var isAttached: Bool { searchField?.window != nil }
 
+    @discardableResult
+    func focusExistingSearch() -> Bool {
+        (searchField as? LibrarySearchField)?.focusForLibrarySearch() ?? false
+    }
+
     func activateSelection() -> Bool {
         guard isAttached else { return false }
         return resultsCoordinator?.activateSelection() ?? false
@@ -686,11 +691,36 @@ private struct Row: Hashable {
 }
 
 final class LibrarySearchTableView: NSTableView {
+    private var needsSelectionRevealAfterLayout = false
+
     var defaultActionHandler: (() -> Bool)?
     var cancelActionHandler: (() -> Void)?
     var navigationHandler: ((LibrarySearchNavigationCommand) -> Bool)?
     var menuProvider: ((Int) -> NSMenu?)?
     var willRemoveHandler: (() -> Void)?
+
+    override func scrollRowToVisible(_ row: Int) {
+        // NSViewRepresentable creates the table before its viewport has a size.
+        // Scrolling then leaves the first result underneath its floating heading.
+        guard !visibleRect.isEmpty else {
+            needsSelectionRevealAfterLayout = true
+            needsLayout = true
+            return
+        }
+        needsSelectionRevealAfterLayout = false
+        // Reloading results also invalidates the floating heading's geometry.
+        // Finish that layout before AppKit computes the selected row's scroll.
+        layoutSubtreeIfNeeded()
+        super.scrollRowToVisible(row)
+    }
+
+    override func layout() {
+        super.layout()
+        guard needsSelectionRevealAfterLayout, !visibleRect.isEmpty else { return }
+        needsSelectionRevealAfterLayout = false
+        // Selection may have changed or disappeared while waiting for a viewport.
+        if selectedRow >= 0 { super.scrollRowToVisible(selectedRow) }
+    }
 
     // These selectors are declared by the responder protocol but do not have
     // superclass implementations. Empty or retired lists simply cannot move.

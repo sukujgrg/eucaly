@@ -83,7 +83,27 @@ final class PresentationSession: NSObject, ObservableObject {
 
     private var currentResourceScope: URL?
     private var audioResourceScope: URL?
+    var referencedFileURLs: Set<URL> {
+        var urls = Set(Self.sourceFileURLs(in: slides, lyricsSourceURL: currentLyricsSourceURL).map(\.standardizedFileURL))
+        for url in [pdfSlideSource?.url, backgroundVisualURL, backgroundAudioURL, currentResourceScope, audioResourceScope,
+                    (backgroundAudioPlayer?.currentItem?.asset as? AVURLAsset)?.url].compactMap({ $0 }) {
+            urls.insert(url.standardizedFileURL)
+        }
+        return urls
+    }
+
+    private static func sourceFileURLs(in slides: [Slide], lyricsSourceURL: URL?) -> [URL] {
+        var urls = slides.flatMap { [$0.videoURL, $0.pdfURL, $0.imageURL].compactMap { $0 } }
+        if !slides.isEmpty, let lyricsSourceURL { urls.append(lyricsSourceURL) }
+        return urls
+    }
+
+    private func canAcquireFile(_ url: URL?) -> Bool {
+        url.map { outputCoordinator.fileAdmissionProblem(for: $0) == nil } ?? true
+    }
+
     func setCurrentResourceScope(_ url: URL?) {
+        guard canAcquireFile(url) else { return }
         guard currentResourceScope != url else { return }
         currentResourceScope?.stopAccessingSecurityScopedResource(); currentResourceScope = nil
         if let url, url.startAccessingSecurityScopedResource() { currentResourceScope = url }
@@ -239,12 +259,14 @@ final class PresentationSession: NSObject, ObservableObject {
         return FileManager.default.fileExists(atPath: url.path)
     }
 
+    @discardableResult
     func setSlides(
         _ slides: [Slide],
         lyricsSourceURL: URL? = nil,
         preferredSelection: Slide.ID? = nil,
         preferredSelectionIndex: Int? = nil
-    ) {
+    ) -> Bool {
+        guard Self.sourceFileURLs(in: slides, lyricsSourceURL: lyricsSourceURL).allSatisfy({ canAcquireFile($0) }) else { return false }
         currentDocumentRevision &+= 1
         pdfDocumentCache.clear()
         let preservedSelection = preferredSelection ?? currentSlideID
@@ -262,13 +284,16 @@ final class PresentationSession: NSObject, ObservableObject {
         }
         if let url = currentSlide?.pdfURL { pdfDocumentCache.prepareAcceptedSource(for: url) }
         resetVideoPlaybackProgress()
+        return true
     }
 
+    @discardableResult
     func setPDFSlideSource(
         _ source: PDFSlideSource,
         preferredSelection: Slide.ID? = nil,
         preferredSelectionIndex: Int? = nil
-    ) {
+    ) -> Bool {
+        guard canAcquireFile(source.url) else { return false }
         currentDocumentRevision &+= 1
         pdfDocumentCache.clear()
         slides = []
@@ -286,6 +311,7 @@ final class PresentationSession: NSObject, ObservableObject {
         }
         pdfDocumentCache.prepareAcceptedSource(for: source.url)
         resetVideoPlaybackProgress()
+        return true
     }
 
     func clearSlides() {
@@ -427,25 +453,32 @@ final class PresentationSession: NSObject, ObservableObject {
         outputCoordinator.refreshMedia()
     }
 
-    func setBackgroundVisual(_ url: URL?) {
+    @discardableResult
+    func setBackgroundVisual(_ url: URL?) -> Bool {
+        guard canAcquireFile(url) else { return false }
         backgroundVisualURL = url
         isBackgroundVisualVisible = (url != nil)
+        return true
     }
 
-    func setBackgroundAudio(url: URL?, autoplay: Bool) {
-        guard outputCoordinator.profiles.document.workspaces.contains(where: { $0.id == outputSourceID }) else { return }
+    @discardableResult
+    func setBackgroundAudio(url: URL?, autoplay: Bool) -> Bool {
+        guard outputCoordinator.profiles.document.workspaces.contains(where: { $0.id == outputSourceID }),
+              canAcquireFile(url) else { return false }
         if backgroundAudioURL == url {
             if autoplay {
                 playBackgroundAudio()
             }
-            return
+            return true
         }
         backgroundAudioURL = url
         configureBackgroundAudioPlayer(for: url, autoplay: autoplay)
+        return true
     }
 
     func playBackgroundAudio() {
-        guard outputCoordinator.profiles.document.workspaces.contains(where: { $0.id == outputSourceID }) else { return }
+        guard outputCoordinator.profiles.document.workspaces.contains(where: { $0.id == outputSourceID }),
+              canAcquireFile(backgroundAudioURL) else { return }
         backgroundAudioHasStandaloneLocalRoute = outputCoordinator.canPlayStandaloneBackgroundAudio(workspace: outputSourceID)
         outputCoordinator.claimBackgroundAudio(self)
         backgroundAudioGeneration = UUID()
@@ -522,6 +555,7 @@ final class PresentationSession: NSObject, ObservableObject {
     }
 
     private func configureBackgroundAudioPlayer(for url: URL?, autoplay: Bool) {
+        guard canAcquireFile(url) else { return }
         backgroundAudioGeneration = UUID()
         backgroundAudioPlayer?.pause()
         removeBackgroundAudioTimeObserver()

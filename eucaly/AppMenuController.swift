@@ -12,7 +12,7 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
 
     private enum Command: String {
         case settings, updates, notices, support, newWorkspace, detach
-        case newLyrics, quickOpen, refresh, save, stop, stopAll, slides, background, audio
+        case newLyrics, searchLibrary, refresh, save, stop, stopAll, slides, background, audio
         case clearBackground, clearAudio, clearAll
         case monitorAudioLocally, manageOutputs
     }
@@ -40,7 +40,6 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         let file = submenu("File")
         add("New Lyrics", to: file, command: .newLyrics, key: "n")
         add("New Workspace Tab", to: file, command: .newWorkspace, key: "t")
-        add("Quick Open…", to: file, command: .quickOpen, key: "o", modifiers: [.command, .shift])
         add("Refresh Library", to: file, command: .refresh, key: "r")
         file.addItem(.separator())
         add("Save Lyrics", to: file, command: .save, key: "s")
@@ -59,12 +58,13 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         edit.addItem(.separator())
         let find = NSMenu(title: "Find")
         let findItem = NSMenuItem(title: "Find", action: nil, keyEquivalent: ""); findItem.submenu = find; edit.addItem(findItem)
+        add("Search Library…", to: find, command: .searchLibrary, key: "f")
         for (title, key, modifiers, action) in [
-            ("Find…", "f", NSEvent.ModifierFlags.command, NSTextFinder.Action.showFindInterface),
+            ("Find in Lyrics…", "", NSEvent.ModifierFlags.command, NSTextFinder.Action.showFindInterface),
             ("Find Next", "g", .command, .nextMatch),
             ("Find Previous", "g", [.command, .shift], .previousMatch),
             ("Use Selection for Find", "e", .command, .setSearchString)] {
-            let item = add(title, to: find, action: #selector(NSTextView.performTextFinderAction(_:)), key: key, modifiers: modifiers)
+            let item = add(title, to: find, action: #selector(LyricsTextView.performLyricsFindAction(_:)), key: key, modifiers: modifiers)
             item.tag = action.rawValue
         }
         add("Show Fonts", to: edit, action: #selector(NSFontManager.orderFrontFontPanel(_:))).target = NSFontManager.shared
@@ -145,7 +145,7 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
             menuItem.state = listening.isListening ? .on : .off
             menuItem.toolTip = listening.help
             return listening.canChange
-        case .newLyrics, .quickOpen, .refresh, .save: return app.workspaceWindows.activeWorkspaceID != nil
+        case .newLyrics, .searchLibrary, .refresh, .save: return app.workspaceWindows.activeWorkspaceID != nil
         case .slides: return app.outputs.commandSession?.isEmpty == false
         case .stop: return app.outputs.commandWorkspaceID != nil
         case .background, .audio, .clearBackground, .clearAudio, .clearAll:
@@ -172,7 +172,7 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
                 app.outputs.setMonitorAudioLocally(!listening.workspace.monitorAudioLocally, workspace: listening.workspace.id)
             }
         case .newLyrics: post(.newLyrics)
-        case .quickOpen: post(.showLibrarySearch)
+        case .searchLibrary: post(.showLibrarySearch)
         case .refresh: post(.refreshLibrary)
         case .save: post(.saveLyrics)
         case .stop: app.outputs.stop()

@@ -61,6 +61,7 @@ struct LibrarySearchOverlayView: View {
 
     @Binding var selectedEntry: LibrarySearchEntryID?
 
+    let commandRouter: LibrarySearchCommandRouter
     let actions: [LibraryCommandPaletteAction]
     let results: [LibraryTextSearchIndex.SearchResult]
     let minimumCharacterCount: Int
@@ -72,9 +73,6 @@ struct LibrarySearchOverlayView: View {
     let onOpenResult: (URL) -> Void
     let onAddResultToPlaylist: (URL) -> Void
     let onCommitQuery: () -> Void
-
-    @State
-    private var commandRouter = LibrarySearchCommandRouter()
 
     var body: some View {
         ZStack {

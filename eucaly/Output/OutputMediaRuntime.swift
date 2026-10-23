@@ -30,15 +30,37 @@ final class OutputMediaRuntime {
     // customization changes profile identity, not the source or its lifetime.
     private var backgroundURLs: [String: URL] = [:]
     private var bookmarkTasks: [String: Task<Void, Never>] = [:]
+    private var bookmarkAdmissionGuards: [String: (URL) -> OutputCoordinator.FileAcquisitionAdmission] = [:]
     private var requestedBookmarks: Set<String> = []
     private var scopedURLs: [String: URL] = [:]
+    // A deferred resolution is intent, not an acquired resource. Its exact
+    // reservation releases it for retry after failure or an unrelated removal.
+    private struct DeferredBackground {
+        let url: URL
+        let reservationID: UUID
+    }
+    private var deferredBackgrounds: [String: DeferredBackground] = [:]
+
+    var referencedFileURLs: Set<URL> {
+        var urls = Set(backgroundURLs.values.map(\.standardizedFileURL))
+        urls.formUnion(scopedURLs.values.map(\.standardizedFileURL))
+        urls.formUnion(backgrounds.values.map { $0.url.standardizedFileURL })
+        if let programURL { urls.insert(programURL.standardizedFileURL) }
+        return urls
+    }
+
+    func retainsFile(where matches: (URL) -> Bool) -> Bool {
+        referencedFileURLs.contains(where: matches)
+    }
 
     private final class BackgroundResource {
+        let url: URL
         let player: AVPlayer
         var endObserver: NSObjectProtocol?
         var wantsPlayback = false
         func setPlayback(_ play: Bool) { wantsPlayback = play; if play { player.play() } else { player.pause() } }
         init(url: URL) {
+            self.url = url
             player = AVPlayer(url: url); player.allowsExternalPlayback = false; player.isMuted = true
             endObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: player.currentItem, queue: .main) { [weak self] _ in
                 Task { @MainActor [weak self] in
@@ -53,11 +75,13 @@ final class OutputMediaRuntime {
         }
     }
     func updateProgram(slide: Slide?, session: PresentationSession?, running: Bool, visible: Bool,
-                       localAudioEnabled: Bool = true, documentRevision: UInt64? = nil) {
+                       localAudioEnabled: Bool = true, documentRevision: UInt64? = nil,
+                       canAcquireFile: (URL) -> Bool = { _ in true }) {
+        let url = running ? slide?.videoURL : nil
+        if let url, (programURL != url || self.session !== session), !canAcquireFile(url) { return }
         programFill = session?.videoFill ?? false
         programVisible = visible && running
         programAudioGain.set(session?.videoMuted == true ? 0 : 1)
-        let url = running ? slide?.videoURL : nil
         if programURL != url || self.session !== session {
             stopProgram()
             self.session = session; programURL = url
@@ -119,24 +143,47 @@ final class OutputMediaRuntime {
         guard let url = backgroundURL(for: profile) else { return nil }
         return backgrounds[backgroundKey(profile, url: url)]?.player
     }
-    func syncBackgrounds(profiles: [OutputProfile], visible: Bool, media: Bool, changed: @escaping () -> Void) {
+    func syncBackgrounds(profiles: [OutputProfile], visible: Bool, media: Bool,
+                         canAcquireFile: (URL) -> Bool = { _ in true },
+                         makeFileAcquisitionGuard: () -> (URL) -> OutputCoordinator.FileAcquisitionAdmission = { { _ in .allowed } },
+                         changed: @escaping () -> Void) {
         let bookmarks = Set(profiles.compactMap(\.background.bookmark).filter { !$0.isEmpty })
         for bookmark in requestedBookmarks.subtracting(bookmarks) {
             bookmarkTasks.removeValue(forKey: bookmark)?.cancel()
+            bookmarkAdmissionGuards.removeValue(forKey: bookmark)
             backgroundURLs.removeValue(forKey: bookmark)
+            deferredBackgrounds.removeValue(forKey: bookmark)
             scopedURLs.removeValue(forKey: bookmark)?.stopAccessingSecurityScopedResource()
         }
         let added = bookmarks.subtracting(requestedBookmarks)
         requestedBookmarks = bookmarks
         for bookmark in added {
             // Bookmark resolution and filesystem access never run in a View body.
-            bookmarkTasks[bookmark] = Task {
-                let url = await bookmarkResolver(bookmark)
-                guard !Task.isCancelled, requestedBookmarks.contains(bookmark) else { return }
-                bookmarkTasks.removeValue(forKey: bookmark)
+            let resolve = bookmarkResolver
+            // Keep the ticket outside the awaiting task: cancellation must
+            // release it even if the resolver does not finish cooperatively.
+            bookmarkAdmissionGuards[bookmark] = makeFileAcquisitionGuard()
+            bookmarkTasks[bookmark] = Task { [weak self] in
+                let url = await resolve(bookmark)
+                guard !Task.isCancelled, let self, self.requestedBookmarks.contains(bookmark) else { return }
+                self.bookmarkTasks.removeValue(forKey: bookmark)
+                guard let admission = self.bookmarkAdmissionGuards.removeValue(forKey: bookmark) else { return }
                 if let url {
-                    if url.startAccessingSecurityScopedResource() { scopedURLs[bookmark] = url }
-                    backgroundURLs[bookmark] = url
+                    switch admission(url) {
+                    case .deferred(let reservationID):
+                        self.deferredBackgrounds[bookmark] = .init(url: url, reservationID: reservationID)
+                        changed()
+                        return
+                    case .removed:
+                        self.deferredBackgrounds.removeValue(forKey: bookmark)
+                        changed()
+                        return
+                    case .allowed:
+                        break
+                    }
+                    self.deferredBackgrounds.removeValue(forKey: bookmark)
+                    if url.startAccessingSecurityScopedResource() { self.scopedURLs[bookmark] = url }
+                    self.backgroundURLs[bookmark] = url
                 }
                 changed()
             }
@@ -153,16 +200,35 @@ final class OutputMediaRuntime {
             if let resource = backgrounds.removeValue(forKey: key) { ndiVideoFrames.stop(player: resource.player) }
         }
         for (key, value) in wanted {
-            if backgrounds[key] == nil { backgrounds[key] = BackgroundResource(url: value.0) }
+            if backgrounds[key] == nil {
+                guard canAcquireFile(value.0) else { continue }
+                backgrounds[key] = BackgroundResource(url: value.0)
+            }
             backgrounds[key]?.setPlayback(value.1)
         }
+    }
+    @discardableResult
+    func finishFileRemoval(reservationID: UUID, matching matches: (URL) -> Bool, removed: Bool) -> Bool {
+        let deferred = deferredBackgrounds.filter { $0.value.reservationID == reservationID }
+        var needsRetry = false
+        for (bookmark, intent) in deferred {
+            deferredBackgrounds.removeValue(forKey: bookmark)
+            // The coordinator releases its reservation before the next normal
+            // refresh. A successful removal must never follow a bookmark into Trash.
+            if !removed || !matches(intent.url) {
+                requestedBookmarks.remove(bookmark)
+                needsRetry = true
+            }
+        }
+        return needsRetry
     }
     var backgroundResourceCount: Int { backgrounds.count }
     func stop() {
         ndiVideoFrames.stop()
         stopProgram(); backgrounds.removeAll()
         for task in bookmarkTasks.values { task.cancel() }
-        bookmarkTasks.removeAll(); requestedBookmarks.removeAll(); backgroundURLs.removeAll()
+        bookmarkTasks.removeAll(); bookmarkAdmissionGuards.removeAll(); requestedBookmarks.removeAll()
+        backgroundURLs.removeAll(); deferredBackgrounds.removeAll()
         for url in scopedURLs.values { url.stopAccessingSecurityScopedResource() }
         scopedURLs.removeAll()
     }

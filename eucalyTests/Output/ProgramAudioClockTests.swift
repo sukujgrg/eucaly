@@ -154,7 +154,6 @@ final class ProgramAudioClockTests: XCTestCase {
         XCTAssertEqual(CMTimebaseCreateWithSourceClock(allocator: kCFAllocatorDefault,
             sourceClock: CMClockGetHostTimeClock(), timebaseOut: &value), noErr)
         let clock = try XCTUnwrap(value), id = UUID(), metrics = ProgramPositionMetrics()
-        metrics.begin(at: .max, end: .max); metrics.setClock(clock)
         let bus = ProgramAudioBus { metrics.consume($0, at: $1) }
         defer { bus.stop() }
         let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2))
@@ -187,11 +186,11 @@ final class ProgramAudioClockTests: XCTestCase {
         await fulfillment(of: [installed], timeout: 2)
         let now = CMClockGetTime(CMClockGetHostTimeClock()).convertScale(48000, method: .roundHalfAwayFromZero).value
         let host = CMTime(value: (now / 960 + 1) * 960, timescale: 48000)
-        let first = CMSyncConvertTime(host, from: CMClockGetHostTimeClock(), to: clock)
-            .convertScale(48000, method: .roundHalfAwayFromZero).value
-        metrics.begin(at: first, end: first + 48000)
+        try metrics.begin(clock: clock, atHostSample: host.value, frames: 48000)
         try await wait { metrics.snapshot.complete }
-        XCTAssertEqual(Double(metrics.snapshot.frames), 48000, accuracy: 4)
+        XCTAssertEqual(metrics.snapshot.frames, 48000)
+        XCTAssertEqual(metrics.snapshot.timestampDiscontinuities, 0)
+        XCTAssertEqual(metrics.snapshot.nonFinite, 0)
         XCTAssertLessThanOrEqual(metrics.snapshot.maximumError, 0.0000004,
             "A clock correction must reuse actual retained PCM immediately, including its already-rendered prefix")
     }
@@ -201,7 +200,7 @@ final class ProgramAudioClockTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: url) }
         let player = AVPlayer(url: url), gain = ProgramAudioGain(), measured = ProgramPositionMetrics()
         player.volume = 0
-        measured.begin(at: .max, end: .max)
+        useDeterministicPositionClock(player)
         let bus = ProgramAudioBus { measured.consume($0, at: $1) }
         let source = PlayerProgramAudioSource(player: player, mixer: bus, programGain: gain)
         defer { source.stop(); player.pause(); bus.stop() }
@@ -209,7 +208,7 @@ final class ProgramAudioClockTests: XCTestCase {
         let prerolled = await player.preroll(atRate: 1)
         XCTAssertTrue(prerolled)
         let clock = try XCTUnwrap(player.currentItem?.timebase)
-        measured.setClock(clock)
+        XCTAssertFalse(CMSyncMightDrift(clock, CMClockGetHostTimeClock()))
         bus.start(at: CMClockGetTime(CMClockGetHostTimeClock())); player.play()
         try await wait { player.currentTime().seconds >= 0.5 }
         for _ in 0..<3 {
@@ -230,12 +229,12 @@ final class ProgramAudioClockTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: url) }
         let player = AVPlayer(url: url), gain = ProgramAudioGain(), measured = ProgramPositionMetrics()
         player.volume = 0
-        measured.begin(at: .max, end: .max)
+        useDeterministicPositionClock(player)
         let bus = ProgramAudioBus { measured.consume($0, at: $1) }
         let source = PlayerProgramAudioSource(player: player, mixer: bus, programGain: gain)
         defer { source.stop(); player.pause(); bus.stop() }
         try await wait { source.isPrepared && player.status == .readyToPlay }
-        measured.setClock(try XCTUnwrap(player.currentItem?.timebase))
+        XCTAssertFalse(CMSyncMightDrift(try XCTUnwrap(player.currentItem?.timebase), CMClockGetHostTimeClock()))
         bus.start(at: CMClockGetTime(CMClockGetHostTimeClock())); player.play()
         try await wait { player.currentTime().seconds >= 0.5 }
         // Leave both the decoded lookahead and the already-pruned history.
@@ -252,18 +251,113 @@ final class ProgramAudioClockTests: XCTestCase {
                                    metrics: ProgramPositionMetrics) async throws {
         let clock = try XCTUnwrap(player.currentItem?.timebase)
         let now = CMClockGetTime(CMClockGetHostTimeClock()).convertScale(48000, method: .roundHalfAwayFromZero).value
-        let hostStart = CMTime(value: (now + 959) / 960 * 960, timescale: 48000)
-        let start = CMSyncConvertTime(hostStart, from: CMClockGetHostTimeClock(), to: clock)
-            .convertScale(48000, method: .roundHalfAwayFromZero).value
-        metrics.begin(at: start, end: start + 48000)
+        let hostStart = (now / 960 + 1) * 960
+        XCTAssertFalse(CMSyncMightDrift(clock, CMClockGetHostTimeClock()))
+        source.refresh()
+        try metrics.begin(clock: clock, atHostSample: hostStart, frames: 48000)
         try await wait { source.refresh(); return metrics.snapshot.complete }
         let result = metrics.snapshot
-        print("Transition PCM: frames=\(result.frames), maximumAmplitudeError=\(result.maximumError)")
-        XCTAssertEqual(Double(result.frames), 48000, accuracy: 4)
+        print("Transition PCM: frames=\(result.frames), maximumAmplitudeError=\(result.maximumError), rate=\(result.rate), timestampDiscontinuities=\(result.timestampDiscontinuities)")
+        XCTAssertEqual(result.frames, 48000)
+        XCTAssertEqual(result.timestampDiscontinuities, 0)
         XCTAssertEqual(result.nonFinite, 0)
         XCTAssertLessThanOrEqual(result.maximumError, 0.0000004,
             "Every sample must match the asset through the full second, including non-silent partial blocks")
         XCTAssertNil(source.failureReason)
+    }
+
+    private func useDeterministicPositionClock(_ player: AVPlayer) {
+        // AVPlayer.h sourceClock / CMSync.h: a common source uses mathematical
+        // rates/offsets; independent device clocks use mutable measured drift.
+        // These muted generated-PCM fixtures need a stable independent oracle.
+        // Automatic audio-device clock behavior remains outside this unit test.
+        player.sourceClock = CMClockGetHostTimeClock()
+    }
+
+    func testRelativeRatesPreserveAnExactHostWindowAndIndependentAssetPCM() async throws {
+        for rate in [0.8, 1.25] {
+            let measured = ProgramPositionMetrics(), id = UUID()
+            let bus = ProgramAudioBus { measured.consume($0, at: $1) }
+            defer { bus.stop() }
+            let pcm = try positionPCM(start: 0, frames: 24000)
+            XCTAssertTrue(bus.append([.init(pcm, at: .zero)], id: id))
+            let now = CMClockGetTime(CMClockGetHostTimeClock()).convertScale(48000, method: .roundHalfAwayFromZero).value
+            let host = CMTime(value: (now / 960 + 2) * 960, timescale: 48000)
+            let clock = try controlledPositionClock(rate: rate, host: host)
+            bus.setPlaybackClock(clock, gain: 1, id: id)
+            try measured.begin(clock: clock, atHostSample: host.value, frames: 4800)
+            bus.start(at: host)
+            try await wait { measured.snapshot.complete }
+            let result = measured.snapshot
+            // Faster playback skips asset positions and slower playback repeats
+            // them; neither may lose or duplicate a host output sample.
+            XCTAssertEqual(result.frames, 4800)
+            XCTAssertEqual(result.timestampDiscontinuities, 0)
+            XCTAssertEqual(result.nonFinite, 0)
+            XCTAssertEqual(result.rate, rate)
+            XCTAssertLessThanOrEqual(result.maximumError, 0.0000004)
+        }
+    }
+
+    func testPositionOracleRejectsMissingAndRepeatedHostBlocks() throws {
+        let fixtures: [[Int64]] = [[0, 1920], [0, 0, 960, 1920]]
+        for starts in fixtures {
+            let measured = ProgramPositionMetrics()
+            let clock = try controlledPositionClock(rate: 1, host: .zero)
+            try measured.begin(clock: clock, atHostSample: 0, frames: 2880)
+            for start in starts {
+                measured.consume(try positionPCM(start: start, frames: 960),
+                                 at: AVAudioTime(sampleTime: start, atRate: 48000))
+            }
+            let result = measured.snapshot
+            XCTAssertTrue(result.complete)
+            XCTAssertNotEqual(result.frames, 2880)
+            XCTAssertGreaterThan(result.timestampDiscontinuities, 0)
+            XCTAssertEqual(result.maximumError, 0, "Correct PCM cannot conceal a skipped or repeated host timestamp")
+        }
+    }
+
+    func testPositionOracleRejectsSilenceAndShiftedPCMDespiteCompleteHostClock() throws {
+        for silent in [true, false] {
+            let measured = ProgramPositionMetrics()
+            let clock = try controlledPositionClock(rate: 1, host: .zero)
+            try measured.begin(clock: clock, atHostSample: 0, frames: 2880)
+            for start in [Int64(0), 960, 1920] {
+                let pcm = try positionPCM(start: start + (silent ? 0 : 960), frames: 960)
+                if silent, start == 960 {
+                    for channel in 0..<2 { pcm.floatChannelData![channel].update(repeating: 0, count: 960) }
+                }
+                measured.consume(pcm, at: AVAudioTime(sampleTime: start, atRate: 48000))
+            }
+            let result = measured.snapshot
+            XCTAssertTrue(result.complete)
+            XCTAssertEqual(result.frames, 2880)
+            XCTAssertEqual(result.timestampDiscontinuities, 0)
+            XCTAssertEqual(result.nonFinite, 0)
+            XCTAssertGreaterThan(result.maximumError, 0.0000004,
+                "Expected source position comes from the frozen clock, never the observed sample value")
+        }
+    }
+
+    private func controlledPositionClock(rate: Double, host: CMTime) throws -> CMTimebase {
+        var value: CMTimebase?
+        XCTAssertEqual(CMTimebaseCreateWithSourceClock(allocator: kCFAllocatorDefault,
+            sourceClock: CMClockGetHostTimeClock(), timebaseOut: &value), noErr)
+        let clock = try XCTUnwrap(value)
+        XCTAssertEqual(CMTimebaseSetRateAndAnchorTime(clock, rate: rate,
+            anchorTime: .zero, immediateSourceTime: host), noErr)
+        XCTAssertFalse(CMSyncMightDrift(clock, CMClockGetHostTimeClock()))
+        return clock
+    }
+
+    private func positionPCM(start: Int64, frames: Int) throws -> AVAudioPCMBuffer {
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2))
+        let pcm = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)))
+        pcm.frameLength = AVAudioFrameCount(frames)
+        for channel in 0..<2 { for frame in 0..<frames {
+            pcm.floatChannelData![channel][frame] = Float(0.1 + Double(start + Int64(frame)) * 0.0000001)
+        } }
+        return pcm
     }
 
     private func wait(_ condition: () -> Bool) async throws {
@@ -314,6 +408,7 @@ final class ProgramAudioClockTests: XCTestCase {
         }
         let player = AVPlayer(url: url), gain = ProgramAudioGain(), measured = ProgramPositionMetrics()
         player.volume = 0
+        useDeterministicPositionClock(player)
         let bus = ProgramAudioBus { measured.consume($0, at: $1) }
         let tap = PlayerProgramAudioSource(player: player, mixer: bus, programGain: gain)
         defer { tap.stop(); player.pause(); bus.stop() }
@@ -324,19 +419,25 @@ final class ProgramAudioClockTests: XCTestCase {
         }
         let prerolled = await player.preroll(atRate: 1)
         XCTAssertTrue(prerolled)
-        measured.setClock(try XCTUnwrap(player.currentItem?.timebase))
         bus.start(at: CMClockGetTime(CMClockGetHostTimeClock())); player.play()
+        while player.timeControlStatus != .playing || player.currentTime().seconds < 1 {
+            guard ProcessInfo.processInfo.systemUptime < deadline else { return XCTFail("Position fixture did not start") }
+            tap.refresh()
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let clock = try XCTUnwrap(player.currentItem?.timebase)
+        XCTAssertFalse(CMSyncMightDrift(clock, CMClockGetHostTimeClock()))
+        let now = CMClockGetTime(CMClockGetHostTimeClock()).convertScale(48000, method: .roundHalfAwayFromZero).value
+        try measured.begin(clock: clock, atHostSample: (now / 960 + 1) * 960, frames: 96000)
         while !measured.snapshot.complete {
             guard ProcessInfo.processInfo.systemUptime < deadline else { return XCTFail("Position fixture did not finish") }
             tap.refresh()
-            if let timebase = player.currentItem?.timebase { measured.setClock(timebase) }
             try await Task.sleep(for: .milliseconds(10))
         }
         let result = measured.snapshot
-        print("Programme asset position: frames=\(result.frames), maximumAmplitudeError=\(result.maximumError)")
-        // Relative clock-rate corrections can repeat/drop an asset sample at a
-        // boundary. Four samples also cover independent clock-snapshot rounding.
-        XCTAssertEqual(Double(result.frames), 96000, accuracy: 4)
+        print("Programme asset position: frames=\(result.frames), maximumAmplitudeError=\(result.maximumError), rate=\(result.rate), timestampDiscontinuities=\(result.timestampDiscontinuities)")
+        XCTAssertEqual(result.frames, 96000)
+        XCTAssertEqual(result.timestampDiscontinuities, 0)
         XCTAssertEqual(result.nonFinite, 0)
         XCTAssertLessThanOrEqual(result.maximumError, 0.0000004,
             "Programme PCM must match asset time without inheriting local AudioQueue processing delay")
@@ -369,36 +470,63 @@ nonisolated private final class ProgramPositionMetrics: @unchecked Sendable {
         var frames = 0
         var maximumError = 0.0
         var nonFinite = 0
+        var timestampDiscontinuities = 0
+        var rate = 0.0
         var complete = false
     }
-    private let lock = NSLock()
-    private var clock: CMTimebase?
-    private var value = Snapshot()
-    private var first: Int64 = 48000, end: Int64 = 144000
-    var snapshot: Snapshot { lock.withLock { value } }
-    func begin(at first: Int64, end: Int64) {
-        lock.withLock { self.first = first; self.end = end; value = Snapshot() }
+    private struct Mapping {
+        let rate: Double
+        let media: CMTime
+        let host: CMTime
+        func mediaSample(at hostSample: Int64) -> Int64 {
+            let elapsed = CMTime(value: hostSample, timescale: 48000) - host
+            return (media + CMTimeMultiplyByFloat64(elapsed, multiplier: rate))
+                .convertScale(48000, method: .roundHalfAwayFromZero).value
+        }
     }
-    func setClock(_ clock: CMTimebase) { lock.withLock { self.clock = clock } }
-    func consume(_ pcm: AVAudioPCMBuffer, at when: AVAudioTime) {
-        guard let clock = lock.withLock({ clock }) else { return }
+    private let lock = NSLock()
+    private var mapping: Mapping?
+    private var value = Snapshot()
+    private var first: Int64 = 0, end: Int64 = 0, next: Int64 = 0
+    var snapshot: Snapshot { lock.withLock { value } }
+    func begin(clock: CMTimebase, atHostSample first: Int64, frames: Int) throws {
         var rate = 0.0, media = CMTime.invalid, host = CMTime.invalid
+        let (end, overflow) = first.addingReportingOverflow(Int64(frames))
         guard CMSyncGetRelativeRateAndAnchorTime(clock, relativeTo: CMClockGetHostTimeClock(),
             relativeRateOut: &rate, anchorTimeOut: &media, relativeToAnchorTimeOut: &host) == noErr,
-            rate > 0, media.isNumeric, host.isNumeric else { return }
-        let first = media.seconds * 48000 + (Double(when.sampleTime) - host.seconds * 48000) * rate
+            rate.isFinite, rate > 0, media.isNumeric, host.isNumeric,
+            !CMSyncMightDrift(clock, CMClockGetHostTimeClock()), frames > 0, !overflow else {
+            throw NSError(domain: "ProgramPositionMetrics", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "A running common-source clock and finite host window are required"])
+        }
+        lock.withLock {
+            // Freeze a reference before the measured host interval. A later
+            // mutable timebase snapshot cannot redefine already-rendered PCM.
+            mapping = Mapping(rate: rate, media: media, host: host)
+            self.first = first; self.end = end; next = first
+            value = Snapshot(rate: rate)
+        }
+    }
+    func consume(_ pcm: AVAudioPCMBuffer, at when: AVAudioTime) {
         lock.lock(); defer { lock.unlock() }
-        for frame in 0..<Int(pcm.frameLength) {
-            let position = Int64((first + Double(frame) * rate).rounded())
-            guard position >= self.first else { continue }
-            if position >= self.end { value.complete = true; break }
+        guard let mapping, !value.complete, when.isSampleTimeValid, when.sampleRate == 48000,
+              pcm.format.channelCount == 2, let samples = pcm.floatChannelData else { return }
+        let blockEnd = when.sampleTime + Int64(pcm.frameLength)
+        guard blockEnd > first else { return }
+        let begin = max(first, when.sampleTime), finish = min(end, blockEnd)
+        if begin != next { value.timestampDiscontinuities += 1 }
+        for hostSample in begin..<max(begin, finish) {
+            let frame = Int(hostSample - when.sampleTime)
+            let position = mapping.mediaSample(at: hostSample)
             let expected = Float(0.1 + Double(position) * 0.0000001)
             value.frames += 1
             for channel in 0..<2 {
-                let actual = pcm.floatChannelData![channel][frame]
+                let actual = samples[channel][frame]
                 if actual.isFinite { value.maximumError = max(value.maximumError, Double(abs(actual - expected))) }
                 else { value.nonFinite += 1 }
             }
         }
+        next = finish
+        if blockEnd >= end { value.complete = true }
     }
 }

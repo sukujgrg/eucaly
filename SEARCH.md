@@ -15,10 +15,20 @@ The app uses a hybrid filesystem/SQLite model:
   result stay private to each workspace
 
 ## User Behavior
+- `Cmd+F` or Edit > Find > Search Library opens the active workspace's library
+  search, including from the lyrics editor. Repeating it focuses and selects the
+  existing query without restarting the search or resetting the selected result.
+- Escape dismisses library search and restores the previous editor or control,
+  including its text selection. Search and result activation never replace Current;
+  files open in Preview. The former `Shift+Cmd+O` shortcut is removed.
+- Edit > Find > Find in Lyrics is a separate native AppKit Find command for the
+  focused lyrics editor, without a shortcut. `Cmd+G`, `Shift+Cmd+G` and `Cmd+E`
+  retain native next match, previous match and Use Selection for Find behavior;
+  they do not navigate library results or search the library query field.
 - Search starts only when query length is `>= 3` characters.
 - Query is debounced (about `220ms`) to reduce unnecessary recomputation.
-- An empty Quick Open query exposes its actions without starting a file query.
-- Quick Open actions and file results share one keyboard selection; section
+- An empty library search query exposes its actions without starting a file query.
+- Library actions and file results share one keyboard selection; section
   headings stay outside selection. Arrow keys traverse available entries and
   Return activates the selected action or opens the selected file in Preview.
 - Search status covers both debounce and query execution. An empty-result message
@@ -26,7 +36,7 @@ The app uses a hybrid filesystem/SQLite model:
   cannot overwrite a newer query's results or status.
 - Intervening keyboard selection survives query completion when the entry remains
   available. Dismissal invalidates pending requests and retires native actions;
-  late results or retained controls cannot activate a closed Quick Open.
+  late results or retained controls cannot activate a closed library search.
 
 ## Query Semantics
 - Single-word query: prefix match (for example, `bea` matches `beautiful`).
@@ -38,13 +48,15 @@ This is intentional to avoid overly broad results from token-only matching.
 - Index backend: SQLite FTS5 via `SQLite3` (system library, no third-party package).
 - Every indexed library URL contributes its `filename`.
 - `.txt` files contribute `content` only when they are `<= 10KB`.
+- Lyrics labels and Save filename suggestions use one shared naming rule. The shared parser's authored title, including `#title:`, is kept without showing the marker. Without an authored title, both use the first six words of the first primary lyric line. Section and companion headings are excluded; filenames additionally sanitize characters that are unsuitable in a filename.
+- Title extraction uses at most the first 8KB for both disk reads and supplied contents. Authored titles retain their full text within that source budget.
 - Library metadata is cached in SQLite so startup can show the last synced library list before the filesystem scan finishes.
-- Unchanged files reuse cached titles/search rows based on path, file size, and modification time.
+- Unchanged files reuse cached titles/search rows based on path, file size, and modification time. A per-row title format version refreshes older title labels once without reindexing unchanged full-text content; startup cache reads do not read source files. Temporarily unreadable legacy sources keep their saved title and pending title version until a later successful refresh.
 - Index table stores:
   - `filename`
   - `content`
   - `path` (unindexed)
-- Metadata table stores path, root, relative sort key, display title, file kind, size, modification time, and source flags.
+- Metadata table stores path, root, relative sort key, display title and its format version, file kind, size, modification time, and source flags.
 
 ## How SQLite FTS5 Works Here
 

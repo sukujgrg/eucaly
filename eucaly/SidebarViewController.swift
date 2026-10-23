@@ -731,6 +731,7 @@ final class SidebarViewController: NSViewController {
                 switch action {
                 case .addToPlaylist: configuration.onAddLibraryItemToPlaylist(url)
                 case .revealInFinder: NSWorkspace.shared.activateFileViewerSelecting([url])
+                case .moveToTrash: configuration.onMoveFileToTrash(url)
                 case .remove: break
                 }
             }, onExpansionStateChange: { [weak self] state in
@@ -791,7 +792,7 @@ final class SidebarViewController: NSViewController {
         }
         audioOutline.update(SidebarOutlineConfiguration(
             contentRevision: AnyHashable(configuration.libraryRevision), modelBuilder: {
-                SidebarOutlineModel(roots: files.map { SidebarOutlineItem(id: .audio($0.standardizedFileURL), title: self.configuration.displayName($0), contextActions: [.revealInFinder]) })
+                SidebarOutlineModel(roots: files.map { SidebarOutlineItem(id: .audio($0.standardizedFileURL), title: self.configuration.displayName($0), contextActions: [.revealInFinder, .moveToTrash]) })
             }, selectedItemIDs: selected.map { [$0] } ?? [], primarySelectedItemID: selected, itemStatuses: statuses,
             expansionStore: expansionStore, navigationSection: files.isEmpty ? nil : navigationSection(.audio),
             navigationCoordinator: navigation, allowsEmptySelection: true,
@@ -815,8 +816,13 @@ final class SidebarViewController: NSViewController {
                 }
                 performAudio(AudioSidebarInteraction.toggleAction(selectedURL: configuration.selectedAudioURL, activeURL: activeAudioURL))
             }, onAction: { [weak self] item, action in
-                guard let self, !isDetached, !isApplyingSnapshot, case .audio(let url) = item, action == .revealInFinder else { return }
-                NSWorkspace.shared.activateFileViewerSelecting([url])
+                guard let self, !isDetached, !isApplyingSnapshot, case .audio(let url) = item,
+                      configuration.audioFiles.contains(where: { $0.standardizedFileURL == url }) else { return }
+                switch action {
+                case .revealInFinder: NSWorkspace.shared.activateFileViewerSelecting([url])
+                case .moveToTrash: configuration.onMoveFileToTrash(url)
+                case .addToPlaylist, .remove: break
+                }
             }
         ))
     }

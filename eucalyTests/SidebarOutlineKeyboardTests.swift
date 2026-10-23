@@ -357,6 +357,168 @@ final class SidebarOutlineKeyboardTests: XCTestCase {
         XCTAssertEqual(fixture.recorder.accepted, .playlist(ids[3]))
     }
 
+    func testNativePointerContextMenusTargetClickedLibraryAndAudioWithoutAcceptingSource() async throws {
+        for isAudio in [false, true] {
+            for invocation in [SidebarNativeMenuInvocation.secondaryClick, .controlClick] {
+                for hit in [SidebarNativeMenuHit.title, .trailingBlank] {
+                    let urls = ["First.txt", "Second.txt"].map { URL(fileURLWithPath: "/sidebar-context-fixture/" + $0) }
+                    let ids: [SidebarOutlineItemID] = urls.map { isAudio ? .audio($0) : .library($0) }
+                    let fixture = SidebarKeyboardFixture(roots: ids.enumerated().map {
+                        SidebarOutlineItem(id: $0.element, title: "Song \($0.offset)", contextActions: [.revealInFinder, .moveToTrash])
+                    })
+                    defer { fixture.close() }
+                    try await fixture.settle()
+                    try fixture.click(row: 0)
+                    let requests = fixture.recorder.requests
+                    let selectedRows = fixture.controller.outlineView.selectedRowIndexes
+
+                    let menu = try fixture.dispatchContextMenu(row: 1, invocation: invocation, hit: hit)
+                    XCTAssertNotNil(menu, "Native delivery must show a menu: audio=\(isAudio), \(invocation), \(hit)")
+                    if let menu {
+                        let reveal = try XCTUnwrap(menu.items.firstIndex { $0.title == "Reveal in Finder" })
+                        menu.performActionForItem(at: reveal)
+                        let trash = try XCTUnwrap(menu.items.firstIndex { $0.title == "Move to Trash" })
+                        XCTAssertTrue(trash > 0 && menu.items[trash - 1].isSeparatorItem)
+                        menu.performActionForItem(at: trash)
+                        XCTAssertEqual(fixture.recorder.actions, [ids[1], ids[1]], "Context actions target the clicked, unselected file")
+                        XCTAssertEqual(fixture.recorder.performedActions, [.revealInFinder, .moveToTrash])
+                    }
+                    let reopenedMenu = try fixture.dispatchContextMenu(row: 0, invocation: invocation, hit: hit)
+                    XCTAssertNotNil(reopenedMenu, "Dismissing a native context menu must permit reopening on another row")
+                    if let reopenedMenu {
+                        reopenedMenu.performActionForItem(at: try XCTUnwrap(reopenedMenu.items.firstIndex { $0.title == "Reveal in Finder" }))
+                        XCTAssertEqual(fixture.recorder.actions, [ids[1], ids[1], ids[0]], "Reopening must use the new clicked file")
+                    }
+                    XCTAssertEqual(fixture.recorder.requests, requests, "Context delivery must not request Preview or select Audio")
+                    XCTAssertEqual(fixture.recorder.accepted, ids[0])
+                    XCTAssertEqual(fixture.controller.outlineView.selectedRowIndexes, selectedRows)
+                    XCTAssertTrue(fixture.recorder.defaultActions.isEmpty, "Opening a menu must not start Audio")
+                    XCTAssertEqual(fixture.session.slides.map(\.id), [fixture.currentSlideID])
+                }
+            }
+        }
+    }
+
+    func testNativeKeyboardAndAccessibilityContextMenusTargetSelectedFile() async throws {
+        for isAudio in [false, true] {
+            for invocation in [SidebarNativeMenuInvocation.keyboard, .accessibility] {
+                let urls = ["First.txt", "Second.txt"].map { URL(fileURLWithPath: "/sidebar-context-fixture/" + $0) }
+                let ids: [SidebarOutlineItemID] = urls.map { isAudio ? .audio($0) : .library($0) }
+                let fixture = SidebarKeyboardFixture(roots: ids.enumerated().map {
+                    SidebarOutlineItem(id: $0.element, title: "Song \($0.offset)", contextActions: [.revealInFinder, .moveToTrash])
+                })
+                defer { fixture.close() }
+                try await fixture.settle()
+                try fixture.click(row: 0)
+                XCTAssertTrue(fixture.window.makeFirstResponder(fixture.controller.outlineView))
+                try fixture.sendArrow(.down)
+                XCTAssertEqual(fixture.recorder.accepted, ids[1])
+                let requests = fixture.recorder.requests
+
+                let menu = try fixture.dispatchContextMenu(row: 1, invocation: invocation, hit: .title)
+                XCTAssertNotNil(menu, "The native \(invocation) entry must show the selected file's menu")
+                if let menu {
+                    let reveal = try XCTUnwrap(menu.items.firstIndex { $0.title == "Reveal in Finder" })
+                    menu.performActionForItem(at: reveal)
+                    menu.performActionForItem(at: try XCTUnwrap(menu.items.firstIndex { $0.title == "Move to Trash" }))
+                    XCTAssertEqual(fixture.recorder.actions, [ids[1], ids[1]], "Keyboard and AX menus use the selected row after arrow navigation")
+                    XCTAssertEqual(fixture.recorder.performedActions, [.revealInFinder, .moveToTrash])
+                }
+                XCTAssertEqual(fixture.recorder.requests, requests)
+                XCTAssertEqual(fixture.recorder.accepted, ids[1])
+                XCTAssertEqual(fixture.controller.outlineView.selectedRowIndexes, IndexSet(integer: 1))
+                XCTAssertTrue(fixture.recorder.defaultActions.isEmpty)
+                XCTAssertEqual(fixture.session.slides.map(\.id), [fixture.currentSlideID])
+            }
+        }
+    }
+
+    func testRetainedFileTrashMenuRevalidatesCurrentSourceAndVisibility() async throws {
+        enum Change: CaseIterable { case removed, actionRemoved, collapsed, hidden, removedFromWindow, detached }
+        for isAudio in [false, true] {
+            for change in Change.allCases {
+                let url = URL(fileURLWithPath: "/sidebar-context-fixture/Song.txt")
+                let id: SidebarOutlineItemID = isAudio ? .audio(url) : .library(url)
+                let leaf = SidebarOutlineItem(id: id, title: "Song", contextActions: [.revealInFinder, .moveToTrash])
+                let group = SidebarOutlineItem(id: .group("retained-file-menu"), title: "Files", children: [leaf])
+                let fixture = SidebarKeyboardFixture(roots: [group])
+                defer { fixture.close() }
+                try await fixture.settle()
+                let outline = fixture.controller.outlineView
+                outline.expandItem(group)
+                XCTAssertTrue(outline.isItemExpanded(group))
+                XCTAssertEqual(outline.row(forItem: leaf), 1)
+                let menu = try XCTUnwrap(fixture.dispatchContextMenu(row: 1, invocation: .secondaryClick, hit: .title))
+                let trash = try XCTUnwrap(menu.items.firstIndex { $0.title == "Move to Trash" })
+                menu.performActionForItem(at: trash)
+                XCTAssertEqual(fixture.recorder.actions, [id])
+                XCTAssertTrue(fixture.recorder.requests.isEmpty)
+
+                switch change {
+                case .removed:
+                    fixture.model = .empty
+                    fixture.revision += 1
+                    fixture.controller.update(fixture.configuration())
+                case .actionRemoved:
+                    let replacement = SidebarOutlineItem(id: id, title: "Song", contextActions: [.revealInFinder])
+                    fixture.model = SidebarOutlineModel(roots: [SidebarOutlineItem(id: group.id, title: group.title, children: [replacement])])
+                    fixture.revision += 1
+                    fixture.controller.update(fixture.configuration())
+                case .collapsed:
+                    outline.collapseItem(group)
+                case .hidden:
+                    fixture.controller.scrollView.isHidden = true
+                case .removedFromWindow:
+                    fixture.controller.scrollView.removeFromSuperview()
+                case .detached:
+                    fixture.controller.detach()
+                }
+
+                menu.performActionForItem(at: trash)
+                XCTAssertEqual(fixture.recorder.actions, [id], "A retained Trash menu must be inert after \(change)")
+                XCTAssertEqual(fixture.recorder.performedActions, [.moveToTrash])
+                XCTAssertTrue(fixture.recorder.requests.isEmpty)
+                XCTAssertTrue(fixture.recorder.defaultActions.isEmpty)
+                XCTAssertEqual(fixture.session.slides.map(\.id), [fixture.currentSlideID])
+            }
+        }
+    }
+
+    func testAccessibilityFileMenuRejectsUnavailableSelectionsAndRetainedOutlines() async throws {
+        enum Change: CaseIterable { case removed, container, hidden, removedFromWindow, detached }
+        for change in Change.allCases {
+            let id = SidebarOutlineItemID.library(URL(fileURLWithPath: "/sidebar-context-fixture/Song.txt"))
+            let leaf = SidebarOutlineItem(id: id, title: "Song", contextActions: [.revealInFinder, .moveToTrash])
+            let group = SidebarOutlineItem(id: .group("ax-file-menu"), title: "Files", children: [leaf])
+            let fixture = SidebarKeyboardFixture(roots: [group])
+            defer { fixture.close() }
+            try await fixture.settle()
+            let outline = fixture.controller.outlineView
+            outline.expandItem(group)
+            try fixture.click(row: 1)
+            let requests = fixture.recorder.requests
+            switch change {
+            case .removed:
+                fixture.model = .empty
+                fixture.revision += 1
+                fixture.controller.update(fixture.configuration())
+            case .container:
+                outline.collapseItem(group)
+            case .hidden:
+                fixture.controller.scrollView.isHidden = true
+            case .removedFromWindow:
+                fixture.controller.scrollView.removeFromSuperview()
+            case .detached:
+                fixture.controller.detach()
+            }
+            XCTAssertFalse(outline.accessibilityPerformShowMenu(), "AX cannot open a menu after \(change)")
+            XCTAssertEqual(fixture.recorder.requests, requests)
+            XCTAssertTrue(fixture.recorder.actions.isEmpty)
+            XCTAssertTrue(fixture.recorder.defaultActions.isEmpty)
+            XCTAssertEqual(fixture.session.slides.map(\.id), [fixture.currentSlideID])
+        }
+    }
+
     func testRetainedNativeContextMenuRevalidatesCurrentRowActionAndVisibility() async throws {
         enum Change: CaseIterable { case removed, actionRemoved, collapsed, hidden, removedFromWindow, detached }
         for change in Change.allCases {
@@ -754,8 +916,100 @@ private final class SidebarKeyboardRecorder {
     var accepted: SidebarOutlineItemID?
     var selected: Set<SidebarOutlineItemID> = []
     var actions: [SidebarOutlineItemID] = []
+    var performedActions: [SidebarOutlineAction] = []
     var defaultActions: [SidebarOutlineItemID] = []
     var spaceActions: [SidebarOutlineItemID?] = []
+}
+
+enum SidebarNativeMenuInvocation { case secondaryClick, controlClick, keyboard, accessibility }
+enum SidebarNativeMenuHit { case title, trailingBlank }
+
+@MainActor
+private final class SidebarNativeMenuCapture {
+    var menu: NSMenu?
+}
+
+@MainActor
+enum SidebarNativeContextMenuDispatcher {
+    static func open(in outline: NSOutlineView, window: NSWindow, row: Int, invocation: SidebarNativeMenuInvocation,
+                     hit: SidebarNativeMenuHit, eventNumber: inout Int) throws -> NSMenu? {
+        window.contentView?.layoutSubtreeIfNeeded()
+        outline.scrollRowToVisible(row)
+        outline.scrollToVisible(outline.rect(ofRow: row))
+        let capture = SidebarNativeMenuCapture()
+        let observer = NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: nil) { notification in
+            MainActor.assumeIsolated {
+                guard let menu = notification.object as? NSMenu else { return }
+                capture.menu = menu
+                // The notification precedes AppKit's tracking loop. Cancel
+                // inside that loop after it starts, without a timing delay.
+                RunLoop.main.perform(inModes: [.eventTracking]) {
+                    MainActor.assumeIsolated { menu.cancelTrackingWithoutAnimation() }
+                }
+            }
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+
+        switch invocation {
+        case .keyboard:
+            outline.showContextMenuForSelection(nil)
+            return capture.menu
+        case .accessibility:
+            XCTAssertTrue(outline.isAccessibilitySelectorAllowed(#selector(NSAccessibilityProtocol.accessibilityPerformShowMenu)))
+            _ = outline.accessibilityPerformShowMenu()
+            return capture.menu
+        case .secondaryClick, .controlClick:
+            break
+        }
+
+        let cell = try XCTUnwrap(outline.view(atColumn: 0, row: row, makeIfNecessary: true) as? NSTableCellView)
+        // Newly expanded rows may be realized above for the first time. Resolve
+        // their constraints before measuring the actual title hit point.
+        cell.layoutSubtreeIfNeeded()
+        outline.layoutSubtreeIfNeeded()
+        window.contentView?.layoutSubtreeIfNeeded()
+        let pointInOutline: NSPoint
+        switch hit {
+        case .title:
+            let title = try XCTUnwrap(cell.textField)
+            XCTAssertFalse(title.bounds.isEmpty)
+            pointInOutline = title.convert(NSPoint(x: min(4, title.bounds.width / 2), y: title.bounds.midY), to: outline)
+        case .trailingBlank:
+            let cellFrame = outline.frameOfCell(atColumn: 0, row: row)
+            let titleFrame = cell.textField.map { $0.convert($0.bounds, to: outline) } ?? cellFrame
+            let trailingFrame = cell.subviews.first { $0 is NSStackView }.map { $0.convert($0.bounds, to: outline) }
+            let blankStart = max(cellFrame.minX, titleFrame.maxX)
+            let blankEnd = min(cellFrame.maxX, trailingFrame?.minX ?? cellFrame.maxX)
+            XCTAssertGreaterThan(blankEnd, blankStart, "The test must hit blank row space outside accessories")
+            pointInOutline = NSPoint(x: (blankStart + blankEnd) / 2, y: cellFrame.midY)
+        }
+        XCTAssertEqual(outline.row(at: pointInOutline), row)
+        XCTAssertTrue(outline.visibleRect.intersects(outline.rect(ofRow: row)), "The context target must be a visible row")
+        let point = outline.convert(pointInOutline, to: nil)
+        let modifiers: NSEvent.ModifierFlags = invocation == .controlClick ? .control : []
+        let downType: NSEvent.EventType = invocation == .controlClick ? .leftMouseDown : .rightMouseDown
+        let upType: NSEvent.EventType = invocation == .controlClick ? .leftMouseUp : .rightMouseUp
+        let upMask: NSEvent.EventTypeMask = invocation == .controlClick ? .leftMouseUp : .rightMouseUp
+        eventNumber += 2
+        let down = try XCTUnwrap(NSEvent.mouseEvent(with: downType, location: point, modifierFlags: modifiers,
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
+            eventNumber: eventNumber, clickCount: 1, pressure: 1))
+        let up = try XCTUnwrap(NSEvent.mouseEvent(with: upType, location: point, modifierFlags: modifiers,
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
+            eventNumber: eventNumber + 1, clickCount: 1, pressure: 0))
+        NSApplication.shared.postEvent(up, atStart: true)
+        // NSControl's contextual handling also consults NSApp.currentEvent.
+        // Dispatch through the application, as real input reaches this window.
+        NSApplication.shared.sendEvent(down)
+        if let pending = NSApplication.shared.nextEvent(matching: upMask, until: .distantPast, inMode: .default, dequeue: true) {
+            if pending.windowNumber == window.windowNumber {
+                NSApplication.shared.sendEvent(pending)
+            } else {
+                NSApplication.shared.postEvent(pending, atStart: true)
+            }
+        }
+        return capture.menu
+    }
 }
 
 @MainActor
@@ -853,7 +1107,10 @@ private final class SidebarKeyboardFixture {
                 recorder.accepted = primary
                 return true
             }, onDefaultAction: defaultAction, onSpaceAction: spaceAction,
-            onAction: { [recorder] item, _ in recorder.actions.append(item) })
+            onAction: { [recorder] item, action in
+                recorder.actions.append(item)
+                recorder.performedActions.append(action)
+            })
     }
 
     func sendArrow(_ arrow: Arrow, modifiers: NSEvent.ModifierFlags = [], isRepeat: Bool = false) throws {
@@ -875,6 +1132,11 @@ private final class SidebarKeyboardFixture {
             timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
             eventNumber: 1, clickCount: 1, pressure: 0))
         return try XCTUnwrap(outline.menu(for: event))
+    }
+
+    func dispatchContextMenu(row: Int, invocation: SidebarNativeMenuInvocation, hit: SidebarNativeMenuHit) throws -> NSMenu? {
+        try SidebarNativeContextMenuDispatcher.open(in: controller.outlineView, window: window, row: row,
+            invocation: invocation, hit: hit, eventNumber: &pointerEventNumber)
     }
 
     func firstButton(in view: NSView) -> NSButton? {

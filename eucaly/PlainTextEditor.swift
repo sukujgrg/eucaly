@@ -30,6 +30,17 @@ final class PlainTextEditorFocusController {
         (textView as? LyricsTextView)?.formatLyrics() ?? false
     }
 
+    func lyricsForCleanup() -> String? {
+        guard let textView = textView as? LyricsTextView,
+              textView.window != nil, !textView.hasMarkedText() else { return nil }
+        return textView.string
+    }
+
+    @discardableResult
+    func applyLyricsCleanup(_ proposed: String, replacing original: String) -> Bool {
+        (textView as? LyricsTextView)?.applyLyricsCleanup(proposed, replacing: original) ?? false
+    }
+
     @discardableResult
     func clearLyrics() -> Bool {
         (textView as? LyricsTextView)?.clearLyrics() ?? false
@@ -46,7 +57,7 @@ struct PlainTextEditor: NSViewRepresentable {
     }
 
     static func makeScrollView(text: String, coordinator: Coordinator) -> NSScrollView {
-        let scrollView = NSScrollView()
+        let scrollView = LyricsEditorScrollView()
         scrollView.hasVerticalScroller = true
         scrollView.drawsBackground = false
 
@@ -56,7 +67,7 @@ struct PlainTextEditor: NSViewRepresentable {
         textView.isEditable = true
         textView.isSelectable = true
         textView.allowsUndo = true
-        textView.usesFindPanel = true
+        textView.usesFindBar = true
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
@@ -381,5 +392,18 @@ struct PlainTextEditor: NSViewRepresentable {
                 return .secondaryLabelColor
             }
         }
+    }
+}
+
+/// The native find bar is a sibling of the document view in the scroll view.
+/// Let its field keep routing the scoped find commands to the lyrics document.
+@MainActor
+private final class LyricsEditorScrollView: NSScrollView {
+    override func supplementalTarget(forAction action: Selector, sender: Any?) -> Any? {
+        if action == #selector(LyricsTextView.performLyricsFindAction(_:)),
+           let lyrics = documentView as? LyricsTextView, lyrics.isActiveForLyricsFind {
+            return lyrics
+        }
+        return super.supplementalTarget(forAction: action, sender: sender)
     }
 }

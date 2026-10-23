@@ -574,6 +574,112 @@ final class SidebarControlLayoutTests: XCTestCase {
         XCTAssertFalse(fixture.session.isPresenting)
     }
 
+    func testFileContextMenusRouteTrashWithoutChangingSelectionOrPlayback() async throws {
+        let fixture = try SidebarControlsFixture(grouping: .none)
+        defer { fixture.close() }
+        let root = try XCTUnwrap(fixture.configuration.libraryRootURL)
+        let libraryURL = root.appendingPathComponent("Z song.txt")
+        let audioURL = root.appendingPathComponent("Audio/Z audio.mp3")
+        let next = fixture.configuration(libraryRevision: 2,
+            libraryFiles: fixture.configuration.libraryFiles + [libraryURL],
+            audioFiles: fixture.configuration.audioFiles + [audioURL])
+        fixture.controller.update(next)
+        await fixture.controller.pendingLibraryPreparationForTests?.value
+        fixture.window.contentView?.layoutSubtreeIfNeeded()
+        let currentID = UUID()
+        fixture.session.setSlides([Slide(id: currentID, index: 1, lines: [], label: "Current",
+            videoURL: nil, pdfURL: nil, pdfPageIndex: nil, imageURL: nil)])
+        let outlines = nativeViews(NSOutlineView.self, in: fixture.controller.view)
+        let library = try XCTUnwrap(outlines.first { $0.accessibilityIdentifier() == "sidebar.library.outline" })
+        let audio = try XCTUnwrap(outlines.first { $0.accessibilityIdentifier() == "sidebar.audio.outline" })
+        let libraryMenu = try XCTUnwrap(contextMenu(for: library, row: 1, in: fixture.window))
+        let audioMenu = try XCTUnwrap(contextMenu(for: audio, row: 1, in: fixture.window))
+        XCTAssertEqual(libraryMenu.items.map(\.title), ["Add to Playlist", "Reveal in Finder", "", "Move to Trash"])
+        XCTAssertEqual(audioMenu.items.map(\.title), ["Reveal in Finder", "", "Move to Trash"])
+        libraryMenu.performActionForItem(at: try XCTUnwrap(libraryMenu.items.firstIndex { $0.title == "Move to Trash" }))
+        audioMenu.performActionForItem(at: try XCTUnwrap(audioMenu.items.firstIndex { $0.title == "Move to Trash" }))
+        XCTAssertEqual(fixture.calls.trashedFiles, [libraryURL, audioURL])
+        XCTAssertTrue(fixture.calls.selections.isEmpty)
+        XCTAssertTrue(fixture.calls.playbackActions.isEmpty)
+        XCTAssertEqual(fixture.calls.count, 0, "File menus must not change the Audio draft or other controls")
+        XCTAssertEqual(fixture.session.slides.map(\.id), [currentID])
+
+        let playlist = try XCTUnwrap(outlines.first { $0.accessibilityIdentifier() == "sidebar.playlist.outline" })
+        let windows = try XCTUnwrap(outlines.first { $0.accessibilityIdentifier() == "sidebar.windows.outline" })
+        XCTAssertEqual(try XCTUnwrap(contextMenu(for: playlist, row: 0, in: fixture.window)).items.map(\.title), ["Remove"])
+        XCTAssertNil(try contextMenu(for: windows, row: 0, in: fixture.window))
+
+        // A retained Library row can remain visible while the new snapshot is
+        // being prepared; its action must consult the current inventory.
+        fixture.controller.update(fixture.configuration(libraryRevision: 3))
+        libraryMenu.performActionForItem(at: libraryMenu.numberOfItems - 1)
+        audioMenu.performActionForItem(at: audioMenu.numberOfItems - 1)
+        XCTAssertEqual(fixture.calls.trashedFiles, [libraryURL, audioURL])
+        fixture.controller.detach()
+        libraryMenu.performActionForItem(at: libraryMenu.numberOfItems - 1)
+        audioMenu.performActionForItem(at: audioMenu.numberOfItems - 1)
+        XCTAssertEqual(fixture.calls.trashedFiles, [libraryURL, audioURL])
+        XCTAssertTrue(fixture.calls.selections.isEmpty)
+        XCTAssertTrue(fixture.calls.playbackActions.isEmpty)
+        XCTAssertEqual(fixture.session.slides.map(\.id), [currentID])
+    }
+
+    func testProductionSidebarHierarchyDeliversNativeFileContextMenus() async throws {
+        let fixture = try SidebarControlsFixture(grouping: .none, selectsLibraryItem: true)
+        defer { fixture.close() }
+        // Installing a controller with an initially unsized view can resize an
+        // NSWindow. Give this native event fixture its intended content area.
+        fixture.window.setContentSize(.init(width: 260, height: 1000))
+        let root = try XCTUnwrap(fixture.configuration.libraryRootURL)
+        let libraryURL = root.appendingPathComponent("Z song.txt")
+        let audioURL = root.appendingPathComponent("Audio/Z audio.mp3")
+        fixture.controller.update(fixture.configuration(libraryRevision: 2,
+            libraryFiles: fixture.configuration.libraryFiles + [libraryURL],
+            audioFiles: fixture.configuration.audioFiles + [audioURL]))
+        await fixture.controller.pendingLibraryPreparationForTests?.value
+        fixture.window.contentView?.layoutSubtreeIfNeeded()
+        let currentID = UUID()
+        fixture.session.setSlides([Slide(id: currentID, index: 1, lines: [], label: "Current",
+            videoURL: nil, pdfURL: nil, pdfPageIndex: nil, imageURL: nil)])
+        let outlines = nativeViews(NSOutlineView.self, in: fixture.controller.view)
+        var expectedTrashRequests: [URL] = []
+        var nativeEventNumber = 0
+
+        for (section, targetURL) in [("library", libraryURL), ("audio", audioURL)] {
+            let outline = try XCTUnwrap(outlines.first { $0.accessibilityIdentifier() == "sidebar.\(section).outline" })
+            let selectedRows = outline.selectedRowIndexes
+            for invocation in [SidebarNativeMenuInvocation.secondaryClick, .controlClick] {
+                for hit in [SidebarNativeMenuHit.title, .trailingBlank] {
+                    let menu = try XCTUnwrap(SidebarNativeContextMenuDispatcher.open(
+                        in: outline, window: fixture.window, row: 1,
+                        invocation: invocation, hit: hit, eventNumber: &nativeEventNumber),
+                        "Real \(section) hierarchy must deliver \(invocation)/\(hit)")
+                    XCTAssertNotNil(menu.items.first { $0.title == "Reveal in Finder" })
+                    let trash = try XCTUnwrap(menu.items.firstIndex { $0.title == "Move to Trash" })
+                    XCTAssertTrue(trash > 0 && menu.items[trash - 1].isSeparatorItem)
+                    menu.performActionForItem(at: trash)
+                    expectedTrashRequests.append(targetURL)
+                    XCTAssertEqual(fixture.calls.trashedFiles, expectedTrashRequests)
+                    XCTAssertEqual(outline.selectedRowIndexes, selectedRows)
+                    XCTAssertTrue(fixture.calls.selections.isEmpty)
+                    XCTAssertTrue(fixture.calls.playbackActions.isEmpty)
+                    XCTAssertEqual(fixture.calls.count, 0)
+                    XCTAssertEqual(fixture.session.slides.map(\.id), [currentID])
+                }
+            }
+        }
+    }
+
+    private func contextMenu(for outline: NSOutlineView, row: Int, in window: NSWindow) throws -> NSMenu? {
+        window.contentView?.layoutSubtreeIfNeeded()
+        let cell = outline.frameOfCell(atColumn: 0, row: row)
+        let location = outline.convert(NSPoint(x: cell.midX, y: cell.midY), to: nil)
+        let event = try XCTUnwrap(NSEvent.mouseEvent(with: .rightMouseDown, location: location, modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
+            eventNumber: 1, clickCount: 1, pressure: 0))
+        return outline.menu(for: event)
+    }
+
     private func element(_ identifier: String, in elements: [any NSAccessibilityProtocol]) throws -> any NSAccessibilityProtocol {
         try XCTUnwrap(elements.first { $0.accessibilityIdentifier() == identifier }, identifier + "\n" + elements.map { "\($0.accessibilityRole()?.rawValue ?? "nil") \($0.accessibilityIdentifier() ?? "nil")" }.joined(separator: "\n"))
     }
@@ -675,6 +781,7 @@ private final class SidebarControlsFixture {
                 onRetryLibraryLoad: { calls.count += 1 },
                 onImportToAudio: { calls.count += 1 },
                 onAddLibraryItemToPlaylist: { _ in calls.count += 1 },
+                onMoveFileToTrash: { calls.trashedFiles.append($0) },
                 onRemovePlaylistItem: { _ in calls.count += 1 },
                 onRemoveSelectedFromPlaylist: { calls.count += 1 },
                 onMovePlaylistUp: { calls.count += 1 },
@@ -748,6 +855,7 @@ private final class SidebarControlCalls {
     var acceptsSelection = true
     var selections: [SidebarSelection?] = []
     var playbackActions: [String] = []
+    var trashedFiles: [URL] = []
 }
 
 @MainActor

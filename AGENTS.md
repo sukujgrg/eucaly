@@ -279,6 +279,8 @@ If a new type cannot follow this contract, treat it as a design bug and refactor
 - Projection requires an explicitly selected monitor; there is no Auto selection or fallback. A previous Auto preference becomes unassigned and requires a choice. Each active projection pins the selected physical identity. Disconnect, mirroring, or ambiguous identity closes projection immediately, retaining Current, audio, names, and the saved assignment; reconnect requires an explicit Show Slides. Never silently move output to another monitor.
 
 ### Keyboard Shortcuts (Current)
+- `Cmd+F`: Search Library in the active workspace, including from the lyrics editor; repeating focuses the existing query. See `SEARCH.md` for search focus and activation behavior.
+- Find in Lyrics: separate native Edit > Find command without a shortcut. `Cmd+G` / `Shift+Cmd+G` find the next / previous text match; `Cmd+E` uses selected lyrics for Find. These do not navigate library results.
 - `Cmd+T`: New Workspace Tab
 - `Cmd+1`: Stop Workspace Outputs (retain that workspace’s Current and assignments)
 - Stop All Outputs: explicit global Slides-menu action, without a shortcut
@@ -286,7 +288,7 @@ If a new type cannot follow this contract, treat it as a design bug and refactor
 - `Cmd+3`: Clear Background Visual
 - `Cmd+4`: Clear Background Audio
 - `Cmd+5`: Clear All Layers (hide slides + clear visual/audio)
-- ESC: Hide Slides only (does not stop projection, does not clear background/audio)
+- ESC: Dismiss library search and restore focus when search is open; otherwise Hide Slides only (does not stop projection, does not clear background/audio)
 
 ### Layer Model
 Order in projection:

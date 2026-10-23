@@ -3,6 +3,7 @@ import SQLite3
 
 actor LibraryTextSearchIndex {
     static let maxIndexedFileSizeBytes: Int64 = 10 * 1024
+    private static let titleFormatVersion: Int32 = 1
 
     struct SearchResult: Hashable, Sendable {
         let url: URL
@@ -118,18 +119,35 @@ actor LibraryTextSearchIndex {
             } else {
                 indexedContent = nil
             }
-            let title = isUnchanged
-                ? cached?.title ?? LibraryFileScannerService.displayTitle(for: file.url, kind: file.kind)
-                : LibraryFileScannerService.displayTitle(
+            let title: String
+            let titleFormatVersion: Int32
+            if isUnchanged, let cached {
+                if cached.titleFormatVersion == Self.titleFormatVersion {
+                    title = cached.title
+                    titleFormatVersion = cached.titleFormatVersion
+                } else if let refreshedTitle = LibraryFileScannerService.readableDisplayTitle(for: file.url, kind: file.kind) {
+                    title = refreshedTitle
+                    titleFormatVersion = Self.titleFormatVersion
+                } else {
+                    // Keep the exact known label and pending version when a
+                    // one-time title refresh cannot read an unchanged source.
+                    title = cached.title
+                    titleFormatVersion = cached.titleFormatVersion
+                }
+            } else {
+                title = LibraryFileScannerService.displayTitle(
                     for: file.url,
                     kind: file.kind,
                     contents: indexedContent.flatMap { $0.isEmpty ? nil : $0 }
                 )
+                titleFormatVersion = Self.titleFormatVersion
+            }
 
             guard upsertMetadata(
                 rootPath: rootPath,
                 file: file,
                 title: title,
+                titleFormatVersion: titleFormatVersion,
                 scanToken: scanToken,
                 db: db
             ) else {
@@ -150,7 +168,9 @@ actor LibraryTextSearchIndex {
             metadata.append(
                 FileMetadata(
                     url: file.url,
-                    title: title,
+                    title: titleFormatVersion == Self.titleFormatVersion
+                        ? title
+                        : LibraryFileScannerService.displayTitle(for: file.url, kind: file.kind, cachedTitle: title),
                     kind: file.kind,
                     relativeSortKey: file.relativeSortKey
                 )
@@ -181,7 +201,7 @@ actor LibraryTextSearchIndex {
         guard openDatabaseIfNeeded(), let db else { return [] }
 
         let sql = """
-        SELECT path, title, kind, relative_sort_key
+        SELECT path, title, kind, relative_sort_key, title_format_version
         FROM library_file_metadata
         WHERE root_path = ?1
         ORDER BY relative_sort_key COLLATE NOCASE ASC;
@@ -209,12 +229,18 @@ actor LibraryTextSearchIndex {
             else {
                 continue
             }
+            let url = URL(fileURLWithPath: String(cString: cPath)).standardizedFileURL
+            let kind = LibraryFileKind(rawValue: String(cString: cKind)) ?? .unsupported
+            let cachedTitle = String(cString: cTitle)
+            let title = sqlite3_column_int(statement, 4) == Self.titleFormatVersion
+                ? cachedTitle
+                : LibraryFileScannerService.displayTitle(for: url, kind: kind, cachedTitle: cachedTitle)
 
             metadata.append(
                 FileMetadata(
-                    url: URL(fileURLWithPath: String(cString: cPath)).standardizedFileURL,
-                    title: String(cString: cTitle),
-                    kind: LibraryFileKind(rawValue: String(cString: cKind)) ?? .unsupported,
+                    url: url,
+                    title: title,
+                    kind: kind,
                     relativeSortKey: String(cString: cRelativeSortKey)
                 )
             )
@@ -395,6 +421,7 @@ actor LibraryTextSearchIndex {
             relative_sort_key TEXT NOT NULL,
             filename TEXT NOT NULL,
             title TEXT NOT NULL,
+            title_format_version INTEGER NOT NULL DEFAULT 0,
             kind TEXT NOT NULL,
             size INTEGER NOT NULL,
             modification_time REAL NOT NULL,
@@ -403,7 +430,7 @@ actor LibraryTextSearchIndex {
             scan_token TEXT NOT NULL
         );
         """
-        guard execute(createMetadataSQL, db: pointer), execute(
+        guard execute(createMetadataSQL, db: pointer), ensureTitleFormatVersionColumn(db: pointer), execute(
             "CREATE INDEX IF NOT EXISTS library_file_metadata_root_path_index ON library_file_metadata(root_path);",
             db: pointer
         ) else {
@@ -413,15 +440,40 @@ actor LibraryTextSearchIndex {
         return true
     }
 
+    /// Title labels are derived data. Old rows are refreshed once during sync,
+    /// independently of their unchanged source fingerprint and FTS content.
+    private func ensureTitleFormatVersionColumn(db: OpaquePointer) -> Bool {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "PRAGMA table_info(library_file_metadata);", -1, &statement, nil) == SQLITE_OK else {
+            return false
+        }
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                if let name = sqlite3_column_text(statement, 1), String(cString: name) == "title_format_version" {
+                    sqlite3_finalize(statement)
+                    return true
+                }
+            case SQLITE_DONE:
+                sqlite3_finalize(statement)
+                return execute("ALTER TABLE library_file_metadata ADD COLUMN title_format_version INTEGER NOT NULL DEFAULT 0;", db: db)
+            default:
+                sqlite3_finalize(statement)
+                return false
+            }
+        }
+    }
+
     private struct CachedMetadata {
         let title: String
         let size: Int64
         let modificationTime: Double
+        let titleFormatVersion: Int32
     }
 
     private func existingMetadata(rootPath: String, db: OpaquePointer) -> [String: CachedMetadata] {
         let sql = """
-        SELECT path, title, size, modification_time
+        SELECT path, title, size, modification_time, title_format_version
         FROM library_file_metadata
         WHERE root_path = ?1;
         """
@@ -450,7 +502,8 @@ actor LibraryTextSearchIndex {
             metadata[String(cString: cPath)] = CachedMetadata(
                 title: String(cString: cTitle),
                 size: sqlite3_column_int64(statement, 2),
-                modificationTime: sqlite3_column_double(statement, 3)
+                modificationTime: sqlite3_column_double(statement, 3),
+                titleFormatVersion: sqlite3_column_int(statement, 4)
             )
         }
         return metadata
@@ -460,6 +513,7 @@ actor LibraryTextSearchIndex {
         rootPath: String,
         file: LibraryDiscoveredFileModel,
         title: String,
+        titleFormatVersion: Int32,
         scanToken: String,
         db: OpaquePointer
     ) -> Bool {
@@ -475,9 +529,10 @@ actor LibraryTextSearchIndex {
             modification_time,
             is_preview,
             is_background_audio,
-            scan_token
+            scan_token,
+            title_format_version
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
         ON CONFLICT(path) DO UPDATE SET
             root_path = excluded.root_path,
             relative_sort_key = excluded.relative_sort_key,
@@ -488,7 +543,8 @@ actor LibraryTextSearchIndex {
             modification_time = excluded.modification_time,
             is_preview = excluded.is_preview,
             is_background_audio = excluded.is_background_audio,
-            scan_token = excluded.scan_token;
+            scan_token = excluded.scan_token,
+            title_format_version = excluded.title_format_version;
         """
 
         var statement: OpaquePointer?
@@ -514,6 +570,7 @@ actor LibraryTextSearchIndex {
         sqlite3_bind_double(statement, 8, file.modificationTime)
         sqlite3_bind_int(statement, 9, file.kind.isPreviewLibraryItem ? 1 : 0)
         sqlite3_bind_int(statement, 10, file.kind.isBackgroundAudioSource ? 1 : 0)
+        sqlite3_bind_int(statement, 12, titleFormatVersion)
         return sqlite3_step(statement) == SQLITE_DONE
     }
 

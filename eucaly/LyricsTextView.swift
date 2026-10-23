@@ -4,6 +4,32 @@ import AppKit
 /// committed input is cleaned; setMarkedText is intentionally left untouched.
 @MainActor
 final class LyricsTextView: NSTextView {
+    var isActiveForLyricsFind: Bool {
+        guard let window, window.isKeyWindow, let responder = window.firstResponder as? NSView else { return false }
+        if responder === self { return true }
+        guard let scrollView = enclosingScrollView, scrollView.isFindBarVisible,
+              let findBar = scrollView.findBarView else { return false }
+        let focusedView = (responder as? NSTextView).flatMap { editor in
+            editor.isFieldEditor ? editor.delegate as? NSView : nil
+        } ?? responder
+        return focusedView === findBar || focusedView.isDescendant(of: findBar)
+    }
+
+    @objc func performLyricsFindAction(_ sender: NSMenuItem) {
+        guard isActiveForLyricsFind else { return }
+        performTextFinderAction(sender)
+    }
+
+    override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        guard item.action == #selector(performLyricsFindAction(_:)) else {
+            return super.validateUserInterfaceItem(item)
+        }
+        guard isActiveForLyricsFind else { return false }
+        let nativeItem = NSMenuItem(title: "", action: #selector(performTextFinderAction(_:)), keyEquivalent: "")
+        nativeItem.tag = item.tag
+        return super.validateUserInterfaceItem(nativeItem)
+    }
+
     override func insertText(_ insertString: Any, replacementRange: NSRange) {
         let input: String
         if let string = insertString as? String { input = string }
@@ -63,6 +89,16 @@ final class LyricsTextView: NSTextView {
     }
 
     @discardableResult
+    func applyLyricsCleanup(_ proposed: String, replacing original: String) -> Bool {
+        guard window != nil, !hasMarkedText(), string == original,
+              !proposed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        // Apply the exact reviewed proposal, with no further sanitation or
+        // casing pass that could differ from the preview the operator approved.
+        guard replaceLyrics(with: proposed, action: "Clean Up Lyrics", preserveSelection: true) else { return false }
+        return string == proposed
+    }
+
+    @discardableResult
     func clearLyrics() -> Bool {
         unmarkText()
         return replaceLyrics(with: "", action: "Clear Lyrics", preserveSelection: false)
@@ -72,7 +108,7 @@ final class LyricsTextView: NSTextView {
         guard text != string else { return true }
         let selection = selectedRange()
         let origin = enclosingScrollView?.contentView.bounds.origin
-        // Format has already cleaned its output; Clear supplies an empty string.
+        // Callers provide the exact reviewed text; avoid a second cleanup pass.
         insertPreparedText(text, replacementRange: NSRange(location: 0, length: (string as NSString).length), action: action)
         let length = (string as NSString).length
         let location = preserveSelection ? min(selection.location, length) : 0

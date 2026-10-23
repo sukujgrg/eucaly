@@ -4,6 +4,7 @@ enum EditorPaneAction {
     case close
     case save
     case format
+    case cleanUp
     case clear
 }
 
@@ -44,30 +45,18 @@ struct EditorPaneContainerView: View {
                         .stroke(.separator, lineWidth: 1)
                 )
 
-            HStack(spacing: 10) {
-                Button("Format") {
-                    onAction(.format)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
+                    cleanupActions
+                    documentActions
+                    Spacer(minLength: 0)
                 }
-                .primaryActionStyle()
-
-                Button(saveButtonTitle) {
-                    onAction(.save)
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack { cleanupActions; Spacer(minLength: 0) }
+                    HStack { documentActions; Spacer(minLength: 0) }
                 }
-                .buttonStyle(.bordered)
-                .disabled(!canSave)
-
-                Button("Clear") {
-                    onAction(.clear)
-                }
-                .buttonStyle(.bordered)
-
-                Button("Close") {
-                    onAction(.close)
-                }
-                .buttonStyle(.bordered)
-
-                Spacer()
             }
+
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -80,4 +69,30 @@ struct EditorPaneContainerView: View {
                 .stroke(.separator, lineWidth: 1)
         )
     }
+
+    private var cleanupActions: some View {
+        HStack(spacing: 10) {
+            Button("Clean Up Lyrics…") { onAction(.cleanUp) }
+                .primaryActionStyle()
+                .disabled(rawLyrics.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .help("Review character cleanup and natural lyric casing from local rules, plus sections and line-break repairs, before applying.")
+            Button("Format") { onAction(.format) }
+                .buttonStyle(.bordered)
+        }
+        .fixedSize()
+    }
+
+    private var documentActions: some View {
+        HStack(spacing: 10) {
+            Button(saveButtonTitle) { onAction(.save) }
+                .buttonStyle(.bordered)
+                .disabled(!canSave)
+            Button("Clear") { onAction(.clear) }
+                .buttonStyle(.bordered)
+            Button("Close") { onAction(.close) }
+                .buttonStyle(.bordered)
+        }
+        .fixedSize()
+    }
+
 }

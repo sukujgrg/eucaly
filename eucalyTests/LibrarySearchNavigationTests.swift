@@ -112,6 +112,77 @@ final class LibrarySearchNavigationTests: XCTestCase {
     }
 
     @MainActor
+    func testSearchInitiallySelectedFirstResultIsFullyBelowSongsHeading() async throws {
+        let results = (0..<30).map { index in
+            LibraryTextSearchIndex.SearchResult(
+                url: URL(fileURLWithPath: "/tmp/search-navigation/song-\(index).txt"),
+                snippet: "ഒന്നുമാത്രം ഞാൻ ആഗ്രഹിക്കുന്നു\nദൈവമേ നിന്റെ മുഖം കാണുവാൻ"
+            )
+        }
+        let fixture = SearchNavigationFixture(actions: [], results: results, selection: .result(results[0].url))
+        defer { fixture.close() }
+        await drainFocusRequest()
+        try assertSearchSelectionVisible(fixture, headerRow: 0)
+
+        fixture.table.scrollRowToVisible(25)
+        fixture.table.moveUp(nil)
+        try assertSearchSelectionVisible(fixture, headerRow: 0)
+        XCTAssertEqual(fixture.selection, .result(results[0].url))
+
+        fixture.table.scrollRowToVisible(25)
+        fixture.results.reverse()
+        fixture.selection = .result(fixture.results[0].url)
+        fixture.coordinator.update(from: fixture.listView)
+        try assertSearchSelectionVisible(fixture, headerRow: 0)
+        XCTAssertEqual(fixture.selection, .result(results[29].url))
+        XCTAssertTrue(fixture.opened.isEmpty, "Revealing a selection must not open a result")
+    }
+
+    @MainActor
+    func testSearchInitiallySelectedLaterResultIsRevealedAfterLayout() async throws {
+        let results = (0..<30).map { index in
+            LibraryTextSearchIndex.SearchResult(
+                url: URL(fileURLWithPath: "/tmp/search-navigation/song-\(index).txt"), snippet: "Song lyrics"
+            )
+        }
+        let fixture = SearchNavigationFixture(actions: LibraryCommandPaletteAction.allCases,
+            results: results, selection: .result(results[25].url))
+        defer { fixture.close() }
+        await drainFocusRequest()
+
+        try assertSearchSelectionVisible(fixture, headerRow: 3)
+        XCTAssertEqual(fixture.selection, .result(results[25].url))
+        XCTAssertEqual(fixture.table.selectedRow, 29)
+        XCTAssertTrue(fixture.opened.isEmpty)
+        XCTAssertTrue(fixture.actionsRun.isEmpty)
+    }
+
+    @MainActor
+    private func assertSearchSelectionVisible(_ fixture: SearchNavigationFixture, headerRow: Int,
+        file: StaticString = #filePath, line: UInt = #line) throws {
+        // Floating group rows acquire their pinned geometry during native
+        // display. A hidden window and a main-queue drain only establish layout.
+        fixture.window.animationBehavior = .none
+        fixture.window.orderBack(nil)
+        fixture.window.contentView?.layoutSubtreeIfNeeded()
+        fixture.scrollView.layoutSubtreeIfNeeded()
+        fixture.table.layoutSubtreeIfNeeded()
+        fixture.window.display()
+        XCTAssertTrue(fixture.window.isVisible, file: file, line: line)
+        XCTAssertFalse(fixture.window.isKeyWindow, file: file, line: line)
+        let header = try XCTUnwrap(fixture.table.rowView(atRow: headerRow, makeIfNecessary: true), file: file, line: line)
+        let result = try XCTUnwrap(fixture.table.rowView(atRow: fixture.table.selectedRow, makeIfNecessary: true), file: file, line: line)
+        let headerRect = header.convert(header.bounds, to: fixture.table)
+        let resultRect = result.convert(result.bounds, to: fixture.table)
+        XCTAssertGreaterThanOrEqual(headerRect.minY, fixture.table.visibleRect.minY,
+            "Floating: \(header.isFloating); header: \(headerRect); result: \(resultRect); viewport: \(fixture.table.visibleRect)",
+            file: file, line: line)
+        XCTAssertGreaterThanOrEqual(resultRect.minY, headerRect.maxY,
+            "The floating Songs heading must not cover the selected result's title", file: file, line: line)
+        XCTAssertLessThanOrEqual(resultRect.maxY, fixture.table.visibleRect.maxY, file: file, line: line)
+    }
+
+    @MainActor
     func testRestoringExistingSearchFocusPreservesInsertionPoint() async throws {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 320, height: 80),
@@ -400,17 +471,58 @@ final class LibrarySearchNavigationTests: XCTestCase {
     }
 
     @MainActor
+    func testRepeatedLibrarySearchFocusSelectsExistingQueryAndPreservesCandidateAndReturnFocus() async throws {
+        let url = URL(fileURLWithPath: "/tmp/search-navigation/song.txt")
+        let fixture = SearchNavigationFixture(actions: [], results: [.init(url: url, snippet: "Song")], keyable: true)
+        defer { fixture.close() }
+        let previousApplication = NSWorkspace.shared.frontmostApplication
+        defer {
+            if previousApplication?.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+                previousApplication?.activate(options: [.activateIgnoringOtherApps])
+            }
+        }
+        try await activateNativeSearchTestWindow(fixture.window)
+        fixture.query = "grace"
+        fixture.field.stringValue = fixture.query
+        fixture.selection = .result(url)
+        fixture.coordinator.update(from: fixture.listView)
+        XCTAssertTrue(fixture.window.makeFirstResponder(fixture.table))
+
+        XCTAssertTrue(fixture.router.focusExistingSearch())
+        let editor = try XCTUnwrap(fixture.field.currentEditor() as? NSTextView)
+        XCTAssertTrue(fixture.window.firstResponder === editor)
+        XCTAssertEqual(editor.selectedRange(), .init(location: 0, length: 5))
+        XCTAssertEqual(fixture.query, "grace")
+        XCTAssertEqual(fixture.field.stringValue, "grace")
+        XCTAssertEqual(fixture.selection, .result(url))
+        XCTAssertTrue(fixture.router.focusExistingSearch())
+        XCTAssertEqual(fixture.selection, .result(url))
+        editor.setMarkedText("かな", selectedRange: .init(location: 2, length: 0),
+            replacementRange: .init(location: NSNotFound, length: 0))
+        XCTAssertTrue(fixture.router.focusExistingSearch())
+        XCTAssertTrue(editor.hasMarkedText())
+        editor.unmarkText()
+
+        fixture.dismissSearch()
+        XCTAssertTrue(fixture.window.firstResponder === fixture.originalLyrics)
+        XCTAssertEqual(fixture.originalLyrics.selectedRange(), .init(location: 5, length: 0))
+        XCTAssertFalse(fixture.router.focusExistingSearch())
+        XCTAssertTrue(fixture.opened.isEmpty)
+        XCTAssertTrue(fixture.actionsRun.isEmpty)
+    }
+
+    @MainActor
     func testOverlayShowsSearchingUntilTheCurrentQueryCompletes() {
         var selection: LibrarySearchEntryID? = .action(.refreshLibrary)
         let overlay = LibrarySearchOverlayView(query: .constant("refresh"),
             selectedEntry: Binding(get: { selection }, set: { selection = $0 }),
-            actions: [.refreshLibrary], results: [], minimumCharacterCount: 3, isIndexing: false,
+            commandRouter: LibrarySearchCommandRouter(), actions: [.refreshLibrary], results: [], minimumCharacterCount: 3, isIndexing: false,
             searchPhase: .pending, displayName: { $0.lastPathComponent }, onRunAction: { _ in },
             onClose: {}, onOpenResult: { _ in XCTFail("Commands cannot preview a file") },
             onAddResultToPlaylist: { _ in }, onCommitQuery: { XCTFail("An available command runs immediately") })
         XCTAssertEqual(overlay.statusText, "Searching songs…")
         let empty = LibrarySearchOverlayView(query: .constant("unmatched"), selectedEntry: .constant(nil),
-            actions: [], results: [], minimumCharacterCount: 3, isIndexing: false, searchPhase: .completed,
+            commandRouter: LibrarySearchCommandRouter(), actions: [], results: [], minimumCharacterCount: 3, isIndexing: false, searchPhase: .completed,
             displayName: { $0.lastPathComponent }, onRunAction: { _ in }, onClose: {}, onOpenResult: { _ in },
             onAddResultToPlaylist: { _ in }, onCommitQuery: {})
         XCTAssertEqual(empty.statusText, "No matching songs or actions found")
@@ -589,11 +701,13 @@ private final class SearchNavigationFixture {
             onAddResultToPlaylist: { [weak self] in self?.added.append($0) })
     }
 
-    init(actions: [LibraryCommandPaletteAction], results: [LibraryTextSearchIndex.SearchResult] = []) {
+    init(actions: [LibraryCommandPaletteAction], results: [LibraryTextSearchIndex.SearchResult] = [],
+         selection: LibrarySearchEntryID? = nil, keyable: Bool = false) {
         self.actions = actions
         self.results = results
+        self.selection = selection
         window = NSWindow(contentRect: .init(x: 0, y: 0, width: 640, height: 400),
-            styleMask: .borderless, backing: .buffered, defer: false)
+            styleMask: keyable ? .titled : .borderless, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         originalLyrics.string = "Sing with joy"
         window.contentView?.addSubview(originalLyrics)
@@ -637,3 +751,60 @@ private final class SearchClickedRowTableView: NSTableView {
     var testClickedRow = -1
     override var clickedRow: Int { testClickedRow }
 }
+
+extension XCTestCase {
+    @MainActor
+    func activateNativeSearchTestWindow(_ window: NSWindow) async throws {
+        let readiness = NativeSearchTestWindowReadiness(
+            active: expectation(description: "Native search test application became active"),
+            keyed: expectation(description: "Native search test window became key")
+        )
+        let center = NotificationCenter.default
+        let activeObserver = center.addObserver(forName: NSApplication.didBecomeActiveNotification, object: NSApp, queue: nil) { [weak window] _ in
+            MainActor.assumeIsolated {
+                readiness.becameActive()
+                window?.makeKeyAndOrderFront(nil)
+            }
+        }
+        let keyObserver = center.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: nil) { _ in
+            MainActor.assumeIsolated { readiness.becameKey() }
+        }
+        defer {
+            center.removeObserver(activeObserver)
+            center.removeObserver(keyObserver)
+        }
+        if NSApp.isActive { readiness.becameActive() }
+        else { NSApp.activate(ignoringOtherApps: true) }
+        window.makeKeyAndOrderFront(nil)
+        if window.isKeyWindow { readiness.becameKey() }
+        await fulfillment(of: [readiness.active, readiness.keyed], timeout: 5)
+        guard NSApp.isActive, window.isKeyWindow else { throw NativeSearchTestFocusError.unavailable }
+    }
+}
+
+@MainActor
+private final class NativeSearchTestWindowReadiness {
+    let active: XCTestExpectation
+    let keyed: XCTestExpectation
+    private var observedActive = false
+    private var observedKey = false
+
+    init(active: XCTestExpectation, keyed: XCTestExpectation) {
+        self.active = active
+        self.keyed = keyed
+    }
+
+    func becameActive() {
+        guard !observedActive else { return }
+        observedActive = true
+        active.fulfill()
+    }
+
+    func becameKey() {
+        guard !observedKey else { return }
+        observedKey = true
+        keyed.fulfill()
+    }
+}
+
+private enum NativeSearchTestFocusError: Error { case unavailable }

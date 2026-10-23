@@ -2,6 +2,7 @@ import SwiftUI
 
 struct LibrarySearchOverlayContainerView: View {
     @ObservedObject var model: LibrarySearchModel
+    let commandRouter: LibrarySearchCommandRouter
     let currentSelectedURL: URL?
     let displayName: (URL) -> String
     let onRunAction: (LibraryCommandPaletteAction) -> Void
@@ -17,6 +18,7 @@ struct LibrarySearchOverlayContainerView: View {
                 set: { model.setQuery($0, currentSelectedURL: currentSelectedURL) }
             ),
             selectedEntry: $model.selectedEntry,
+            commandRouter: commandRouter,
             actions: model.matchingActions,
             results: model.filteredResults,
             minimumCharacterCount: LibrarySearchModel.minimumCharacterCount,
