@@ -68,6 +68,14 @@ The native close callback owns controls cleanup; hiding a tab does not release i
 library access or cancel its private preparation. Initial view setup runs once per
 controls window.
 
+Lyrics editing keeps draft changes separate from Preview acceptance. Clean Up Lyrics
+and Text Tools → Normalize Formatting make native undoable draft edits only.
+Preview Draft parses the committed draft into that workspace's Preview without
+rewriting it or saving the source file. Save also refreshes Preview after writing;
+Load to Current remains explicit. Clear Draft clears the draft and Preview, and
+native Undo restores only the text. Preview Draft remains available after Undo
+even when the restored draft matches the saved file and Save is disabled.
+
 **Manage Workspaces…** in the Workspace menu and workspace toolbar opens the
 **Workspaces** toolbar tab in the app's shared native AppKit Settings window.
 The existing AppKit list provides Open, Rename and Delete. It shows

@@ -30,7 +30,8 @@ final class PlainTextEditorFocusController {
         (textView as? LyricsTextView)?.formatLyrics() ?? false
     }
 
-    func lyricsForCleanup() -> String? {
+    /// Reads committed native text without moving focus or accepting marked input.
+    func committedLyrics() -> String? {
         guard let textView = textView as? LyricsTextView,
               textView.window != nil, !textView.hasMarkedText() else { return nil }
         return textView.string

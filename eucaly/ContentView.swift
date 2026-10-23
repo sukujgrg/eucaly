@@ -551,6 +551,7 @@ public struct ContentView: View {
                 editorID: lyricsEditor.documentID,
                 saveButtonTitle: saveButtonTitle,
                 canSave: canSaveEditorContent,
+                canPreviewDraft: lyricsEditor.canPreviewDraft,
                 focusController: lyricsEditorFocusController,
                 onAction: handleEditorAction
             ),
@@ -587,7 +588,7 @@ public struct ContentView: View {
     }
 
     private var saveButtonTitle: String {
-        editorSourceURL == nil ? "Save As..." : "Save"
+        editorSourceURL == nil ? "Save As…" : "Save"
     }
 
     private var canSaveEditorContent: Bool {
@@ -601,11 +602,15 @@ public struct ContentView: View {
             requestEditorExit(.closeEditor)
         case .save:
             _ = saveEditorDraft()
+        case .previewDraft:
+            guard hasActiveEditorPane, lyricsEditor.canPreviewDraft else { return }
+            _ = syncEditorDraftToPreview()
         case .format:
             formatEditorDraft()
         case .cleanUp:
             cleanUpEditorDraft()
         case .clear:
+            guard hasActiveEditorPane, !lyricsEditor.draft.isEmpty else { return }
             if !lyricsEditorFocusController.clearLyrics() { lyricsEditor.clearDraft() }
             clearPreviewDocument()
         }
@@ -814,7 +819,9 @@ public struct ContentView: View {
             return "Resolve the Preview load error before loading to Current."
         }
         if lyricsEditor.isEditing && !lyricsEditor.isPreviewSynchronized {
-            return "Save or Format the lyrics to update Preview before loading to Current."
+            return lyricsEditor.hasLoadableDraft
+                ? "Choose Preview Draft to update Preview before loading to Current."
+                : "Add lyrics, then choose Preview Draft before loading to Current."
         }
         return "Load Preview into Current."
     }
@@ -1742,6 +1749,10 @@ public struct ContentView: View {
             newFileWarning = "Add some content before saving lyrics."
             return false
         }
+        guard lyricsEditorFocusController.committedLyrics() == lyricsEditor.draft else {
+            newFileWarning = "Finish composing the current text before saving lyrics."
+            return false
+        }
         if editorSourceURL != nil, !lyricsEditor.isDirty {
             return true
         }
@@ -1811,7 +1822,7 @@ public struct ContentView: View {
     private func cleanUpEditorDraft() {
         guard hasActiveEditorPane, let window = workspaceCommands.window,
               window.isVisible, window.attachedSheet == nil else { return }
-        guard let source = lyricsEditorFocusController.lyricsForCleanup(), source == lyricsEditor.draft else {
+        guard let source = lyricsEditorFocusController.committedLyrics(), source == lyricsEditor.draft else {
             newFileWarning = "Finish composing the current text before cleaning up lyrics."
             return
         }
@@ -1833,8 +1844,14 @@ public struct ContentView: View {
     }
 
     private func formatEditorDraft() {
-        guard !isCurrentSelectionMediaFile, lyricsEditorFocusController.formatLyrics() else { return }
-        _ = syncEditorDraftToPreview()
+        guard hasActiveEditorPane else { return }
+        do {
+            if try LyricsEditorDraftActions.normalizeFormatting(editor: lyricsEditor, focus: lyricsEditorFocusController) {
+                newFileWarning = nil
+            }
+        } catch {
+            newFileWarning = error.localizedDescription
+        }
     }
 
     private func saveCurrentFile() -> Bool {
@@ -1883,25 +1900,18 @@ public struct ContentView: View {
 
     @discardableResult
     private func syncEditorDraftToPreview() -> Bool {
-        guard lyricsEditor.hasLoadableDraft else {
-            newFileWarning = "Add some content before loading lyrics."
+        guard hasActiveEditorPane else { return false }
+        do {
+            guard try LyricsEditorDraftActions.updatePreview(
+                editor: &lyricsEditor, focus: lyricsEditorFocusController, flow: flow
+            ) else { return false }
+            isEditorPreviewAreaCollapsed = false
+            newFileWarning = nil
+            return true
+        } catch {
+            newFileWarning = error.localizedDescription
             return false
         }
-
-        let preferredSelectionIndex = currentPreviewSelectionIndex()
-        let fileName = lyricsEditor.sourceURL?.lastPathComponent
-        let document = LyricsParser.parseDocument(lyricsEditor.draft, fileName: fileName)
-        guard !document.slides.isEmpty else {
-            newFileWarning = "These lyrics do not contain a slide to load."
-            return false
-        }
-
-        let source = lyricsEditor.sourceURL.map(PreviewSource.file) ?? .lyrics
-        setPreviewSource(source)
-        setPreviewSlides(document.slides, preferredSelectionIndex: preferredSelectionIndex)
-        lyricsEditor.markPreviewed()
-        newFileWarning = nil
-        return true
     }
 
     private func restoreSavedEditorPreview() {
@@ -2065,12 +2075,6 @@ public struct ContentView: View {
         }
         return url
     }
-
-    private func currentPreviewSelectionIndex() -> Int? {
-        guard let previewSelectionID = flow.previewSelectionID else { return nil }
-        return flow.previewSlideIndex(for: previewSelectionID)
-    }
-
 
 }
 
