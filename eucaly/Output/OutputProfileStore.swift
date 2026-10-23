@@ -117,6 +117,11 @@ final class OutputProfileStore: ObservableObject {
                    defaults?.data(forKey: "outputProfilesWorkspaceMigrationBackup") == nil {
                     defaults?.set(data, forKey: "outputProfilesWorkspaceMigrationBackup")
                 }
+                if let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   (root["version"] as? Int ?? 0) < 7,
+                   defaults?.data(forKey: "outputProfilesOMTMigrationBackup") == nil {
+                    defaults?.set(data, forKey: "outputProfilesOMTMigrationBackup")
+                }
                 let defaultsRevision = defaults?.integer(forKey: Self.defaultsRevisionKey) ?? 0
                 if defaultsRevision < 1 {
                     // Upgrade the untouched built-in background once. Subsequent
@@ -168,10 +173,11 @@ final class OutputProfileStore: ObservableObject {
     func profile(_ id: UUID) -> OutputProfile? { document.profiles.first { $0.id == id } }
     func assignmentProblem(for destination: OutputDestinationConfiguration) -> String? {
         guard destination.enabled else { return nil }
-        if let ndi = destination.ndi {
-            guard ndi.isValid else { return "Choose a valid NDI source name and the supported 1920 × 1080, 30 fps format." }
-            if let other = document.destinations.first(where: { $0.id != destination.id && $0.enabled && $0.ndi?.normalizedName == ndi.normalizedName }) {
-                return "This NDI source name is used by \(other.name). Choose a different name."
+        if let settings = destination.networkSettings {
+            let technology = destination.networkTechnology == .omt ? "OMT" : "NDI"
+            guard settings.isValid else { return "Choose a valid \(technology) source name and the supported 1920 × 1080, 30 fps format." }
+            if let other = document.destinations.first(where: { $0.id != destination.id && $0.enabled && $0.networkTechnology == destination.networkTechnology && $0.networkSettings?.normalizedName == settings.normalizedName }) {
+                return "This \(technology) source name is used by \(other.name). Choose a different name."
             }
         }
         if let target = destination.monitor,
@@ -205,10 +211,15 @@ final class OutputProfileStore: ObservableObject {
     }
     @discardableResult
     func setNDISettings(_ settings: NDIOutputSettings, for destinationID: UUID) -> String? {
+        guard document.destinations.contains(where: { $0.id == destinationID && $0.ndi != nil }) else { return "This NDI output no longer exists." }
+        return setNetworkSettings(settings, for: destinationID)
+    }
+    @discardableResult
+    func setNetworkSettings(_ settings: NDIOutputSettings, for destinationID: UUID) -> String? {
         guard recoveryNotice == nil else { return recoveryNotice }
         guard settings.isValid else { return "Use a source name of up to 120 UTF-8 bytes without control characters or \\ / : * ? \" < > |." }
-        guard var destination = document.destinations.first(where: { $0.id == destinationID && $0.ndi != nil }) else { return "This NDI output no longer exists." }
-        destination.ndi = settings
+        guard var destination = document.destinations.first(where: { $0.id == destinationID && $0.isNetworkDestination }) else { return "This network output no longer exists." }
+        destination.networkSettings = settings
         if let problem = assignmentProblem(for: destination) { return problem }
         edit { doc in
             if let index = doc.destinations.firstIndex(where: { $0.id == destinationID }) { doc.destinations[index] = destination }
@@ -218,14 +229,14 @@ final class OutputProfileStore: ObservableObject {
     var conflictingDestinationIDs: Set<UUID> {
         let assigned = document.destinations.filter { $0.enabled && $0.monitor != nil }
         let grouped = Dictionary(grouping: assigned, by: { $0.monitor!.identity })
-        let ndi = Dictionary(grouping: document.destinations.filter { $0.enabled && $0.ndi != nil }, by: { $0.ndi!.normalizedName })
-        return Set((grouped.values.filter { $0.count > 1 } + ndi.values.filter { $0.count > 1 }).flatMap { $0.map(\.id) })
+        let network = Dictionary(grouping: document.destinations.filter { $0.enabled && $0.isNetworkDestination }, by: { ($0.networkTechnology == .omt ? "omt:" : "ndi:") + $0.networkSettings!.normalizedName })
+        return Set((grouped.values.filter { $0.count > 1 } + network.values.filter { $0.count > 1 }).flatMap { $0.map(\.id) })
     }
     var monitorConflictNotice: String? {
         let conflicts = conflictingDestinationIDs
         guard !conflicts.isEmpty else { return nil }
         let names = document.destinations.filter { conflicts.contains($0.id) }.map(\.name).joined(separator: ", ")
-        return "\(names) share a destination. Choose a different monitor or NDI source name for each enabled output."
+        return "\(names) share a destination. Choose a different monitor or source name for each enabled output of the same protocol."
     }
     var audience: OutputProfile {
         if let destination = document.destinations.first, let profile = profile(destination.profileID), profile.kind == .audience { return profile }
@@ -238,7 +249,7 @@ final class OutputProfileStore: ObservableObject {
     func edit(_ action: (inout OutputProfileDocument) -> Void) {
         var next = document; action(&next)
         if !next.destinations.contains(where: { $0.id == next.defaultDestinationID }) { next.defaultDestinationID = nil }
-        if !next.destinations.contains(where: { $0.id == next.backgroundAudioDestinationID && $0.ndi != nil }) { next.backgroundAudioDestinationID = nil }
+        if !next.destinations.contains(where: { $0.id == next.backgroundAudioDestinationID && $0.isNetworkDestination }) { next.backgroundAudioDestinationID = nil }
         guard next.isValid, next != document else { return }
         let previousDefault = defaultDestination
         let nextDefault = next.destinations.first { $0.id == next.defaultDestinationID }
@@ -274,14 +285,14 @@ final class OutputProfileStore: ObservableObject {
         recoveryNotice = nil; persist()
     }
     func clearDestinationBackground(_ destinationID: UUID) {
-        let keepsKey = document.destinations.first { $0.id == destinationID }?.ndi != nil
+        let keepsKey = document.destinations.first { $0.id == destinationID }?.isNetworkDestination == true
         editDestinationProfile(destinationID) { $0.clearBackground(preservingKeyColour: keepsKey) }
     }
     func clearBackgrounds() {
         edit { doc in
             let enabled = doc.destinations.filter(\.enabled)
             let ids = Set(enabled.map(\.profileID))
-            let keys = Set(enabled.filter { $0.ndi != nil }.map(\.profileID))
+            let keys = Set(enabled.filter(\.isNetworkDestination).map(\.profileID))
             for index in doc.profiles.indices where ids.contains(doc.profiles[index].id) {
                 doc.profiles[index].clearBackground(preservingKeyColour: keys.contains(doc.profiles[index].id))
             }

@@ -5,8 +5,8 @@ import CoreVideo
 /// No SDK types, AVPlayer, bookmarks, file paths or observable state cross IPC.
 /// The schema is shared by the app and its separately linked helper executable.
 nonisolated enum NDIHelperWire {
-    static let version = 16
-    static let build = "ndi-transformed-aperture-1"
+    static let version = 17
+    static let build = "network-omt-1"
     static let maximumMessageBytes = 65_536
     static let maximumAudioBlocks = 8
     // Audio acknowledgements share the four-slot reply port with one render
@@ -161,6 +161,7 @@ nonisolated struct NDIHelperConfiguration: Codable, Sendable {
     enum Purpose: String, Codable, Sendable { case renderOnly, renderYUV, sender, loopbackProbe, audioProbe }
     var purpose: Purpose = .renderOnly
     var sourceName = ""
+    var technology: NetworkOutputTechnology = .ndi
     // Debug-only comparison against the previous SDK input path. Never saved or
     // exposed as an operator setting; Release always submits GPU-produced YUV.
     var referenceBGRA = false

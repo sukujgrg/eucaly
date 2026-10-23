@@ -3,6 +3,95 @@ import XCTest
 
 @MainActor
 final class WorkspaceMigrationTests: XCTestCase {
+    func testVersionSixUpgradePreservesEveryAssignmentAndOriginalBytesWithoutStartingOutputs() throws {
+        let suite = "OMTMigration.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let originalStore = OutputProfileStore()
+        let online = try XCTUnwrap(originalStore.addWorkspace(name: "Online"))
+        var row = OutputDestinationConfiguration(name: "Saved source", profileID: OutputProfile.audienceID,
+            monitor: nil, workspaceID: online)
+        row.ndi = .init(sourceName: "Worship")
+        originalStore.edit {
+            $0.destinations.append(row)
+            $0.defaultDestinationID = row.id
+            $0.backgroundAudioDestinationID = row.id
+            $0.workspaces[1].monitorAudioLocally = false
+        }
+        originalStore.editDestinationProfile(row.id) { $0.typography.size = 103; $0.background.colour = .chromaGreen }
+        let expected = originalStore.document
+        var root = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(expected)) as? [String: Any])
+        root["version"] = 6
+        let original = try JSONSerialization.data(withJSONObject: root)
+        let earlierBackup = Data("preserved pre-v6 backup".utf8)
+        defaults.set(earlierBackup, forKey: "outputProfilesWorkspaceMigrationBackup")
+        defaults.set(2, forKey: "outputProfileDefaultsRevision")
+        defaults.set(original, forKey: OutputProfileStore.key)
+
+        let restored = OutputProfileStore(defaults: defaults)
+        restored.flush()
+        XCTAssertNil(restored.recoveryNotice)
+        XCTAssertEqual(restored.document, expected)
+        XCTAssertEqual(defaults.data(forKey: "outputProfilesOMTMigrationBackup"), original)
+        XCTAssertEqual(defaults.data(forKey: "outputProfilesWorkspaceMigrationBackup"), earlierBackup)
+        XCTAssertTrue(restored.document.destinations.allSatisfy { $0.omt == nil }, "Migration does not create OMT outputs.")
+        let transport = RecordingNDIOutput()
+        let outputs = OutputCoordinator(profiles: restored, displays: ProjectionDisplayManager(displays: { [] }),
+            retainsPreparedSessions: true, ndi: transport)
+        defer { outputs.stopAllOutputs() }
+        XCTAssertTrue(transport.starts.isEmpty)
+        XCTAssertFalse(outputs.isRunning)
+        XCTAssertNil(outputs.preparedSession(workspace: online))
+        XCTAssertEqual(OutputProfileStore(defaults: defaults).document, expected)
+        XCTAssertEqual(defaults.data(forKey: "outputProfilesOMTMigrationBackup"), original)
+    }
+
+    func testOMTRoundTripRetainsProtocolIdentityAppearanceWorkspaceAndExclusiveMusicRoute() throws {
+        let store = OutputProfileStore()
+        let owner = try XCTUnwrap(store.addWorkspace(name: "Stream"))
+        var ndi = OutputDestinationConfiguration(name: "NDI", profileID: OutputProfile.audienceID, monitor: nil)
+        ndi.ndi = .init(sourceName: "eucaly")
+        var omt = OutputDestinationConfiguration(name: "OMT", profileID: OutputProfile.audienceID,
+            monitor: nil, workspaceID: owner)
+        omt.omt = .init(sourceName: "eucaly")
+        store.edit { $0.destinations = [ndi, omt]; $0.backgroundAudioDestinationID = omt.id }
+        store.editDestinationProfile(omt.id) { $0.position = "bottom"; $0.background.colour = .chromaGreen }
+        let saved = store.document
+        let restored = try OutputLegacyMigration.decode(JSONEncoder().encode(saved))
+        XCTAssertEqual(restored, saved)
+        XCTAssertEqual(restored.destinations.map(\.networkTechnology), [.ndi, .omt])
+        XCTAssertEqual(restored.destinations.compactMap(\.networkSettings).map(\.sourceID), [ndi.ndi!.sourceID, omt.omt!.sourceID])
+        XCTAssertEqual(restored.backgroundAudioDestinationID, omt.id)
+        XCTAssertNil(restored.destinations[1].ndi)
+        XCTAssertFalse(restored.destinations[1].isMonitorDestination)
+        XCTAssertTrue(restored.isValid)
+        XCTAssertTrue(store.conflictingDestinationIDs.isEmpty, "The protocols have separate discovery namespaces.")
+    }
+
+    func testFailedOrFutureOMTMigrationRetainsOriginalSavedDataUntilExplicitRecovery() throws {
+        for version in [6, 7, 99] {
+            let suite = "OMTRecovery.\(UUID())"
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+            defer { defaults.removePersistentDomain(forName: suite) }
+            let store = OutputProfileStore()
+            var row = OutputDestinationConfiguration(name: "OMT", profileID: OutputProfile.audienceID, monitor: nil)
+            row.omt = .init(sourceName: "Saved OMT")
+            if version != 99 { row.omt?.width = 3840 }
+            var document = store.document
+            document.version = version
+            document.destinations = [row]
+            let original = try JSONEncoder().encode(document)
+            defaults.set(original, forKey: OutputProfileStore.key)
+            let restored = OutputProfileStore(defaults: defaults)
+            XCTAssertNotNil(restored.recoveryNotice)
+            restored.edit { $0.destinations.removeAll() }
+            restored.flush()
+            XCTAssertEqual(defaults.data(forKey: OutputProfileStore.key), original)
+            XCTAssertNil(defaults.data(forKey: "outputProfilesOMTMigrationBackup"), "Failed migrations do not replace a migration backup.")
+            XCTAssertTrue(restored.document.destinations.allSatisfy { !$0.enabled })
+        }
+    }
+
     func testWorkspaceMigrationPreservesOperatorNamesAndRemovesRetiredLaunchPreference() throws {
         let store = OutputProfileStore()
         let other = try XCTUnwrap(store.addWorkspace(name: "Online"))
@@ -48,7 +137,7 @@ final class WorkspaceMigrationTests: XCTestCase {
         store.editDestinationProfile(lyrics.id) { $0.typography.size = 112; $0.background.colour = .chromaGreen }
         let original = store.document
         let migrated = try OutputLegacyMigration.decode(legacy(original))
-        XCTAssertEqual(migrated.version, 6)
+        XCTAssertEqual(migrated.version, 7)
         XCTAssertEqual(migrated.workspaces, [.primary])
         XCTAssertEqual(migrated.destinations, original.destinations)
         XCTAssertEqual(migrated.profiles, original.profiles)

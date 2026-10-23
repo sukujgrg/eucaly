@@ -1,5 +1,14 @@
 # Output profiles and workspace programs
 
+Network destinations now choose NDI or OMT per saved output. Both share the
+accepted-Current rendering, workspace playback, single music-destination policy,
+native Settings editor and routing controls described below. Document version 7
+adds OMT while preserving version-6 identities and assignments, and retains the
+original pre-v7 bytes in a separate migration backup. Protocol-specific OMT
+format, SDK lifetime, packaging and connection-count details are documented in
+[OMT outputs](omt-runtime.md). Picked-window network output remains deferred for
+both protocols.
+
 ## Content, assignment and lifetime
 
 Each named workspace has one `PresentationSession` (Current), one
@@ -316,6 +325,10 @@ player/item, mixing its enabled audio tracks into timestamped stereo 48 kHz PCM.
 Its one-second decoded lookahead is independent of the player's local audio queue
 and adds no clock offset. Retained PCM and per-mixer delivery cursors preserve
 preroll, pause/resume and late joins; seeks reposition decoding when needed.
+Admission snapshots PCM metadata and sample-plane addresses before sharing it
+across destination queues. Each segment retains the backing buffer without
+re-entering its lazy typed-channel accessors; format conversion uses independent
+metadata over those retained samples. NDI and OMT share this boundary.
 Delivery retargeting is queued behind source removal on the mixer queue, so an
 in-flight old-owner PCM block
 cannot acquire the new owner's epoch. This retains the bus and its sample clock.

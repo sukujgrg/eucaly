@@ -10,7 +10,7 @@ nonisolated private final class PlayerAssetAudioDecoder: @unchecked Sendable {
         let sequence: UInt64
         let input: ProgramAudioBus.Input
         var end: CMTime { CMTimeRangeGetEnd(input.range) }
-        var bytes: Int { Int(input.buffer.frameLength) * 8 }
+        var bytes: Int { input.byteCount }
     }
     private final class Client {
         weak var mixer: ProgramAudioBus?

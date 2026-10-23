@@ -1,0 +1,18 @@
+{
+  "sdk_version": "1.0.0.19",
+  "source": "https://github.com/openmediatransport/libomtnet/releases/tag/v1.0.0.19",
+  "sdk_archive_sha256": "c62460174499dabe703e3e57372daf5f1dd95f890355d11e30052b9ed35bdac4",
+  "architectures": [
+    "arm64",
+    "x86_64"
+  ],
+  "runtime_bundled": true,
+  "files_sha256": {
+    "LICENSE.txt": "616e62811c0395c0719bd77b2c2c4276a797e803f73d412e87c3834f2af8bda2",
+    "include/libomt.h": "863b4b4a642810d9a77bd1e6861b7836990a720182d6e4669a33ac3e3eee4ec9",
+    "lib/libomt.dylib": "3b215b01f354da1132c6c48870530a36b814c9149b6cbb92d114faacac9a25fc",
+    "lib/libvmx.dylib": "8a69beac08f040851a88dfd1127b8a4d0141ce3864c56d66e4c08cd287883f37"
+  },
+  "notes": "Unmodified upstream binaries. App packaging preserves the universal vendor binaries, verifies their arm64 slices and signs them with the app identity. No libomtnet.dll or separately installed .NET runtime is required.",
+  "header_local_patch": "omt_shutdown(void) uses a C prototype; unchanged ABI, documented in PATCHES.md."
+}

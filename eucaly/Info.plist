@@ -50,10 +50,11 @@
 	<key>NSScreenCaptureUsageDescription</key>
 	<string>eucaly needs screen recording permission to capture application windows for presentation.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>eucaly publishes the NDI outputs you start, sending presentation video and audio to receivers on your local network.</string>
+	<string>eucaly publishes the NDI or OMT outputs you start, sending presentation video and audio to receivers on your local network.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_ndi._tcp</string>
+		<string>_omt._tcp</string>
 	</array>
 </dict>
 </plist>

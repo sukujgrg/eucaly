@@ -25,7 +25,8 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
     private var monitors: [MonitorEntry] = []
     private var profiles: [ProfileEntry] = []
     private var confidenceActions: NSStackView?
-    private(set) var ndiEditor: NDIOutputSettingsEditor?
+    private(set) var networkEditor: NetworkOutputSettingsEditor?
+    var ndiEditor: NetworkOutputSettingsEditor? { networkEditor }
 
     init(coordinator: OutputCoordinator, destinationID: UUID) {
         self.coordinator = coordinator; self.destinationID = destinationID
@@ -35,7 +36,7 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
     override func loadView() {
         let form = OutputSettingsForm(frame: .zero); view = form
         guard destination != nil else { return }
-        form.section(destination?.ndi == nil ? "Native Output" : "NDI Output")
+        form.section(destination?.networkTechnology.map { $0.title + " Output" } ?? "Native Output")
         nameField.delegate = self; nameField.setAccessibilityLabel("Output name")
         enabledButton.target = self; enabledButton.action = #selector(enabledChanged(_:))
         profilePicker.autoenablesItems = false
@@ -52,9 +53,9 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
             customizeButton,
             clearBackgroundButton
         ]))
-        if destination?.ndi != nil {
-            let editor = NDIOutputSettingsEditor(coordinator: coordinator, destinationID: destinationID)
-            ndiEditor = editor; addChild(editor)
+        if destination?.isNetworkDestination == true {
+            let editor = NetworkOutputSettingsEditor(coordinator: coordinator, destinationID: destinationID)
+            networkEditor = editor; addChild(editor)
             let operations = editor.view
             form.add(editor.configurationView)
             let content = NSStackView(views: [operations, form]); content.orientation = .vertical
@@ -110,7 +111,7 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
         }
         profilePicker.toolTip = "Choose a reusable profile, or keep this output’s custom appearance. Customize Appearance edits this output only."
         profilePicker.select(profilePicker.itemArray.first { $0.representedObject as? UUID == destination.profileID })
-        if let ndiEditor { ndiEditor.render(); return }
+        if let networkEditor { networkEditor.render(); return }
         let displays = coordinator.displays
         var fresh = [MonitorEntry(target: nil, title: "None", enabled: true)]
         fresh += displays.displays.map { display in

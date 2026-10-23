@@ -7,7 +7,7 @@ final class OutputRetirementTests: XCTestCase {
     func testMixedLegacyDocumentRetainsNativeSettingsAndRemovesRetiredDefault() throws {
         let fixture = try legacy()
         let document = try OutputLegacyMigration.decode(fixture.data)
-        XCTAssertEqual(document.version, 6)
+        XCTAssertEqual(document.version, 7)
         XCTAssertEqual(document.destinations, [fixture.native])
         XCTAssertNil(document.defaultDestinationID)
         XCTAssertEqual(document.profiles, fixture.profiles)

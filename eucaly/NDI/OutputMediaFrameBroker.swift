@@ -30,7 +30,7 @@ final class OutputMediaFrameBroker {
         // Workspace snapshots must carry their explicit load's accepted bytes.
         // URL-only requests are retained for standalone preparation/probe callers.
         if snapshot.source != nil, slide?.pdfURL != nil, snapshot.acceptedPDF == nil {
-            failure("NDI could not prepare the accepted PDF. Load the PDF to Current again."); return
+            failure("Network output could not prepare the accepted PDF. Load the PDF to Current again."); return
         }
         let media = slide.map { OutputContentClassifier.mode(for: $0) == .media } ?? false
         let background = profile.background
@@ -64,7 +64,7 @@ final class OutputMediaFrameBroker {
             foregroundFill: slide?.videoURL != nil && runtime.programFill,
             backgroundFill: background.fit == "fill", dimming: background.dimming,
             colour: keyMode == .chroma ? background.colour : .init(alpha: 0))
-        guard request.isValid else { failure("NDI render state exceeds the supported limits."); return }
+        guard request.isValid else { failure("Network output render state exceeds the supported limits."); return }
         plan = .init(request: request, foregroundVideo: foregroundVideo, backgroundVideo: backgroundVideo)
         refreshPlan()
     }
@@ -172,7 +172,7 @@ nonisolated final class NDIMediaFrameClock: @unchecked Sendable {
             // A newer Current can replace it before that callback is delivered.
             if current { failedPlanVersion = version; plan = nil }
             lock.unlock()
-            if current { failure(self, version, "NDI could not read the shared video frame. Use an SDR video file and choose Retry.") }
+            if current { failure(self, version, "Network output could not read the shared video frame. Use an SDR video file and choose Retry.") }
         }
     }
 }
@@ -244,7 +244,7 @@ nonisolated final class OutputPreparedMedia: @unchecked Sendable {
                         work.result(work.key, frame, nil)
                     }
                 }
-                catch { work.result(work.key, nil, "NDI could not prepare the selected image or PDF page.") }
+                catch { work.result(work.key, nil, "Network output could not prepare the selected image or PDF page.") }
             }
         }
     }

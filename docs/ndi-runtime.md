@@ -39,6 +39,12 @@ physical receiver, network, audio synchronization or a sustained session.
 
 ## Using the outputs
 
+NDI and OMT are saved per-output choices. Add either in Manage Outputs; both use
+the same network editor and workspace routing menu. Existing NDI destinations
+keep their protocol and source identity. See [OMT outputs](omt-runtime.md) for the
+OMT format, bundled dependencies and cross-protocol audio policy. Picked windows
+remain native-only for both protocols.
+
 1. Create/name workspace tabs from the Workspace menu (`Cmd+T` creates a tab).
    Each keeps one independent Sidebar → Preview → Current flow. Move Tab to New
    Window retains the same workspace for side-by-side operation.
@@ -172,6 +178,13 @@ ranges preserve converter state; gaps and overlaps re-anchor it at the supplied
 timestamp. PCM already matching the mixer's format retains its immutable copied
 buffer directly, avoiding streaming-converter batching. Actual format/rate
 conversions retain their converter.
+Before fanout, admission captures the PCM frame count, format and raw sample
+planes. Destinations retain that immutable storage and never re-enter the shared
+`AVAudioPCMBuffer` metadata or typed-channel accessors: AVFoundation lazily
+initializes its channel table, and concurrent first access can expose null
+channel pointers. Conversion receives a destination-local metadata wrapper over
+the retained samples. This boundary applies equally to NDI and OMT destinations;
+it adds neither another player nor a per-output sample copy.
 NDI prevents idle system sleep while allowing
 display sleep. These engineering checks do not qualify physical receiver delivery.
 

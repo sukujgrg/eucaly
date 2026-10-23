@@ -93,7 +93,7 @@ final class NDIProgramAudio {
             // live NDI audio. The output coordinator still owns sleep policy.
             timingActivity = ProcessInfo.processInfo.beginActivity(
                 options: [.userInitiatedAllowingIdleSystemSleep, .latencyCritical],
-                reason: "Producing live NDI audio")
+                reason: "Producing live network output audio")
             let distribution = distribution
             let bus = makeBus { distribution.deliver(program: $0, background: $1, time: $2) }
             bus.setSourceFailureHandler { [weak self] id, reason in

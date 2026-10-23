@@ -55,6 +55,8 @@ final class OutputCoordinator: ObservableObject {
     let profiles: OutputProfileStore
     let displays: ProjectionDisplayManager
     let ndi: any NDIOutputDriving
+    // Compatibility name retained for callers; the router serves NDI and OMT.
+    var network: any NDIOutputDriving { ndi }
     private let retainsPreparedSessions: Bool
     private let sleepPrevention: ProjectionSleepPrevention
     private let keyWindow: @MainActor () -> NSWindow?
@@ -73,8 +75,8 @@ final class OutputCoordinator: ObservableObject {
     private var standbySuppressed: Set<UUID> = []
     private var standbyScheduled = false
     private var workspaceReady = false
-    private var dismissedNDIPerformance: Set<UUID> = []
-    private var dismissedNDIFailures: [UUID: String] = [:]
+    private var dismissedNetworkPerformance: Set<UUID> = []
+    private var dismissedNetworkFailures: [UUID: String] = [:]
     private var issues: [UUID: String] = [:]
     private var pendingFileRemoval: PendingFileRemoval?
     private var fileAcquisitionTickets: [WeakFileAcquisitionTicket] = []
@@ -419,7 +421,7 @@ final class OutputCoordinator: ObservableObject {
     func localBackgroundAudioEnabled(workspace: UUID) -> Bool {
         return monitorAudioLocally(workspace: workspace)
             || hasOpenNativeOutput(workspace: workspace)
-            // Retain explicit standalone local music. A saved NDI music route
+            // Retain explicit standalone local music. A saved network music route
             // never falls back to local speakers when its sender stops/moves.
             || hasStandaloneLocalAudio(workspace: workspace)
     }
@@ -431,7 +433,7 @@ final class OutputCoordinator: ObservableObject {
             && canPlayStandaloneBackgroundAudio(workspace: workspace)
     }
     func canPlayStandaloneBackgroundAudio(workspace: UUID) -> Bool {
-        profiles.document.backgroundAudioDestinationID == nil && !destinations(workspace: workspace).contains { $0.ndi != nil }
+        profiles.document.backgroundAudioDestinationID == nil && !destinations(workspace: workspace).contains { $0.isNetworkDestination }
     }
     func profile(for destination: UUID) -> OutputProfile? { self.destination(destination).flatMap { profiles.profile($0.profileID) } }
     func snapshot(for destination: UUID) -> OutputContentSnapshot {
@@ -466,7 +468,7 @@ final class OutputCoordinator: ObservableObject {
     func thumbnailGeometry(workspace: UUID) -> CGSize? {
         let rows = destinations(workspace: workspace).filter(\.enabled)
         let row = rows.first { $0.isMonitorDestination && profiles.profile($0.profileID)?.kind == .audience } ?? rows.first
-        if let settings = row?.ndi { return .init(width: settings.width, height: settings.height) }
+        if let settings = row?.networkSettings { return .init(width: settings.width, height: settings.height) }
         return row?.monitor.flatMap { displays.resolve($0)?.frame.size }
     }
     func tabStatus(workspace: UUID) -> String {
@@ -477,8 +479,8 @@ final class OutputCoordinator: ObservableObject {
         if count > 0 {
             let state = programs[workspace]
             let activity = state?.started == true ? (state?.snapshot.visible == true ? "Live" : "Hidden") : state?.backgroundOpen == true ? "Background" : "Standby"
-            let blank = state?.snapshot.localMedia.map { !OutputContentClassifier.supportsNDI($0) } == true && rows.contains { $0.ndi != nil && isOpen($0.id) }
-            return "\(count) output\(count == 1 ? "" : "s") · " + activity + (blank ? " · NDI blank" : "")
+            let blank = state?.snapshot.localMedia.map { !OutputContentClassifier.supportsNetworkOutput($0) } == true && rows.contains { $0.isNetworkDestination && isOpen($0.id) }
+            return "\(count) output\(count == 1 ? "" : "s") · " + activity + (blank ? " · " + networkOutputNames(rows) + " blank" : "")
         }
         return rows.isEmpty ? "No outputs" : "Stopped"
     }
@@ -504,8 +506,8 @@ final class OutputCoordinator: ObservableObject {
             setIssue(problem, workspace: workspaceID ?? session.outputSourceID, reason: .transfer); return false
         }
         var proposed = destinations(workspace: session.outputSourceID); proposed.append(row)
-        if let slide = session.currentSlide, row.ndi != nil, !OutputContentClassifier.supportsNDI(slide) {
-            setIssue("Cannot move \(profiles.destinationLabel(row)) to \(profiles.workspaceName(session.outputSourceID)). NDI supports lyrics, PDFs, images and video files. Choose supported Current content before moving this output.",
+        if let slide = session.currentSlide, row.isNetworkDestination, !OutputContentClassifier.supportsNetworkOutput(slide) {
+            setIssue("Cannot move \(profiles.destinationLabel(row)) to \(profiles.workspaceName(session.outputSourceID)). \(networkOutputNames([row])) supports lyrics, PDFs, images and video files. Choose supported Current content before moving this output.",
                      workspace: workspaceID ?? session.outputSourceID, reason: .transfer)
             return false
         }
@@ -536,11 +538,15 @@ final class OutputCoordinator: ObservableObject {
         commandSession?.toggleSlidesVisibility()
     }
     func startNDI(_ id: UUID) {
-        guard let row = destination(id), row.enabled, row.ndi != nil, let owner = row.workspaceID,
+        guard destination(id)?.ndi != nil else { return }
+        startNetworkOutput(id)
+    }
+    func startNetworkOutput(_ id: UUID) {
+        guard let row = destination(id), row.enabled, row.isNetworkDestination, let owner = row.workspaceID,
               ndi.state(id).canStart || ndi.state(id).active else { return }
         let session = session(workspace: owner)
-        if let slide = session.currentSlide, !OutputContentClassifier.supportsNDI(slide) {
-            setIssue("NDI supports lyrics, PDFs, images and video files. Choose supported Current content before starting this source.", workspace: owner); return
+        if let slide = session.currentSlide, !OutputContentClassifier.supportsNetworkOutput(slide) {
+            setIssue("\(networkOutputNames([row])) supports lyrics, PDFs, images and video files. Choose supported Current content before starting this source.", workspace: owner); return
         }
         _ = presentLocal(session, onlyDestinationID: id)
     }
@@ -568,7 +574,7 @@ final class OutputCoordinator: ObservableObject {
         guard activation == .show ? openDestinations(rows) : !rows.isEmpty else {
             setIssue(profiles.monitorConflictNotice ?? "Choose an available output assigned to this workspace in Manage Outputs before presenting.", workspace: state.id); return false
         }
-        if let slide = session.currentSlide, !OutputContentClassifier.supportsNDI(slide),
+        if let slide = session.currentSlide, !OutputContentClassifier.supportsNetworkOutput(slide),
            !rows.contains(where: { windows[$0.id] != nil }) {
             setIssue("This content needs an available native output.", workspace: state.id); return false
         }
@@ -590,10 +596,17 @@ final class OutputCoordinator: ObservableObject {
     }
     private func presentationProblem(for slide: Slide?, rows: [OutputDestinationConfiguration]) -> String? {
         let available = availableDestinations(rows)
-        if let slide, !OutputContentClassifier.supportsNDI(slide), !available.contains(where: { $0.isMonitorDestination }) {
-            return "NDI supports lyrics, PDFs, images and video files. Use a native monitor for picked windows."
+        if let slide, !OutputContentClassifier.supportsNetworkOutput(slide), !available.contains(where: { $0.isMonitorDestination }) {
+            let verb = rows.contains { $0.networkTechnology == .ndi } && rows.contains { $0.networkTechnology == .omt } ? "support" : "supports"
+            return "\(networkOutputNames(rows)) \(verb) lyrics, PDFs, images and video files. Use a native monitor for picked windows."
         }
         return nil
+    }
+    private func networkOutputNames(_ rows: [OutputDestinationConfiguration]) -> String {
+        let hasNDI = rows.contains { $0.networkTechnology == .ndi }
+        let hasOMT = rows.contains { $0.networkTechnology == .omt }
+        if hasOMT { return hasNDI ? "NDI and OMT" : "OMT" }
+        return "NDI"
     }
     private var windowCaptureStartProblem: String? {
         captureManager?.pendingPickerRequest == nil ? nil : "Finish or cancel Pick Window before showing a picked window."
@@ -604,7 +617,7 @@ final class OutputCoordinator: ObservableObject {
         let state = program(session.outputSourceID)
         guard state.ownership.source == state.id else { return }
         // A model refresh only updates surviving consumers. A closed native
-        // companion cannot make picked-window content supported by live NDI.
+        // companion cannot make picked-window content supported by network outputs.
         let rows = destinations(workspace: state.id).filter { $0.enabled && isOpen($0.id) }
         if session.currentSlide?.captureWindowID != nil, rows.contains(where: \.isMonitorDestination),
            let problem = windowCaptureStartProblem {
@@ -679,7 +692,7 @@ final class OutputCoordinator: ObservableObject {
         let conflicts = profiles.conflictingDestinationIDs
         return rows.filter { row in
             guard row.enabled, !conflicts.contains(row.id) else { return false }
-            if row.ndi?.isValid == true { return true }
+            if row.networkSettings?.isValid == true { return true }
             guard let target = row.monitor, displays.resolve(target) != nil else { return false }
             return windows[row.id] != nil || !displays.isReserved(target)
         }
@@ -687,7 +700,7 @@ final class OutputCoordinator: ObservableObject {
     private func openDestinations(_ rows: [OutputDestinationConfiguration]) -> Bool {
         displays.refresh(); var ready = false
         for row in availableDestinations(rows) {
-            if row.ndi != nil { if ndi.start(row) { ready = true } }
+            if row.isNetworkDestination { if ndi.start(row) { ready = true } }
             else if openDestination(row, activate: true) { ready = true }
         }
         return ready
@@ -735,7 +748,7 @@ final class OutputCoordinator: ObservableObject {
         profiles.document.destinations.filter(\.enabled).map { row in
             let state: OutputReadiness
             if profiles.conflictingDestinationIDs.contains(row.id) { state = .unavailable }
-            else if row.ndi != nil {
+            else if row.isNetworkDestination {
                 switch ndi.state(row.id) {
                 case .stopped: state = .closed
                 case .starting: state = .starting
@@ -853,10 +866,10 @@ final class OutputCoordinator: ObservableObject {
         // Observers must see the completed ownership/media transaction.
         revision &+= 1
     }
-    private func ndiMessage(_ message: String, id: UUID) -> String {
-        guard let row = destination(id) else { return "NDI output: " + message }
+    private func networkMessage(_ message: String, id: UUID) -> String {
+        guard let row = destination(id) else { return "Network output: " + message }
         let duplicate = profiles.document.destinations.filter { $0.name == row.name }.count > 1
-        return row.name + (duplicate ? " (" + (row.ndi?.sourceName ?? profiles.workspaceName(row.workspaceID)) + ")" : "") + ": " + message
+        return row.name + (duplicate ? " (" + (row.networkSettings?.sourceName ?? profiles.workspaceName(row.workspaceID)) + ")" : "") + ": " + message
     }
     private func refreshIssues() {
         for (id, reason) in issueReasons {
@@ -890,19 +903,19 @@ final class OutputCoordinator: ObservableObject {
     private func workspaceIssue(_ id: UUID) -> String? {
         let rows = destinations(workspace: id).filter(\.enabled)
         let failures = rows.compactMap { row -> String? in
-            guard let reason = ndi.state(row.id).failureReason, dismissedNDIFailures[row.id] != reason else { return nil }
-            return ndiMessage(reason, id: row.id)
+            guard let reason = ndi.state(row.id).failureReason, dismissedNetworkFailures[row.id] != reason else { return nil }
+            return networkMessage(reason, id: row.id)
         }
         let warnings = rows.compactMap { row -> String? in
-            guard !dismissedNDIPerformance.contains(row.id), let notice = ndi.performanceNotice(row.id) else { return nil }
-            return ndiMessage(notice, id: row.id)
+            guard !dismissedNetworkPerformance.contains(row.id), let notice = ndi.performanceNotice(row.id) else { return nil }
+            return networkMessage(notice, id: row.id)
         }
         let messages = [issues[id]].compactMap { $0 } + failures + warnings
         return messages.isEmpty ? nil : messages.joined(separator: "\n")
     }
     private func publishIssues() {
-        dismissedNDIPerformance = dismissedNDIPerformance.filter { destination($0)?.enabled == true && ndi.performanceNotice($0) != nil }
-        dismissedNDIFailures = dismissedNDIFailures.filter { destination($0.key)?.enabled == true && ndi.state($0.key).failureReason == $0.value }
+        dismissedNetworkPerformance = dismissedNetworkPerformance.filter { destination($0)?.enabled == true && ndi.performanceNotice($0) != nil }
+        dismissedNetworkFailures = dismissedNetworkFailures.filter { destination($0.key)?.enabled == true && ndi.state($0.key).failureReason == $0.value }
         for state in programs.values {
             let message = workspaceIssue(state.id)
             if state.session?.projectionDisplayIssue != message { state.session?.projectionDisplayIssue = message }
@@ -913,8 +926,8 @@ final class OutputCoordinator: ObservableObject {
     func dismissIssue(workspace: UUID? = nil) {
         let id = workspace ?? focusedProgram.id
         for row in destinations(workspace: id) {
-            if ndi.performanceNotice(row.id) != nil { dismissedNDIPerformance.insert(row.id) }
-            if let reason = ndi.state(row.id).failureReason { dismissedNDIFailures[row.id] = reason }
+            if ndi.performanceNotice(row.id) != nil { dismissedNetworkPerformance.insert(row.id) }
+            if let reason = ndi.state(row.id).failureReason { dismissedNetworkFailures[row.id] = reason }
         }
         setIssue(nil, workspace: id)
     }

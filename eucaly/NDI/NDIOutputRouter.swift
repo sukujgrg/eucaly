@@ -1,6 +1,10 @@
 import AppKit
 import Combine
 
+typealias NetworkOutputState = NDIOutputState
+typealias NetworkOutputDriving = NDIOutputDriving
+typealias NetworkOutputRouter = NDIOutputRouter
+
 nonisolated enum NDIOutputState: Equatable, Sendable {
     case stopped, starting, publishing, sending(Int), stopping(String?), failed(String)
     var title: String {
@@ -12,6 +16,13 @@ nonisolated enum NDIOutputState: Equatable, Sendable {
         case .sending(let count): "Sending · \(count) receiver\(count == 1 ? "" : "s")"
         case .failed(let reason): reason
         }
+    }
+    func title(for technology: NetworkOutputTechnology) -> String {
+        if technology == .omt {
+            if case .publishing = self { return "Publishing · No connections" }
+            if case .sending(let count) = self { return "Sending · \(count) connection\(count == 1 ? "" : "s")" }
+        }
+        return title
     }
     var active: Bool {
         switch self { case .starting, .publishing, .sending: true; case .stopped, .stopping, .failed: false }
@@ -64,14 +75,15 @@ final class NDIOutputRouter: ObservableObject, NDIOutputDriving {
     private final class Entry {
         let generation = UUID()
         let supervisor: any NDISenderDriving
+        let technology: NetworkOutputTechnology
         var settings: NDIOutputSettings
         var ready = false
         var retiring = false
         let route = NDIContentRoute()
         let audio: NDIProgramAudio
         var media: OutputMediaFrameBroker?
-        init(settings: NDIOutputSettings, supervisor: any NDISenderDriving, musicRoute: NDIMusicRoute) {
-            self.settings = settings; self.supervisor = supervisor; audio = NDIProgramAudio(musicRoute: musicRoute)
+        init(settings: NDIOutputSettings, technology: NetworkOutputTechnology, supervisor: any NDISenderDriving, musicRoute: NDIMusicRoute) {
+            self.settings = settings; self.technology = technology; self.supervisor = supervisor; audio = NDIProgramAudio(musicRoute: musicRoute)
         }
     }
     private var entries: [UUID: Entry] = [:]
@@ -87,19 +99,23 @@ final class NDIOutputRouter: ObservableObject, NDIOutputDriving {
     func state(_ id: UUID) -> NDIOutputState { states[id] ?? .stopped }
     func performanceNotice(_ id: UUID) -> String? { state(id).active ? statistics[id]?.performanceNotice : nil }
     func start(_ destination: OutputDestinationConfiguration) -> Bool {
-        guard !shuttingDown, destination.enabled, let settings = destination.ndi, settings.isValid else { return false }
-        if let entry = entries[destination.id] { return !entry.retiring && state(destination.id).active }
+        guard !shuttingDown, destination.enabled, let settings = destination.networkSettings,
+              let technology = destination.networkTechnology, settings.isValid else { return false }
+        if let entry = entries[destination.id] {
+            return !entry.retiring && state(destination.id).active && entry.technology == technology
+                && !settings.requiresRestart(comparedTo: entry.settings)
+        }
         let id = destination.id
         let supervisor = senderFactory { [weak self] event in
             Task { @MainActor [weak self] in self?.receive(event, id: id) }
         }
-        let entry = Entry(settings: settings, supervisor: supervisor, musicRoute: musicRoute)
+        let entry = Entry(settings: settings, technology: technology, supervisor: supervisor, musicRoute: musicRoute)
         entry.audio.sourceFailed = { [weak self, weak entry] reason in
             guard let self, let entry, self.entries[id] === entry, !entry.retiring else { return }
             self.fail(id, reason)
         }
         entries[id] = entry; statistics[id] = nil; setState(.starting, for: id)
-        supervisor.startSender(generation: entry.generation, configuration: .init(purpose: .sender, sourceName: settings.sourceName))
+        supervisor.startSender(generation: entry.generation, configuration: .init(purpose: .sender, sourceName: settings.sourceName, technology: technology))
         return true
     }
     func stop(_ id: UUID) {
@@ -124,8 +140,8 @@ final class NDIOutputRouter: ObservableObject, NDIOutputDriving {
     func reconcile(_ document: OutputProfileDocument) {
         for (id, entry) in entries {
             guard let destination = document.destinations.first(where: { $0.id == id && $0.enabled }),
-                  let settings = destination.ndi else { stop(id); continue }
-            if settings.requiresRestart(comparedTo: entry.settings) { stop(id) }
+                  let settings = destination.networkSettings else { stop(id); continue }
+            if destination.networkTechnology != entry.technology || settings.requiresRestart(comparedTo: entry.settings) { stop(id) }
             else { entry.settings = settings }
         }
     }
@@ -187,7 +203,7 @@ final class NDIOutputRouter: ObservableObject, NDIOutputDriving {
         entry.media?.stop(); entry.media = nil; entry.audio.stop()
         entries[id] = nil
         if case .stopping(let reason) = state(id) { setState(reason.map(NDIOutputState.failed) ?? .stopped, for: id) }
-        else if state(id).active { setState(.failed("NDI output stopped unexpectedly. Choose Retry or Show Slides."), for: id) }
+        else if state(id).active { setState(.failed("\(entry.technology.title) output stopped unexpectedly. Choose Retry or Show Slides."), for: id) }
     }
     private func fail(_ id: UUID, _ reason: String) {
         if let entry = entries[id] { entry.retiring = true; entry.route.invalidate(); entry.media?.stop(); entry.media = nil; entry.supervisor.stop() }

@@ -369,6 +369,7 @@ def verify_arm64_app(app):
         "Sparkle", "Autoupdate", "Updater.app/Contents/MacOS/Updater",
         "XPCServices/Installer.xpc/Contents/MacOS/Installer",
         "XPCServices/Downloader.xpc/Contents/MacOS/Downloader"))
+    binaries.extend(app / "Contents/Frameworks/OMT" / name for name in ("libomt.dylib", "libvmx.dylib"))
     for binary in binaries:
         if not binary.is_file() or not binary.resolve().is_relative_to(app.resolve()):
             raise ReleaseError(f"Required executable is missing or outside the app: {binary}")
@@ -402,6 +403,10 @@ def verify_app(app, state, team):
     if info.get("SUEnableInstallerLauncherService") or info.get("SUEnableDownloaderService"):
         raise ReleaseError("The unsandboxed app must not enable Sparkle's sandbox XPC services.")
     binaries = verify_arm64_app(app)
+    for name in ("LICENSE.txt", "provenance.json"):
+        notice = app / "Contents/Resources/OMT" / name
+        if not notice.is_file() or not notice.resolve().is_relative_to(app.resolve()):
+            raise ReleaseError(f"The bundled OMT runtime is missing its required notice: {name}")
     if any(app.rglob("libndi*")):
         raise ReleaseError("NDI must use a separately installed runtime; do not bundle libndi.")
     run("codesign", "--verify", "--deep", "--strict", app)

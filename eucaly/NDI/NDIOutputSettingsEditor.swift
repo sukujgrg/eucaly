@@ -3,10 +3,12 @@ import Combine
 
 /// Operations stay above the destination's scrolling configuration form.
 @MainActor
-final class NDIOutputSettingsEditor: NSViewController, NSTextFieldDelegate {
+final class NetworkOutputSettingsEditor: NSViewController, NSTextFieldDelegate {
     let coordinator: OutputCoordinator
     let destinationID: UUID
     let sourceName = NSTextField()
+    let formatLabel = outputSettingsLabel(secondary: true)
+    let informationButton = NSButton()
     let keyMode = NSPopUpButton()
     let chromaColour = NSColorWell()
     let transparencyNotice = outputSettingsLabel(secondary: true)
@@ -23,11 +25,12 @@ final class NDIOutputSettingsEditor: NSViewController, NSTextFieldDelegate {
     private var chromaColourRow: NSView?
     private var store: OutputProfileStore { coordinator.profiles }
     private var destination: OutputDestinationConfiguration? { store.document.destinations.first { $0.id == destinationID } }
+    private var technology: NetworkOutputTechnology { destination?.networkTechnology ?? .ndi }
 
     init(coordinator: OutputCoordinator, destinationID: UUID) {
         self.coordinator = coordinator; self.destinationID = destinationID
         super.init(nibName: nil, bundle: nil)
-        if let router = coordinator.ndi as? NDIOutputRouter {
+        if let router = coordinator.network as? NDIOutputRouter {
             subscription = router.objectWillChange.sink { [weak self] _ in
                 DispatchQueue.main.async {
                     guard let self, self.isViewLoaded, self.view.window?.isVisible == true, !self.view.isHiddenOrHasHiddenAncestor else { return }
@@ -40,7 +43,7 @@ final class NDIOutputSettingsEditor: NSViewController, NSTextFieldDelegate {
     override func loadView() {
         let operations = NSStackView(); operations.orientation = .vertical; operations.alignment = .leading; operations.spacing = 6
         view = operations
-        let title = outputSettingsLabel("NDI Output", heading: true)
+        let title = outputSettingsLabel(technology.title + " Output", heading: true)
         startButton.target = self; startButton.action = #selector(toggle(_:)); startButton.bezelStyle = .rounded
         startButton.setContentHuggingPriority(.required, for: .horizontal)
         startButton.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -55,13 +58,16 @@ final class NDIOutputSettingsEditor: NSViewController, NSTextFieldDelegate {
         operations.setHuggingPriority(.required, for: .vertical)
 
         let form = configurationView; form.orientation = .vertical; form.alignment = .leading; form.spacing = 10
-        sourceName.delegate = self; sourceName.setAccessibilityLabel("NDI source name")
+        sourceName.delegate = self; sourceName.setAccessibilityLabel(technology.title + " source name")
         sourceName.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         form.addArrangedSubview(outputSettingsRow("Source Name", sourceName))
         validationLabel.textColor = .systemOrange; form.addArrangedSubview(validationLabel)
-        form.addArrangedSubview(outputSettingsLabel("1920 × 1080 · 30 fps · NDI High Bandwidth", secondary: true))
+        formatLabel.stringValue = technology == .ndi
+            ? "1920 × 1080 · 30 fps · NDI High Bandwidth"
+            : "1920 × 1080 · 30 fps · OMT VMX · Stereo 48 kHz"
+        form.addArrangedSubview(formatLabel)
         keyMode.addItems(withTitles: ["Transparent Alpha", "Chroma Colour"])
-        keyMode.target = self; keyMode.action = #selector(keyChanged(_:)); keyMode.setAccessibilityLabel("NDI transparency")
+        keyMode.target = self; keyMode.action = #selector(keyChanged(_:)); keyMode.setAccessibilityLabel(technology.title + " transparency")
         form.addArrangedSubview(outputSettingsRow("Transparency", keyMode))
         form.addArrangedSubview(transparencyNotice)
         chromaColour.target = self; chromaColour.action = #selector(chromaColourChanged(_:))
@@ -81,13 +87,14 @@ final class NDIOutputSettingsEditor: NSViewController, NSTextFieldDelegate {
             group.add(outputSettingsLabel("Frame age measures the latest new picture at submission. Cached stills continue at 30 fps. These measurements do not confirm receiver display or audio delivery.", secondary: true))
         }
         form.addArrangedSubview(diagnostics)
-        let link = NSButton(title: "NDI Runtime and Information…", target: self, action: #selector(openNDI(_:)))
-        form.addArrangedSubview(outputSettingsActionRow([link]))
+        informationButton.title = technology == .ndi ? "NDI Runtime and Information…" : "OMT Information…"
+        informationButton.target = self; informationButton.action = #selector(openInformation(_:))
+        form.addArrangedSubview(outputSettingsActionRow([informationButton]))
         for child in form.arrangedSubviews { child.widthAnchor.constraint(equalTo: form.widthAnchor).isActive = true }
         render()
     }
     func render() {
-        guard isViewLoaded, let destination, let settings = destination.ndi else { return }
+        guard isViewLoaded, let destination, let settings = destination.networkSettings else { return }
         if sourceName.currentEditor() == nil { sourceName.stringValue = settings.sourceName }
         keyMode.selectItem(at: settings.keyMode == .alpha ? 0 : 1)
         chromaColourRow?.isHidden = settings.keyMode != .chroma
@@ -96,29 +103,30 @@ final class NDIOutputSettingsEditor: NSViewController, NSTextFieldDelegate {
         chromaColour.isEnabled = store.canCustomizeProfile(for: destinationID)
         chromaColour.toolTip = chromaColour.isEnabled ? "Change the key colour for this output only. The saved colour is retained when using Alpha." : "The appearance limit has been reached. Remove an unused profile to customize this colour."
         transparencyNotice.stringValue = settings.keyMode == .alpha
-            ? "Surroundings are transparent. Enable alpha compositing at the receiver to show cameras underneath. The saved chroma colour is inactive; enabled image or video backgrounds still show."
+            ? "Surroundings are transparent. Compatible receivers can composite the picture over another source; display-only receivers show it over black. The saved chroma colour is inactive; enabled image or video backgrounds still show."
             : "Surroundings use the Chroma Colour below. Configure the receiver to remove that colour. Changing it customizes this output only; full-frame media still uses this connection."
-        let outputs = store.document.destinations.filter { $0.ndi != nil }
+        let outputs = store.document.destinations.filter(\.isNetworkDestination)
         let names = ["Off"] + outputs.map { output in
-            return output.name + " (" + (output.ndi?.sourceName ?? "") + ")" + (output.enabled ? "" : " · Disabled")
+            return output.name + " (" + (output.networkTechnology?.title ?? "") + ": "
+                + (output.networkSettings?.sourceName ?? "") + ")" + (output.enabled ? "" : " · Disabled")
         }
         if audioRoute.itemTitles != names || audioRoute.itemArray.dropFirst().compactMap({ $0.representedObject as? UUID }) != outputs.map(\.id) {
             audioRoute.removeAllItems(); audioRoute.addItems(withTitles: names)
             for (index, output) in outputs.enumerated() { audioRoute.item(at: index + 1)?.representedObject = output.id }
         }
         audioRoute.selectItem(at: store.document.backgroundAudioDestinationID.flatMap { id in outputs.firstIndex { $0.id == id }.map { $0 + 1 } } ?? 0)
-        let state = coordinator.ndi.state(destinationID)
+        let state = coordinator.network.state(destinationID)
         switch state {
         case .stopping: startButton.title = "Stopping…"
         case .failed: startButton.title = "Retry"
         default: startButton.title = state.active ? "Stop Output" : "Start Output"
         }
         startButton.isEnabled = state.active || (state.canStart && destination.enabled && destination.workspaceID != nil)
-        let detail = state.title
+        let detail = state.title(for: technology)
         publishedNameLabel.stringValue = ""; publishedNameLabel.isHidden = true
         performanceLabel.stringValue = ""; performanceLabel.isHidden = true
         diagnosticsLabel.stringValue = "Start this output to measure performance."
-        if state.active, let status = (coordinator.ndi as? NDIOutputRouter)?.statistics[destinationID] {
+        if state.active, let status = (coordinator.network as? NDIOutputRouter)?.statistics[destinationID] {
             publishedNameLabel.stringValue = "Published: " + status.sourceName
             publishedNameLabel.toolTip = status.sourceName; publishedNameLabel.isHidden = status.sourceName.isEmpty
             let fps = status.effectiveFramesPerSecond.map { $0.formatted(.number.precision(.fractionLength(1))) + " / 30 fps" } ?? "Measuring frame rate…"
@@ -126,11 +134,11 @@ final class NDIOutputSettingsEditor: NSViewController, NSTextFieldDelegate {
             performanceLabel.stringValue = fps + age; performanceLabel.isHidden = false
             diagnosticsLabel.stringValue = "\(status.submittedFrames) frames submitted · \(status.replacedFrames) replaced before submission\nGPU \(status.gpuMilliseconds.formatted(.number.precision(.fractionLength(1)))) ms · SDK submission \(status.submissionMilliseconds.formatted(.number.precision(.fractionLength(1)))) ms\n\(status.audioBlocks) audio blocks submitted"
         }
-        var notices = [coordinator.ndi.performanceNotice(destinationID)].compactMap { $0 }
-        if state.active, coordinator.snapshot(for: destinationID).visible, let slide = coordinator.snapshot(for: destinationID).localMedia, !OutputContentClassifier.supportsNDI(slide) {
+        var notices = [coordinator.network.performanceNotice(destinationID)].compactMap { $0 }
+        if state.active, coordinator.snapshot(for: destinationID).visible, let slide = coordinator.snapshot(for: destinationID).localMedia, !OutputContentClassifier.supportsNetworkOutput(slide) {
             notices.append("Picked windows use native monitors. This source is blank.")
         }
-        if let route = store.document.backgroundAudioDestinationID, !coordinator.ndi.activeIDs.contains(route) {
+        if let route = store.document.backgroundAudioDestinationID, !coordinator.network.activeIDs.contains(route) {
             let name = store.document.destinations.first { $0.id == route }?.name ?? "selected output"
             notices.append("Network music output \(name) is inactive.")
         }
@@ -139,17 +147,17 @@ final class NDIOutputSettingsEditor: NSViewController, NSTextFieldDelegate {
         validationLabel.isHidden = validationLabel.stringValue.isEmpty
     }
     func controlTextDidEndEditing(_ notification: Notification) {
-        guard notification.object as? NSTextField === sourceName, var settings = destination?.ndi else { return }
+        guard notification.object as? NSTextField === sourceName, var settings = destination?.networkSettings else { return }
         settings.sourceName = sourceName.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        validationLabel.stringValue = store.setNDISettings(settings, for: destinationID) ?? ""; render()
+        validationLabel.stringValue = store.setNetworkSettings(settings, for: destinationID) ?? ""; render()
     }
     @objc private func keyChanged(_ sender: Any?) {
-        guard var settings = destination?.ndi else { return }
+        guard var settings = destination?.networkSettings else { return }
         settings.keyMode = keyMode.indexOfSelectedItem == 0 ? .alpha : .chroma
-        validationLabel.stringValue = store.setNDISettings(settings, for: destinationID) ?? ""; render()
+        validationLabel.stringValue = store.setNetworkSettings(settings, for: destinationID) ?? ""; render()
     }
     @objc private func chromaColourChanged(_ sender: Any?) {
-        guard destination?.ndi?.keyMode == .chroma else { render(); return }
+        guard destination?.networkSettings?.keyMode == .chroma else { render(); return }
         finishOutputSettingsFieldEditing(in: view)
         store.editDestinationProfile(destinationID) { $0.background.colour = OutputColour(nativeColor: chromaColour.color, opaque: true) }
         render()
@@ -158,13 +166,20 @@ final class NDIOutputSettingsEditor: NSViewController, NSTextFieldDelegate {
         store.edit { $0.backgroundAudioDestinationID = audioRoute.selectedItem?.representedObject as? UUID }; render()
     }
     @objc private func toggle(_ sender: Any?) {
-        let wasActive = coordinator.ndi.state(destinationID).active
+        let wasActive = coordinator.network.state(destinationID).active
         finishOutputSettingsFieldEditing(in: view)
         if wasActive { coordinator.closeOutput(destinationID) }
-        else if validationLabel.stringValue.isEmpty { coordinator.startNDI(destinationID) }
+        else if validationLabel.stringValue.isEmpty { coordinator.startNetworkOutput(destinationID) }
         render()
     }
-    @objc private func openNDI(_ sender: Any?) { NSWorkspace.shared.open(URL(string: "https://ndi.video/")!) }
+    @objc private func openInformation(_ sender: Any?) {
+        guard let technology = destination?.networkTechnology else { return }
+        let address = technology == .ndi ? "https://ndi.video/" : "https://www.openmediatransport.org/"
+        if let url = URL(string: address) { NSWorkspace.shared.open(url) }
+    }
     func finishEditing() { chromaColour.deactivate() }
     override func viewWillDisappear() { super.viewWillDisappear(); finishEditing() }
 }
+
+// Existing callers can retain their NDI-specific name while sharing the form.
+typealias NDIOutputSettingsEditor = NetworkOutputSettingsEditor

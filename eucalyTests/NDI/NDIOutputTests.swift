@@ -172,21 +172,23 @@ final class RecordingNDIOutput: NDIOutputDriving {
     var routedSnapshots: [UUID: OutputContentSnapshot] = [:]
     private var states: [UUID: NDIOutputState] = [:]
     private var settings: [UUID: NDIOutputSettings] = [:]
+    private var technologies: [UUID: NetworkOutputTechnology] = [:]
     private var performanceNotices: [UUID: String] = [:]
     func state(_ id: UUID) -> NDIOutputState { states[id] ?? .stopped }
     func performanceNotice(_ id: UUID) -> String? { activeIDs.contains(id) ? performanceNotices[id] : nil }
     func reportPerformance(_ notice: String?, id: UUID) { performanceNotices[id] = notice; stateChanged?(id, state(id)) }
     func start(_ destination: OutputDestinationConfiguration) -> Bool {
-        guard destination.ndi != nil else { return false }
+        guard let next = destination.networkSettings else { return false }
         if !activeIDs.contains(destination.id) { starts.append(destination.id) }
-        settings[destination.id] = destination.ndi
+        settings[destination.id] = next
+        technologies[destination.id] = destination.networkTechnology
         activeIDs.insert(destination.id); states[destination.id] = .publishing; return true
     }
     func stop(_ id: UUID) { activeIDs.remove(id); states[id] = .stopped }
     func fail(_ id: UUID) { activeIDs.remove(id); states[id] = .failed("Injected failure"); stateChanged?(id, state(id)) }
     func reconcile(_ document: OutputProfileDocument) {
         for id in activeIDs {
-            guard let row = document.destinations.first(where: { $0.id == id && $0.enabled }), let next = row.ndi,
+            guard let row = document.destinations.first(where: { $0.id == id && $0.enabled }), let next = row.networkSettings, row.networkTechnology == technologies[id],
                   let old = settings[id], !next.requiresRestart(comparedTo: old) else { stop(id); continue }
         }
     }

@@ -120,8 +120,65 @@ final class NDIToolbarRoutingTests: XCTestCase {
         XCTAssertNil(f.outputs.preparedSession(workspace: replacement))
         XCTAssertEqual(f.outputs.destination(f.network)?.workspaceID, f.house)
         controls.render()
-        XCTAssertEqual(controls.ndiButton.title, "NDI")
-        XCTAssertNotNil(try item("No NDI outputs configured.", in: controls.ndiButton.menu))
+        XCTAssertEqual(controls.networkButton.title, "Network")
+        XCTAssertNotNil(try item("No network outputs configured.", in: controls.networkButton.menu))
+        XCTAssertTrue(f.transport.starts.isEmpty)
+    }
+
+    func testOMTRoutingUsesCurrentWithoutRestartingOrOpeningWorkspaceControls() throws {
+        let f = Fixture(technology: .omt); defer { f.outputs.stopAllOutputs() }
+        let controls = OutputQuickControlsController(outputs: f.outputs, workspaceID: f.house, manageOutputs: {})
+        XCTAssertEqual(controls.networkButton.title, "OMT: House")
+        XCTAssertTrue(controls.networkButton.accessibilityLabel()?.hasPrefix("OMT workspace routing") == true)
+        XCTAssertTrue(f.transport.starts.isEmpty)
+        XCTAssertNil(f.outputs.preparedSession(workspace: f.online))
+        f.a.setSlides(lyrics("House live")); f.a.showSlides()
+        let online = f.outputs.session(workspace: f.online)
+        online.setSlides(lyrics("Online live"))
+        let source = try XCTUnwrap(f.outputs.destination(f.network)?.omt)
+        let windows = Set(NSApp.windows.map(ObjectIdentifier.init))
+        let music = f.store.document.backgroundAudioDestinationID
+        controls.render()
+        invoke(try item("Move to Online", in: controls.networkButton.menu))
+        XCTAssertEqual(controls.networkButton.title, "OMT: Online")
+        XCTAssertEqual(f.outputs.destination(f.network)?.omt, source)
+        XCTAssertEqual(f.outputs.destination(f.network)?.workspaceID, f.online)
+        XCTAssertEqual(f.outputs.snapshot(for: f.network).current.components.first?.text, "Online live")
+        XCTAssertEqual(f.outputs.snapshot(for: f.native).current.components.first?.text, "House live")
+        XCTAssertEqual(f.store.document.backgroundAudioDestinationID, music)
+        XCTAssertEqual(f.transport.starts, [f.network])
+        XCTAssertEqual(f.outputs.focusedWorkspaceID, f.house)
+        XCTAssertEqual(Set(NSApp.windows.map(ObjectIdentifier.init)), windows)
+    }
+
+    func testMixedRoutingIdentifiesEachTechnologyAndRejectsStaleProtocolActions() throws {
+        let f = Fixture(); defer { f.outputs.stopAllOutputs() }
+        var omt = try XCTUnwrap(f.outputs.destination(f.network))
+        omt.id = UUID(); omt.omt = .init(sourceName: "eucaly"); omt.enabled = false
+        omt.workspaceID = f.online
+        f.store.edit { $0.destinations.append(omt) }
+        let controls = OutputQuickControlsController(outputs: f.outputs, workspaceID: f.house, manageOutputs: {})
+        XCTAssertTrue(controls.networkButton.title.hasPrefix("Network:"))
+        let menu = try XCTUnwrap(controls.networkButton.menu)
+        XCTAssertNotNil(menu.items.first { $0.title.hasPrefix("NDI · ") })
+        let omtMenu = try XCTUnwrap(menu.items.first { $0.title.hasPrefix("OMT · ") }?.submenu)
+        XCTAssertNotNil(try item("OMT source: eucaly · Disabled", in: omtMenu))
+        XCTAssertNil(f.outputs.preparedSession(workspace: f.online), "Constructing a routing menu must not prepare a closed workspace")
+        invoke(try item("Move to House", in: omtMenu))
+        XCTAssertEqual(f.outputs.destination(omt.id)?.workspaceID, f.house)
+        XCTAssertEqual(f.outputs.destination(f.network)?.workspaceID, f.house)
+        XCTAssertEqual(f.outputs.destination(omt.id)?.networkTechnology, .omt)
+        XCTAssertFalse(try XCTUnwrap(f.outputs.destination(omt.id)).enabled)
+        XCTAssertTrue(f.transport.starts.isEmpty)
+        let refreshed = try XCTUnwrap(controls.networkButton.menu?.items.first { $0.title.hasPrefix("OMT · ") }?.submenu)
+        let staleAction = try item("Move to Online", in: refreshed)
+        f.store.edit { document in
+            let index = document.destinations.firstIndex { $0.id == omt.id }!
+            document.destinations[index].ndi = .init(sourceName: "Replaced technology")
+        }
+        let saved = f.store.document
+        invoke(staleAction)
+        XCTAssertEqual(f.store.document, saved, "A retained OMT action must not operate on a replacement NDI destination")
         XCTAssertTrue(f.transport.starts.isEmpty)
     }
 
@@ -140,7 +197,7 @@ final class NDIToolbarRoutingTests: XCTestCase {
         let a: PresentationSession
         let house = OutputWorkspaceRecord.primaryID
         let online: UUID, native: UUID, network: UUID
-        init() {
+        init(technology: NetworkOutputTechnology = .ndi) {
             let monitor = ProjectionMonitor(id: 1, identity: UUID().uuidString, name: "Audience", frame: .init(x: 0, y: 0, width: 1920, height: 1080))
             let displays = ProjectionDisplayManager(displays: { [monitor] })
             store = OutputProfileStore(monitor: monitor.target)
@@ -148,7 +205,8 @@ final class NDIToolbarRoutingTests: XCTestCase {
             _ = store.renameWorkspace(house, name: "House")
             online = store.addWorkspace(name: "Online")!
             var row = OutputDestinationConfiguration(name: "YouTube", profileID: OutputProfile.lowerThirdID, monitor: nil)
-            row.ndi = .init(); network = row.id
+            let settings = NDIOutputSettings()
+            row.destination = technology == .ndi ? .ndi(settings) : .omt(settings); network = row.id
             store.edit { $0.destinations.append(row); $0.backgroundAudioDestinationID = row.id }
             outputs = OutputCoordinator(profiles: store, displays: displays, retainsPreparedSessions: true, ndi: transport,
                                         driverFactory: { FakeOutputDriver() })

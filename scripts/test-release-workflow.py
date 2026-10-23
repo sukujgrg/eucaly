@@ -292,6 +292,16 @@ class ReleaseFlowTests(unittest.TestCase):
                     if binary.name != self.missing_binary:
                         binary.parent.mkdir(parents=True, exist_ok=True)
                         binary.write_bytes(b"fixture Sparkle executable")
+                for name in ("libomt.dylib", "libvmx.dylib"):
+                    binary = app / "Frameworks/OMT" / name
+                    if name != self.missing_binary:
+                        binary.parent.mkdir(parents=True, exist_ok=True)
+                        binary.write_bytes(b"fixture OMT runtime")
+                for name in ("LICENSE.txt", "provenance.json"):
+                    notice = app / "Resources/OMT" / name
+                    if name != self.missing_binary:
+                        notice.parent.mkdir(parents=True, exist_ok=True)
+                        notice.write_text("fixture OMT notice")
                 options = plistlib.loads(Path(args[args.index("-exportOptionsPlist") + 1]).read_bytes())
                 self.assertEqual(options["method"], "developer-id")
             return
@@ -1090,7 +1100,7 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertEqual(self.archive_count(), 0)
 
     def test_every_shipped_binary_must_support_arm64(self):
-        for name in ("eucaly", "eucalyNDIHelper", "Sparkle", "Autoupdate", "Updater", "Installer", "Downloader"):
+        for name in ("eucaly", "eucalyNDIHelper", "Sparkle", "Autoupdate", "Updater", "Installer", "Downloader", "libomt.dylib", "libvmx.dylib"):
             with self.subTest(binary=name):
                 self.missing_arm_binary = name
                 with self.assertRaises(subprocess.CalledProcessError):
@@ -1108,10 +1118,27 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assert_not_published()
 
     def test_missing_sparkle_binaries_are_rejected_before_notarization(self):
-        for name in ("eucalyNDIHelper", "Sparkle", "Autoupdate", "Updater", "Installer", "Downloader"):
+        for name in ("eucalyNDIHelper", "Sparkle", "Autoupdate", "Updater", "Installer", "Downloader", "libomt.dylib", "libvmx.dylib"):
             with self.subTest(binary=name):
                 self.missing_binary = name
                 with self.assertRaisesRegex(release.ReleaseError, "Required executable is missing"):
+                    self.invoke(no_publish=True)
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 0)
+
+    def test_omt_runtime_and_notices_are_required(self):
+        for name in ("LICENSE.txt", "provenance.json"):
+            with self.subTest(notice=name):
+                self.missing_binary = name
+                with self.assertRaisesRegex(release.ReleaseError, "missing its required notice"):
+                    self.invoke(no_publish=True)
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 0)
+
+    def test_omt_libraries_require_the_app_signing_team(self):
+        for name in ("libomt.dylib", "libvmx.dylib"):
+            with self.subTest(library=name):
+                self.signature_overrides.clear()
+                self.signature_overrides[(name, "arm64")] = {"team": "OTHERTEAM"}
+                with self.assertRaisesRegex(release.ReleaseError, "Signing team differs"):
                     self.invoke(no_publish=True)
         self.assertEqual(self.count("xcrun", "notarytool", "submit"), 0)
 

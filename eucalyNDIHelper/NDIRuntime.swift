@@ -54,11 +54,12 @@ final class NDISubmissionWorker: @unchecked Sendable {
     private var pending: NDIGPUFrame?
     private var report = NDIHelperStatus()
     private var fault = ""
-    private var runtime: NDIRuntime?
+    private var runtime: NetworkHelperRuntime?
     private var timer: DispatchSourceTimer?
     private var current: NDIGPUFrame?
     // Held until the NEXT SDK send/flush returns, not just the async call itself.
     private var borrowed: NDIGPUFrame?
+    private weak var submittedPicture: NDIGPUFrame?
     private var lastTick: UInt64 = 0
     private var metrics = NDISubmissionMetrics()
     private var stopping = false // protected by lock; blocks late GPU/audio handoffs
@@ -67,16 +68,16 @@ final class NDISubmissionWorker: @unchecked Sendable {
     private var videoInProgress = false // protected by lock
     #endif
 
-    func start(name: String, completion: @escaping @Sendable (NDIHelperStatus?, String?) -> Void) {
+    func start(name: String, technology: NetworkOutputTechnology = .ndi, completion: @escaping @Sendable (NDIHelperStatus?, String?) -> Void) {
         queue.async { [self] in
             do {
-                let runtime = try NDIRuntime()
-                guard eucaly_ndi_create_sender(runtime.handle, name), let actual = eucaly_ndi_source_name(runtime.handle) else {
-                    throw NDIRuntime.RuntimeError.message("The NDI source could not be created.")
+                let runtime = try NetworkHelperRuntime(technology: technology)
+                guard runtime.createSender(name: name), let actual = runtime.sourceName else {
+                    throw NDIRuntime.RuntimeError.message("The \(technology.title) source could not be created.")
                 }
                 lock.lock()
                 self.runtime = runtime
-                report.runtimeVersion = runtime.version; report.sourceName = String(cString: actual)
+                report.runtimeVersion = runtime.version; report.sourceName = actual
                 let initial = report
                 lock.unlock()
                 let timer = DispatchSource.makeTimerSource(queue: queue)
@@ -174,7 +175,7 @@ final class NDISubmissionWorker: @unchecked Sendable {
             }
         }
         #endif
-        block.pcm.withUnsafeBytes { eucaly_ndi_send_audio(runtime.handle, $0.baseAddress!, block.sampleTime) }
+        block.pcm.withUnsafeBytes { runtime.sendAudio($0.baseAddress!, sampleTime: block.sampleTime) }
         let duration = Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000
         #if DEBUG
         NDIAudioTrace.record("sdk-return", sample: block.sampleTime)
@@ -209,19 +210,13 @@ final class NDISubmissionWorker: @unchecked Sendable {
         let tick = started / 100
         let timecode = max(tick, lastTick + 1); lastTick = timecode
         let previous = borrowed
-        if current.format == .bgra {
-            // Only the explicit Debug comparison configuration produces BGRA.
-            eucaly_ndi_send_bgra(runtime.handle, current.baseAddress, Int32(NDIHelperWire.width), Int32(NDIHelperWire.height),
-                                Int32(current.format.bytesPerRow), Int64(timecode))
-        } else {
-            eucaly_ndi_send_yuv(runtime.handle, current.baseAddress, Int32(NDIHelperWire.width), Int32(NDIHelperWire.height),
-                               Int32(current.format.bytesPerRow), current.format == .uyva, Int64(timecode))
-        }
+        runtime.sendVideo(current.baseAddress, format: current.format, timecode: Int64(timecode))
         let finished = DispatchTime.now().uptimeNanoseconds
-        metrics.submitted(at: finished, newPictureProducedAt: current !== previous ? current.producedAtNanoseconds : nil)
+        metrics.submitted(at: finished, newPictureProducedAt: current !== submittedPicture ? current.producedAtNanoseconds : nil)
         withExtendedLifetime(previous) {} // Previous async borrow is now synchronized.
-        borrowed = current
-        let connections = eucaly_ndi_connections(runtime.handle)
+        submittedPicture = current
+        borrowed = runtime.borrowsVideoAfterReturn ? current : nil
+        let connections = runtime.connections
         lock.lock(); report.submittedFrames &+= 1; report.lastTimecode = Int64(timecode)
         report.effectiveFramesPerSecond = metrics.framesPerSecond
         report.slowCadence = metrics.slowCadence; report.frameAgeMilliseconds = metrics.frameAgeMilliseconds
@@ -250,7 +245,7 @@ final class NDISubmissionWorker: @unchecked Sendable {
             }
         }
     }
-    private func sendTerminalPicture(_ colour: OutputColour, runtime: NDIRuntime) -> NDIHelperShutdown {
+    private func sendTerminalPicture(_ colour: OutputColour, runtime: NetworkHelperRuntime) -> NDIHelperShutdown {
         func byte(_ value: Double) -> UInt32 { UInt32((min(1, max(0, value)) * 255).rounded()) }
         let pixel = byte(colour.blue) | byte(colour.green) << 8 | byte(colour.red) << 16 | byte(colour.alpha) << 24
         let y = 0.2126 * colour.red + 0.7152 * colour.green + 0.0722 * colour.blue
@@ -270,9 +265,8 @@ final class NDISubmissionWorker: @unchecked Sendable {
         }
         let timecode = max(DispatchTime.now().uptimeNanoseconds / 100, lastTick + 1)
         pixels.withUnsafeMutableBytes { bytes in
-            eucaly_ndi_send_yuv(runtime.handle, bytes.baseAddress!, Int32(NDIHelperWire.width), Int32(NDIHelperWire.height),
-                               Int32(format.bytesPerRow), format == .uyva, Int64(timecode))
-            eucaly_ndi_flush(runtime.handle)
+            runtime.sendVideo(bytes.baseAddress!, format: format, timecode: Int64(timecode))
+            runtime.flush()
         }
         return .init(terminalPixelBGRA: pixel, videoFormat: format, terminalUYVY: pair, terminalAlpha: UInt8(byte(colour.alpha)))
     }
@@ -309,7 +303,7 @@ final class NDIAudioInput: @unchecked Sendable {
         switch target.sender.sendAudio(block, epoch: packet.contentEpoch) {
         case .submitted, .superseded: break
         case .discontinuity:
-            close(); failed("NDI audio discontinuity. Choose Retry to restart this source."); return
+            close(); failed("Network output audio discontinuity. Choose Retry to restart this source."); return
         }
         #if DEBUG
         NDIAudioTrace.record("ack-send", sample: block.sampleTime, generation: generation)

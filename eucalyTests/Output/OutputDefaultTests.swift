@@ -372,7 +372,7 @@ final class OutputDefaultTests: XCTestCase {
             descendants(NSPopUpButton.self, in: chrome).first { $0.accessibilityLabel()?.hasPrefix(labelPrefix) == true }
         }
         try await waitForUIState("native toolbar controls to mount") {
-            ["Output, default:", "NDI workspace routing", "Appearance for default output:", "Background for default output:", "Thumbnails"].allSatisfy { button($0) != nil }
+            ["Output, default:", "Network workspace routing", "Appearance for default output:", "Background for default output:", "Thumbnails"].allSatisfy { button($0) != nil }
         }
         let longName = String(repeating: "Long output name ", count: 9)
         let longWorkspaceName = String(repeating: "Long workspace name ", count: 7).trimmingCharacters(in: .whitespaces)

@@ -5,6 +5,47 @@ import AVFoundation
 
 @MainActor
 final class WorkspaceAudioMonitoringTests: XCTestCase {
+    func testOMTProgramAndMusicFollowMonitoringWithoutFallbackDuringTransferOrStop() throws {
+        let f = try Fixture(homeTechnology: .omt)
+        defer { f.home.clearBackgroundAudio(); f.outputs.stopAllOutputs() }
+        f.showVideos()
+        let player = try XCTUnwrap(f.outputs.media(for: f.homeNDI)?.program)
+        XCTAssertEqual(player.volume, 0)
+        XCTAssertEqual(f.outputs.media(for: f.homeNDI)?.programAudioGain.value, 1)
+        XCTAssertFalse(f.outputs.hasOpenNativeOutput(workspace: f.home.outputSourceID))
+        XCTAssertFalse(f.outputs.canPlayStandaloneBackgroundAudio(workspace: f.home.outputSourceID))
+        f.store.edit { $0.backgroundAudioDestinationID = f.homeNDI }
+        f.home.setBackgroundAudioVolume(0.35)
+        f.home.setBackgroundAudio(url: musicURL(), autoplay: true)
+        let music = try XCTUnwrap(f.home.programBackgroundAudioPlayer)
+        XCTAssertEqual(music.volume, 0)
+        XCTAssertFalse(f.home.backgroundAudioHasStandaloneLocalRoute)
+        let starts = f.transport.starts
+        f.outputs.setMonitorAudioLocally(true, workspace: f.home.outputSourceID)
+        XCTAssertEqual(player.volume, 1)
+        XCTAssertEqual(music.volume, 0.35)
+        XCTAssertEqual(f.outputs.media(for: f.homeNDI)?.programAudioGain.value, 1)
+        f.outputs.setMonitorAudioLocally(false, workspace: f.home.outputSourceID)
+        XCTAssertTrue(player === f.outputs.media(for: f.homeNDI)?.program)
+        XCTAssertEqual(music.volume, 0)
+        XCTAssertTrue(f.outputs.moveOutput(f.homeNDI, to: f.peer))
+        XCTAssertEqual(f.transport.starts, starts)
+        XCTAssertEqual(f.store.document.backgroundAudioDestinationID, f.homeNDI)
+        XCTAssertTrue(f.outputs.audioSession === f.home)
+        XCTAssertNil(f.peer.backgroundAudioURL)
+        XCTAssertEqual(music.volume, 0)
+        f.outputs.stopAllOutputs()
+        XCTAssertEqual(music.volume, 0)
+        XCTAssertFalse(f.home.backgroundAudioHasStandaloneLocalRoute)
+        XCTAssertEqual(f.store.document.backgroundAudioDestinationID, f.homeNDI)
+        // One shared saved UUID selects either protocol; changing it never
+        // starts output or substitutes another workspace's music selection.
+        f.store.edit { $0.backgroundAudioDestinationID = f.peerNDI }
+        XCTAssertEqual(f.store.document.backgroundAudioDestinationID, f.peerNDI)
+        XCTAssertEqual(f.transport.starts, starts)
+        XCTAssertTrue(f.outputs.audioSession === f.home)
+    }
+
     func testNDIOnlyListeningOptOutIsIndependentOfProgramAudio() throws {
         let f = try Fixture(); defer { f.outputs.stopAllOutputs() }
         f.showVideos()
@@ -225,7 +266,8 @@ final class WorkspaceAudioMonitoringTests: XCTestCase {
         let peerNDI: UUID
         let native: UUID?
 
-        init(native includeNative: Bool = false, useDefaultListening: Bool = false) throws {
+        init(native includeNative: Bool = false, useDefaultListening: Bool = false,
+             homeTechnology: NetworkOutputTechnology = .ndi) throws {
             let peerID = try XCTUnwrap(store.addWorkspace(name: "Online"))
             // Opt-out scenarios explicitly save off; the default-on behavior
             // is exercised separately without changing the workspace records.
@@ -238,7 +280,8 @@ final class WorkspaceAudioMonitoringTests: XCTestCase {
                 frame: .init(x: 0, y: 0, width: 1920, height: 1080))
             let displays = ProjectionDisplayManager(displays: { [monitor] })
             var first = OutputDestinationConfiguration(name: "Home NDI", profileID: OutputProfile.audienceID, monitor: nil)
-            first.ndi = .init(sourceName: "Home Monitoring Test")
+            let settings = NDIOutputSettings(sourceName: "Home Monitoring Test")
+            first.destination = homeTechnology == .omt ? .omt(settings) : .ndi(settings)
             var second = OutputDestinationConfiguration(name: "Online NDI", profileID: OutputProfile.audienceID,
                 monitor: nil, workspaceID: peerID)
             second.ndi = .init(sourceName: "Online Monitoring Test")

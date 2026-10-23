@@ -36,6 +36,7 @@ nonisolated final class NDIHelperSupervisor: @unchecked Sendable {
     private var latestRevision: UInt64 = 0
     private var inFlight: RenderJob?
     private var configuration = NDIHelperConfiguration()
+    private var runtimeStorage: URL?
     private var submissionProgressAt: TimeInterval?
     private var submittedFrames: UInt64 = 0
     #if DEBUG
@@ -88,6 +89,15 @@ nonisolated final class NDIHelperSupervisor: @unchecked Sendable {
                 let process = Process(), input = Pipe()
                 process.executableURL = executable; process.standardInput = input
                 process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+                if configuration.technology == .omt {
+                    let storage = FileManager.default.temporaryDirectory.appendingPathComponent("com.suku.eucaly.omt.\(generation.uuidString)", isDirectory: true)
+                    try FileManager.default.createDirectory(at: storage, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+                    runtimeStorage = storage
+                    var environment = ProcessInfo.processInfo.environment
+                    environment.removeValue(forKey: "OMT_STORAGE_PATH")
+                    environment["EUCALY_OMT_STORAGE_PATH"] = storage.path
+                    process.environment = environment
+                }
                 process.terminationHandler = { [self] ended in
                     queue.async { [self] in
                         guard self.process === ended, self.generation == generation else { return }
@@ -220,7 +230,7 @@ nonisolated final class NDIHelperSupervisor: @unchecked Sendable {
         guard readyState, !stopping, routeInFlight == nil, routedEpoch != contentEpoch, let peer else { return }
         routeInFlight = contentEpoch; routeStartedAt = Self.now
         if !NDIMachMailbox.send(.init(kind: .route, generation: generation, contentEpoch: contentEpoch), to: peer.first) {
-            fail("NDI ownership handoff failed")
+            fail("Network output ownership handoff failed")
         }
     }
     func sendAudio(_ block: NDIAudioBlock, generation: UUID, contentEpoch: UInt64 = 0) {
@@ -245,7 +255,7 @@ nonisolated final class NDIHelperSupervisor: @unchecked Sendable {
         guard readyState, !stopping, routedEpoch == contentEpoch, routeInFlight == nil,
               configuration.purpose == .sender, let peer else { return }
         admission.lock(); let overran = audioOverflow; admission.unlock()
-        if overran { fail("NDI audio queue overran. Choose Retry to restart this source."); return }
+        if overran { fail("Network output audio queue overran. Choose Retry to restart this source."); return }
         // Pipeline three blocks on the private audio port without enlarging
         // the eight-block total across both processes. Replies reserve their
         // fourth kernel slot for the one outstanding render acknowledgement.
@@ -253,7 +263,7 @@ nonisolated final class NDIHelperSupervisor: @unchecked Sendable {
         while audioInFlight.count < NDIHelperWire.maximumInFlightAudioBlocks {
             admission.lock()
             guard admittedGeneration == generation, admittedContentEpoch == contentEpoch else { admission.unlock(); return }
-            if audioOverflow { admission.unlock(); fail("NDI audio queue overran. Choose Retry to restart this source."); return }
+            if audioOverflow { admission.unlock(); fail("Network output audio queue overran. Choose Retry to restart this source."); return }
             guard !stagedAudio.isEmpty else { admission.unlock(); return }
             let block = stagedAudio.removeFirst(); admission.unlock()
             guard audioInFlight[block.sampleTime] == nil else { fail("Invalid duplicate audio block"); return }
@@ -262,7 +272,7 @@ nonisolated final class NDIHelperSupervisor: @unchecked Sendable {
             NDIAudioTrace.record("ipc-send", sample: block.sampleTime, generation: generation)
             #endif
             guard NDIMachMailbox.send(.init(kind: .audio, generation: generation, contentEpoch: contentEpoch, audio: block), to: peer.second) else {
-                fail("NDI audio handoff failed. Choose Retry to restart this source."); return
+                fail("Network output audio handoff failed. Choose Retry to restart this source."); return
             }
         }
     }
@@ -364,9 +374,9 @@ nonisolated final class NDIHelperSupervisor: @unchecked Sendable {
         guard !stopping else { return }
         if !readyState && Self.now - startedAt > progressDeadline { fail("Output helper startup timed out") }
         if let due = workStartedAt, Self.now - due > progressDeadline { fail("Output helper made no rendering/submission progress") }
-        if let due = submissionProgressAt, Self.now - due > progressDeadline { fail("NDI helper made no submission progress") }
-        if let due = audioInFlight.values.min(), Self.now - due > progressDeadline { fail("NDI helper made no audio submission progress") }
-        if let due = routeStartedAt, Self.now - due > progressDeadline { fail("NDI helper made no ownership handoff progress") }
+        if let due = submissionProgressAt, Self.now - due > progressDeadline { fail("Network output helper made no submission progress") }
+        if let due = audioInFlight.values.min(), Self.now - due > progressDeadline { fail("Network output helper made no audio submission progress") }
+        if let due = routeStartedAt, Self.now - due > progressDeadline { fail("Network output helper made no ownership handoff progress") }
         // No work due (including a source with no receivers) is not a stall.
     }
     private func fail(_ reason: String) {
@@ -410,6 +420,9 @@ nonisolated final class NDIHelperSupervisor: @unchecked Sendable {
         stopping = true; timer?.cancel(); timer = nil
         control?.close(); control = nil; frames?.close(); frames = nil; peer = nil
         process = nil; pending = nil; inFlight = nil; workStartedAt = nil; submissionProgressAt = nil
+        // The parent owns this path so forced helper retirement cleans up too.
+        if let runtimeStorage { try? FileManager.default.removeItem(at: runtimeStorage) }
+        runtimeStorage = nil
         #if DEBUG
         replies.removeAll()
         #endif

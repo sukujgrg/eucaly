@@ -3,6 +3,54 @@ import XCTest
 
 @MainActor
 final class OutputProfileTests: XCTestCase {
+    func testOMTSourceNamesAreReservedWithinTheirProtocolAndEditsKeepTheProtocol() throws {
+        let store = OutputProfileStore()
+        var ndi = OutputDestinationConfiguration(name: "NDI", profileID: OutputProfile.audienceID, monitor: nil)
+        ndi.ndi = .init(sourceName: "eucaly")
+        var first = OutputDestinationConfiguration(name: "OMT", profileID: OutputProfile.audienceID, monitor: nil)
+        first.omt = .init(sourceName: "eucaly")
+        var second = OutputDestinationConfiguration(name: "Second OMT", profileID: OutputProfile.audienceID,
+            monitor: nil, enabled: false)
+        second.omt = .init(sourceName: "EUCALY")
+        store.edit { $0.destinations = [ndi, first, second] }
+        XCTAssertTrue(store.conflictingDestinationIDs.isEmpty)
+        let original = store.document
+        XCTAssertTrue(store.setEnabled(true, for: second.id)?.contains("OMT source name") == true)
+        XCTAssertEqual(store.document, original, "Rejected enabling leaves saved assignments and names intact.")
+        var changed = try XCTUnwrap(second.omt)
+        changed.sourceName = "Other OMT"
+        XCTAssertNil(store.setNetworkSettings(changed, for: second.id))
+        XCTAssertNil(store.setEnabled(true, for: second.id))
+        XCTAssertEqual(store.document.destinations[2].networkTechnology, .omt)
+        XCTAssertEqual(store.document.destinations[2].omt, changed)
+        XCTAssertNil(store.document.destinations[2].ndi)
+        changed.sourceName = "EUCALY"
+        let enabled = store.document
+        XCTAssertNotNil(store.setNetworkSettings(changed, for: second.id))
+        XCTAssertEqual(store.document, enabled)
+        XCTAssertNotNil(store.setNDISettings(changed, for: second.id), "The compatibility API cannot convert an OMT destination.")
+        XCTAssertEqual(store.document, enabled)
+    }
+
+    func testOMTBackgroundClearRetainsItsKeyColourAndSingleSavedMusicRoute() throws {
+        let store = OutputProfileStore()
+        var omt = OutputDestinationConfiguration(name: "OMT", profileID: OutputProfile.audienceID, monitor: nil)
+        omt.omt = .init(sourceName: "OMT key")
+        store.edit { $0.destinations.append(omt); $0.backgroundAudioDestinationID = omt.id }
+        let colour = OutputColour(red: 0.1, green: 0.6, blue: 0.2)
+        store.editDestinationProfile(omt.id) { $0.background.bookmark = "selected visual"; $0.background.colour = colour }
+        store.clearDestinationBackground(omt.id)
+        let profile = try XCTUnwrap(store.document.destinations.first { $0.id == omt.id }.flatMap { store.profile($0.profileID) })
+        XCTAssertNil(profile.background.bookmark)
+        XCTAssertEqual(profile.background.colour, colour)
+        XCTAssertEqual(store.document.backgroundAudioDestinationID, omt.id)
+        store.clearBackgrounds()
+        XCTAssertEqual(store.profile(profile.id)?.background.colour, colour)
+        XCTAssertEqual(store.document.backgroundAudioDestinationID, omt.id)
+        store.edit { $0.destinations.removeAll { $0.id == omt.id } }
+        XCTAssertNil(store.document.backgroundAudioDestinationID)
+    }
+
     func testMigrationIsIdempotentAndKeepsIndependentPreferences() throws {
         let name = "Profiles.\(UUID())", defaults = UserDefaults(suiteName: name)!
         defer { defaults.removePersistentDomain(forName: name) }
@@ -16,7 +64,7 @@ final class OutputProfileTests: XCTestCase {
         store.flush()
         XCTAssertEqual(store.document.destinations.count, 1)
         XCTAssertEqual(store.document.destinations.first?.monitor, target)
-        XCTAssertEqual(store.document.version, 6)
+        XCTAssertEqual(store.document.version, 7)
         XCTAssertEqual(store.audience.typography.size, 126)
         XCTAssertEqual(store.audience.typography(for: .meaning).size, 63)
         XCTAssertEqual(store.audience.background.bookmark, "bookmark")
@@ -238,7 +286,7 @@ final class OutputProfileRecoveryTests: XCTestCase {
         XCTAssertEqual(store.document.destinations.map(\.monitor), doc.destinations.map(\.monitor))
         XCTAssertEqual(store.document.destinations.map(\.id), doc.destinations.map(\.id))
         XCTAssertTrue(store.document.destinations.allSatisfy { !$0.enabled })
-        XCTAssertEqual(store.document.version, 6)
+        XCTAssertEqual(store.document.version, 7)
         store.flush(); XCTAssertEqual(defaults.data(forKey: OutputProfileStore.key), original)
     }
 }

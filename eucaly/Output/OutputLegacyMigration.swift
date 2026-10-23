@@ -28,7 +28,7 @@ nonisolated enum OutputLegacyMigration {
     static func decode(_ data: Data) throws -> OutputProfileDocument {
         guard data.count <= 1_048_576,
               var root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let version = root["version"] as? Int, (1...6).contains(version) else { throw Failure.invalid }
+              let version = root["version"] as? Int, (1...7).contains(version) else { throw Failure.invalid }
         if version < 5 {
             guard let profiles = root["profiles"] as? [[String: Any]], (1...128).contains(profiles.count),
                   let destinations = root["destinations"] as? [[String: Any]], destinations.count <= 16 else { throw Failure.invalid }
@@ -87,7 +87,7 @@ nonisolated enum OutputLegacyMigration {
             }
             root["version"] = 6
         }
-        if version == 6, var workspaces = root["workspaces"] as? [[String: Any]],
+        if version >= 6, var workspaces = root["workspaces"] as? [[String: Any]],
            let rows = root["destinations"] as? [[String: Any]] {
             let savedOwners = Set(workspaces.compactMap { $0["id"] as? String })
             var known = savedOwners
@@ -102,6 +102,9 @@ nonisolated enum OutputLegacyMigration {
             }
             root["workspaces"] = workspaces
         }
+        // Version 7 adds OMT as an explicit destination kind. Existing rows,
+        // sender identities, appearances and the single music route are intact.
+        root["version"] = 7
         // Retain the historical Home rename without treating the retired launch
         // preference as live state. Existing operator names remain unchanged.
         // Current records encode their listening preference, distinguishing an

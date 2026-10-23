@@ -1,5 +1,16 @@
 import Foundation
 
+/// The network protocol belongs to a saved destination, independently of its
+/// workspace, appearance and live sender generation.
+nonisolated enum NetworkOutputTechnology: String, Codable, CaseIterable, Sendable {
+    case ndi, omt
+    var title: String { self == .ndi ? "NDI" : "OMT" }
+}
+
+// Both transports initially use the same explicit 1080p30 source identity and
+// alpha/chroma settings. The destination's enum case preserves its technology.
+typealias OMTOutputSettings = NDIOutputSettings
+
 nonisolated struct NDIOutputSettings: Codable, Equatable, Sendable {
     enum KeyMode: String, Codable, CaseIterable, Sendable { case alpha, chroma }
     var sourceID = UUID()

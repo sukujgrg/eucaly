@@ -26,7 +26,7 @@ final class HelperService: @unchecked Sendable {
     private var statusTimer: DispatchSourceTimer?
     private var liveActivity: NSObjectProtocol?
     #if DEBUG
-    private var probe: NDIRuntime? // Confined to worker.
+    private var probe: NetworkHelperRuntime? // Confined to worker.
     #endif
     @MainActor private var renderer: OffscreenTextRenderer?
     private var mediaRenderer: OffscreenMediaRenderer? // worker-confined
@@ -160,7 +160,7 @@ final class HelperService: @unchecked Sendable {
                 }
             }
             guard configured == KERN_SUCCESS else {
-                fail("Could not configure the live NDI helper's scheduling (\(configured)). Choose Retry to restart this source.")
+                fail("Could not configure the live output helper's scheduling (\(configured)). Choose Retry to restart this source.")
                 return
             }
             // The parent activity does not describe this separate process's
@@ -168,17 +168,17 @@ final class HelperService: @unchecked Sendable {
             // scheduling as well as App Nap prevention. Scope that request to
             // this source's lifetime; the app still owns sleep policy.
             liveActivity = ProcessInfo.processInfo.beginActivity(options: [.userInitiatedAllowingIdleSystemSleep, .latencyCritical],
-                reason: "Sending or monitoring live NDI video and audio")
+                reason: "Sending or monitoring live network video and audio")
         default: break
         }
         switch configuration.purpose {
         case .renderOnly, .renderYUV: ready(nil)
         case .sender:
             let sender = NDISubmissionWorker(); self.sender = sender
-            sender.start(name: configuration.sourceName) { [self] status, error in
+            sender.start(name: configuration.sourceName, technology: configuration.technology) { [self] status, error in
                 queue.async { [self] in
                     guard !stopping else { return }
-                    guard let status else { fail(error ?? "NDI startup failed"); return }
+                    guard let status else { fail(error ?? "\(configuration.technology.title) startup failed"); return }
                     if let peer { audioInput.install(sender, peer: peer) }
                     ready(status)
                     let timer = DispatchSource.makeTimerSource(queue: queue)
@@ -196,8 +196,8 @@ final class HelperService: @unchecked Sendable {
             #if DEBUG
             worker.async { [self] in
                 do {
-                    let runtime = try NDIRuntime()
-                    guard eucaly_ndi_create_probe(runtime.handle, configuration.sourceName, configuration.purpose == .audioProbe) else {
+                    let runtime = try NetworkHelperRuntime(technology: configuration.technology)
+                    guard runtime.createProbe(source: configuration.sourceName, audioOnly: configuration.purpose == .audioProbe) else {
                         throw NDIRuntime.RuntimeError.message("Loopback receiver could not start")
                     }
                     probe = runtime
@@ -347,7 +347,7 @@ final class HelperService: @unchecked Sendable {
             guard let probe else { return }
             for _ in 0..<40 {
                 var result = eucaly_ndi_audio_observation()
-                let status = eucaly_ndi_probe_audio(probe.handle, &result)
+                let status = probe.probeAudio(&result)
                 let receivedAt = DispatchTime.now().uptimeNanoseconds
                 if status > 0 {
                     NDIAudioTrace.record("recv-energy", sample: result.timecode * 48000 / 10000000,
@@ -378,7 +378,7 @@ final class HelperService: @unchecked Sendable {
             }
             for _ in 0..<40 {
                 var timecode: Int64 = 0
-                let result = eucaly_ndi_probe_frame(probe.handle, surface.baseAddress, surface.allocationSize, &timecode)
+                let result = probe.probeFrame(bytes: surface.baseAddress, capacity: surface.allocationSize, timecode: &timecode)
                 if result > 0 {
                     let report = NDIHelperStatus(runtimeVersion: probe.version, sourceName: configuration.sourceName, lastTimecode: timecode)
                     queue.async { [self] in
@@ -417,13 +417,14 @@ final class HelperService: @unchecked Sendable {
 // Explicit read-only qualification command for the installed, signed helper.
 // It neither creates a sender nor opens a window. The caller owns a finite
 // process deadline just as the app supervisor does.
-if CommandLine.arguments == [CommandLine.arguments[0], "--check-runtime"] {
+if CommandLine.arguments == [CommandLine.arguments[0], "--check-runtime"]
+    || CommandLine.arguments == [CommandLine.arguments[0], "--check-omt-runtime"] {
     do {
-        let runtime = try NDIRuntime()
+        let runtime = try NetworkHelperRuntime(technology: CommandLine.arguments.last == "--check-omt-runtime" ? .omt : .ndi)
         let result = ["runtime": runtime.version]
         let data = try JSONEncoder().encode(result)
         FileHandle.standardOutput.write(data); FileHandle.standardOutput.write(Data([10]))
-        withExtendedLifetime(runtime) {}
+        runtime.close()
         exit(0)
     } catch {
         FileHandle.standardError.write(Data((error.localizedDescription + "\n").utf8)); exit(1)
