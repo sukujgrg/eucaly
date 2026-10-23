@@ -8,7 +8,7 @@ final class SidebarControlLayoutTests: XCTestCase {
         let fixture = try SidebarControlsFixture()
         defer { fixture.close() }
         for width: CGFloat in [260, 520, 260] {
-            fixture.window.setContentSize(.init(width: width, height: 1000))
+            fixture.resizeSidebar(to: width)
             try await settle(fixture.window)
             XCTAssertEqual(fixture.controller.view.bounds.width, width, accuracy: 1, "Controls must fit without widening the sidebar")
             try fixture.saveSnapshot(width: width)
@@ -627,9 +627,6 @@ final class SidebarControlLayoutTests: XCTestCase {
     func testProductionSidebarHierarchyDeliversNativeFileContextMenus() async throws {
         let fixture = try SidebarControlsFixture(grouping: .none, selectsLibraryItem: true)
         defer { fixture.close() }
-        // Installing a controller with an initially unsized view can resize an
-        // NSWindow. Give this native event fixture its intended content area.
-        fixture.window.setContentSize(.init(width: 260, height: 1000))
         let root = try XCTUnwrap(fixture.configuration.libraryRootURL)
         let libraryURL = root.appendingPathComponent("Z song.txt")
         let audioURL = root.appendingPathComponent("Audio/Z audio.mp3")
@@ -734,6 +731,7 @@ private final class SidebarControlsFixture {
     let frameRateSelection: SidebarFrameRateSelection
     let configuration: SidebarConfiguration
     private let configurationBuilder: (Int, URL, [URL], [PlaylistSidebarItem], [URL], Set<UUID>) -> SidebarConfiguration
+    private let sidebarWidth: NSLayoutConstraint
     private let defaults: UserDefaults
     private let suite: String
 
@@ -807,7 +805,22 @@ private final class SidebarControlsFixture {
         self.configuration = configuration
         let controller = SidebarViewController(configuration: configuration, defaults: defaults)
         self.controller = controller
-        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 260, height: 1000),
+        // Production embeds the sidebar in a split view. Keep its test width
+        // independent of AppKit's initial top-level window fitting as well.
+        let host = NSViewController()
+        host.view = NSView(frame: .init(x: 0, y: 0, width: 800, height: 1000))
+        host.addChild(controller)
+        controller.view.translatesAutoresizingMaskIntoConstraints = false
+        host.view.addSubview(controller.view)
+        let sidebarWidth = controller.view.widthAnchor.constraint(equalToConstant: 260)
+        self.sidebarWidth = sidebarWidth
+        NSLayoutConstraint.activate([
+            controller.view.leadingAnchor.constraint(equalTo: host.view.leadingAnchor),
+            controller.view.topAnchor.constraint(equalTo: host.view.topAnchor),
+            controller.view.bottomAnchor.constraint(equalTo: host.view.bottomAnchor),
+            sidebarWidth
+        ])
+        let window = NSWindow(contentRect: host.view.frame,
                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         // Layout and responder checks do not exercise window transforms.
         window.animationBehavior = .none
@@ -816,8 +829,12 @@ private final class SidebarControlsFixture {
         window.isRestorable = false
         window.tabbingMode = .disallowed
         window.appearance = NSAppearance(named: .darkAqua)
-        window.contentViewController = controller
+        window.contentViewController = host
         window.orderFrontRegardless()
+    }
+
+    func resizeSidebar(to width: CGFloat) {
+        sidebarWidth.constant = width
     }
 
     var isWindowSectionExpanded: Bool { defaults.bool(forKey: "sidebar.windowsSectionExpanded") }
