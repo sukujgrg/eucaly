@@ -5,7 +5,6 @@ final class LyricsCleanupReviewViewController: NSViewController, NSTextViewDeleg
     var onCancel: (() -> Void)?
     var onApply: (() -> Void)?
     var onOptionsChanged: ((LyricsCleanupOptions) -> Void)?
-    var onImprove: (() -> Void)?
     var onReset: (() -> Void)?
     var onProposalEdited: ((String) -> Void)?
 
@@ -13,12 +12,10 @@ final class LyricsCleanupReviewViewController: NSViewController, NSTextViewDeleg
     let proposedTextView = NSTextView()
     let applyButton = NSButton(title: "Apply Changes", target: nil, action: nil)
     let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
-    let improveButton = NSButton(title: "Analyze with Apple Intelligence", target: nil, action: nil)
     let resetButton = NSButton(title: "Reset Preview", target: nil, action: nil)
     let optionsDisclosureButton = NSButton(title: "Cleanup options", target: nil, action: nil)
     let notesDisclosureButton = NSButton(title: "Changes and notes", target: nil, action: nil)
     let statusLabel = NSTextField(wrappingLabelWithString: "")
-    let modelLabel = NSTextField(wrappingLabelWithString: "")
     let summaryTextView = NSTextView()
     let editingHint = NSTextField(wrappingLabelWithString: "You can edit the proposed lyrics before applying them.")
     private(set) var optionButtons: [NSButton] = []
@@ -30,8 +27,6 @@ final class LyricsCleanupReviewViewController: NSViewController, NSTextViewDeleg
     private let choices = NSStackView()
     private let summaryScroll = NSScrollView()
     private let progress = NSProgressIndicator()
-    private var modelUnavailable: String?
-    private var canImprove = false
     private var isReplacingProposal = false
     private var equalizePreviewPanes = true
 
@@ -58,9 +53,8 @@ final class LyricsCleanupReviewViewController: NSViewController, NSTextViewDeleg
         choices.alignment = .leading
         choices.spacing = 5
         let optionStates = [options.cleanCharacters, options.suggestSections, options.naturalLyricCasing,
-                            options.repairLineBreaks, options.removeAnnotations, options.correctSpelling,
-                            options.identifyCopyright]
-        for (index, title) in ["Clean up characters and pasted text", "Suggest verse and chorus sections", "Use natural lyric casing", "Repair split words and PDF line breaks", "Remove chord annotations and non-lyric instructions", "Suggest clear spelling corrections", "Recognize licence and copyright credits"].enumerated() {
+                            options.repairLineBreaks, options.removeAnnotations, options.identifyCopyright]
+        for (index, title) in ["Clean up characters and pasted text", "Suggest verse and chorus sections", "Use natural lyric casing", "Repair PDF line breaks", "Remove chord annotations and non-lyric instructions", "Recognize licence and copyright credits"].enumerated() {
             let button = NSButton(checkboxWithTitle: title, target: self, action: #selector(optionChanged(_:)))
             button.tag = index
             button.state = optionStates[index] ? .on : .off
@@ -72,17 +66,6 @@ final class LyricsCleanupReviewViewController: NSViewController, NSTextViewDeleg
             optionButtons.append(button)
             choices.addArrangedSubview(button)
         }
-        let modelRow = NSStackView(views: [improveButton, modelLabel])
-        modelRow.alignment = .centerY
-        modelRow.spacing = 12
-        modelLabel.font = .systemFont(ofSize: 11)
-        modelLabel.textColor = .secondaryLabelColor
-        modelLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        modelLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        improveButton.target = self
-        improveButton.action = #selector(improve)
-        improveButton.setAccessibilityHelp("Analyze the lyrics with Apple Intelligence on this Mac for section, PDF line-break, split-word, spelling and credit suggestions. Review and edit them before applying.")
-
         previewSplitView.isVertical = true
         previewSplitView.dividerStyle = .thin
         previewSplitView.delegate = self
@@ -151,7 +134,7 @@ final class LyricsCleanupReviewViewController: NSViewController, NSTextViewDeleg
         let disclosureRow = NSStackView(views: [optionsDisclosureButton, disclosureSpacer, notesDisclosureButton])
         disclosureRow.spacing = 12
         disclosureRow.alignment = .centerY
-        let header = NSStackView(views: [title, subtitle, modelRow, statusRow])
+        let header = NSStackView(views: [title, subtitle, statusRow])
         header.orientation = .vertical
         header.alignment = .leading
         header.spacing = 8
@@ -190,7 +173,6 @@ final class LyricsCleanupReviewViewController: NSViewController, NSTextViewDeleg
             stack.topAnchor.constraint(equalTo: document.topAnchor),
             stack.bottomAnchor.constraint(equalTo: document.bottomAnchor),
             subtitle.widthAnchor.constraint(equalTo: header.widthAnchor),
-            modelRow.widthAnchor.constraint(equalTo: header.widthAnchor),
             statusRow.widthAnchor.constraint(equalTo: header.widthAnchor),
             disclosureRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
             previewSplitView.widthAnchor.constraint(equalTo: stack.widthAnchor),
@@ -322,18 +304,12 @@ final class LyricsCleanupReviewViewController: NSViewController, NSTextViewDeleg
         setDisclosure(notesDisclosureButton, expanded: areNotesExpanded, content: summaryScroll)
     }
 
-    func setModelAvailability(_ reason: String?) {
-        modelUnavailable = reason
-        modelLabel.stringValue = reason ?? "Apple Intelligence runs on this Mac."
-        improveButton.isEnabled = reason == nil && canImprove
-    }
-
     func setStatus(_ message: String, isError: Bool = false) {
         statusLabel.stringValue = message
         statusLabel.textColor = isError ? .systemRed : .secondaryLabelColor
     }
 
-    func show(_ result: LyricsCleanupResult, completedAnalysis: Bool = false) {
+    func show(_ result: LyricsCleanupResult) {
         isReplacingProposal = true
         proposedTextView.string = result.proposed
         proposedTextView.undoManager?.removeAllActions()
@@ -344,13 +320,9 @@ final class LyricsCleanupReviewViewController: NSViewController, NSTextViewDeleg
         summaryTextView.string = messages.joined(separator: "\n")
         notesDisclosureButton.title = messages.isEmpty ? "Changes and notes" : "Changes and notes (\(messages.count))"
         notesDisclosureButton.isEnabled = !messages.isEmpty
-        if completedAnalysis {
-            setStatus("Analysis complete. Lyric casing uses local rules. Review any section, line-break, spelling and credit suggestions before applying.")
-        } else {
-            setStatus(result.hasChanges
-                ? "Basic cleanup preview. Analyze with Apple Intelligence for contextual suggestions, or review and edit this proposal."
-                : "Basic cleanup found no changes. Analyze with Apple Intelligence or edit the proposed lyrics.")
-        }
+        setStatus(result.hasChanges
+            ? "Cleanup preview. Review and edit the proposed lyrics before applying."
+            : "No cleanup changes found. You can edit the proposed lyrics before applying.")
     }
 
     func updateControls(isBusy: Bool, isStale: Bool, hasResult: Bool, hasManualEdits: Bool, canApply: Bool) {
@@ -358,8 +330,6 @@ final class LyricsCleanupReviewViewController: NSViewController, NSTextViewDeleg
         optionButtons.forEach { $0.isEnabled = !hasManualEdits && !isStale }
         proposedTextView.isEditable = !isBusy && !isStale && hasResult
         resetButton.isEnabled = !isBusy && !isStale
-        canImprove = !isBusy && !isStale && !hasManualEdits && hasResult
-        improveButton.isEnabled = modelUnavailable == nil && canImprove
         editingHint.stringValue = hasManualEdits
             ? "Your edits are included. Reset Preview discards them and unlocks the cleanup options."
             : "You can edit the proposed lyrics. Highlighted lines differ from the original. ⌘Return applies changes."
@@ -432,13 +402,11 @@ final class LyricsCleanupReviewViewController: NSViewController, NSTextViewDeleg
         case 2: options.naturalLyricCasing = enabled
         case 3: options.repairLineBreaks = enabled
         case 4: options.removeAnnotations = enabled
-        case 5: options.correctSpelling = enabled
-        case 6: options.identifyCopyright = enabled
+        case 5: options.identifyCopyright = enabled
         default: return
         }
         onOptionsChanged?(options)
     }
-    @objc private func improve() { onImprove?() }
     @objc private func reset() { onReset?() }
     @objc private func cancel() { onCancel?() }
     @objc private func apply() { if applyButton.isEnabled { onApply?() } }

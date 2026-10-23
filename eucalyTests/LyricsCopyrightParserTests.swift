@@ -366,17 +366,4 @@ final class LyricsCopyrightParserTests: XCTestCase {
         XCTAssertTrue(content.metadata.isEmpty)
     }
 
-    func testModelFooterMarkersRequireExactBoundedTrailingEvidence() {
-        let source = "Verse 1\nWe gather here\n\nJane Doe\nCopyright held by Example Music\nLicensed under the venue agreement"
-        XCTAssertTrue(LyricsCopyrightParser.canMarkFooter(in: source, startingAtLine: 4))
-        XCTAssertFalse(LyricsCopyrightParser.canMarkFooter(in: source, startingAtLine: 1))
-        XCTAssertFalse(LyricsCopyrightParser.canMarkFooter(in: source, startingAtLine: 2))
-        XCTAssertFalse(LyricsCopyrightParser.canMarkFooter(in: source, startingAtLine: 100))
-        XCTAssertFalse(LyricsCopyrightParser.canMarkFooter(in: source, startingAtLine: .min))
-        XCTAssertFalse(LyricsCopyrightParser.canMarkFooter(in: source, startingAtLine: .max))
-        XCTAssertFalse(LyricsCopyrightParser.canMarkFooter(in: source, startingAtLine: 0))
-        XCTAssertFalse(LyricsCopyrightParser.canMarkFooter(in: "Verse 1\nWe gather here\n\nJane Doe\nAnother lyric", startingAtLine: 4))
-        XCTAssertFalse(LyricsCopyrightParser.canMarkFooter(in: source + "\nChorus\nKeep singing", startingAtLine: 4))
-        XCTAssertFalse(LyricsCopyrightParser.canMarkFooter(in: source + String(repeating: "\nCredit", count: 40), startingAtLine: 4))
-    }
 }

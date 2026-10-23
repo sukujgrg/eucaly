@@ -10,7 +10,6 @@ final class LyricsCleanupEngineTests: XCTestCase {
         value.naturalLyricCasing = casing
         value.repairLineBreaks = wraps
         value.removeAnnotations = annotations
-        value.correctSpelling = false
         return value
     }
 
@@ -77,7 +76,6 @@ final class LyricsCleanupEngineTests: XCTestCase {
         let result = LyricsCleanupEngine.clean(source, options: options(casing: true))
         XCTAssertEqual(result.proposed, "Verse 1\nWe follow Jesus\nAnd Mary sings. We praise Him\nWe see Your love on TV")
         XCTAssertTrue(result.notes.contains { $0.contains("uncertain names") })
-        XCTAssertFalse(result.notes.contains { $0.contains("Apple Intelligence") })
     }
 
     func testAllCapsBecomesNaturalCasingWithReviewNote() {
@@ -167,7 +165,6 @@ final class LyricsCleanupEngineTests: XCTestCase {
         let result = LyricsCleanupEngine.clean(source, options: options(casing: true))
         XCTAssertEqual(result.proposed, "Verse 1\nWe ponder the Lamb\nWe hear Your story\nWe sing with joy")
         XCTAssertTrue(result.notes.contains { $0.contains("uncertain names, titles and pronoun references") })
-        XCTAssertFalse(result.notes.contains { $0.contains("Analyze with Apple Intelligence") })
     }
 
     func testHumanRelationshipsAndNamedPeopleDoNotInheritNearbyDivineCasing() {
@@ -205,6 +202,55 @@ final class LyricsCleanupEngineTests: XCTestCase {
         XCTAssertTrue(LyricsCleanupEngine.safeCasingForms(for: "ß") == nil)
         XCTAssertTrue(LyricsCleanupEngine.safeCasingForms(for: "ı") == nil)
         XCTAssertTrue(LyricsCleanupEngine.safeCasingForms(for: "ſ") == nil)
+    }
+
+    func testLocalCasingPreservesIntegratedTitleCompanionsCreditsAndLayout() {
+        let source = "#title: KEEP exact title\nVerse 1\n  (we sing)\n\t‘and we pray’\niPhone gathers us\nMcDonald sings\nMeaning\nmeaning stays lowercase\n\n© 2026 PUBLISHER"
+        let result = LyricsCleanupEngine.clean(source, options: options(casing: true))
+        XCTAssertEqual(result.proposed, "#title: KEEP exact title\nVerse 1\n  (We sing)\n\t‘And we pray’\niPhone gathers us\nMcDonald sings\nMeaning\nmeaning stays lowercase\n\n© 2026 PUBLISHER")
+        XCTAssertEqual(LyricsParser.parseDocument(result.proposed).metadata, LyricsParser.parseDocument(source).metadata)
+    }
+
+    func testLocalCasingPreservesUnicodeFormsAndWholeGlyphs() {
+        for source in ["WE SING CAFÉ\n\nWE SING CAFE\u{301}", "WE \u{2764}\u{FE0F}SING WITH JOY"] {
+            let result = LyricsCleanupEngine.clean(source, options: options(casing: true))
+            XCTAssertEqual(Array(result.proposed.lowercased().utf8), Array(source.lowercased().utf8))
+        }
+        for source in ["مرحبا بالعالم", "WE ക്‍ഷേത്രം SING WITH JOY"] {
+            let result = LyricsCleanupEngine.clean(source, options: options(casing: true))
+            XCTAssertEqual(Array(result.proposed.utf8), Array(source.utf8))
+        }
+    }
+
+    func testLocalCasingKeepsEveryLineInALongDraft() {
+        let source = Array(repeating: "WE SING WITH JOY", count: 300).joined(separator: "\n")
+        let result = LyricsCleanupEngine.clean(source, options: options(casing: true))
+        XCTAssertEqual(result.proposed, Array(repeating: "We sing with joy", count: 300).joined(separator: "\n"))
+        XCTAssertEqual(result.changes.map(\.category), [.casing])
+    }
+
+    func testLocalCleanupKeepsAuthoredSpellingAndTraditionalWords() {
+        let source = "Verse 1\nWE SING WITH TEH CHOIR\nTHOU ART WITH US"
+        let result = LyricsCleanupEngine.clean(source)
+        XCTAssertEqual(result.proposed, "Verse 1\nWe sing with teh choir\nThou art with us")
+        XCTAssertEqual(result.proposed.lowercased(), source.lowercased())
+    }
+
+    func testDefaultCleanupLabelsRepeatedHymnStanzasWithoutChangingTheirContent() {
+        let verses = [
+            "Morning light fills the room\nWe gather here together\nA new day begins with joy\nWe share this song today",
+            "Evening light fills the room\nWe welcome every neighbour\nA quiet hour brings us home\nWe share this song today",
+            "Another morning greets us all\nWe walk this road together\nA gentle breeze moves through the trees\nWe share this song today"
+        ]
+        let chorus = "We lift our voices here\nAnd sing this song together\nWe lift our voices here\nAnd sing this song together"
+        let source = [verses[0], chorus, verses[1], chorus, verses[2], chorus].joined(separator: "\n\n")
+        let result = LyricsCleanupEngine.clean(source)
+        let original = LyricsParser.parseDocument(source)
+        let proposed = LyricsParser.parseDocument(result.proposed)
+        XCTAssertEqual(proposed.slides.map(\.label), ["Verse 1", "Chorus", "Verse 2", "Chorus", "Verse 3", "Chorus"])
+        XCTAssertEqual(proposed.slides.map { $0.lines.map(\.text) }, original.slides.map { $0.lines.map(\.text) })
+        let body = LyricsCleanupEngine.lines(in: result.proposed).filter { !LyricsSectionCatalog.isHeading($0) }.joined(separator: "\n")
+        XCTAssertEqual(Array(body.utf8), Array(source.utf8))
     }
 
     func testMultilingualShapingAndUncertainCaseRemainIntact() {

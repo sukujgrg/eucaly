@@ -5,8 +5,6 @@ import AppKit
 @MainActor
 final class LyricsCleanupController {
     typealias Generate = @Sendable (String, LyricsCleanupOptions) async -> LyricsCleanupResult
-    typealias Refine = @MainActor (String, LyricsCleanupOptions) async throws -> LyricsCleanupResult
-    typealias Availability = @MainActor (String) -> String?
     typealias BeginSheet = @MainActor (NSWindow, NSWindow, @escaping (NSApplication.ModalResponse) -> Void) -> Void
 
     private final class Request {
@@ -45,8 +43,6 @@ final class LyricsCleanupController {
     }
 
     private let generate: Generate
-    private let refine: Refine
-    private let availability: Availability
     private let beginSheet: BeginSheet
     private var active: Request?
 
@@ -63,13 +59,10 @@ final class LyricsCleanupController {
         } onCancel: {
             work.cancel()
         }
-    }, availability: Availability? = nil, refine: Refine? = nil,
-         beginSheet: @escaping BeginSheet = { panel, parent, reply in
+    }, beginSheet: @escaping BeginSheet = { panel, parent, reply in
              parent.beginSheet(panel, completionHandler: reply)
          }) {
         self.generate = generate
-        self.availability = availability ?? { LyricsCleanupModel().availability(for: $0) }
-        self.refine = refine ?? { try await LyricsCleanupModel().refine($0, options: $1) }
         self.beginSheet = beginSheet
     }
 
@@ -112,10 +105,6 @@ final class LyricsCleanupController {
             request.options = updatedOptions
             self.generatePreview(request)
         }
-        review.onImprove = { [weak self, weak request] in
-            guard let self, let request else { return }
-            self.improve(request)
-        }
         review.onReset = { [weak self, weak request] in
             guard let self, let request, self.active === request else { return }
             self.generatePreview(request)
@@ -135,7 +124,6 @@ final class LyricsCleanupController {
         }
         review.loadViewIfNeeded()
         panel.initialFirstResponder = review.cancelButton
-        review.setModelAvailability(availability(source))
         guard active === request, window.isVisible, window.attachedSheet == nil, isCurrent() else {
             finish(request)
             return false
@@ -177,47 +165,11 @@ final class LyricsCleanupController {
             guard !Task.isCancelled, let self, let request, self.active === request,
                   request.generation == generation else { return }
             guard self.isValid(request) else { self.markStale(request); return }
-            self.accept(result, for: request, completedAnalysis: false)
+            self.accept(result, for: request)
         }
     }
 
-    private func improve(_ request: Request) {
-        guard active === request, !request.isBusy, !request.hasManualEdits else { return }
-        guard isValid(request) else { markStale(request); return }
-        if let reason = availability(request.source) {
-            request.review?.setModelAvailability(reason)
-            request.review?.setStatus(reason)
-            return
-        }
-        request.task?.cancel()
-        let generation = UUID()
-        request.generation = generation
-        request.isBusy = true
-        request.review?.setStatus("Improving suggestions on this Mac…")
-        updateControls(request)
-        let source = request.source
-        let options = request.options
-        let refine = refine
-        request.task = Task { [weak self, weak request] in
-            do {
-                guard !Task.isCancelled else { return }
-                let result = try await refine(source, options)
-                guard !Task.isCancelled, let self, let request, self.active === request,
-                      request.generation == generation else { return }
-                guard self.isValid(request) else { self.markStale(request); return }
-                self.accept(result, for: request, completedAnalysis: true)
-            } catch {
-                guard !Task.isCancelled, let self, let request, self.active === request,
-                      request.generation == generation else { return }
-                guard self.isValid(request) else { self.markStale(request); return }
-                request.isBusy = false
-                request.review?.setStatus("Couldn’t improve suggestions: \(error.localizedDescription) Your existing preview is still available.", isError: true)
-                self.updateControls(request)
-            }
-        }
-    }
-
-    private func accept(_ result: LyricsCleanupResult, for request: Request, completedAnalysis: Bool) {
+    private func accept(_ result: LyricsCleanupResult, for request: Request) {
         guard result.original == request.source else {
             request.isBusy = false
             request.review?.setStatus("The suggestions didn’t match this draft. Reset Preview to try again.", isError: true)
@@ -227,7 +179,7 @@ final class LyricsCleanupController {
         request.result = result
         request.proposal = result.proposed
         request.isBusy = false
-        request.review?.show(result, completedAnalysis: completedAnalysis)
+        request.review?.show(result)
         updateControls(request)
     }
 

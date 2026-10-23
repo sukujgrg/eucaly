@@ -7,13 +7,12 @@ nonisolated struct LyricsCleanupOptions: Equatable, Sendable {
     var naturalLyricCasing = true
     var repairLineBreaks = true
     var removeAnnotations = false
-    var correctSpelling = true
     var identifyCopyright = true
     var sourceFileName: String? = nil
 }
 
 nonisolated enum LyricsCleanupCategory: String, CaseIterable, Identifiable, Sendable {
-    case characters, sections, casing, lineBreaks, annotations, spelling, copyright
+    case characters, sections, casing, lineBreaks, annotations
 
     var id: String { rawValue }
     var title: String {
@@ -21,10 +20,8 @@ nonisolated enum LyricsCleanupCategory: String, CaseIterable, Identifiable, Send
         case .characters: "Character cleanup"
         case .sections: "Section suggestions"
         case .casing: "Natural lyric casing"
-        case .lineBreaks: "PDF line breaks and split words"
+        case .lineBreaks: "PDF line breaks"
         case .annotations: "Remove non-lyric annotations"
-        case .spelling: "Clear spelling errors"
-        case .copyright: "Licence and copyright"
         }
     }
 }
@@ -82,7 +79,7 @@ nonisolated enum LyricsCleanupEngine {
         if options.repairLineBreaks {
             apply(.lineBreaks, "Join hyphen-wrapped lines and short continuations of long PDF lines.") { repairLineBreaks($0, fileName: options.sourceFileName) }
             if changes.contains(where: { $0.category == .lineBreaks }) {
-                notes.append("Line-wrap repairs retain source hyphens. Analyze with Apple Intelligence to distinguish split-word hyphens from compound words; review intentional lyric line breaks.")
+                notes.append("Line-wrap repairs retain source hyphens. Review split words, compound words and intentional lyric line breaks; remove a hyphen manually only when it splits one word.")
             }
         }
         if options.suggestSections {
@@ -103,11 +100,8 @@ nonisolated enum LyricsCleanupEngine {
         if !options.removeAnnotations, containsAnnotations(text, fileName: options.sourceFileName) {
             notes.append("Possible chords or non-lyric annotations were found. Enable Remove non-lyric annotations to review their removal.")
         }
-        if options.correctSpelling {
-            notes.append("Contextual spelling corrections require Apple Intelligence. Standard cleanup preserves lyric spelling.")
-        }
         if hasUncertainWrapping(text, fileName: options.sourceFileName) {
-            notes.append("Some long lines may contain PDF wrapping. Their boundaries are uncertain; review them or Analyze with Apple Intelligence.")
+            notes.append("Some long lines may contain PDF wrapping. Their boundaries are uncertain; review the original line breaks before applying.")
         }
         return LyricsCleanupResult(original: source, proposed: text, changes: changes, notes: notes)
     }
@@ -382,9 +376,8 @@ nonisolated enum LyricsCleanupEngine {
         return result
     }
 
-    /// One reproducible local policy is shared by basic cleanup and the final
-    /// layout admitted by Apple section/PDF suggestions. No generated lyric
-    /// text or model casing answers enter this path.
+    /// Builds local casing suggestions after wrap and section edits, retaining
+    /// the source spelling, layout and protected components.
     static func lyricCasingDraft(_ text: String, fileName: String? = nil) -> LyricsCleanupResult {
         let primary = primaryText(in: text, fileName: fileName)
         guard isEnglish(primary) else {
@@ -661,13 +654,6 @@ nonisolated enum LyricsCleanupEngine {
             return true
         }
         return tags == [.pronoun, .verb]
-    }
-
-    static func isProtectedSpellingWord(_ word: String) -> Bool {
-        let lower = word.lowercased()
-        let archaic: Set<String> = ["thou", "thee", "thy", "thine", "hath", "doth", "art", "wast", "wert", "o'er", "o’er", "e'er", "e’er", "hallelujah", "alleluia", "hosanna", "amen"]
-        return properNames[lower] != nil || archaic.contains(lower)
-            || word.dropFirst().contains(where: \.isUppercase) && word.contains(where: \.isLowercase)
     }
 
     private static func looksMostlyUppercase(_ text: String) -> Bool {

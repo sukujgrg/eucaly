@@ -25,7 +25,7 @@ final class LyricsCleanupControllerTests: XCTestCase {
         XCTAssertTrue(review.originalTextView.isSelectable)
         XCTAssertTrue(review.applyButton.isEnabled)
         XCTAssertTrue(fixture.applied.isEmpty, "Preparing or viewing suggestions cannot mutate the editor")
-        // The reviewed text, rather than the cached model result, is applied.
+        // The reviewed text, rather than the cached generated result, is applied.
         review.proposedTextView.string = "My reviewed proposal"
         review.proposedTextView.didChangeText()
         review.applyButton.performClick(nil)
@@ -121,88 +121,88 @@ final class LyricsCleanupControllerTests: XCTestCase {
         XCTAssertTrue(fixture.applied.isEmpty)
     }
 
-    func testUnavailableAppleIntelligenceStillOffersBasicCleanup() async throws {
+    func testUnchangedPreviewCanBeEditedBeforeApplying() async throws {
         let fixture = CleanupReviewFixture()
         defer { fixture.close() }
-        let controller = fixture.controller(availability: { _ in "Apple Intelligence is turned off." })
-        fixture.present(controller)
+        let controller = fixture.controller(generate: { source, _ in
+            .init(original: source, proposed: source, changes: [], notes: [])
+        })
+        fixture.present(controller, source: "Original")
         await controller.pendingTask?.value
         let review = try XCTUnwrap(controller.reviewViewController)
-        XCTAssertFalse(review.improveButton.isEnabled)
-        XCTAssertTrue(review.modelLabel.stringValue.contains("turned off"))
-        XCTAssertTrue(review.statusLabel.stringValue.contains("Basic cleanup"))
+        XCTAssertTrue(review.statusLabel.stringValue.contains("No cleanup changes found"))
+        XCTAssertTrue(review.proposedTextView.isEditable)
+        XCTAssertFalse(review.applyButton.isEnabled)
+        review.proposedTextView.string = "Reviewed lyrics"
+        review.proposedTextView.didChangeText()
         XCTAssertTrue(review.applyButton.isEnabled)
         XCTAssertTrue(fixture.applied.isEmpty)
+        review.applyButton.performClick(nil)
+        XCTAssertEqual(fixture.applied, ["Reviewed lyrics"])
     }
 
-    func testChangingOptionsFencesAnUncooperativeAppleIntelligenceResponse() async throws {
+    func testChangingOptionsIgnoresAnOutdatedLocalPreview() async throws {
         let fixture = CleanupReviewFixture()
         defer { fixture.close() }
-        let ai = CleanupReviewGate()
-        let controller = fixture.controller(refine: { source, options in await ai.wait(source, options) })
+        let gate = CleanupReviewGate(expected: 2)
+        let controller = fixture.controller(generate: { source, options in await gate.wait(source, options) })
         fixture.present(controller)
-        await controller.pendingTask?.value
+        let originalTask = try XCTUnwrap(controller.pendingTask)
+        await gate.waitUntilCount(1)
         let review = try XCTUnwrap(controller.reviewViewController)
-        review.improveButton.performClick(nil)
-        let aiTask = try XCTUnwrap(controller.pendingTask)
-        await fulfillment(of: [ai.entered], timeout: 3)
         XCTAssertFalse(review.applyButton.isEnabled)
         review.optionsDisclosureButton.performClick(nil)
         review.optionButtons[1].performClick(nil)
-        let basicTask = try XCTUnwrap(controller.pendingTask)
-        await basicTask.value
-        XCTAssertEqual(review.proposedTextView.string, "Basic without sections")
-        await ai.resolve(0, proposed: "Outdated AI sections")
-        await aiTask.value
-        XCTAssertEqual(review.proposedTextView.string, "Basic without sections")
+        let currentTask = try XCTUnwrap(controller.pendingTask)
+        await fulfillment(of: [gate.entered], timeout: 3)
+        await gate.resolve(1, proposed: "Without sections")
+        await currentTask.value
+        XCTAssertEqual(review.proposedTextView.string, "Without sections")
+        await gate.resolve(0, proposed: "Outdated sections")
+        await originalTask.value
+        XCTAssertEqual(review.proposedTextView.string, "Without sections")
         XCTAssertTrue(review.applyButton.isEnabled)
-    }
-
-    func testFailedAppleIntelligenceRetainsReviewedBasicResult() async throws {
-        let fixture = CleanupReviewFixture()
-        defer { fixture.close() }
-        let controller = fixture.controller(refine: { _, _ in throw CocoaError(.coderInvalidValue) })
-        fixture.present(controller)
-        await controller.pendingTask?.value
-        let review = try XCTUnwrap(controller.reviewViewController)
-        let proposal = review.proposedTextView.string
-        review.improveButton.performClick(nil)
-        await controller.pendingTask?.value
-        XCTAssertEqual(review.proposedTextView.string, proposal)
-        XCTAssertTrue(review.applyButton.isEnabled)
-        XCTAssertTrue(review.statusLabel.stringValue.contains("Couldn’t improve"))
         XCTAssertTrue(fixture.applied.isEmpty)
     }
 
-    func testCompletedAnalysisWithOnlyLocalCasingDoesNotCreditAppleIntelligence() async throws {
+    func testCopyrightOptionUpdatesTheLocalPreview() async throws {
+        let fixture = CleanupReviewFixture()
+        defer { fixture.close() }
+        let recorder = CleanupOptionsRecorder()
+        let controller = fixture.controller(generate: { source, options in
+            await recorder.result(source: source, options: options)
+        })
+        fixture.present(controller)
+        await controller.pendingTask?.value
+        let review = try XCTUnwrap(controller.reviewViewController)
+        XCTAssertEqual(review.optionButtons.count, 6)
+        review.optionsDisclosureButton.performClick(nil)
+        review.optionButtons[5].performClick(nil)
+        await controller.pendingTask?.value
+        let captured = await recorder.snapshots()
+        XCTAssertEqual(captured.count, 2)
+        XCTAssertTrue(captured[0].identifyCopyright)
+        XCTAssertFalse(captured[1].identifyCopyright)
+        XCTAssertEqual(captured[1].suggestSections, captured[0].suggestSections)
+        XCTAssertEqual(captured[1].removeAnnotations, captured[0].removeAnnotations)
+        XCTAssertEqual(review.optionButtons[5].state, .off)
+        XCTAssertTrue(fixture.applied.isEmpty)
+    }
+
+    func testLocalCasingPreviewStaysInTheReviewUntilApplied() async throws {
         let fixture = CleanupReviewFixture()
         defer { fixture.close() }
         let source = "[Verse]\nWORTHY IS THE LAMB\nHOLY FOREVER"
-        let proposal = "[Verse]\nWorthy is the Lamb\nHoly forever"
-        let localResult = LyricsCleanupResult(
-            original: source, proposed: proposal,
-            changes: [.init(category: .casing, summary: "Use local English lyric casing.", before: source, after: proposal)],
-            notes: []
-        )
-        var completedAnalyses = 0
-        let controller = fixture.controller(generate: { _, _ in localResult }, refine: { receivedSource, _ in
-            XCTAssertEqual(receivedSource, source)
-            completedAnalyses += 1
-            // Analysis may finish using local cleanup without a native model request.
-            return localResult
+        let proposal = "Verse\nWorthy is the Lamb\nHoly forever"
+        let controller = fixture.controller(generate: { source, options in
+            LyricsCleanupEngine.clean(source, options: options)
         })
         fixture.present(controller, source: source)
         await controller.pendingTask?.value
         let review = try XCTUnwrap(controller.reviewViewController)
-        review.improveButton.performClick(nil)
-        let analysis = try XCTUnwrap(controller.pendingTask)
-        await analysis.value
-
-        XCTAssertEqual(completedAnalyses, 1)
+        XCTAssertEqual(review.originalTextView.string, source)
         XCTAssertEqual(review.proposedTextView.string, proposal)
-        XCTAssertTrue(review.statusLabel.stringValue.contains("Analysis complete."))
-        XCTAssertTrue(review.statusLabel.stringValue.contains("Lyric casing uses local rules."))
-        XCTAssertFalse(review.statusLabel.stringValue.contains("Apple Intelligence"))
+        XCTAssertTrue(review.statusLabel.stringValue.contains("Cleanup preview"))
         XCTAssertTrue(review.applyButton.isEnabled)
         XCTAssertTrue(controller.isPresented)
         XCTAssertTrue(fixture.applied.isEmpty)
@@ -221,7 +221,6 @@ final class LyricsCleanupControllerTests: XCTestCase {
         review.proposedTextView.setSelectedRange(NSRange(location: 0, length: (initial as NSString).length))
         review.proposedTextView.insertText("Manually edited", replacementRange: review.proposedTextView.selectedRange())
         XCTAssertFalse(review.optionButtons[0].isEnabled)
-        XCTAssertFalse(review.improveButton.isEnabled)
         XCTAssertTrue(review.resetButton.isEnabled)
         XCTAssertTrue(review.applyButton.isEnabled)
         let undo = try XCTUnwrap(review.proposedTextView.undoManager)
@@ -229,7 +228,6 @@ final class LyricsCleanupControllerTests: XCTestCase {
         undo.undo()
         XCTAssertEqual(review.proposedTextView.string, initial)
         XCTAssertTrue(review.optionButtons[0].isEnabled)
-        XCTAssertTrue(review.improveButton.isEnabled)
         XCTAssertTrue(fixture.applied.isEmpty)
     }
 
@@ -309,14 +307,12 @@ final class LyricsCleanupControllerTests: XCTestCase {
         XCTAssertTrue(fixture.applied.isEmpty)
     }
 
-    func testFilenameTitleContextSurvivesOptionsResetAndAppleAnalysis() async throws {
+    func testFilenameTitleContextSurvivesOptionsAndReset() async throws {
         let fixture = CleanupReviewFixture()
         defer { fixture.close() }
         let recorder = CleanupOptionsRecorder()
         let controller = fixture.controller(generate: { source, options in
-            await recorder.result(source: source, options: options, usingAI: false)
-        }, refine: { source, options in
-            await recorder.result(source: source, options: options, usingAI: true)
+            await recorder.result(source: source, options: options)
         })
         let filename = "Gather Here.txt"
         fixture.present(controller, source: "Gather Here\n\nWe gather here", sourceFileName: filename)
@@ -327,15 +323,11 @@ final class LyricsCleanupControllerTests: XCTestCase {
         await controller.pendingTask?.value
         review.resetButton.performClick(nil)
         await controller.pendingTask?.value
-        review.improveButton.performClick(nil)
-        await controller.pendingTask?.value
-
         let captured = await recorder.snapshots()
-        XCTAssertEqual(captured.count, 4)
-        XCTAssertEqual(captured.map { $0.options.sourceFileName }, [filename, filename, filename, filename])
-        XCTAssertEqual(captured.map { $0.usingAI }, [false, false, false, true])
-        XCTAssertTrue(captured[0].options.suggestSections)
-        XCTAssertTrue(captured.dropFirst().allSatisfy { !$0.options.suggestSections })
+        XCTAssertEqual(captured.count, 3)
+        XCTAssertEqual(captured.map(\.sourceFileName), [filename, filename, filename])
+        XCTAssertTrue(captured[0].suggestSections)
+        XCTAssertTrue(captured.dropFirst().allSatisfy { !$0.suggestSections })
         XCTAssertTrue(fixture.applied.isEmpty)
     }
 
@@ -397,7 +389,7 @@ final class LyricsCleanupControllerTests: XCTestCase {
         XCTAssertFalse(review.areNotesExpanded)
         review.notesDisclosureButton.performClick(nil)
         review.optionsDisclosureButton.performClick(nil)
-        review.setStatus("The analysis could not finish. Your original lyrics and the current preview are still available.", isError: true)
+        review.setStatus("The lyrics draft changed. Close this review and run Clean Up Lyrics again.", isError: true)
         review.updateControls(isBusy: true, isStale: false, hasResult: true, hasManualEdits: false, canApply: false)
         panel.layoutIfNeeded()
         review.view.layoutSubtreeIfNeeded()
@@ -464,14 +456,10 @@ private final class CleanupReviewFixture {
 
     func controller(generate: @escaping LyricsCleanupController.Generate = { source, options in
         LyricsCleanupResult(original: source,
-                            proposed: options.suggestSections ? "Basic with sections" : "Basic without sections",
+                            proposed: options.suggestSections ? "With sections" : "Without sections",
                             changes: [], notes: [])
-    }, availability: @escaping LyricsCleanupController.Availability = { _ in nil },
-                    refine: @escaping LyricsCleanupController.Refine = { source, _ in
-        LyricsCleanupResult(original: source, proposed: "AI proposal", changes: [], notes: [])
     }) -> LyricsCleanupController {
-        LyricsCleanupController(generate: generate, availability: availability, refine: refine,
-                                beginSheet: { [weak self] panel, _, reply in
+        LyricsCleanupController(generate: generate, beginSheet: { [weak self] panel, _, reply in
             self?.panels.append(panel)
             self?.nativeReplies.append(reply)
         })
@@ -541,18 +529,14 @@ private actor CleanupReviewGate {
 }
 
 private actor CleanupOptionsRecorder {
-    struct Snapshot: Sendable {
-        let options: LyricsCleanupOptions
-        let usingAI: Bool
-    }
-    private var captured: [Snapshot] = []
+    private var captured: [LyricsCleanupOptions] = []
 
-    func result(source: String, options: LyricsCleanupOptions, usingAI: Bool) -> LyricsCleanupResult {
-        captured.append(Snapshot(options: options, usingAI: usingAI))
+    func result(source: String, options: LyricsCleanupOptions) -> LyricsCleanupResult {
+        captured.append(options)
         return LyricsCleanupResult(original: source, proposed: "Reviewed candidate", changes: [], notes: [])
     }
 
-    func snapshots() -> [Snapshot] { captured }
+    func snapshots() -> [LyricsCleanupOptions] { captured }
 }
 
 @MainActor

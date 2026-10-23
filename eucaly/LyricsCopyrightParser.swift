@@ -113,27 +113,6 @@ nonisolated enum LyricsCopyrightParser {
         return kind(matching) != nil || matching.caseInsensitiveCompare(explicitMarker) == .orderedSame
     }
 
-    /// Model classifications identify exact source lines. Only a bounded,
-    /// evidenced trailing block may be marked, and an actual lyric must remain.
-    static func canMarkFooter(in source: String, startingAtLine line: Int) -> Bool {
-        let lines = LyricsTextSanitizer.normalizeLineEndings(source).components(separatedBy: "\n")
-        guard line > 0, line <= lines.count else { return false }
-        let start = line - 1
-        guard start > 0, start < lines.count, !LyricsTextSyntax.isBlank(lines[start]),
-              lines.count - start <= 32,
-              lines[start...].joined(separator: "\n").utf8.count <= 8_192,
-              lines[..<start].contains(where: {
-                  !LyricsTextSyntax.isBlank($0) && !LyricsSectionCatalog.isHeading($0)
-                      && !LyricsTextSyntax.isSeparator($0) && !isMetadataLine($0)
-              }) else { return false }
-        let tail = lines[start...].map(normalized)
-        guard !tail.contains(where: {
-            LyricsSectionCatalog.isHeading($0) || LyricsTextSyntax.isSeparator($0)
-                || LyricsTextSyntax.explicitTitle($0) != nil || $0.caseInsensitiveCompare(explicitMarker) == .orderedSame
-        }), let signal = tail.firstIndex(where: hasCreditSignal), signal <= 3 else { return false }
-        return start == 0 || LyricsTextSyntax.isBlank(lines[start - 1]) || hasCreditSignal(normalized(lines[start]))
-    }
-
     private static func normalized(_ line: String) -> String {
         LyricsTextSyntax.markerText(line).trimmingCharacters(in: .whitespaces)
     }
@@ -166,15 +145,6 @@ nonisolated enum LyricsCopyrightParser {
         if lower.hasPrefix("for use solely with"), lower.contains("songselect"),
            lower.contains("terms of use") || lower.contains("ccli.com") { return .rights }
         return nil
-    }
-
-    private static func hasCreditSignal(_ line: String) -> Bool {
-        if kind(line) != nil { return true }
-        let lower = line.lowercased()
-        return lower.hasPrefix("©") || lower.hasPrefix("copyright ") || lower.hasPrefix("(c) ")
-            || lower.hasPrefix("license:") || lower.hasPrefix("licence:")
-            || lower.hasPrefix("licensed under ") || lower.hasPrefix("licenced under ")
-            || lower.hasPrefix("all rights reserved")
     }
 
     private static func metadata(in lines: [String], matching: [String], within range: Range<Int>) -> [String: String] {
