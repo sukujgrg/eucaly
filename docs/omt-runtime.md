@@ -408,3 +408,106 @@ with their exact app/helper processes gone, no source invariant violations or
 unexpected router failures, and no active outputs. Receiver overload failures
 remain failures; these checks establish neither a congestion repair nor full
 production qualification.
+
+### Ethernet-sender baseline with one NDI and one OMT receiver
+
+The operator resumed testing on October 24 with the sender on `en0`, negotiated
+at 1000baseT full duplex, address `192.168.1.27`; Wi-Fi was inactive. Both receiver
+routes used that interface. The remote NDI Mac's link remained 100baseTX, a
+recorded downstream constraint. Testing was limited to one NDI and one OMT
+receiver; no additional receiver-load experiment was run.
+
+The restored movie matched the original retained SHA-256 exactly:
+`1578bc4ae077a81fad6492a6c0b34d024f77d3870e11045a253b58df443e5507`,
+328,913,440 bytes, 313.003 seconds, 3840×2160 H.264 at 30 fps and stereo 48 kHz
+AAC. Source encoding remained progressive SDR Rec.709 1080p30, Medium VMX,
+stereo 48 kHz Float32, SDK `1.0.0.19+eucaly.1` and the existing 512 KiB socket
+request. The source player's local volume stayed zero and background music Off,
+with one shared program player and sampler. Only the test fixture's dated
+authorization cutoff and its NDI source identity changed. `eucaly Wired Audio NDI`
+prevented the operator's Monitor from silently attaching to its previous test
+source.
+
+The source had a 35-minute cap and a 13:00 Sydney hard cutoff. A TV readiness
+capture completed without audio warnings. The initial native NDI metadata probe
+and partial TV window were then stopped explicitly so the operator could listen
+through NDI Monitor. That planned client change was retained as a partial run;
+it was not counted as a completed 20-minute baseline or a transport failure.
+The GUI and native NDI consumers never overlapped. The same source helpers,
+player, item and continuous clocks survived the change.
+
+The subsequent NDI Monitor + OMTReceiver baseline completed a measured
+1,205.001 seconds, admitting 36,123 video frames at 29.977561 fps and 60,251 audio
+packets. All 23 configured receiver runtime targets passed. There were zero
+audio route-horizon violations, late packets, timestamp discontinuities,
+timeline resets, decoder-pool stalls, failures or reconnects. Minimum audio lead,
+including warmup, was 137.531 ms against the unchanged 101.333 ms route horizon.
+Native renderer metrics reported four dropped frames among 35,973 and zero
+corruption. These native counters do not measure physical HDMI/panel delivery.
+
+Full source tracing retained 3,713,861 well-formed rows with no overflow or
+duplicate stages. All 98,898 OMT and 97,863 NDI blocks paired through application
+admission, IPC, SDK return and acknowledgement, with continuous 960-sample steps.
+The measured receiver-timestamp span contained 60,251 source blocks per protocol.
+Every OMT return in that span was positive: 59,815 returned 7,720 bytes and 436
+returned a valid 40-byte silent-channel encoding. NDI returns remained unknown
+because its API is void. No audio-channel rejection was observed. The full run's
+positive 40-byte returns all matched exact-zero stereo RMS. GUI minutes 13–20
+alone retained 21,000 continuous blocks per protocol without OMT zero returns.
+
+Largest instrumented SDK-call durations in the measured span were 10.479 ms
+for OMT and 0.703 ms for NDI; SDK-return ages peaked at 38.265 and 50.845 ms.
+These instrumented spans include the diagnostic trace and RMS work. The largest
+retained receiver callback gap, 81.724 ms, matched a positive 7,720-byte OMT return
+at age 27.518 ms, taking 0.099 ms. The largest receiver playback wait, 64.093 ms,
+also matched prompt source work. These distinguish source submission timing
+from callback and playback-queue timing; they do not measure kernel arrival or
+identify which downstream component delayed a packet.
+
+The worst five-second video admission window was 29.254247 fps around the
+movie's fifth loop. The receiver's diagnostic `playbackCoalescedVideo` increased
+by four, while both source helpers submitted 30 frames across the corresponding
+source interval and OMT enqueued 30 with zero rejection. That diagnostic counts
+both compressed-queue skips and completed decoded batches admitting no sample;
+the periodic data cannot distinguish those sites or prove that EOF caused them.
+The broader source loop window retained 495 SDK submissions per protocol at
+approximately 30 fps, with 492 new-picture offers and no sustained CPU spike in
+the process samples. Brief stalls remain unobservable at that sampling rate.
+One separate video-channel rejection was first observed at 01:19:07 UTC; its
+unchanged cumulative value appeared in 115 checkpoints. It was one rejection,
+not 115, and did not explain the earlier EOF-window dip. No tuning was applied.
+
+The source-side network measurements retained evidence of pressure: 12 of
+11,629 sampled video queues were full, while the audio queue reached 23,160
+bytes without being observed full. Sampling batches had gaps up to 0.858 seconds,
+so short peaks may be absent. OMT audio RTT averaged 7.035 ms with a 9.75 ms
+95th percentile and 11.28 ms maximum; the egress counters reported retransmitted
+bytes. A successful audio baseline does not establish zero network pressure.
+Source PSH/control headers are not complete audio frames or a receiving-NIC
+arrival trace.
+
+The operator confirmed clean NDI audio throughout the time they listened. The
+listening duration was unspecified; this is neither continuous audible proof
+for every measured second nor a TV speaker observation. The main 20-minute
+NDI client was the GUI Monitor, whereas the original isolated-warning run used
+the native probe. This prevents treating the comparison as a single-variable
+Ethernet-versus-Wi-Fi experiment or identifying Wi-Fi as the cause of the
+original two warnings.
+
+The source finished explicitly at 01:22:50 UTC after 1,978.223 seconds. Its
+196,761 observed output audio blocks had no invalid samples, duplicates,
+timestamp gaps, regressions or overlaps. All exact app/helper processes exited,
+no outputs remained active, and no source invariant violations or unexpected
+router failures were recorded. The SDK log was copied before shutdown.
+Evidence is retained under
+`build/OMTProductionStress-20261024/wired-20261024/source-01`; receiver records
+are in OMTReceiver's `build/WiredAudio-20261024/Receiver-Monitor`.
+
+Both optimized build-for-testing runs passed, including the final source-name
+change. Seven offline oracle/harness tests passed before starting the source;
+the controlled production XCTest then completed with clean shutdown. This
+follow-up changes only the fixture, launcher and evidence documentation. The
+full app regression and signed-build checks above belong to the preceding
+diagnostics commit; they were not rerun for this documentation follow-up.
+Python syntax and `git diff --check` passed. Independent review found no
+actionable issues in this follow-up or its evidence claims.

@@ -20,10 +20,10 @@ final class OMTProductionStressTests: XCTestCase {
               let directory = env["EUCALY_OMT_PRODUCTION_DIRECTORY"] else {
             throw OMTProductionFailure.invalid("Missing bounded duration, deadline or evidence directory")
         }
-        // Operator renewed this coordinated investigation through 08:58 Sydney.
-        let lastAuthorizedStart = ISO8601DateFormatter().date(from: "2026-10-23T21:58:00Z")!
+        // Operator resumed wired qualification through 13:00 Sydney.
+        let lastAuthorizedStart = ISO8601DateFormatter().date(from: "2026-10-24T02:00:00Z")!
         guard Date().timeIntervalSince1970 + 45 < deadline, deadline <= lastAuthorizedStart.timeIntervalSince1970 else {
-            throw OMTProductionFailure.invalid("The authorized 2026-10-24 08:58 Sydney hardware deadline has passed or was exceeded")
+            throw OMTProductionFailure.invalid("The authorized 2026-10-24 13:00 Sydney hardware deadline has passed or was exceeded")
         }
         executionTimeAllowance = min(seconds + 120, deadline - Date().timeIntervalSince1970 + 30)
         continueAfterFailure = true
@@ -173,7 +173,7 @@ private final class OMTProductionRun {
         var two = OutputDestinationConfiguration(name: "Second OMT", profileID: OutputProfile.audienceID, monitor: nil, enabled: false)
         two.omt = .init(sourceName: "eucaly Production Stress Secondary"); secondary = two.id
         var companion = OutputDestinationConfiguration(name: "NDI Companion", profileID: OutputProfile.audienceID, monitor: nil, enabled: false)
-        companion.ndi = .init(sourceName: "eucaly Production Stress NDI"); ndi = companion.id
+        companion.ndi = .init(sourceName: "eucaly Wired Audio NDI"); ndi = companion.id
         store.edit { doc in
             doc.destinations = [one, two, companion]
             doc.defaultDestinationID = one.id
@@ -182,7 +182,7 @@ private final class OMTProductionRun {
             for index in doc.profiles.indices { doc.profiles[index].background.visible = false }
         }
         let lookup = ["omt:eucaly Production Stress": one.id, "omt:eucaly Production Stress Secondary": two.id,
-                      "ndi:eucaly Production Stress NDI": companion.id]
+                      "ndi:eucaly Wired Audio NDI": companion.id]
         factory = try OMTProductionFactory(lookup: lookup, oracle: audio, events: directory.appendingPathComponent("helper-events.jsonl"))
         let factory = factory
         router = NetworkOutputRouter(senderFactory: { receive in factory.make(receive) })

@@ -19,8 +19,8 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTROL = Path("/tmp/eucaly-omt-production-stress-20261024")
-# Renewed by the operator for the coordinated audio-warning investigation.
-CUTOFF = datetime.fromisoformat("2026-10-24T08:58:00+11:00").timestamp()
+# Renewed by the operator for the coordinated wired audio-warning investigation.
+CUTOFF = datetime.fromisoformat("2026-10-24T13:00:00+11:00").timestamp()
 ACTIONS = ("stablehold", "hold", "marker", "status", "lyrics", "slides", "video", "generated", "image", "pdf",
            "preview", "loadpreview", "select", "next", "hide", "show", "clear", "pause", "play", "seek", "transfer",
            "start", "retry", "restart", "stop", "enable", "disable", "fault", "music", "musicstop", "position", "finish")
@@ -231,7 +231,7 @@ def run(args):
         raise ValueError("--seconds must be between 30 and 10800")
     deadline = datetime.fromisoformat(args.deadline).timestamp()
     if not time.time() + 45 < deadline <= CUTOFF:
-        raise ValueError("Run deadline must be future and no later than 2026-10-24 08:58 Sydney")
+        raise ValueError("Run deadline must be future and no later than 2026-10-24 13:00 Sydney")
     ipaddress.ip_address(args.lan_host)
     media = args.media.expanduser().resolve(strict=True) if args.media else None
     if media and (not media.is_file() or not os.access(media, os.R_OK)):
@@ -325,7 +325,7 @@ def main():
     modes = parser.add_subparsers(dest="mode", required=True)
     launch = modes.add_parser("run", help="launch the genuine source; hold its initial movie until explicit commands")
     launch.add_argument("--seconds", type=int, default=7200)
-    launch.add_argument("--deadline", default="2026-10-24T08:58:00+11:00")
+    launch.add_argument("--deadline", default="2026-10-24T13:00:00+11:00")
     launch.add_argument("--output", type=Path, default=ROOT / "build/OMTProductionStress-20261024")
     launch.add_argument("--control-dir", type=Path, default=CONTROL)
     launch.add_argument("--derived-data", type=Path, default=ROOT / "build/DerivedDataOMTProduction")
