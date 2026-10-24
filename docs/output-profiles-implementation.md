@@ -184,6 +184,13 @@ Action clocks and cancellation generations are per workspace. Destination closur
 transfer and newer commands invalidate older queued navigation without canceling
 another workspace's input.
 
+Deferred session publication, navigation and audio callbacks also bind weakly to
+the exact coordinator that scheduled them. Native controls can retain a session
+during runtime teardown; queued work then drops without reading its retired
+unowned owner. Navigation validates the registered session, audio-end work keeps
+its playback-generation and music-owner checks, and progress updates validate the
+exact player while remaining available for prepared, paused and stopped tracks.
+
 Live Current navigation, same-slide activation and Load/Switch update only surviving
 open destinations. A closed native window or failed/stopped NDI source requires an
 explicit Show/Start/Retry; ordinary navigation cannot reopen it. Settings-selected

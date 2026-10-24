@@ -158,10 +158,12 @@ final class PresentationSession: NSObject, ObservableObject {
         outputChangeScheduled = true
         // Read the completed model transaction, never @Published's willSet
         // values or an intermediate selection while replacing Current.
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
+        // Controls may outlive their app-owned coordinator during teardown.
+        // Deferred work belongs to that exact runtime, not just to the session.
+        DispatchQueue.main.async { [weak self, weak coordinator = outputCoordinator] in
+            guard let self, let coordinator else { return }
             self.outputChangeScheduled = false
-            self.outputCoordinator.passiveLocal(self)
+            coordinator.passiveLocal(self)
         }
     }
 
@@ -400,8 +402,9 @@ final class PresentationSession: NSObject, ObservableObject {
         if (isPresenting && areSlidesVisible) { navigationActionOrder = outputActionClock.next() }
         // SwiftUI can invoke onKeyPress during its update pass. Resolve each
         // queued move in order, after that pass, against the same Current document.
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
+        DispatchQueue.main.async { [weak self, weak coordinator = outputCoordinator] in
+            guard let self, let coordinator,
+                  coordinator.preparedSession(workspace: self.outputSourceID) === self else { return }
             guard self.navigationGeneration == generation else { return }
             self.pendingNavigationCount = max(0, self.pendingNavigationCount - 1)
             guard self.currentDocumentRevision == revision, !self.isEmpty else { return }
@@ -649,9 +652,11 @@ final class PresentationSession: NSObject, ObservableObject {
         removeBackgroundAudioEndObserver()
         guard let item = backgroundAudioPlayer?.currentItem else { return }
         let generation = backgroundAudioGeneration
-        backgroundAudioEndObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self, self.backgroundAudioGeneration == generation, self.outputCoordinator.audioSession === self else { return }
+        backgroundAudioEndObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self, weak coordinator = outputCoordinator] _ in
+            Task { @MainActor [weak self, weak coordinator] in
+                guard let self, let coordinator, self.backgroundAudioGeneration == generation,
+                      coordinator.profiles.document.workspaces.contains(where: { $0.id == self.outputSourceID }),
+                      coordinator.audioSession === self else { return }
                 self.handleBackgroundAudioEnded()
             }
         }
@@ -683,9 +688,12 @@ final class PresentationSession: NSObject, ObservableObject {
         backgroundAudioTimeObserver = backgroundAudioPlayer.addPeriodicTimeObserver(
             forInterval: interval,
             queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.refreshBackgroundAudioProgress()
+        ) { [weak self, weak coordinator = outputCoordinator, weak scheduledPlayer = backgroundAudioPlayer] _ in
+            Task { @MainActor [weak self, weak coordinator, weak scheduledPlayer] in
+                guard let self, let coordinator, let scheduledPlayer,
+                      self.backgroundAudioPlayer === scheduledPlayer,
+                      coordinator.profiles.document.workspaces.contains(where: { $0.id == self.outputSourceID }) else { return }
+                self.refreshBackgroundAudioProgress()
             }
         }
     }
