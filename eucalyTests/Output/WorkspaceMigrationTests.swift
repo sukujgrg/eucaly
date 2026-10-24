@@ -35,9 +35,9 @@ final class WorkspaceMigrationTests: XCTestCase {
         XCTAssertEqual(defaults.data(forKey: "outputProfilesOMTMigrationBackup"), original)
         XCTAssertEqual(defaults.data(forKey: "outputProfilesWorkspaceMigrationBackup"), earlierBackup)
         XCTAssertTrue(restored.document.destinations.allSatisfy { $0.omt == nil }, "Migration does not create OMT outputs.")
-        let transport = RecordingNDIOutput()
+        let transport = RecordingNetworkOutput()
         let outputs = OutputCoordinator(profiles: restored, displays: ProjectionDisplayManager(displays: { [] }),
-            retainsPreparedSessions: true, ndi: transport)
+            retainsPreparedSessions: true, network: transport)
         defer { outputs.stopAllOutputs() }
         XCTAssertTrue(transport.starts.isEmpty)
         XCTAssertFalse(outputs.isRunning)

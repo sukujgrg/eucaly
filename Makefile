@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help build test test-codex-agents test-ndi-stress test-ndi-diagnostics test-release clean release release-check release-notarize release-publish
+.PHONY: help build test test-network-architecture test-codex-agents test-ndi-stress test-ndi-diagnostics test-release clean release release-check release-notarize release-publish
 
 NOTARY_PROFILE ?= eucalyNotary
 NOTES_FILE ?=
@@ -15,6 +15,7 @@ help:
 	  'make release-notarize  Produce signed local artifacts without publishing' \
 	  'make release-publish   Publish saved artifacts without building or notarizing' \
 	  'make test              Run app and release regression tests' \
+	  'make test-network-architecture  Check shared network and SDK ownership' \
 	  'make test-codex-agents  Validate project agent configuration and references' \
 	  'make test-ndi-stress   Run the opt-in 15-minute real-SDK NDI stress test' \
 	  'make test-ndi-diagnostics  Publish steady video/audio for a remote receiver check' \
@@ -48,7 +49,7 @@ test-release:
 	python3 scripts/test-update-feed.py
 	python3 scripts/test-release-workflow.py
 
-test: test-release
+test: test-release test-network-architecture
 	xcodebuild -project eucaly.xcodeproj -scheme eucaly \
 		-destination 'platform=macOS' -configuration Debug \
 		-derivedDataPath build/DerivedData test \
@@ -56,6 +57,9 @@ test: test-release
 
 test-codex-agents:
 	python3 scripts/test-codex-agents.py
+
+test-network-architecture:
+	python3 scripts/test-network-architecture.py
 
 test-ndi-stress:
 	python3 scripts/test-ndi-stress.py --seconds "$(NDI_STRESS_SECONDS)"

@@ -69,10 +69,10 @@ final class WorkspaceAudioPreferenceTests: XCTestCase {
     }
 
     func testNativeMonitoringMenuRevalidatesTheCommandWorkspaceWithoutStartingOutput() throws {
-        let store = OutputProfileStore(), transport = RecordingNDIOutput()
+        let store = OutputProfileStore(), transport = RecordingNetworkOutput()
         let onlineID = try XCTUnwrap(store.addWorkspace(name: "Online"))
         let outputs = OutputCoordinator(profiles: store, displays: ProjectionDisplayManager(displays: { [] }),
-            ndi: transport, keyWindow: { nil })
+            network: transport, keyWindow: { nil })
         let app = AppDelegate()
         app.outputProfiles = store; app.outputs = outputs
         app.workspaceWindows = makeWorkspaceWindows(outputs: outputs)
@@ -112,9 +112,9 @@ final class WorkspaceAudioPreferenceTests: XCTestCase {
     }
 
     func testOutputMenusShareListeningStateAndKeepItIndependentOfDefaultOutputAndFocus() throws {
-        let store = OutputProfileStore(), transport = RecordingNDIOutput()
+        let store = OutputProfileStore(), transport = RecordingNetworkOutput()
         let peerID = try XCTUnwrap(store.addWorkspace(name: "Online"))
-        let outputs = OutputCoordinator(profiles: store, displays: ProjectionDisplayManager(displays: { [] }), ndi: transport, keyWindow: { nil })
+        let outputs = OutputCoordinator(profiles: store, displays: ProjectionDisplayManager(displays: { [] }), network: transport, keyWindow: { nil })
         let home = outputs.session(workspace: OutputWorkspaceRecord.primaryID), peer = outputs.session(workspace: peerID)
         outputs.focusWorkspace(home)
         let app = AppDelegate()

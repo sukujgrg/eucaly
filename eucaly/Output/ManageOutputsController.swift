@@ -356,7 +356,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         profile.usesLegacySizing = false; profile.background = OutputBackground(); profile.background.colour = .chromaGreen
         var output = OutputDestinationConfiguration(name: technology.title + " Output", profileID: profile.id, monitor: nil,
             enabled: false, workspaceID: coordinator.focusedWorkspaceID)
-        let settings = NDIOutputSettings(sourceName: sourceName)
+        let settings = NetworkOutputSettings(sourceName: sourceName)
         output.destination = technology == .ndi ? .ndi(settings) : .omt(settings)
         profile.customizedForDestinationID = output.id
         store.edit { $0.profiles.append(profile); $0.destinations.append(output) }

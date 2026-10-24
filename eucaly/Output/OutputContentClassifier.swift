@@ -7,9 +7,6 @@ nonisolated enum OutputContentClassifier {
         slide.videoURL != nil || slide.pdfURL != nil || slide.imageURL != nil
             || slide.captureWindowID != nil ? .media : .lyrics
     }
-    static func supportsNDI(_ slide: Slide) -> Bool {
-        supportsNetworkOutput(slide)
-    }
     static func supportsNetworkOutput(_ slide: Slide) -> Bool {
         slide.captureWindowID == nil
     }

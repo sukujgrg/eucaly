@@ -202,10 +202,10 @@ nonisolated private final class PlayerAssetAudioDecoder: @unchecked Sendable {
                 let bytes = cache.reduce(0) { $0 + $1.bytes }, packets = cache.count
                 flush(); lock.unlock()
                 #if DEBUG
-                NDIAudioTrace.record("asset-source", queued: bytes, source: id,
+                NetworkAudioTrace.record("asset-source", queued: bytes, source: id,
                     mediaSample: start.convertScale(48000, method: .roundHalfAwayFromZero).value,
                     frames: frames, covered: packets, sampleRate: format.sampleRate)
-                NDIAudioTrace.record("asset-range-end", source: id,
+                NetworkAudioTrace.record("asset-range-end", source: id,
                     mediaSample: decodedEnd.convertScale(48000, method: .roundHalfAwayFromZero).value)
                 #endif
             }
@@ -254,10 +254,10 @@ private final class SharedPlayerProgramAudio {
         }]
         #if DEBUG
         observations.append(player.observe(\.timeControlStatus, options: [.initial, .new]) { _, change in
-            guard NDIAudioTrace.isEnabled, let status = change.newValue else { return }
+            guard NetworkAudioTrace.isEnabled, let status = change.newValue else { return }
             // Read the notification payload. Re-entering currentTime() inside
             // a synchronous CoreMedia/KVO callback can invert AVPlayer locks.
-            NDIAudioTrace.record("player-control-status", queued: Int(status.rawValue), source: source.id)
+            NetworkAudioTrace.record("player-control-status", queued: Int(status.rawValue), source: source.id)
         })
         #endif
         if let item {

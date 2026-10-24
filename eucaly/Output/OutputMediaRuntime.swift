@@ -4,7 +4,7 @@ import AVFoundation
 /// an individual view never resets playback or adds an audio owner.
 @MainActor
 final class OutputMediaRuntime {
-    let ndiVideoFrames = NDISharedVideoFrames()
+    let networkVideoFrames = NetworkSharedVideoFrames()
     let programAudioGain = ProgramAudioGain()
     private let bookmarkResolver: @Sendable (String) async -> URL?
     init(bookmarkResolver: @escaping @Sendable (String) async -> URL? = { bookmark in
@@ -125,7 +125,7 @@ final class OutputMediaRuntime {
         }
     }
     private func stopProgram() {
-        if let program { ndiVideoFrames.stop(player: program) }
+        if let program { networkVideoFrames.stop(player: program) }
         programGeneration = UUID(); durationTask?.cancel(); durationTask = nil
         program?.pause()
         if let timeObserver { program?.removeTimeObserver(timeObserver) }
@@ -197,7 +197,7 @@ final class OutputMediaRuntime {
             wanted[key] = (url, (wanted[key]?.1 ?? false) || showing)
         }
         for key in Array(backgrounds.keys) where wanted[key] == nil {
-            if let resource = backgrounds.removeValue(forKey: key) { ndiVideoFrames.stop(player: resource.player) }
+            if let resource = backgrounds.removeValue(forKey: key) { networkVideoFrames.stop(player: resource.player) }
         }
         for (key, value) in wanted {
             if backgrounds[key] == nil {
@@ -224,7 +224,7 @@ final class OutputMediaRuntime {
     }
     var backgroundResourceCount: Int { backgrounds.count }
     func stop() {
-        ndiVideoFrames.stop()
+        networkVideoFrames.stop()
         stopProgram(); backgrounds.removeAll()
         for task in bookmarkTasks.values { task.cancel() }
         bookmarkTasks.removeAll(); bookmarkAdmissionGuards.removeAll(); requestedBookmarks.removeAll()

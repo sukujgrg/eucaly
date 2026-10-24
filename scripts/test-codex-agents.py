@@ -26,7 +26,7 @@ INHERITED_FIELDS = {
     "model_provider", "mcp_servers",
 }
 SOURCE_REFERENCE = re.compile(
-    r"\b(?:docs/|eucaly/|eucalyNDIHelper/|eucalyTests/)[A-Za-z0-9_./-]+"
+    r"\b(?:docs/|eucaly/|eucalyNetworkHelper/|eucalyTests/)[A-Za-z0-9_./-]+"
     r"\.(?:swift|md|c|h)\b"
 )
 

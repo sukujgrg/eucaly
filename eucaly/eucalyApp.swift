@@ -21,7 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     lazy var outputProfiles = OutputProfileStore(defaults: AppLaunchContext.isRunningTests ? nil : .standard, monitor: projectionDisplays.target,
         retirementCleanup: AppLaunchContext.isRunningTests ? nil : OutputRetirementCleanup(defaults: .standard))
     lazy var networkOutputs = NetworkOutputRouter()
-    lazy var outputs = OutputCoordinator(profiles: outputProfiles, displays: projectionDisplays, retainsPreparedSessions: true, ndi: networkOutputs)
+    lazy var outputs = OutputCoordinator(profiles: outputProfiles, displays: projectionDisplays, retainsPreparedSessions: true, network: networkOutputs)
     lazy var workspaceWindows = OutputWorkspaceWindows(outputs: outputs, updates: updates,
         defaults: AppLaunchContext.isRunningTests ? nil : .standard,
         manageWorkspaces: { [weak self] in self?.showSettings(pane: .workspaces) })

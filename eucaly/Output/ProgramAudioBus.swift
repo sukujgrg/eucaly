@@ -232,7 +232,7 @@ nonisolated final class ProgramAudioBus: @unchecked Sendable {
             history.append(clock)
             clocks[id] = Array(history.suffix(64))
             #if DEBUG
-            NDIAudioTrace.record("playback-clock", sample: clock.start, source: id,
+            NetworkAudioTrace.record("playback-clock", sample: clock.start, source: id,
                 mediaSample: clock.mediaSample(clock.start), rate: clock.rate, gain: clock.gain)
             #endif
         }
@@ -334,11 +334,11 @@ nonisolated final class ProgramAudioBus: @unchecked Sendable {
                 } else { packets.append(replacement) }
                 state.outputEnd = start + Int64(output.frameLength)
                 #if DEBUG
-                if NDIAudioTrace.isEnabled {
-                    NDIAudioTrace.record("convert-output", source: id, mediaSample: start,
+                if NetworkAudioTrace.isEnabled {
+                    NetworkAudioTrace.record("convert-output", source: id, mediaSample: start,
                         frames: output.frameLength, sampleRate: output.sampleRate,
-                        leftRMS: NDIAudioTrace.rms(channels.left, frames: output.frameLength),
-                        rightRMS: NDIAudioTrace.rms(channels.right, frames: output.frameLength))
+                        leftRMS: NetworkAudioTrace.rms(channels.left, frames: output.frameLength),
+                        rightRMS: NetworkAudioTrace.rms(channels.right, frames: output.frameLength))
                 }
                 #endif
             }
@@ -415,7 +415,7 @@ nonisolated final class ProgramAudioBus: @unchecked Sendable {
             // convert(), so that correction never waits for decoding again.
             #if DEBUG
             if requested > 0 {
-                NDIAudioTrace.record("mixer-coverage", sample: sample, source: id,
+                NetworkAudioTrace.record("mixer-coverage", sample: sample, source: id,
                     mediaSample: firstMediaSample, frames: requested, covered: covered, sampleRate: format.sampleRate)
             }
             #endif
@@ -444,13 +444,13 @@ nonisolated final class ProgramAudioBus: @unchecked Sendable {
     #if DEBUG
     fileprivate static func tracePCM(_ event: String, buffer: AVAudioPCMBuffer, sample: Int64 = 0,
                                      source: UUID? = nil, mediaSample: Int64? = nil) {
-        guard NDIAudioTrace.isEnabled, let data = buffer.floatChannelData else { return }
+        guard NetworkAudioTrace.isEnabled, let data = buffer.floatChannelData else { return }
         let frames = Int(buffer.frameLength), stride = buffer.format.isInterleaved ? Int(buffer.format.channelCount) : 1
         let right = buffer.format.channelCount > 1 ? (buffer.format.isInterleaved ? data[0] + 1 : data[1]) : data[0]
-        NDIAudioTrace.record(event, sample: sample, source: source, mediaSample: mediaSample,
+        NetworkAudioTrace.record(event, sample: sample, source: source, mediaSample: mediaSample,
             frames: frames, sampleRate: buffer.format.sampleRate,
-            leftRMS: NDIAudioTrace.rms(data[0], frames: frames, stride: stride),
-            rightRMS: NDIAudioTrace.rms(right, frames: frames, stride: stride))
+            leftRMS: NetworkAudioTrace.rms(data[0], frames: frames, stride: stride),
+            rightRMS: NetworkAudioTrace.rms(right, frames: frames, stride: stride))
     }
     #endif
 }

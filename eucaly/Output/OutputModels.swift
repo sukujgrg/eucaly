@@ -20,8 +20,8 @@ nonisolated enum OutputContentAdapter {
 nonisolated enum OutputDestination: Codable, Equatable, Sendable {
     case none
     case monitor(ProjectionMonitorTarget)
-    case ndi(NDIOutputSettings)
-    case omt(OMTOutputSettings)
+    case ndi(NetworkOutputSettings)
+    case omt(NetworkOutputSettings)
 }
 
 nonisolated struct OutputDestinationConfiguration: Codable, Equatable, Identifiable {
@@ -31,11 +31,11 @@ nonisolated struct OutputDestinationConfiguration: Codable, Equatable, Identifia
     var destination: OutputDestination = .none
     var enabled = true
     var workspaceID: UUID? = OutputWorkspaceRecord.primaryID
-    var ndi: NDIOutputSettings? {
+    var ndi: NetworkOutputSettings? {
         get { if case .ndi(let settings) = destination { return settings }; return nil }
         set { destination = newValue.map(OutputDestination.ndi) ?? .none }
     }
-    var omt: OMTOutputSettings? {
+    var omt: NetworkOutputSettings? {
         get { if case .omt(let settings) = destination { return settings }; return nil }
         set { destination = newValue.map(OutputDestination.omt) ?? .none }
     }
@@ -46,7 +46,7 @@ nonisolated struct OutputDestinationConfiguration: Codable, Equatable, Identifia
         case .none, .monitor: nil
         }
     }
-    var networkSettings: NDIOutputSettings? {
+    var networkSettings: NetworkOutputSettings? {
         get {
             switch destination {
             case .ndi(let settings), .omt(let settings): settings

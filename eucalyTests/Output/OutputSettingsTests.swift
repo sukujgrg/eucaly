@@ -95,7 +95,7 @@ final class OutputSettingsTests: XCTestCase {
             let fixture = OutputSettingsFixture(); defer { fixture.close() }
             fixture.window.setContentSize(.init(width: 820, height: 650))
             var output = OutputDestinationConfiguration(name: "Online", profileID: OutputProfile.lowerThirdID, monitor: nil)
-            let settings = NDIOutputSettings(sourceName: "Existing source")
+            let settings = NetworkOutputSettings(sourceName: "Existing source")
             output.destination = technology == .ndi ? .ndi(settings) : .omt(settings)
             let shared = try XCTUnwrap(fixture.store.profile(output.profileID))
             fixture.store.edit { $0.destinations.append(output); $0.backgroundAudioDestinationID = output.id }
@@ -209,10 +209,10 @@ final class OutputSettingsTests: XCTestCase {
         XCTAssertEqual(fixture.outputs.destination(omt.id)?.omt?.sourceName, "Stage OMT")
         XCTAssertEqual(fixture.outputs.destination(omt.id)?.omt?.sourceID, omt.omt?.sourceID)
         XCTAssertEqual(fixture.outputs.destination(ndi.id), ndi)
-        let ndiEditor = try XCTUnwrap(fixture.controller.destinationEditor?.networkEditor)
-        XCTAssertEqual(ndiEditor.audioRoute.selectedItem?.representedObject as? UUID, omt.id)
-        ndiEditor.audioRoute.selectItem(at: 0)
-        NSApp.sendAction(try XCTUnwrap(ndiEditor.audioRoute.action), to: ndiEditor.audioRoute.target, from: ndiEditor.audioRoute)
+        let networkEditor = try XCTUnwrap(fixture.controller.destinationEditor?.networkEditor)
+        XCTAssertEqual(networkEditor.audioRoute.selectedItem?.representedObject as? UUID, omt.id)
+        networkEditor.audioRoute.selectItem(at: 0)
+        NSApp.sendAction(try XCTUnwrap(networkEditor.audioRoute.action), to: networkEditor.audioRoute.target, from: networkEditor.audioRoute)
         XCTAssertNil(fixture.store.document.backgroundAudioDestinationID)
         fixture.controller.selectDestination(omt.id)
         XCTAssertTrue(fixture.window.makeFirstResponder(editor.sourceName))
@@ -231,7 +231,7 @@ final class OutputSettingsTests: XCTestCase {
     }
 
     func testOMTStartStopAndRetryRemainExplicitAndNameEditsRetireOnlyThatSource() throws {
-        let driver = RecordingNDIOutput()
+        let driver = RecordingNetworkOutput()
         let fixture = OutputSettingsFixture(network: driver); defer { fixture.close() }
         let session = fixture.outputs.session(workspace: OutputWorkspaceRecord.primaryID)
         session.setSlides(LyricsParser.parseDocument("Verse\nPrepared OMT Current").slides)
@@ -1329,13 +1329,13 @@ private final class OutputSettingsFixture {
     let controller: ManageOutputsController
     let window: NSWindow
 
-    init(monitors: Bool = false, network: (any NDIOutputDriving)? = nil) {
+    init(monitors: Bool = false, network: (any NetworkOutputDriving)? = nil) {
         defaults = UserDefaults(suiteName: suite)!
         let monitor = ProjectionMonitor(id: 1, identity: UUID().uuidString, name: "Audience monitor", frame: CGRect(x: 0, y: 0, width: 1920, height: 1080))
         displays = ProjectionDisplayManager(displays: { monitors ? [monitor] : [] })
         if monitors { displays.select(monitor.target) }
         store = OutputProfileStore(defaults: defaults, monitor: monitors ? monitor.target : nil)
-        outputs = OutputCoordinator(profiles: store, displays: displays, ndi: network ?? NDIOutputRouter(), driverFactory: { FakeOutputDriver() })
+        outputs = OutputCoordinator(profiles: store, displays: displays, network: network ?? NetworkOutputRouter(), driverFactory: { FakeOutputDriver() })
         controller = ManageOutputsController(coordinator: outputs)
         window = NSWindow(contentRect: .init(x: -10000, y: -10000, width: 820, height: 650),
             styleMask: [.titled, .resizable], backing: .buffered, defer: false)

@@ -28,8 +28,6 @@ final class OutputProfileTests: XCTestCase {
         let enabled = store.document
         XCTAssertNotNil(store.setNetworkSettings(changed, for: second.id))
         XCTAssertEqual(store.document, enabled)
-        XCTAssertNotNil(store.setNDISettings(changed, for: second.id), "The compatibility API cannot convert an OMT destination.")
-        XCTAssertEqual(store.document, enabled)
     }
 
     func testOMTBackgroundClearRetainsItsKeyColourAndSingleSavedMusicRoute() throws {

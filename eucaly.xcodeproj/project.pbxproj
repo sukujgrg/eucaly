@@ -28,6 +28,9 @@
 		0A1700000000000000000007 = {isa = PBXBuildFile; fileRef = 0A1700000000000000000014; };
 		0A1700000000000000000008 = {isa = PBXBuildFile; fileRef = 0A1700000000000000000015; };
 		0A1700000000000000000009 = {isa = PBXBuildFile; fileRef = 0A1700000000000000000016; };
+		0B2800000000000000000002 = {isa = PBXBuildFile; fileRef = 0B2800000000000000000001; };
+		0B2800000000000000000004 = {isa = PBXBuildFile; fileRef = 0B2800000000000000000003; };
+		0B2800000000000000000006 = {isa = PBXBuildFile; fileRef = 0B2800000000000000000005; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -38,27 +41,30 @@
 			remoteGlobalIDString = B20C40842F31E99F0006903E;
 			remoteInfo = eucaly;
 		};
-		E5CD1100000000000000000A = {isa = PBXContainerItemProxy; containerPortal = B20C407D2F31E99F0006903E; proxyType = 1; remoteGlobalIDString = E5CD11000000000000000001; remoteInfo = eucalyNDIHelper; };
+		E5CD1100000000000000000A = {isa = PBXContainerItemProxy; containerPortal = B20C407D2F31E99F0006903E; proxyType = 1; remoteGlobalIDString = E5CD11000000000000000001; remoteInfo = eucalyNetworkHelper; };
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		B20C40852F31E99F0006903E /* eucaly.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = eucaly.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B2C9AF862F37CCEE001697D2 /* eucalyTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = eucalyTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		E5CD11000000000000000014 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = eucaly/NDI/NDIHelperProtocol.swift; sourceTree = SOURCE_ROOT; };
+		E5CD11000000000000000014 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = eucaly/Output/Network/IPC/NetworkHelperProtocol.swift; sourceTree = SOURCE_ROOT; };
 		E5CD11000000000000000015 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = eucaly/Output/OutputAppearance.swift; sourceTree = SOURCE_ROOT; };
 		E5CD11000000000000000016 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = eucaly/Output/OutputTypographyRendering.swift; sourceTree = SOURCE_ROOT; };
 		E5CD11000000000000000017 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = eucaly/PresentationTextAlignment.swift; sourceTree = SOURCE_ROOT; };
 		E5CD11000000000000000018 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = eucaly/LyricsTextFitLayout.swift; sourceTree = SOURCE_ROOT; };
-		E5CD11000000000000000002 = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; path = eucalyNDIHelper; sourceTree = BUILT_PRODUCTS_DIR; };
-		E5CD11000000000000000028 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = eucaly/NDI/NDIMachBridge.c; sourceTree = SOURCE_ROOT; };
-		E5CD11000000000000000029 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = eucaly/NDI/NDIMachMailbox.swift; sourceTree = SOURCE_ROOT; };
+		E5CD11000000000000000002 = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; path = eucalyNetworkHelper; sourceTree = BUILT_PRODUCTS_DIR; };
+		E5CD11000000000000000028 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = eucaly/Output/Network/IPC/NetworkMachBridge.c; sourceTree = SOURCE_ROOT; };
+		E5CD11000000000000000029 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = eucaly/Output/Network/IPC/NetworkMachMailbox.swift; sourceTree = SOURCE_ROOT; };
 		0A1700000000000000000010 = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.dylib"; path = Vendor/OMT/lib/libomt.dylib; sourceTree = SOURCE_ROOT; };
 		0A1700000000000000000011 = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.dylib"; path = Vendor/OMT/lib/libvmx.dylib; sourceTree = SOURCE_ROOT; };
 		0A1700000000000000000012 = {isa = PBXFileReference; lastKnownFileType = text; path = Vendor/OMT/LICENSE.txt; sourceTree = SOURCE_ROOT; };
 		0A1700000000000000000013 = {isa = PBXFileReference; lastKnownFileType = text.json; path = Vendor/OMT/provenance.json; sourceTree = SOURCE_ROOT; };
-		0A1700000000000000000014 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = eucaly/NDI/NDIOutputSettings.swift; sourceTree = SOURCE_ROOT; };
+		0A1700000000000000000014 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = eucaly/Output/Network/NetworkOutputSettings.swift; sourceTree = SOURCE_ROOT; };
 		0A1700000000000000000015 = {isa = PBXFileReference; lastKnownFileType = text; path = Vendor/OMT/PATCHES.md; sourceTree = SOURCE_ROOT; };
 		0A1700000000000000000016 = {isa = PBXFileReference; lastKnownFileType = text; path = Vendor/OMT/README.md; sourceTree = SOURCE_ROOT; };
+		0B2800000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = eucaly/Output/Network/Diagnostics/NetworkAudioTrace.swift; sourceTree = SOURCE_ROOT; };
+		0B2800000000000000000003 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = eucaly/Output/Network/Transports/OMT/OMTDiagnostics.swift; sourceTree = SOURCE_ROOT; };
+		0B2800000000000000000005 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = eucaly/Output/Network/Transports/NDI/NDIRuntimeInstallation.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -85,7 +91,7 @@
 			path = eucalyTests;
 			sourceTree = "<group>";
 		};
-		E5CD11000000000000000003 = {isa = PBXFileSystemSynchronizedRootGroup; path = eucalyNDIHelper; sourceTree = "<group>"; };
+		E5CD11000000000000000003 = {isa = PBXFileSystemSynchronizedRootGroup; path = eucalyNetworkHelper; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -197,7 +203,7 @@
 			productReference = B2C9AF862F37CCEE001697D2 /* eucalyTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
-		E5CD11000000000000000001 = {isa = PBXNativeTarget; buildConfigurationList = E5CD11000000000000000007; buildPhases = (E5CD11000000000000000004, E5CD11000000000000000005,); buildRules = (); dependencies = (); fileSystemSynchronizedGroups = (E5CD11000000000000000003,); name = eucalyNDIHelper; productName = eucalyNDIHelper; productReference = E5CD11000000000000000002; productType = "com.apple.product-type.tool"; };
+		E5CD11000000000000000001 = {isa = PBXNativeTarget; buildConfigurationList = E5CD11000000000000000007; buildPhases = (E5CD11000000000000000004, E5CD11000000000000000005,); buildRules = (); dependencies = (); fileSystemSynchronizedGroups = (E5CD11000000000000000003,); name = eucalyNetworkHelper; productName = eucalyNetworkHelper; productReference = E5CD11000000000000000002; productType = "com.apple.product-type.tool"; };
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -291,7 +297,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		E5CD11000000000000000004 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (E5CD1100000000000000001E,E5CD1100000000000000001F,E5CD11000000000000000020,E5CD11000000000000000021,E5CD11000000000000000022,E5CD1100000000000000002A,E5CD1100000000000000002B,0A1700000000000000000007); runOnlyForDeploymentPostprocessing = 0; };
+		E5CD11000000000000000004 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (E5CD1100000000000000001E,E5CD1100000000000000001F,E5CD11000000000000000020,E5CD11000000000000000021,E5CD11000000000000000022,E5CD1100000000000000002A,E5CD1100000000000000002B,0A1700000000000000000007,0B2800000000000000000002,0B2800000000000000000004,0B2800000000000000000006); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -457,7 +463,7 @@
 				/* This target has no App Intents. Remove this opt-out when adding them. */
 				LM_SKIP_METADATA_EXTRACTION = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.suku.eucaly;
-				SWIFT_OBJC_BRIDGING_HEADER = "eucaly/NDI/NDIMachBridge.h";
+				SWIFT_OBJC_BRIDGING_HEADER = "eucaly/Output/Network/IPC/NetworkMachBridge.h";
 				OTHER_LDFLAGS = "$(inherited) -lbsm";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -497,7 +503,7 @@
 				/* This target has no App Intents. Remove this opt-out when adding them. */
 				LM_SKIP_METADATA_EXTRACTION = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.suku.eucaly;
-				SWIFT_OBJC_BRIDGING_HEADER = "eucaly/NDI/NDIMachBridge.h";
+				SWIFT_OBJC_BRIDGING_HEADER = "eucaly/Output/Network/IPC/NetworkMachBridge.h";
 				OTHER_LDFLAGS = "$(inherited) -lbsm";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -559,8 +565,8 @@
 			};
 			name = Release;
 		};
-		E5CD11000000000000000008 = {isa = XCBuildConfiguration; buildSettings = {ARCHS = arm64; CODE_SIGN_STYLE = Automatic; CODE_SIGN_IDENTITY = "Apple Development"; DEVELOPMENT_TEAM = E5N29VFW8T; ENABLE_HARDENED_RUNTIME = YES; ENABLE_APP_SANDBOX = NO; MACOSX_DEPLOYMENT_TARGET = 26.0; PRODUCT_BUNDLE_IDENTIFIER = "com.suku.eucaly.ndi-helper"; OTHER_CODE_SIGN_FLAGS = "--identifier com.suku.eucaly.ndi-helper"; SWIFT_OBJC_BRIDGING_HEADER = "eucalyNDIHelper/HelperBridgingHeader.h"; CODE_SIGN_ENTITLEMENTS = "eucalyNDIHelper/eucalyNDIHelper.entitlements"; OTHER_LDFLAGS = "$(inherited) -lbsm"; LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks/OMT"; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SWIFT_VERSION = 5.0; SWIFT_APPROACHABLE_CONCURRENCY = YES; SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated; }; name = Debug; };
-		E5CD11000000000000000009 = {isa = XCBuildConfiguration; buildSettings = {ARCHS = arm64; CODE_SIGN_STYLE = Automatic; CODE_SIGN_IDENTITY = "Apple Development"; DEVELOPMENT_TEAM = E5N29VFW8T; ENABLE_HARDENED_RUNTIME = YES; ENABLE_APP_SANDBOX = NO; MACOSX_DEPLOYMENT_TARGET = 26.0; PRODUCT_BUNDLE_IDENTIFIER = "com.suku.eucaly.ndi-helper"; OTHER_CODE_SIGN_FLAGS = "--identifier com.suku.eucaly.ndi-helper"; SWIFT_OBJC_BRIDGING_HEADER = "eucalyNDIHelper/HelperBridgingHeader.h"; CODE_SIGN_ENTITLEMENTS = "eucalyNDIHelper/eucalyNDIHelper.entitlements"; OTHER_LDFLAGS = "$(inherited) -lbsm"; LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks/OMT"; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SWIFT_VERSION = 5.0; SWIFT_APPROACHABLE_CONCURRENCY = YES; SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated; }; name = Release; };
+		E5CD11000000000000000008 = {isa = XCBuildConfiguration; buildSettings = {ARCHS = arm64; CODE_SIGN_STYLE = Automatic; CODE_SIGN_IDENTITY = "Apple Development"; DEVELOPMENT_TEAM = E5N29VFW8T; ENABLE_HARDENED_RUNTIME = YES; ENABLE_APP_SANDBOX = NO; MACOSX_DEPLOYMENT_TARGET = 26.0; PRODUCT_BUNDLE_IDENTIFIER = "com.suku.eucaly.network-helper"; OTHER_CODE_SIGN_FLAGS = "--identifier com.suku.eucaly.network-helper"; SWIFT_OBJC_BRIDGING_HEADER = "eucalyNetworkHelper/HelperBridgingHeader.h"; CODE_SIGN_ENTITLEMENTS = "eucalyNetworkHelper/eucalyNetworkHelper.entitlements"; OTHER_LDFLAGS = "$(inherited) -lbsm"; LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks/OMT"; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SWIFT_VERSION = 5.0; SWIFT_APPROACHABLE_CONCURRENCY = YES; SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated; }; name = Debug; };
+		E5CD11000000000000000009 = {isa = XCBuildConfiguration; buildSettings = {ARCHS = arm64; CODE_SIGN_STYLE = Automatic; CODE_SIGN_IDENTITY = "Apple Development"; DEVELOPMENT_TEAM = E5N29VFW8T; ENABLE_HARDENED_RUNTIME = YES; ENABLE_APP_SANDBOX = NO; MACOSX_DEPLOYMENT_TARGET = 26.0; PRODUCT_BUNDLE_IDENTIFIER = "com.suku.eucaly.network-helper"; OTHER_CODE_SIGN_FLAGS = "--identifier com.suku.eucaly.network-helper"; SWIFT_OBJC_BRIDGING_HEADER = "eucalyNetworkHelper/HelperBridgingHeader.h"; CODE_SIGN_ENTITLEMENTS = "eucalyNetworkHelper/eucalyNetworkHelper.entitlements"; OTHER_LDFLAGS = "$(inherited) -lbsm"; LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks/OMT"; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SWIFT_VERSION = 5.0; SWIFT_APPROACHABLE_CONCURRENCY = YES; SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated; }; name = Release; };
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */

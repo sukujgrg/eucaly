@@ -136,7 +136,7 @@ final class WorkspaceAudioMonitoringTests: XCTestCase {
         f.home.setSlides([.init(index: 0, lines: [], label: "NDI only",
             videoURL: URL(fileURLWithPath: "/tmp/workspace-audio-monitoring-home.mov"),
             pdfURL: nil, pdfPageIndex: nil, imageURL: nil)])
-        f.outputs.startNDI(f.homeNDI)
+        f.outputs.startNetworkOutput(f.homeNDI)
         XCTAssertFalse(f.outputs.isOpen(native))
         XCTAssertEqual(f.outputs.media(for: f.homeNDI)?.program?.volume, 0)
         f.home.setBackgroundAudioVolume(0.2)
@@ -172,7 +172,7 @@ final class WorkspaceAudioMonitoringTests: XCTestCase {
 
             f.outputs.closeOutput(f.homeNDI)
             XCTAssertNil(f.outputs.media(for: f.homeNDI)?.program)
-            f.outputs.startNDI(f.homeNDI)
+            f.outputs.startNetworkOutput(f.homeNDI)
             let restarted = try XCTUnwrap(f.outputs.media(for: f.homeNDI)?.program)
             XCTAssertFalse(restarted === quiet)
             XCTAssertEqual(restarted.volume, 0)
@@ -181,7 +181,7 @@ final class WorkspaceAudioMonitoringTests: XCTestCase {
             XCTAssertEqual(peerPlayer.volume, 1)
         }
         f.outputs.closeOutput(f.peerNDI)
-        f.outputs.startNDI(f.peerNDI)
+        f.outputs.startNetworkOutput(f.peerNDI)
         XCTAssertEqual(f.outputs.media(for: f.peerNDI)?.program?.volume, 1)
         XCTAssertTrue(f.outputs.monitorAudioLocally(workspace: f.peer.outputSourceID))
         XCTAssertFalse(f.outputs.monitorAudioLocally(workspace: f.home.outputSourceID))
@@ -258,7 +258,7 @@ final class WorkspaceAudioMonitoringTests: XCTestCase {
 
     @MainActor private final class Fixture {
         let store = OutputProfileStore()
-        let transport = RecordingNDIOutput()
+        let transport = RecordingNetworkOutput()
         let outputs: OutputCoordinator
         let home: PresentationSession
         let peer: PresentationSession
@@ -280,7 +280,7 @@ final class WorkspaceAudioMonitoringTests: XCTestCase {
                 frame: .init(x: 0, y: 0, width: 1920, height: 1080))
             let displays = ProjectionDisplayManager(displays: { [monitor] })
             var first = OutputDestinationConfiguration(name: "Home NDI", profileID: OutputProfile.audienceID, monitor: nil)
-            let settings = NDIOutputSettings(sourceName: "Home Monitoring Test")
+            let settings = NetworkOutputSettings(sourceName: "Home Monitoring Test")
             first.destination = homeTechnology == .omt ? .omt(settings) : .ndi(settings)
             var second = OutputDestinationConfiguration(name: "Online NDI", profileID: OutputProfile.audienceID,
                 monitor: nil, workspaceID: peerID)
@@ -292,7 +292,7 @@ final class WorkspaceAudioMonitoringTests: XCTestCase {
                 native = row.id; rows.append(row)
             } else { native = nil }
             store.edit { $0.destinations = rows }
-            outputs = OutputCoordinator(profiles: store, displays: displays, retainsPreparedSessions: true, ndi: transport,
+            outputs = OutputCoordinator(profiles: store, displays: displays, retainsPreparedSessions: true, network: transport,
                 driverFactory: { FakeOutputDriver() })
             home = outputs.session(workspace: OutputWorkspaceRecord.primaryID)
             peer = outputs.session(workspace: peerID)

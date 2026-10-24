@@ -363,7 +363,7 @@ def verify_arm64_app(app):
     info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
     framework = app / "Contents/Frameworks/Sparkle.framework"
     binaries = [app / "Contents/MacOS" / info["CFBundleExecutable"]]
-    helper = app / "Contents/Helpers/eucalyNDIHelper"
+    helper = app / "Contents/Helpers/eucalyNetworkHelper"
     binaries.append(helper)
     binaries.extend(framework / path for path in (
         "Sparkle", "Autoupdate", "Updater.app/Contents/MacOS/Updater",
@@ -426,9 +426,9 @@ def verify_app(app, state, team):
         if binary == binaries[0] and entitlements.get("com.apple.security.app-sandbox"):
             raise ReleaseError("eucaly must retain its unsandboxed file access (arm64).")
         if binary == binaries[0] and entitlements.get("com.apple.security.cs.disable-library-validation"):
-            raise ReleaseError("Only the NDI helper may disable library validation, not eucaly.")
+            raise ReleaseError("Only the network helper may disable library validation, not eucaly.")
         if binary == binaries[1] and not entitlements.get("com.apple.security.cs.disable-library-validation"):
-            raise ReleaseError("The NDI helper must permit its separately signed vendor runtime.")
+            raise ReleaseError("The network helper must permit its separately signed vendor runtime.")
 
 
 def notarize(directory, state, args, notary_zip):

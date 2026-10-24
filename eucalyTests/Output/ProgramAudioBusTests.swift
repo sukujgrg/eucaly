@@ -101,7 +101,7 @@ final class ProgramAudioBusTests: XCTestCase {
         XCTAssertTrue(ready)
         func mark(_ event: String, phase: Int = 0) {
             #if DEBUG
-            NDIAudioTrace.record(event,
+            NetworkAudioTrace.record(event,
                 sample: CMClockGetTime(CMClockGetHostTimeClock()).convertScale(48000, method: .roundHalfAwayFromZero).value,
                 queued: phase,
                 mediaSample: player.currentTime().convertScale(48000, method: .roundHalfAwayFromZero).value)
@@ -133,7 +133,7 @@ final class ProgramAudioBusTests: XCTestCase {
                 let samples = UnsafeBufferPointer(start: try XCTUnwrap(pcm.floatChannelData?[0]), count: Int(pcm.frameLength))
                 let rms = sqrt(samples.reduce(0.0) { $0 + Double($1 * $1) } / Double(samples.count))
                 #if DEBUG
-                NDIAudioTrace.record("test-monitor-measured", sample: time.sampleTime, queued: phase,
+                NetworkAudioTrace.record("test-monitor-measured", sample: time.sampleTime, queued: phase,
                     frames: Int(pcm.frameLength), sampleRate: time.sampleRate, leftRMS: rms)
                 #endif
                 if abs(rms - 0.05 * 0.25 / sqrt(2)) > 0.0003 {
@@ -351,7 +351,7 @@ final class ProgramAudioBusTests: XCTestCase {
         defer { joined.stop() }
         let joinedAt = CMClockGetTime(CMClockGetHostTimeClock())
         #if DEBUG
-        NDIAudioTrace.record("test-join-start", sample: joinedAt.convertScale(48000, method: .roundHalfAwayFromZero).value)
+        NetworkAudioTrace.record("test-join-start", sample: joinedAt.convertScale(48000, method: .roundHalfAwayFromZero).value)
         #endif
         b.start(at: joinedAt)
         let setupDrained = expectation(description: "Joining mixer has reopened admission")
@@ -368,7 +368,7 @@ final class ProgramAudioBusTests: XCTestCase {
         let readySample = CMClockGetTime(CMClockGetHostTimeClock()).convertScale(48000, method: .roundHalfAwayFromZero).value
         let measuredAt = (readySample + 959) / 960 * 960
         #if DEBUG
-        NDIAudioTrace.record("test-join-measure-start", sample: measuredAt)
+        NetworkAudioTrace.record("test-join-measure-start", sample: measuredAt)
         #endif
         var total = 0, silent = 0, run = 0, maximumSilentRun = 0
         var previousSample: Int64?
@@ -390,7 +390,7 @@ final class ProgramAudioBusTests: XCTestCase {
                     } else { run = 0 }
                 }
                 #if DEBUG
-                NDIAudioTrace.record("test-join-measured", sample: when.sampleTime, frames: Int(pcm.frameLength), covered: Int(pcm.frameLength) - blockSilent)
+                NetworkAudioTrace.record("test-join-measured", sample: when.sampleTime, frames: Int(pcm.frameLength), covered: Int(pcm.frameLength) - blockSilent)
                 #endif
             }
         }

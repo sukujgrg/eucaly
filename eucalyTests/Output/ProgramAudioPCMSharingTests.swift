@@ -183,7 +183,7 @@ final class ProgramAudioPCMSharingTests: XCTestCase {
     private func until(_ reason: String, timeout: Double, _ condition: () -> Bool) async throws {
         let deadline = ProcessInfo.processInfo.systemUptime + timeout
         while !condition(), ProcessInfo.processInfo.systemUptime < deadline { try await Task.sleep(for: .milliseconds(5)) }
-        guard condition() else { XCTFail("Timed out: \(reason)"); throw NDIHelperWire.Failure.unavailable }
+        guard condition() else { XCTFail("Timed out: \(reason)"); throw NetworkHelperWire.Failure.unavailable }
     }
     private func writeFixture(_ url: URL) throws {
         let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2))

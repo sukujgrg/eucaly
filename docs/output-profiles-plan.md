@@ -6,7 +6,7 @@ Operator focus never owns a program or destination. Each saved destination has o
 workspace owner, and several destinations can share a workspace’s player/snapshot.
 Different workspaces can present simultaneously. Profiles own reusable appearance.
 
-AppDelegate owns OutputProfileStore, OutputCoordinator, NDIOutputRouter and native
+AppDelegate owns OutputProfileStore, OutputCoordinator, NetworkOutputRouter and native
 Settings independently of controls windows. OutputCoordinator retains workspace
 sessions, Preview flows, accepted snapshots, action clocks and media runtimes.
 Per-destination generation/epoch fences and global monitor/source-name reservations

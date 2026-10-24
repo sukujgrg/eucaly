@@ -52,7 +52,7 @@ bus for both protocols. Preview is never a program source. There is no NDI
 receiver, desktop capture or forwarding stage in the OMT path.
 
 Each destination owns an independent helper process and sender lifetime. The
-existing `eucalyNDIHelper` executable is shared infrastructure: an authenticated
+existing `eucalyNetworkHelper` executable is shared infrastructure: an authenticated
 bootstrap explicitly selects NDI or OMT before loading a runtime. The app does
 not load either media SDK. An OMT helper does not require or load the NDI runtime.
 

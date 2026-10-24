@@ -76,7 +76,6 @@ private struct OutputQuickButton: NSViewRepresentable {
 final class OutputQuickControlsController: NSObject, ObservableObject {
     let outputButton = NSPopUpButton(frame: .zero, pullsDown: true)
     let networkButton = NSPopUpButton(frame: .zero, pullsDown: true)
-    var ndiButton: NSPopUpButton { networkButton }
     let appearanceButton = NSPopUpButton(frame: .zero, pullsDown: true)
     let backgroundButton = NSPopUpButton(frame: .zero, pullsDown: true)
     let outputs: OutputCoordinator
@@ -92,7 +91,7 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         let defaultID: UUID?
         let target: OutputProfileStore.QuickEditTarget?
         let kind: OutputProfile.Kind?
-        let network: NDIOutputSettings?
+        let network: NetworkOutputSettings?
         let technology: NetworkOutputTechnology?
         let monitors: [ProjectionMonitor]
         let labels: [String]

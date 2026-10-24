@@ -237,12 +237,12 @@ final class PDFDocumentReloadTests: XCTestCase {
         destination.ndi = .init(sourceName: "PDF regression")
         store.edit { $0.destinations[0].enabled = false; $0.destinations.append(destination) }
         let displays = ProjectionDisplayManager(displays: { [] })
-        let outputs = OutputCoordinator(profiles: store, displays: displays, ndi: RecordingNDIOutput())
+        let outputs = OutputCoordinator(profiles: store, displays: displays, network: RecordingNetworkOutput())
         let session = PresentationSession(projectionDisplays: displays, outputCoordinator: outputs)
         return (outputs, session, destination.id)
     }
 
-    private func preparedFrame(_ prepared: OutputPreparedMedia, source: AcceptedPDFSource, page: Int) async throws -> NDIFrameResource {
+    private func preparedFrame(_ prepared: OutputPreparedMedia, source: AcceptedPDFSource, page: Int) async throws -> NetworkFrameResource {
         try await withCheckedThrowingContinuation { continuation in
             prepared.request(.init(url: source.url, page: page, identity: "\(source.id):\(page)", acceptedPDF: source), slot: 0) { _, frame, error in
                 if let frame { continuation.resume(returning: frame) }
@@ -252,7 +252,7 @@ final class PDFDocumentReloadTests: XCTestCase {
         }
     }
 
-    private func pixel(_ frame: NDIFrameResource) -> [UInt8] {
+    private func pixel(_ frame: NetworkFrameResource) -> [UInt8] {
         let surface = frame.surface
         let offset = (surface.height / 2) * surface.bytesPerRow + (surface.width / 2) * 4
         let pixels = surface.baseAddress.assumingMemoryBound(to: UInt8.self)

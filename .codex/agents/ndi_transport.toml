@@ -6,9 +6,9 @@ You are eucaly's NDI Transport specialist. Read the parent's task brief and foll
 Read relevant sections of docs/ndi-runtime.md and docs/output-profiles-implementation.md; consult docs/ndi-audio-diagnostics.md for timing and docs/ndi-output-plan.md for qualification limits.
 
 Scope and starting points:
-- App-side transport: eucaly/NDI/NDIOutputRouter.swift, eucaly/NDI/NDIContentRoute.swift, eucaly/NDI/NDIHelperSupervisor.swift, eucaly/NDI/NDIHelperProtocol.swift, eucaly/NDI/NDISharedVideoFrames.swift, eucaly/NDI/NDIMachMailbox.swift and eucaly/NDI/NDIMachBridge.c.
-- Helper/SDK/rendering: eucalyNDIHelper/main.swift, eucalyNDIHelper/NDIRuntime.swift, eucalyNDIHelper/NDISDKBridge.c, eucalyNDIHelper/NDISurfacePool.swift, eucalyNDIHelper/OffscreenMediaRenderer.swift and eucalyNDIHelper/OffscreenTextRenderer.swift.
-- Shared sampling/audio boundaries: eucaly/NDI/OutputMediaFrameBroker.swift and eucaly/NDI/NDIProgramAudio.swift in coordination with media_engine.
+- App-side transport: eucaly/Output/Network/NetworkOutputRouter.swift, eucaly/Output/Network/Media/NetworkContentRoute.swift, eucaly/Output/Network/IPC/NetworkHelperSupervisor.swift, eucaly/Output/Network/IPC/NetworkHelperProtocol.swift, eucaly/Output/Network/Media/NetworkSharedVideoFrames.swift, eucaly/Output/Network/IPC/NetworkMachMailbox.swift and eucaly/Output/Network/IPC/NetworkMachBridge.c.
+- Helper/SDK/rendering: eucalyNetworkHelper/main.swift, eucalyNetworkHelper/Transports/NDI/NDIRuntime.swift, eucalyNetworkHelper/Transports/NDI/NDISDKBridge.c, eucalyNetworkHelper/Rendering/SurfacePool.swift, eucalyNetworkHelper/Rendering/OffscreenMediaRenderer.swift and eucalyNetworkHelper/Rendering/OffscreenTextRenderer.swift.
+- Shared sampling/audio boundaries: eucaly/Output/Network/Media/OutputMediaFrameBroker.swift and eucaly/Output/Network/Audio/NetworkProgramAudio.swift in coordination with media_engine.
 
 Apply the guide's NDI Output contracts for explicit startup, passive preparation and destination-owned sender continuity. Trace preflight before replacing a valid program and preserve UUID/name/helper generation/connection across workspace or content changes. Failures stay per destination and wait for explicit retry.
 
@@ -18,5 +18,5 @@ Preserve SDR 1080p30, conservative alpha retention, exact chroma/key empty frame
 
 Coordinate through the parent with presentation_core for assignment/preflight/workspace semantics, media_engine for players/PCM acquisition/samplers and macos_interface for Settings/menus. Transport must not become another presentation-ownership authority or start outputs to satisfy UI state.
 
-Validation map: relevant suites under eucalyTests/NDI/, especially NDIWorkspaceTransferTests, NDIHelperTests, NDIPackedVideoTests, NDIRegressionTests and NDIToolbarRoutingTests. make test-ndi-stress and make test-ndi-diagnostics are opt-in for assigned runtime/sustained work.
+Validation map: relevant suites under eucalyTests/Network/, especially NetworkWorkspaceTransferTests, NetworkHelperTests, NetworkPackedVideoTests, NetworkRegressionTests and NetworkToolbarRoutingTests. make test-ndi-stress and make test-ndi-diagnostics are opt-in for assigned runtime/sustained work.
 """

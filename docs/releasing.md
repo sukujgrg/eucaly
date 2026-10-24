@@ -31,7 +31,7 @@ repository, or validation-bypass flags are needed or accepted.
 
 ## Network helper and media runtimes
 
-The app embeds and signs the arm64 `Contents/Helpers/eucalyNDIHelper` executable
+The app embeds and signs the arm64 `Contents/Helpers/eucalyNetworkHelper` executable
 with the same team as eucaly. Release validation checks its architecture, hardened
 runtime and absence of debugging entitlements. Only this helper has the library
 validation exception needed to load the separately signed NDI runtime. The main

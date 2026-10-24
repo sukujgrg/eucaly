@@ -210,12 +210,7 @@ final class OutputProfileStore: ObservableObject {
         }
     }
     @discardableResult
-    func setNDISettings(_ settings: NDIOutputSettings, for destinationID: UUID) -> String? {
-        guard document.destinations.contains(where: { $0.id == destinationID && $0.ndi != nil }) else { return "This NDI output no longer exists." }
-        return setNetworkSettings(settings, for: destinationID)
-    }
-    @discardableResult
-    func setNetworkSettings(_ settings: NDIOutputSettings, for destinationID: UUID) -> String? {
+    func setNetworkSettings(_ settings: NetworkOutputSettings, for destinationID: UUID) -> String? {
         guard recoveryNotice == nil else { return recoveryNotice }
         guard settings.isValid else { return "Use a source name of up to 120 UTF-8 bytes without control characters or \\ / : * ? \" < > |." }
         guard var destination = document.destinations.first(where: { $0.id == destinationID && $0.isNetworkDestination }) else { return "This network output no longer exists." }

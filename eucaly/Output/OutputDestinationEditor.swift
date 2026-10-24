@@ -26,7 +26,6 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
     private var profiles: [ProfileEntry] = []
     private var confidenceActions: NSStackView?
     private(set) var networkEditor: NetworkOutputSettingsEditor?
-    var ndiEditor: NetworkOutputSettingsEditor? { networkEditor }
 
     init(coordinator: OutputCoordinator, destinationID: UUID) {
         self.coordinator = coordinator; self.destinationID = destinationID

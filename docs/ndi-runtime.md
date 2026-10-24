@@ -19,7 +19,7 @@ requires macOS 26 and builds arm64 only. The installed runtime is signed by
 NewTek, Inc., team `W8U66ET244`, identifier `libndi`. Checksums and header provenance
 are in [Vendor/NDI/provenance.json](../Vendor/NDI/provenance.json).
 
-Only `eucalyNDIHelper` loads the library. Its hardened-runtime entitlement allows
+Only `eucalyNetworkHelper` loads the library. Its hardened-runtime entitlement allows
 the differently signed vendor library after a signature check. Eucaly's main
 process retains library validation. No NDI runtime, installer or Tools is copied
 into the application. Missing, outdated or invalid libraries produce a helper
@@ -28,7 +28,7 @@ failure; they cannot prevent native eucaly startup.
 After `make build`, the signed helper supports a read-only installation check:
 
 ```sh
-"$HOME/Applications/eucaly.app/Contents/Helpers/eucalyNDIHelper" --check-runtime
+"$HOME/Applications/eucaly.app/Contents/Helpers/eucalyNetworkHelper" --check-runtime
 ```
 
 The check reports the loaded version without creating a sender or window. When

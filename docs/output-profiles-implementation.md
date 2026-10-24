@@ -272,7 +272,7 @@ workspace's supported Current and changes only content/audio admission. It neith
 restarts nor renames that sender. Moving it back has the same semantics. Other
 outputs retain their owners and programs.
 
-`NDIContentRoute` maintains an owner epoch and one monotonic frame revision counter
+`NetworkContentRoute` maintains an owner epoch and one monotonic frame revision counter
 for the sender lifetime. Transfer fences old broker callbacks, preparation, frames
 and audio. The supervisor drops staged old work and sends an authenticated epoch
 fence to the helper. In-flight surfaces remain retained until GPU acknowledgement;

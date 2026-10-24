@@ -86,7 +86,7 @@ def measure_processes(parent, output, control, lan_host, stop, errors, identitie
                 # work without extra polling, arguments or environment data.
                 unrelated = [{"pid": int(row[0]), "ppid": int(row[1]), "executable": row[4]}
                              for row in rows if len(row) == 5 and int(row[0]) not in owned
-                             and Path(row[4]).name in ("eucaly", "eucalyNDIHelper", "xcodebuild", "swift-frontend", "swiftc", "clang")]
+                             and Path(row[4]).name in ("eucaly", "eucalyNetworkHelper", "xcodebuild", "swift-frontend", "swiftc", "clang")]
                 other_stream.write(json.dumps({"observedAtUTC": datetime.now(timezone.utc).isoformat(),
                     "elapsedSeconds": round(time.monotonic() - start, 3), "processes": unrelated}, sort_keys=True) + "\n")
                 other_stream.flush()
