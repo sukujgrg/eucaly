@@ -337,11 +337,13 @@ final class WorkspaceOutputTests: XCTestCase {
         XCTAssertEqual(f.outputs.profile(for: f.network)?.background.colour, .chromaGreen)
     }
 
-    func testBackgroundSelectionAndClearOnlyCustomizeAssignedWorkspaceOutputs() throws {
+    func testBackgroundClearOnlyCustomizesAssignedWorkspaceOutputs() throws {
         let f = Fixture(); defer { f.outputs.stopAllOutputs() }
         XCTAssertTrue(f.outputs.moveOutput(f.online, to: f.b))
-        f.outputs.setBackgroundVisualBookmark("house visual", for: f.a)
-        f.outputs.setBackgroundVisualBookmark("online visual", for: f.b)
+        XCTAssertNil(f.store.editDestinationProfiles([f.house, f.network]) { profile, _ in
+            profile.background.bookmark = "house visual"
+        })
+        XCTAssertNil(f.store.editDestinationProfile(f.online) { $0.background.bookmark = "online visual" })
         XCTAssertEqual(f.outputs.profile(for: f.house)?.background.bookmark, "house visual")
         XCTAssertEqual(f.outputs.profile(for: f.network)?.background.bookmark, "house visual")
         XCTAssertEqual(f.outputs.profile(for: f.online)?.background.bookmark, "online visual")

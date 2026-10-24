@@ -214,13 +214,10 @@ final class OutputProfileTests: XCTestCase {
         XCTAssertEqual(OutputProfileStore(defaults: defaults).document, store.document)
     }
 
-    func testWorkspaceBackgroundSelectionPreservesProfileAppearanceAndComponentOverrides() {
+    func testOutputBackgroundEditPreservesProfileAppearanceAndComponentOverrides() {
         let name = "ProfileRelative.\(UUID())", defaults = UserDefaults(suiteName: name)!
         defer { defaults.removePersistentDomain(forName: name) }
         let store = OutputProfileStore(defaults: defaults)
-        let displays = ProjectionDisplayManager(displays: { [] })
-        let outputs = OutputCoordinator(profiles: store, displays: displays)
-        let session = PresentationSession(projectionDisplays: displays, outputCoordinator: outputs)
         var audience = store.audience
         audience.typography.size = 500
         audience.layout = "columns"
@@ -232,7 +229,9 @@ final class OutputProfileTests: XCTestCase {
         defaults.set(1.5, forKey: "presentationFontScale")
         defaults.set("stacked", forKey: "presentationLyricsLayout")
         defaults.set("sidebar visual", forKey: "backgroundVisualBookmark")
-        outputs.setBackgroundVisualBookmark("sidebar visual", for: session)
+        XCTAssertNil(store.editDestinationProfile(store.document.destinations[0].id) {
+            $0.background.bookmark = "sidebar visual"
+        })
         XCTAssertEqual(store.audience.typography.size, 500)
         XCTAssertEqual(store.audience.typography.fontName, "Helvetica")
         XCTAssertEqual(store.audience.layout, "columns")
@@ -245,14 +244,20 @@ final class OutputProfileTests: XCTestCase {
     func testCorruptOrFutureDataIsRetainedUntilExplicitRecovery() throws {
         let name = "Profiles.\(UUID())", defaults = UserDefaults(suiteName: name)!
         defer { defaults.removePersistentDomain(forName: name) }
-        for data in [Data("broken".utf8), Data("{\"version\":99}".utf8)] {
+        let originals = [Data("broken".utf8), Data("{\"version\":99}".utf8)]
+        for (index, data) in originals.enumerated() {
             defaults.set(data, forKey: OutputProfileStore.key)
             let store = OutputProfileStore(defaults: defaults)
             XCTAssertNotNil(store.recoveryNotice)
             store.clearBackgrounds(); store.flush()
             XCTAssertEqual(defaults.data(forKey: OutputProfileStore.key), data)
             store.recover(); store.flush()
-            XCTAssertEqual(defaults.data(forKey: "outputProfilesRecoveryBackup"), data)
+            XCTAssertEqual(defaults.data(forKey: "outputProfilesRecoveryBackup"), originals[0])
+            if index > 0 {
+                let snapshots = defaults.dictionaryRepresentation().filter { $0.key.hasPrefix("outputProfilesRecoverySnapshot.") }
+                XCTAssertEqual(snapshots.count, 1)
+                XCTAssertEqual(snapshots.values.first as? Data, data)
+            }
         }
     }
     func testDistinctComponentsAndMissingMeaningNeverSubstitute() throws {

@@ -82,6 +82,8 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
     let workspaceID: UUID?
     var store: OutputProfileStore { outputs.profiles }
     var manageOutputs: () -> Void
+    private let makeBackgroundPanel: @MainActor () -> NSOpenPanel
+    private let beginBackgroundSheet: @MainActor (NSOpenPanel, NSWindow, @escaping (NSApplication.ModalResponse) -> Void) -> Void
     private struct DefaultEntry: Equatable {
         let id: UUID
         let name: String
@@ -122,8 +124,13 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
     private var appearanceState: AppearanceState?
     private var networkRoutingState: NetworkRoutingState?
 
-    init(outputs: OutputCoordinator, workspaceID: UUID? = nil, manageOutputs: @escaping () -> Void) {
+    init(outputs: OutputCoordinator, workspaceID: UUID? = nil, manageOutputs: @escaping () -> Void,
+         makeBackgroundPanel: @escaping @MainActor () -> NSOpenPanel = { NSOpenPanel() },
+         beginBackgroundSheet: @escaping @MainActor (NSOpenPanel, NSWindow, @escaping (NSApplication.ModalResponse) -> Void) -> Void = {
+             $0.beginSheetModal(for: $1, completionHandler: $2)
+         }) {
         self.outputs = outputs; self.workspaceID = workspaceID ?? outputs.focusedWorkspaceID; self.manageOutputs = manageOutputs
+        self.makeBackgroundPanel = makeBackgroundPanel; self.beginBackgroundSheet = beginBackgroundSheet
         super.init()
         for button in [outputButton, networkButton, backgroundButton, appearanceButton] {
             button.bezelStyle = .rounded
@@ -379,20 +386,34 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
               let window = backgroundButton.window, window.attachedSheet == nil else { return }
         let store = store
         let outputs = outputs
-        guard let requestingWorkspaceID = workspaceID ?? destination.workspaceID else { return }
-        let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
+        guard let requestingWorkspaceID = workspaceID ?? destination.workspaceID,
+              store.document.workspaces.contains(where: { $0.id == requestingWorkspaceID }) else { return }
+        if let problem = store.profileCustomizationProblem(for: destination.id) {
+            outputs.reportAppearanceEditIssue(problem, workspace: requestingWorkspaceID)
+            return
+        }
+        let panel = makeBackgroundPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [.image, .movie]
-        panel.beginSheetModal(for: window) { result in
+        // Creating an AppKit panel may run a nested event loop. The controls,
+        // requesting workspace and default output must still be the same.
+        guard backgroundButton.window === window, window.attachedSheet == nil,
+              store.document.workspaces.contains(where: { $0.id == requestingWorkspaceID }),
+              store.enabledDefault(for: target) != nil else { return }
+        beginBackgroundSheet(panel, window) { result in
             guard result == .OK, let url = panel.url else { return }
             let fileAcquisitionGuard = outputs.makeFileAcquisitionGuard(for: url)
             Task { @MainActor in
                 let bookmark = await Task.detached { SecurityScopedBookmarks.createBookmark(for: url) }.value
+                guard store.document.workspaces.contains(where: { $0.id == requestingWorkspaceID }) else { return }
                 guard case .allowed = fileAcquisitionGuard(url) else {
                     outputs.reportFileActionIssue("The selected file changed while it was being prepared. Choose it again.",
                                                  workspace: requestingWorkspaceID)
                     return
                 }
-                if let bookmark { store.editDefaultProfile(target) { $0.background.bookmark = bookmark } }
+                if let bookmark {
+                    let problem = store.editDefaultProfile(target) { $0.background.bookmark = bookmark }
+                    outputs.reportAppearanceEditIssue(problem, workspace: requestingWorkspaceID)
+                }
             }
         }
     }
@@ -419,7 +440,14 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
     }
     private func edit(_ title: String, _ target: OutputProfileStore.QuickEditTarget, enabled: Bool = true, selected: Bool = false,
                       change: @escaping (inout OutputProfile) -> Void) -> NSMenuItem {
-        command(title, enabled: enabled, selected: selected) { [weak self] in self?.store.editDefaultProfile(target, change) }
+        command(title, enabled: enabled, selected: selected) { [weak self] in
+            guard let self,
+                  let requestingWorkspaceID = self.workspaceID ?? self.store.enabledDefault(for: target)?.workspaceID,
+                  self.store.document.workspaces.contains(where: { $0.id == requestingWorkspaceID }) else { return }
+            let problem = self.store.editDefaultProfile(target, change)
+            self.outputs.reportAppearanceEditIssue(problem, workspace: requestingWorkspaceID)
+            self.render()
+        }
     }
     private func command(_ title: String, enabled: Bool = true, selected: Bool = false, action: @escaping () -> Void) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: #selector(performCommand(_:)), keyEquivalent: "")

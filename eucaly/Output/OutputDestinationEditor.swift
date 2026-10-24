@@ -180,11 +180,23 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
     }
     @objc private func editProfile(_ sender: Any?) {
         finishOutputSettingsFieldEditing(in: view)
-        if let id = store.customizeProfile(for: destinationID) { onEditProfile(id) }
+        if let problem = store.profileCustomizationProblem(for: destinationID) {
+            validationLabel.stringValue = problem
+            validationLabel.isHidden = false
+            render()
+            return
+        }
+        if let id = store.customizeProfile(for: destinationID) {
+            validationLabel.stringValue = ""
+            validationLabel.isHidden = true
+            onEditProfile(id)
+        }
     }
     @objc private func clearBackground(_ sender: Any?) {
         finishOutputSettingsFieldEditing(in: view)
-        store.clearDestinationBackground(destinationID)
+        validationLabel.stringValue = store.clearDestinationBackground(destinationID) ?? ""
+        validationLabel.isHidden = validationLabel.stringValue.isEmpty
+        render()
     }
     @objc private func toggleConfidence(_ sender: Any?) {
         if coordinator.isOpen(destinationID) { coordinator.closeOutput(destinationID) }

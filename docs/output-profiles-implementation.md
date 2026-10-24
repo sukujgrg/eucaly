@@ -199,8 +199,12 @@ releases program playback while retaining Current. Muted background-video resour
 are pooled inside each workspace. Runtime bookmark resolution, program access and
 the selected music player's access outlive inactive tabs. ScreenCaptureManager
 continues to own one system-picker-approved stream with reference-counted consumers.
-Picker results retain the requesting workspace through focus changes, and newer
-requests or cancellation invalidate older asynchronous selection work.
+One pending picker presentation owns its request and observer until a terminal
+result is processed. The system API cannot identify overlapping new-stream
+presentations, so another request waits for the operator to finish or cancel the
+current picker. Each observer binds the workspace before any asynchronous hop,
+admits one terminal event and ignores callbacks after retirement. Cancellation
+and failure retain the previous approved selection and another workspace's Preview.
 Replacing the pick is blocked while a native output retains an accepted window,
 including a hidden picture. Conversely, an outstanding picker blocks starting a
 picked-window output until the picker finishes or is cancelled. Other content
@@ -360,11 +364,28 @@ Reusable profiles and output appearances retain native font/colour controls, mul
 stacked/column layout, padding and relative component typography. Output-level edits
 create/reuse an exclusive customization; direct Profiles-list edits intentionally
 affect every consumer. The default-output picker remains an editing preference.
+Workspace background commands plan every enabled destination's customization
+before committing one document change. At the 128-profile limit, a command either
+updates all affected outputs or reports an inline error without changing selections,
+visibility, music or output lifecycle. Clear All performs this preflight before
+hiding slides or clearing audio. Reusable appearances and disabled sharers retain
+their settings. Retained menu actions and pending file panels revalidate at commit.
 Both typography and background controls apply to every generic NDI output. Numeric
 choices use document validation; fields commit on Return/editing end. Thumbnails
 have separate sizing and use a representative assigned workspace profile and canvas.
 Readability checks use each destination's actual workspace snapshot and remain
 operator-only. Settings visibility, resizing, drafts and NSFontPanel remain native.
+
+The app-owned profile store also owns `WorkspaceBackgroundPreferences`, using the
+same defaults domain. It materializes each workspace's existing bookmark, volume
+and loop keys once, including explicit empty selections. Legacy global values are
+migration inputs; modern Home visual restoration uses a Home-owned Audience
+appearance and never a moved output's global mirror. Output edits no longer write
+the global visual bookmark. `PresentationSession` restores its selection and scoped
+file access once, independently of controls windows. Bookmark renewal only updates
+that workspace's file access, without issuing an appearance command. Sidebar,
+menu and projection audio Clear use the same durable operation; Stop retains the
+selection. Empty-track Play cannot claim the single music owner or reset its player.
 
 An AppKit sidebar controller owns section layout, disclosure, controls and UI
 subscriptions, with a thin bridge to the SwiftUI workspace. Section headers have
@@ -462,7 +483,18 @@ Earlier version-5 retirement still removes AltView/SRT rows and factory/exclusiv
 profiles, while retaining supported native appearance, backgrounds and monitor UUIDs.
 Exact retired credential cleanup runs only after verified persistence, off the UI
 thread, without authentication UI and with at most three attempts. Corrupt/future
-data retains its recovery backup and disabled recoverable assignments. Encoding uses
+documents are salvaged record by record within the existing size and count bounds.
+Explicit Recover Settings preserves readable workspace IDs, names, listening
+preferences, appearances, destinations, ownership and the music route; every output
+remains disabled. Missing owners become named recovered workspaces. Provisional
+recovery exposes existing workspace preferences read-only without materializing
+keys or overwriting the saved document. Accepting recovery preserves these same
+preference objects for already-open controls and sessions. Modern damaged profiles
+use safe replacement appearances rather than global legacy preferences.
+Recovery verifies an exact original-data backup before replacing settings, preserves
+the canonical `outputProfilesRecoveryBackup`, and stores distinct later originals as
+immutable `outputProfilesRecoverySnapshot.<SHA256>` entries without replacing older
+migration backups. Repeating Recover after success does nothing. Encoding uses
 a process-wide serial queue and shutdown persistence barrier, preserving write
 order across restored stores as well as within a single store.
 

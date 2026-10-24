@@ -78,7 +78,7 @@ final class OutputCoordinator: ObservableObject {
     private var issues: [UUID: String] = [:]
     private var pendingFileRemoval: PendingFileRemoval?
     private var fileAcquisitionTickets: [WeakFileAcquisitionTicket] = []
-    private enum IssueReason { case presentation, background, assignment(UUID, ProjectionMonitorTarget), disconnected, transfer, capture, fileAction }
+    private enum IssueReason { case presentation, background, assignment(UUID, ProjectionMonitorTarget), disconnected, transfer, capture, fileAction, appearanceEdit, backgroundAudioEdit }
     private var issueReasons: [UUID: IssueReason] = [:]
     @Published private(set) var focusedWorkspaceID: UUID?
     @Published private(set) var revision: UInt64 = 0
@@ -264,6 +264,16 @@ final class OutputCoordinator: ObservableObject {
     func reportFileActionIssue(_ message: String, workspace: UUID) {
         guard profiles.document.workspaces.contains(where: { $0.id == workspace }) else { return }
         setIssue(message, workspace: workspace, reason: .fileAction)
+    }
+    func reportAppearanceEditIssue(_ message: String?, workspace: UUID) {
+        guard profiles.document.workspaces.contains(where: { $0.id == workspace }) else { return }
+        if let message { setIssue(message, workspace: workspace, reason: .appearanceEdit) }
+        else if case .appearanceEdit? = issueReasons[workspace] { setIssue(nil, workspace: workspace) }
+    }
+    func reportBackgroundAudioEditIssue(_ message: String?, workspace: UUID) {
+        guard profiles.document.workspaces.contains(where: { $0.id == workspace }) else { return }
+        if let message { setIssue(message, workspace: workspace, reason: .backgroundAudioEdit) }
+        else if case .backgroundAudioEdit? = issueReasons[workspace] { setIssue(nil, workspace: workspace) }
     }
     @discardableResult
     func finishFileRemoval(_ reservation: FileRemovalReservation, removed: Bool, resultingURL: URL? = nil) -> Bool {
@@ -802,24 +812,47 @@ final class OutputCoordinator: ObservableObject {
         guard audioSession !== session else { return }; audioSession?.stopBackgroundAudioPlayback()
         audioWeak = session; retainedAudio = retainsPreparedSessions ? session : nil; refreshMedia()
     }
-    func setBackgroundVisualBookmark(_ bookmark: String, for session: PresentationSession) {
-        for row in destinations(workspace: session.outputSourceID) where row.enabled {
-            profiles.editDestinationProfile(row.id) {
-                $0.background.bookmark = bookmark.isEmpty ? nil : bookmark
-                $0.background.visible = !bookmark.isEmpty
-            }
-        }
+    func releaseBackgroundAudio(_ session: PresentationSession) {
+        if audioSession === session { audioWeak = nil; retainedAudio = nil }
+        refreshMedia()
     }
     func clearAudio() { commandSession?.clearBackgroundAudio() }
-    func clearAllLayers() { hide(); clearBackgrounds(); clearAudio() }
-    func clearBackgrounds(for session: PresentationSession? = nil) {
-        let id = session?.outputSourceID ?? commandProgram.id
-        for row in destinations(workspace: id) where row.enabled { profiles.clearDestinationBackground(row.id) }
-        programs[id]?.session?.setBackgroundVisual(nil)
+    @discardableResult
+    func clearAllLayers(for session: PresentationSession? = nil) -> Bool {
+        guard let session = session ?? commandSession,
+              clearBackgrounds(for: session) else { return false }
+        hide(for: session)
+        session.clearBackgroundAudio()
+        return true
     }
-    func setAudienceBackgroundVisibility(_ visible: Bool, for session: PresentationSession? = nil) {
-        let id = session?.outputSourceID ?? commandProgram.id
-        for row in destinations(workspace: id) where row.enabled { profiles.editDestinationProfile(row.id) { $0.background.visible = visible } }
+    @discardableResult
+    func clearBackgrounds(for session: PresentationSession? = nil) -> Bool {
+        guard let id = backgroundWorkspace(for: session) else { return false }
+        let problem = profiles.editDestinationProfiles(destinations(workspace: id).filter(\.enabled).map(\.id)) { profile, row in
+            profile.clearBackground(preservingKeyColour: row.isNetworkDestination)
+        }
+        reportAppearanceEditIssue(problem, workspace: id)
+        guard problem == nil else { return false }
+        profiles.backgroundPreferences.settings(for: id).setVisualBookmark("")
+        programs[id]?.session?.setBackgroundVisual(nil)
+        return true
+    }
+    @discardableResult
+    func setAudienceBackgroundVisibility(_ visible: Bool, for session: PresentationSession? = nil) -> Bool {
+        guard let id = backgroundWorkspace(for: session) else { return false }
+        let problem = profiles.editDestinationProfiles(destinations(workspace: id).filter(\.enabled).map(\.id)) { profile, _ in
+            profile.background.visible = visible
+        }
+        reportAppearanceEditIssue(problem, workspace: id)
+        guard problem == nil else { return false }
+        programs[id]?.session?.isBackgroundVisualVisible = visible
+        return true
+    }
+    private func backgroundWorkspace(for session: PresentationSession?) -> UUID? {
+        if let session, session.outputCoordinator !== self { return nil }
+        guard let id = session?.outputSourceID ?? commandWorkspaceID,
+              profiles.document.workspaces.contains(where: { $0.id == id }) else { return nil }
+        return id
     }
     func refreshMedia(publish: Bool = true) {
         for state in Array(programs.values) { refreshMedia(state, publish: publish) }
@@ -883,7 +916,7 @@ final class OutputCoordinator: ObservableObject {
                 // A failed move leaves ownership unchanged. Keep its explanation
                 // in the requesting workspace until retry succeeds or dismissal.
                 message = issues[id]
-            case .capture, .fileAction:
+            case .capture, .fileAction, .appearanceEdit, .backgroundAudioEdit:
                 message = issues[id]
             }
             setIssue(message, workspace: id, reason: reason)

@@ -500,12 +500,16 @@ final class SidebarViewController: NSViewController {
         case "sidebar.audio.play": performAudio(AudioSidebarInteraction.toggleAction(selectedURL: configuration.selectedAudioURL, activeURL: activeAudioURL))
         case "sidebar.audio.stop": configuration.onStopBackgroundAudio()
         case "sidebar.audio.clear":
-            configuration.selectedAudioURL = nil
-            configuration.setSelectedAudioURL(nil)
-            configuration.onClearBackgroundAudio()
+            if configuration.onClearBackgroundAudio() {
+                configuration.selectedAudioURL = nil
+                configuration.setSelectedAudioURL(nil)
+            }
         case "sidebar.audio.loop":
-            configuration.backgroundAudioLoop = sender.state == .on
-            configuration.setBackgroundAudioLoop(sender.state == .on)
+            let requestedLoop = sender.state == .on
+            if configuration.setBackgroundAudioLoop(requestedLoop) {
+                configuration.backgroundAudioLoop = requestedLoop
+            }
+            sender.state = configuration.backgroundAudioLoop ? .on : .off
         case "sidebar.library.toggleGroups":
             libraryExpansionCommand = SidebarOutlineExpansionCommand(action: libraryExpansionState.areAllGroupsCollapsed ? .expandAll : .collapseAll)
             updateLibraryOutline()
