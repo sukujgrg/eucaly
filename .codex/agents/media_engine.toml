@@ -7,7 +7,7 @@ Read relevant media/audio sections of docs/output-profiles-implementation.md and
 
 Scope and starting points:
 - Shared program playback, backgrounds and audio: eucaly/Output/OutputMediaRuntime.swift, eucaly/Output/ProgramAudioBus.swift, eucaly/Output/PlayerProgramAudioSource.swift and media components in eucaly/PresentationWindowController.swift.
-- Shared frame acquisition and audio integration: eucaly/NDI/OutputMediaFrameBroker.swift and eucaly/NDI/NDIProgramAudio.swift, coordinated with ndi_transport at their transport boundaries.
+- Shared frame acquisition and audio integration: eucaly/Output/Network/Media/OutputMediaFrameBroker.swift and eucaly/Output/Network/Audio/NetworkProgramAudio.swift, coordinated with ndi_transport at their transport boundaries.
 - Capture and prepared media: eucaly/ScreenCaptureManager.swift, eucaly/WindowCaptureSlideView.swift, eucaly/ProjectionImageLoader.swift, eucaly/ImageSlideView.swift, eucaly/PDFSlideCatalog.swift and eucaly/PDFPageDisplayGeometry.swift.
 - Composition and text geometry: eucaly/Output/OutputCompositionView.swift, eucaly/Output/OutputTypographyRendering.swift, eucaly/PresentationLyricsLayout.swift and eucaly/LyricsTextFitLayout.swift.
 
@@ -17,5 +17,5 @@ Keep queues/media bounded, close admission immediately on teardown and release a
 
 Coordinate through the parent with presentation_core for ownership/session/native destination lifecycle, ndi_transport for helper/SDK/IPC/packed output, library_editing for parser data/cache invalidation and macos_interface for controls. Helper GPU composition/packing belongs to ndi_transport; shared acquisition/preparation belongs here.
 
-Validation map: ProgramAudioBusTests, ProgramAudioClockTests, WorkspaceAudioMonitoringTests, NDIMediaClockTests, NDILocalAudioMonitoringTests, WindowCapturePipelineTests, OutputRenderingTests, LyricsLayoutTests, PDFSlideCatalogTests and PDFDocumentReloadTests. Check multiple consumers, late callbacks and teardown when affected.
+Validation map: ProgramAudioBusTests, ProgramAudioClockTests, WorkspaceAudioMonitoringTests, NetworkMediaClockTests, NDILocalAudioMonitoringTests, WindowCapturePipelineTests, OutputRenderingTests, LyricsLayoutTests, PDFSlideCatalogTests and PDFDocumentReloadTests. Check multiple consumers, late callbacks and teardown when affected.
 """

@@ -15,9 +15,9 @@ final class ProgramAudioLoopTests: XCTestCase {
             for index in $0.workspaces.indices { $0.workspaces[index].monitorAudioLocally = false }
         }
         let outputs = OutputCoordinator(profiles: store,
-            displays: ProjectionDisplayManager(displays: { [] }), ndi: RecordingNDIOutput())
+            displays: ProjectionDisplayManager(displays: { [] }), network: RecordingNetworkOutput())
         let session = PresentationSession(projectionDisplays: outputs.displays, outputCoordinator: outputs)
-        let audio = NDIProgramAudio(), received = LoopProgramAudio()
+        let audio = NetworkProgramAudio(), received = LoopProgramAudio()
         defer { audio.stop(); outputs.stopAllOutputs() }
         audio.sourceFailed = { received.fail($0) }
         session.setSlides([Slide(index: 0, lines: [], label: "Loop", videoURL: url,
@@ -42,7 +42,7 @@ final class ProgramAudioLoopTests: XCTestCase {
         guard player.status == .readyToPlay, audio.isVideoSourcePreparedForTests,
               received.snapshot.failure == nil else {
             XCTFail("Loop fixture audio could not prepare: \(received.snapshot.failure ?? player.error?.localizedDescription ?? "unknown error")")
-            throw NDIHelperWire.Failure.unavailable
+            throw NetworkHelperWire.Failure.unavailable
         }
         let started = LoopProgramAudio.hostSample
         session.videoPaused = false
@@ -81,12 +81,12 @@ final class ProgramAudioLoopTests: XCTestCase {
         }
         guard condition() else {
             XCTFail("Timed out: \(description)")
-            throw NDIHelperWire.Failure.unavailable
+            throw NetworkHelperWire.Failure.unavailable
         }
     }
 
     nonisolated private static func makeVideoWithAudio() async throws -> URL {
-        let video = try await NDIRegressionTests.makePortraitVideoFixture()
+        let video = try await NetworkRegressionTests.makePortraitVideoFixture()
         let tone = FileManager.default.temporaryDirectory.appendingPathComponent("program-loop-tone-\(UUID()).caf")
         defer {
             try? FileManager.default.removeItem(at: video)
@@ -136,7 +136,7 @@ nonisolated private final class LoopProgramAudio: @unchecked Sendable {
     }
     func endIteration() { lock.withLock { value.ends.append(Self.hostSample) } }
     func fail(_ reason: String) { lock.withLock { value.failure = reason } }
-    func record(_ block: NDIAudioBlock) {
+    func record(_ block: NetworkAudioBlock) {
         let power = block.pcm.withUnsafeBytes { bytes in
             (0..<960).reduce(0.0) { sum, frame in
                 let sample = Double(bytes.loadUnaligned(fromByteOffset: frame * 4, as: Float.self))

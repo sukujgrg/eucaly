@@ -3,6 +3,52 @@ import XCTest
 
 @MainActor
 final class OutputProfileTests: XCTestCase {
+    func testOMTSourceNamesAreReservedWithinTheirProtocolAndEditsKeepTheProtocol() throws {
+        let store = OutputProfileStore()
+        var ndi = OutputDestinationConfiguration(name: "NDI", profileID: OutputProfile.audienceID, monitor: nil)
+        ndi.ndi = .init(sourceName: "eucaly")
+        var first = OutputDestinationConfiguration(name: "OMT", profileID: OutputProfile.audienceID, monitor: nil)
+        first.omt = .init(sourceName: "eucaly")
+        var second = OutputDestinationConfiguration(name: "Second OMT", profileID: OutputProfile.audienceID,
+            monitor: nil, enabled: false)
+        second.omt = .init(sourceName: "EUCALY")
+        store.edit { $0.destinations = [ndi, first, second] }
+        XCTAssertTrue(store.conflictingDestinationIDs.isEmpty)
+        let original = store.document
+        XCTAssertTrue(store.setEnabled(true, for: second.id)?.contains("OMT source name") == true)
+        XCTAssertEqual(store.document, original, "Rejected enabling leaves saved assignments and names intact.")
+        var changed = try XCTUnwrap(second.omt)
+        changed.sourceName = "Other OMT"
+        XCTAssertNil(store.setNetworkSettings(changed, for: second.id))
+        XCTAssertNil(store.setEnabled(true, for: second.id))
+        XCTAssertEqual(store.document.destinations[2].networkTechnology, .omt)
+        XCTAssertEqual(store.document.destinations[2].omt, changed)
+        XCTAssertNil(store.document.destinations[2].ndi)
+        changed.sourceName = "EUCALY"
+        let enabled = store.document
+        XCTAssertNotNil(store.setNetworkSettings(changed, for: second.id))
+        XCTAssertEqual(store.document, enabled)
+    }
+
+    func testOMTBackgroundClearRetainsItsKeyColourAndSingleSavedMusicRoute() throws {
+        let store = OutputProfileStore()
+        var omt = OutputDestinationConfiguration(name: "OMT", profileID: OutputProfile.audienceID, monitor: nil)
+        omt.omt = .init(sourceName: "OMT key")
+        store.edit { $0.destinations.append(omt); $0.backgroundAudioDestinationID = omt.id }
+        let colour = OutputColour(red: 0.1, green: 0.6, blue: 0.2)
+        store.editDestinationProfile(omt.id) { $0.background.bookmark = "selected visual"; $0.background.colour = colour }
+        store.clearDestinationBackground(omt.id)
+        let profile = try XCTUnwrap(store.document.destinations.first { $0.id == omt.id }.flatMap { store.profile($0.profileID) })
+        XCTAssertNil(profile.background.bookmark)
+        XCTAssertEqual(profile.background.colour, colour)
+        XCTAssertEqual(store.document.backgroundAudioDestinationID, omt.id)
+        store.clearBackgrounds()
+        XCTAssertEqual(store.profile(profile.id)?.background.colour, colour)
+        XCTAssertEqual(store.document.backgroundAudioDestinationID, omt.id)
+        store.edit { $0.destinations.removeAll { $0.id == omt.id } }
+        XCTAssertNil(store.document.backgroundAudioDestinationID)
+    }
+
     func testMigrationIsIdempotentAndKeepsIndependentPreferences() throws {
         let name = "Profiles.\(UUID())", defaults = UserDefaults(suiteName: name)!
         defer { defaults.removePersistentDomain(forName: name) }
@@ -16,7 +62,7 @@ final class OutputProfileTests: XCTestCase {
         store.flush()
         XCTAssertEqual(store.document.destinations.count, 1)
         XCTAssertEqual(store.document.destinations.first?.monitor, target)
-        XCTAssertEqual(store.document.version, 6)
+        XCTAssertEqual(store.document.version, 7)
         XCTAssertEqual(store.audience.typography.size, 126)
         XCTAssertEqual(store.audience.typography(for: .meaning).size, 63)
         XCTAssertEqual(store.audience.background.bookmark, "bookmark")
@@ -168,13 +214,10 @@ final class OutputProfileTests: XCTestCase {
         XCTAssertEqual(OutputProfileStore(defaults: defaults).document, store.document)
     }
 
-    func testWorkspaceBackgroundSelectionPreservesProfileAppearanceAndComponentOverrides() {
+    func testOutputBackgroundEditPreservesProfileAppearanceAndComponentOverrides() {
         let name = "ProfileRelative.\(UUID())", defaults = UserDefaults(suiteName: name)!
         defer { defaults.removePersistentDomain(forName: name) }
         let store = OutputProfileStore(defaults: defaults)
-        let displays = ProjectionDisplayManager(displays: { [] })
-        let outputs = OutputCoordinator(profiles: store, displays: displays)
-        let session = PresentationSession(projectionDisplays: displays, outputCoordinator: outputs)
         var audience = store.audience
         audience.typography.size = 500
         audience.layout = "columns"
@@ -186,7 +229,9 @@ final class OutputProfileTests: XCTestCase {
         defaults.set(1.5, forKey: "presentationFontScale")
         defaults.set("stacked", forKey: "presentationLyricsLayout")
         defaults.set("sidebar visual", forKey: "backgroundVisualBookmark")
-        outputs.setBackgroundVisualBookmark("sidebar visual", for: session)
+        XCTAssertNil(store.editDestinationProfile(store.document.destinations[0].id) {
+            $0.background.bookmark = "sidebar visual"
+        })
         XCTAssertEqual(store.audience.typography.size, 500)
         XCTAssertEqual(store.audience.typography.fontName, "Helvetica")
         XCTAssertEqual(store.audience.layout, "columns")
@@ -199,14 +244,20 @@ final class OutputProfileTests: XCTestCase {
     func testCorruptOrFutureDataIsRetainedUntilExplicitRecovery() throws {
         let name = "Profiles.\(UUID())", defaults = UserDefaults(suiteName: name)!
         defer { defaults.removePersistentDomain(forName: name) }
-        for data in [Data("broken".utf8), Data("{\"version\":99}".utf8)] {
+        let originals = [Data("broken".utf8), Data("{\"version\":99}".utf8)]
+        for (index, data) in originals.enumerated() {
             defaults.set(data, forKey: OutputProfileStore.key)
             let store = OutputProfileStore(defaults: defaults)
             XCTAssertNotNil(store.recoveryNotice)
             store.clearBackgrounds(); store.flush()
             XCTAssertEqual(defaults.data(forKey: OutputProfileStore.key), data)
             store.recover(); store.flush()
-            XCTAssertEqual(defaults.data(forKey: "outputProfilesRecoveryBackup"), data)
+            XCTAssertEqual(defaults.data(forKey: "outputProfilesRecoveryBackup"), originals[0])
+            if index > 0 {
+                let snapshots = defaults.dictionaryRepresentation().filter { $0.key.hasPrefix("outputProfilesRecoverySnapshot.") }
+                XCTAssertEqual(snapshots.count, 1)
+                XCTAssertEqual(snapshots.values.first as? Data, data)
+            }
         }
     }
     func testDistinctComponentsAndMissingMeaningNeverSubstitute() throws {
@@ -238,7 +289,7 @@ final class OutputProfileRecoveryTests: XCTestCase {
         XCTAssertEqual(store.document.destinations.map(\.monitor), doc.destinations.map(\.monitor))
         XCTAssertEqual(store.document.destinations.map(\.id), doc.destinations.map(\.id))
         XCTAssertTrue(store.document.destinations.allSatisfy { !$0.enabled })
-        XCTAssertEqual(store.document.version, 6)
+        XCTAssertEqual(store.document.version, 7)
         store.flush(); XCTAssertEqual(defaults.data(forKey: OutputProfileStore.key), original)
     }
 }

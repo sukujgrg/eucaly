@@ -1,0 +1,17 @@
+{
+  "Microsoft.DotNet.ILCompiler/8.0.32": {
+    "type": "package",
+    "path": "microsoft.dotnet.ilcompiler/8.0.32",
+    "sha512": "pKhdv8nH5Fouqyv/9fAUFdzkCnJqlxzwcD0gy4fS6GoIjHlRyRUNrYAUOvtDWp8AHIUXEu/ImDiJBT2kN40K/A=="
+  },
+  "Microsoft.NET.ILLink.Tasks/8.0.32": {
+    "type": "package",
+    "path": "microsoft.net.illink.tasks/8.0.32",
+    "sha512": "FQXkG87JK9+SEbF6vRcWmevk0Pjqgehhz+9e1hHATDh7U8EvgmVQQcEUJTXj1IKi8VqLrdi/c1QHOpVjZcd9ng=="
+  },
+  "runtime.osx-arm64.Microsoft.DotNet.ILCompiler/8.0.32": {
+    "type": "package",
+    "path": "runtime.osx-arm64.microsoft.dotnet.ilcompiler/8.0.32",
+    "sha512": "oeE5V34N4oCYPYS0qCd6xTfbIaxMdsoYmoqnubZ87gB4ztTcxaCNAYfw6hSxHs1ZdoJ+STgreneyexEr4lo6mQ=="
+  }
+}

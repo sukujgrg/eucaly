@@ -787,14 +787,14 @@ private final class SidebarControlsFixture {
                 onSelectBackgroundAudio: { _ in calls.count += 1; calls.playbackActions.append("selectAndPlay") },
                 onPlayPauseBackgroundAudio: { calls.count += 1; calls.playbackActions.append("playPause") },
                 onStopBackgroundAudio: { calls.count += 1; calls.playbackActions.append("stop") },
-                onClearBackgroundAudio: { calls.count += 1; calls.playbackActions.append("clear") },
+                onClearBackgroundAudio: { calls.count += 1; calls.playbackActions.append("clear"); return true },
                 onApplyBackgroundAudioVolume: { _ in calls.count += 1 },
                 onSeekBackgroundAudio: { _ in calls.count += 1 },
                 onSelectionRequest: { selection, _ in calls.selections.append(selection); return calls.acceptsSelection },
                 onPickWindow: { calls.count += 1 },
                 onClearSelectedWindow: { calls.count += 1 },
                 setSelectedAudioURL: { _ in calls.count += 1 },
-                setBackgroundAudioLoop: { _ in calls.count += 1 },
+                setBackgroundAudioLoop: { _ in calls.count += 1; return true },
                 setBackgroundAudioVolumeDraft: { _ in calls.count += 1 },
                 setWindowCaptureFrameRate: { frameRateSelection.value = $0 }
             )

@@ -230,7 +230,8 @@ final class LibraryFileActionServiceTests: XCTestCase {
         let fixture = try Fixture()
         defer { fixture.close() }
         let calls = Calls()
-        let service = makeService(fixture, calls: calls)
+        let released = expectation(description: "Cancelled confirmation releases its access lease")
+        let service = makeService(fixture, calls: calls, didStopAccess: { released.fulfill() })
         let cancelled = LibraryFileActionCancellation()
         cancelled.cancel()
         do {
@@ -250,6 +251,9 @@ final class LibraryFileActionServiceTests: XCTestCase {
             XCTFail("Cancellation before commit must preserve the source")
         } catch { XCTAssertTrue(error is CancellationError) }
         candidate = nil
+        // Preparation's continuation can resume before its queue releases the
+        // last temporary candidate. Observe scope teardown before checking it.
+        await fulfillment(of: [released], timeout: 2)
         XCTAssertTrue(calls.moved.isEmpty)
         XCTAssertEqual(calls.starts, calls.stops)
         XCTAssertEqual(try Data(contentsOf: fixture.source), Data("Original".utf8))
@@ -462,13 +466,17 @@ final class LibraryFileActionServiceTests: XCTestCase {
         XCTAssertFalse(matches(fixture.trash.appendingPathComponent("Unrelated.png")))
     }
 
-    private func makeService(_ fixture: Fixture, calls: Calls) -> LibraryFileActionService {
+    private func makeService(_ fixture: Fixture, calls: Calls,
+                             didStopAccess: @escaping @Sendable () -> Void = {}) -> LibraryFileActionService {
         LibraryFileActionService(trashItem: { url in
             calls.recordMove(url)
             let destination = fixture.trash.appendingPathComponent(url.lastPathComponent)
             try FileManager.default.moveItem(at: url, to: destination)
             return destination
-        }, startAccess: { calls.start($0) }, stopAccess: { calls.stop($0) })
+        }, startAccess: { calls.start($0) }, stopAccess: { url in
+            calls.stop(url)
+            didStopAccess()
+        })
     }
 
     nonisolated private struct Fixture: Sendable {

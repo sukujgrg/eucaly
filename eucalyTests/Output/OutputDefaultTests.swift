@@ -90,7 +90,7 @@ final class OutputDefaultTests: XCTestCase {
         defer { outputs.stop() }
         let controls = OutputQuickControlsController(outputs: outputs, manageOutputs: {})
         let first = try XCTUnwrap(store.defaultDestination)
-        for button in [controls.outputButton, controls.ndiButton, controls.appearanceButton, controls.backgroundButton] {
+        for button in [controls.outputButton, controls.networkButton, controls.appearanceButton, controls.backgroundButton] {
             XCTAssertEqual(button.menu?.items.last?.title, "Manage Outputs…")
             XCTAssertEqual(button.menu?.items.dropLast().last?.isSeparatorItem, true)
         }
@@ -372,7 +372,7 @@ final class OutputDefaultTests: XCTestCase {
             descendants(NSPopUpButton.self, in: chrome).first { $0.accessibilityLabel()?.hasPrefix(labelPrefix) == true }
         }
         try await waitForUIState("native toolbar controls to mount") {
-            ["Output, default:", "NDI workspace routing", "Appearance for default output:", "Background for default output:", "Thumbnails"].allSatisfy { button($0) != nil }
+            ["Output, default:", "Network workspace routing", "Appearance for default output:", "Background for default output:", "Thumbnails"].allSatisfy { button($0) != nil }
         }
         let longName = String(repeating: "Long output name ", count: 9)
         let longWorkspaceName = String(repeating: "Long workspace name ", count: 7).trimmingCharacters(in: .whitespaces)
@@ -411,7 +411,7 @@ final class OutputDefaultTests: XCTestCase {
                 // SwiftUI can remount toolbar items when the item set changes.
                 // Inspect the controls actually mounted in the window.
                 let outputButton = try XCTUnwrap(button("Output, default:"))
-                let ndiButton = try XCTUnwrap(button("NDI workspace routing"))
+                let networkButton = try XCTUnwrap(button("NDI workspace routing"))
                 let appearanceButton = try XCTUnwrap(button("Appearance for default output:"))
                 let backgroundButton = try XCTUnwrap(button("Background for default output:"))
                 let thumbnailButton = try XCTUnwrap(button("Thumbnails"))
@@ -423,11 +423,11 @@ final class OutputDefaultTests: XCTestCase {
                 XCTAssertTrue(try XCTUnwrap(outputButton.toolTip).contains(longName))
                 XCTAssertTrue(try XCTUnwrap(outputButton.accessibilityLabel()).contains(longName))
                 XCTAssertNotNil(try? item("Default: " + longName, in: outputButton.menu))
-                XCTAssertTrue(ndiButton.title.hasPrefix("NDI: ")); XCTAssertTrue(ndiButton.title.hasSuffix("…"))
-                XCTAssertLessThan(ndiButton.frame.width, 220)
-                XCTAssertTrue(try XCTUnwrap(ndiButton.accessibilityLabel()).contains(longWorkspaceName))
-                XCTAssertEqual(try item("Move to " + longWorkspaceName, in: ndiButton.menu).state, .on)
-                for button in [outputButton, ndiButton, appearanceButton, backgroundButton, thumbnailButton] {
+                XCTAssertTrue(networkButton.title.hasPrefix("NDI: ")); XCTAssertTrue(networkButton.title.hasSuffix("…"))
+                XCTAssertLessThan(networkButton.frame.width, 220)
+                XCTAssertTrue(try XCTUnwrap(networkButton.accessibilityLabel()).contains(longWorkspaceName))
+                XCTAssertEqual(try item("Move to " + longWorkspaceName, in: networkButton.menu).state, .on)
+                for button in [outputButton, networkButton, appearanceButton, backgroundButton, thumbnailButton] {
                     XCTAssertGreaterThan(button.visibleRect.width, 20)
                     XCTAssertGreaterThanOrEqual(button.frame.width, button.intrinsicContentSize.width - 1)
                 }

@@ -83,6 +83,10 @@ final class PresentationSession: NSObject, ObservableObject {
 
     private var currentResourceScope: URL?
     private var audioResourceScope: URL?
+    private var backgroundVisualResourceScope: URL?
+    var backgroundSettings: WorkspaceBackgroundSettings {
+        outputCoordinator.profiles.backgroundPreferences.settings(for: outputSourceID)
+    }
     var referencedFileURLs: Set<URL> {
         var urls = Set(Self.sourceFileURLs(in: slides, lyricsSourceURL: currentLyricsSourceURL).map(\.standardizedFileURL))
         for url in [pdfSlideSource?.url, backgroundVisualURL, backgroundAudioURL, currentResourceScope, audioResourceScope,
@@ -154,10 +158,12 @@ final class PresentationSession: NSObject, ObservableObject {
         outputChangeScheduled = true
         // Read the completed model transaction, never @Published's willSet
         // values or an intermediate selection while replacing Current.
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
+        // Controls may outlive their app-owned coordinator during teardown.
+        // Deferred work belongs to that exact runtime, not just to the session.
+        DispatchQueue.main.async { [weak self, weak coordinator = outputCoordinator] in
+            guard let self, let coordinator else { return }
             self.outputChangeScheduled = false
-            self.outputCoordinator.passiveLocal(self)
+            coordinator.passiveLocal(self)
         }
     }
 
@@ -197,10 +203,12 @@ final class PresentationSession: NSObject, ObservableObject {
         outputActionClock = linkedOutputCoordinator.program(outputSourceID).actionClock
         super.init()
         self.outputCoordinator.attach(self)
+        restoreBackgroundPreferences()
     }
 
     deinit {
         currentResourceScope?.stopAccessingSecurityScopedResource(); audioResourceScope?.stopAccessingSecurityScopedResource()
+        backgroundVisualResourceScope?.stopAccessingSecurityScopedResource()
         if let backgroundAudioEndObserver { NotificationCenter.default.removeObserver(backgroundAudioEndObserver) }
         if let backgroundAudioTimeObserver, let backgroundAudioPlayer { backgroundAudioPlayer.removeTimeObserver(backgroundAudioTimeObserver) }
     }
@@ -358,14 +366,12 @@ final class PresentationSession: NSObject, ObservableObject {
     func toggleBackgroundVisualVisibility() {
         guard hasAvailableBackgroundVisual else { return }
         if !isPresenting && !outputCoordinator.hasOpenAudienceOutput(workspace: outputSourceID) {
+            guard outputCoordinator.setAudienceBackgroundVisibility(true, for: self) else { return }
             guard outputCoordinator.openBackgroundOutputs(for: self) else { return }
-            isBackgroundVisualVisible = true
-            outputCoordinator.setAudienceBackgroundVisibility(true, for: self)
             return
         }
         let visible = outputCoordinator.backgroundVisualVisibility(workspace: outputSourceID) ?? isBackgroundVisualVisible
-        isBackgroundVisualVisible = !visible
-        outputCoordinator.setAudienceBackgroundVisibility(isBackgroundVisualVisible, for: self)
+        outputCoordinator.setAudienceBackgroundVisibility(!visible, for: self)
     }
 
     func moveSelection(_ delta: Int) {
@@ -396,8 +402,9 @@ final class PresentationSession: NSObject, ObservableObject {
         if (isPresenting && areSlidesVisible) { navigationActionOrder = outputActionClock.next() }
         // SwiftUI can invoke onKeyPress during its update pass. Resolve each
         // queued move in order, after that pass, against the same Current document.
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
+        DispatchQueue.main.async { [weak self, weak coordinator = outputCoordinator] in
+            guard let self, let coordinator,
+                  coordinator.preparedSession(workspace: self.outputSourceID) === self else { return }
             guard self.navigationGeneration == generation else { return }
             self.pendingNavigationCount = max(0, self.pendingNavigationCount - 1)
             guard self.currentDocumentRevision == revision, !self.isEmpty else { return }
@@ -455,9 +462,56 @@ final class PresentationSession: NSObject, ObservableObject {
 
     @discardableResult
     func setBackgroundVisual(_ url: URL?) -> Bool {
-        guard canAcquireFile(url) else { return false }
+        guard outputCoordinator.profiles.document.workspaces.contains(where: { $0.id == outputSourceID }),
+              canAcquireFile(url) else { return false }
+        if backgroundVisualURL != url {
+            backgroundVisualResourceScope?.stopAccessingSecurityScopedResource()
+            backgroundVisualResourceScope = nil
+            if let url, url.startAccessingSecurityScopedResource() { backgroundVisualResourceScope = url }
+        }
         backgroundVisualURL = url
         isBackgroundVisualVisible = (url != nil)
+        return true
+    }
+
+    /// Restoration prepares the app-retained runtime once. Reopening controls
+    /// observes that runtime rather than importing another selection into it.
+    private func restoreBackgroundPreferences() {
+        let preferences = outputCoordinator.profiles.backgroundPreferences
+        let settings = backgroundSettings
+        let values = settings.values
+        backgroundAudioLoop = values.audioLoop
+        backgroundAudioVolume = values.audioVolume
+        backgroundAudioGain.set(Float(values.audioVolume))
+        if let visual = preferences.resolveBookmark(values.visualBookmark), canAcquireFile(visual.url) {
+            if let updated = visual.updatedBookmark { settings.setVisualBookmark(updated) }
+            setBackgroundVisual(visual.url)
+        }
+        if let audio = preferences.resolveBookmark(values.audioBookmark), canAcquireFile(audio.url) {
+            if let updated = audio.updatedBookmark { settings.setAudioBookmark(updated) }
+            setBackgroundAudio(url: audio.url, autoplay: false)
+        }
+    }
+
+    @discardableResult
+    func selectBackgroundAudio(_ url: URL) -> Bool {
+        guard outputCoordinator.profiles.document.workspaces.contains(where: { $0.id == outputSourceID }),
+              canAcquireFile(url) else { return false }
+        guard let bookmark = outputCoordinator.profiles.backgroundPreferences.createBookmark(url) else {
+            outputCoordinator.reportBackgroundAudioEditIssue("The selected audio file could not be saved. Choose the file again.", workspace: outputSourceID)
+            return false
+        }
+        guard saveBackgroundAudioPreference({ $0.setAudioBookmark(bookmark) }) else { return false }
+        return setBackgroundAudio(url: url, autoplay: true)
+    }
+
+    private func saveBackgroundAudioPreference(_ change: (WorkspaceBackgroundSettings) -> Bool) -> Bool {
+        guard change(backgroundSettings) else {
+            outputCoordinator.reportBackgroundAudioEditIssue(outputCoordinator.profiles.recoveryNotice
+                ?? "The workspace audio settings could not be saved.", workspace: outputSourceID)
+            return false
+        }
+        outputCoordinator.reportBackgroundAudioEditIssue(nil, workspace: outputSourceID)
         return true
     }
 
@@ -478,18 +532,16 @@ final class PresentationSession: NSObject, ObservableObject {
 
     func playBackgroundAudio() {
         guard outputCoordinator.profiles.document.workspaces.contains(where: { $0.id == outputSourceID }),
-              canAcquireFile(backgroundAudioURL) else { return }
+              let url = backgroundAudioURL, canAcquireFile(url) else { return }
+        guard let player = backgroundAudioPlayer else {
+            configureBackgroundAudioPlayer(for: url, autoplay: true)
+            return
+        }
         backgroundAudioHasStandaloneLocalRoute = outputCoordinator.canPlayStandaloneBackgroundAudio(workspace: outputSourceID)
         outputCoordinator.claimBackgroundAudio(self)
         backgroundAudioGeneration = UUID()
         configureBackgroundAudioEndObserver()
         configureBackgroundAudioTimeObserver()
-        guard let player = backgroundAudioPlayer else {
-            if let url = backgroundAudioURL {
-                configureBackgroundAudioPlayer(for: url, autoplay: true)
-            }
-            return
-        }
         outputCoordinator.refreshMedia()
         player.play()
         backgroundAudioPlaybackState = .playing
@@ -510,7 +562,10 @@ final class PresentationSession: NSObject, ObservableObject {
         backgroundAudioPlaybackState = .stopped
     }
 
-    func clearBackgroundAudio() {
+    @discardableResult
+    func clearBackgroundAudio() -> Bool {
+        if outputCoordinator.profiles.document.workspaces.contains(where: { $0.id == outputSourceID }),
+           !saveBackgroundAudioPreference({ $0.setAudioBookmark("") }) { return false }
         stopBackgroundAudioPlayback()
         removeBackgroundAudioTimeObserver()
         backgroundAudioPlayer = nil
@@ -519,18 +574,26 @@ final class PresentationSession: NSObject, ObservableObject {
         backgroundAudioURL = nil
         playbackProgress.resetBackgroundAudio()
         removeBackgroundAudioEndObserver()
+        outputCoordinator.releaseBackgroundAudio(self)
+        return true
     }
 
-    func setBackgroundAudioLoop(_ loop: Bool) {
+    @discardableResult
+    func setBackgroundAudioLoop(_ loop: Bool) -> Bool {
+        guard saveBackgroundAudioPreference({ $0.setAudioLoop(loop) }) else { return false }
         backgroundAudioLoop = loop
+        return true
     }
 
-    func setBackgroundAudioVolume(_ volume: Double) {
+    @discardableResult
+    func setBackgroundAudioVolume(_ volume: Double) -> Bool {
         let clamped = min(max(volume, 0.0), 1.0)
+        guard saveBackgroundAudioPreference({ $0.setAudioVolume(clamped) }) else { return false }
         backgroundAudioVolume = clamped
         backgroundAudioGain.set(Float(clamped))
         updateBackgroundAudioLocalPlayback(enabled: outputCoordinator.localBackgroundAudioEnabled(workspace: outputSourceID))
         outputCoordinator.refreshMedia()
+        return true
     }
 
     func updateBackgroundAudioLocalPlayback(enabled: Bool) {
@@ -565,7 +628,8 @@ final class PresentationSession: NSObject, ObservableObject {
         removeBackgroundAudioEndObserver()
 
         audioResourceScope?.stopAccessingSecurityScopedResource(); audioResourceScope = nil
-        guard let url else { return }
+        backgroundAudioHasStandaloneLocalRoute = false
+        guard let url else { outputCoordinator.releaseBackgroundAudio(self); return }
         if url.startAccessingSecurityScopedResource() { audioResourceScope = url }
         backgroundAudioHasStandaloneLocalRoute = autoplay && outputCoordinator.canPlayStandaloneBackgroundAudio(workspace: outputSourceID)
         if autoplay { outputCoordinator.claimBackgroundAudio(self) }
@@ -588,9 +652,11 @@ final class PresentationSession: NSObject, ObservableObject {
         removeBackgroundAudioEndObserver()
         guard let item = backgroundAudioPlayer?.currentItem else { return }
         let generation = backgroundAudioGeneration
-        backgroundAudioEndObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self, self.backgroundAudioGeneration == generation, self.outputCoordinator.audioSession === self else { return }
+        backgroundAudioEndObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self, weak coordinator = outputCoordinator] _ in
+            Task { @MainActor [weak self, weak coordinator] in
+                guard let self, let coordinator, self.backgroundAudioGeneration == generation,
+                      coordinator.profiles.document.workspaces.contains(where: { $0.id == self.outputSourceID }),
+                      coordinator.audioSession === self else { return }
                 self.handleBackgroundAudioEnded()
             }
         }
@@ -622,9 +688,12 @@ final class PresentationSession: NSObject, ObservableObject {
         backgroundAudioTimeObserver = backgroundAudioPlayer.addPeriodicTimeObserver(
             forInterval: interval,
             queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.refreshBackgroundAudioProgress()
+        ) { [weak self, weak coordinator = outputCoordinator, weak scheduledPlayer = backgroundAudioPlayer] _ in
+            Task { @MainActor [weak self, weak coordinator, weak scheduledPlayer] in
+                guard let self, let coordinator, let scheduledPlayer,
+                      self.backgroundAudioPlayer === scheduledPlayer,
+                      coordinator.profiles.document.workspaces.contains(where: { $0.id == self.outputSourceID }) else { return }
+                self.refreshBackgroundAudioProgress()
             }
         }
     }
@@ -810,7 +879,9 @@ final class PresentationWindow: NSWindow {
     private func requestToggleSlidesVisibility() { commandSession?.toggleSlidesVisibility() }
     private func requestClearBackgroundVisual() { if let session = commandSession { outputCoordinator?.clearBackgrounds(for: session) } }
     private func requestClearBackgroundAudio() { commandSession?.clearBackgroundAudio() }
-    private func requestClearAllLayers() { requestHideSlides(); requestClearBackgroundVisual(); requestClearBackgroundAudio() }
+    private func requestClearAllLayers() {
+        if let session = commandSession { outputCoordinator?.clearAllLayers(for: session) }
+    }
 
     private func requestMoveSelection(_ delta: Int) {
         commandSession?.moveSelection(delta)

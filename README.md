@@ -30,11 +30,12 @@ Browsing never silently replaces **Current**.
 - Background visual layer for lyrics
 - Background audio layer
 - Confidence output with Current/Next columns and a large centered standby clock
-- Live app-window capture with ScreenCaptureKit
+- Live app-window capture with ScreenCaptureKit for native displays
 - Recursive text search under library root
 - [Named projection monitors](docs/projection-monitors.md) with remembered numbers, physical display identity, and an Identify action
 - Keeps the Mac and displays awake while projection is open, including hidden slides and background-only output
-- Named workspace tabs with independent Currents, detachable windows and exclusive output assignments. Optional [generic NDI outputs](docs/ndi-runtime.md) carry keyed lyrics or full-frame media on the same stable 1080p30 source, with shared playback per workspace and an explicit background-music route, using a separately installed runtime. Physical receiver qualification is still required before production use.
+- Named workspace tabs with independent Currents, detachable windows and exclusive output assignments.
+- Per-output [NDI](docs/ndi-runtime.md) or [OMT](docs/omt-runtime.md) sources carry keyed lyrics, PDFs, images and video at 1080p30 with audio, shared workspace playback and one explicit background-music route. NDI uses a separately installed runtime; OMT includes its runtime and works with compatible receivers such as OMTReceiver on Apple TV. Screen sharing remains native-only. Physical receiver qualification is still required before production use.
 - **Home** is the initial workspace. macOS restores your previous windows and tabs, including their sizes. If nothing is restored, eucaly reopens the last-used workspace.
 - Sparkle self-updates with quiet toolbar reminders during presentations
 

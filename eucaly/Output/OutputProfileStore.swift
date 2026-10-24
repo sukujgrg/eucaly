@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import CryptoKit
 
 @MainActor
 final class OutputProfileStore: ObservableObject {
@@ -8,10 +9,12 @@ final class OutputProfileStore: ObservableObject {
     private static let currentDefaultsRevision = 2
     @Published private(set) var document: OutputProfileDocument
     @Published private(set) var recoveryNotice: String?
+    let backgroundPreferences: WorkspaceBackgroundPreferences
     private let defaults: UserDefaults?
     private var observers: [UUID: () -> Void] = [:]
     private let persistence: OutputProfilePersistence?
     private var quickControlsGeneration: UInt64 = 0
+    private var recoveryOriginalData: Data?
 
     var reusableProfiles: [OutputProfile] { document.profiles.filter(\.isReusable) }
 
@@ -51,71 +54,129 @@ final class OutputProfileStore: ObservableObject {
         guard recoveryNotice == nil, id == nil || document.destinations.contains(where: { $0.id == id }) else { return }
         edit { $0.defaultDestinationID = id }
     }
-    func editDefaultProfile(_ target: QuickEditTarget, _ change: (inout OutputProfile) -> Void) {
-        guard let destination = enabledDefault(for: target) else { return }
-        editDestinationProfile(destination.id, change)
+    @discardableResult
+    func editDefaultProfile(_ target: QuickEditTarget, _ change: (inout OutputProfile) -> Void) -> String? {
+        guard let destination = enabledDefault(for: target) else { return recoveryNotice ?? "The selected output has changed. Choose it again before editing its appearance." }
+        return editDestinationProfile(destination.id, change)
     }
     func canCustomizeProfile(for destinationID: UUID) -> Bool {
-        guard recoveryNotice == nil, let destination = document.destinations.first(where: { $0.id == destinationID }),
-              let profile = profile(destination.profileID) else { return false }
-        return isExclusiveCustomization(profile, for: destinationID) || document.profiles.count < 128
+        profileCustomizationProblem(for: destinationID) == nil
+    }
+    func profileCustomizationProblem(for destinationID: UUID) -> String? {
+        if case .failure(let problem) = destinationProfileEdits([destinationID], customizeUnchanged: true, { _, _ in }) {
+            return problem.message
+        }
+        return nil
     }
     /// Output-level editing is independent even when its reusable profile is
     /// shared with disabled outputs. Direct Profiles-list edits remain shared.
     func customizeProfile(for destinationID: UUID) -> UUID? {
-        guard let destination = document.destinations.first(where: { $0.id == destinationID }),
-              let profile = profile(destination.profileID) else { return nil }
-        return saveCustomizedProfile(profile, for: destination)
+        guard case .success(let changes) = destinationProfileEdits([destinationID], customizeUnchanged: true, { _, _ in }),
+              commitDestinationProfileEdits(changes) == nil else { return nil }
+        return document.destinations.first { $0.id == destinationID }?.profileID
     }
-    func editDestinationProfile(_ destinationID: UUID, _ change: (inout OutputProfile) -> Void) {
-        guard let destination = document.destinations.first(where: { $0.id == destinationID }),
-              var profile = profile(destination.profileID) else { return }
-        let original = profile
-        change(&profile)
-        guard profile != original else { return }
-        _ = saveCustomizedProfile(profile, for: destination)
+    @discardableResult
+    func editDestinationProfile(_ destinationID: UUID, _ change: (inout OutputProfile) -> Void) -> String? {
+        editDestinationProfiles([destinationID]) { profile, _ in change(&profile) }
+    }
+    /// Workspace commands preflight every required private appearance before
+    /// committing. No observer can see half of a multi-output change.
+    @discardableResult
+    func editDestinationProfiles(_ destinationIDs: [UUID],
+                                 _ change: (inout OutputProfile, OutputDestinationConfiguration) -> Void) -> String? {
+        switch destinationProfileEdits(destinationIDs, customizeUnchanged: false, change) {
+        case .success(let changes): return commitDestinationProfileEdits(changes)
+        case .failure(let problem): return problem.message
+        }
     }
     private func isExclusiveCustomization(_ profile: OutputProfile, for destinationID: UUID) -> Bool {
         profile.customizedForDestinationID == destinationID
             && !document.destinations.contains { $0.id != destinationID && $0.profileID == profile.id }
     }
-    private func saveCustomizedProfile(_ changed: OutputProfile, for destination: OutputDestinationConfiguration) -> UUID? {
-        guard canCustomizeProfile(for: destination.id) else { return nil }
-        var profile = changed
-        let originalID = destination.profileID
-        let exclusive = isExclusiveCustomization(profile, for: destination.id)
-        if !exclusive {
-            profile.id = UUID(); profile.customizedForDestinationID = destination.id
-            let name = destination.name + " Customized"
-            profile.name = name.utf8.count <= 160 ? name : "Customized Output"
+    private struct DestinationProfileChange {
+        let destinationIndex: Int
+        let profileIndex: Int
+        let profile: OutputProfile
+        let needsCopy: Bool
+    }
+    private struct DestinationProfileProblem: Error {
+        let message: String
+    }
+    private func destinationProfileEdits(_ destinationIDs: [UUID], customizeUnchanged: Bool,
+                                         _ change: (inout OutputProfile, OutputDestinationConfiguration) -> Void)
+        -> Result<[DestinationProfileChange], DestinationProfileProblem> {
+        if let recoveryNotice { return .failure(.init(message: recoveryNotice)) }
+        let ids = Set(destinationIDs)
+        guard ids.isSubset(of: Set(document.destinations.map(\.id))) else {
+            return .failure(.init(message: "An output no longer exists. Choose its appearance again."))
         }
-        edit { doc in
-            guard let destinationIndex = doc.destinations.firstIndex(where: { $0.id == destination.id && $0.profileID == originalID }),
-                  let profileIndex = doc.profiles.firstIndex(where: { $0.id == originalID }) else { return }
-            if exclusive {
-                doc.profiles[profileIndex] = profile
+        var changes: [DestinationProfileChange] = []
+        for index in document.destinations.indices where ids.contains(document.destinations[index].id) {
+            let destination = document.destinations[index]
+            guard let profileIndex = document.profiles.firstIndex(where: { $0.id == destination.profileID }) else {
+                return .failure(.init(message: "An output appearance no longer exists. Choose another appearance in Manage Outputs."))
+            }
+            let original = document.profiles[profileIndex]
+            var profile = original
+            change(&profile, destination)
+            guard profile.id == original.id, profile.customizedForDestinationID == original.customizedForDestinationID else {
+                return .failure(.init(message: "An appearance edit cannot change its saved identity or owner."))
+            }
+            let needsCopy = !isExclusiveCustomization(original, for: destination.id)
+            guard profile != original || (customizeUnchanged && needsCopy) else { continue }
+            changes.append(.init(destinationIndex: index, profileIndex: profileIndex, profile: profile, needsCopy: needsCopy))
+        }
+        guard document.profiles.count + changes.filter(\.needsCopy).count <= 128 else {
+            return .failure(.init(message: "The profile limit has been reached. Remove an unused appearance in Manage Outputs before changing these outputs."))
+        }
+        return .success(changes)
+    }
+    private func commitDestinationProfileEdits(_ changes: [DestinationProfileChange]) -> String? {
+        var next = document
+        for change in changes {
+            var profile = change.profile
+            if change.needsCopy {
+                let destination = document.destinations[change.destinationIndex]
+                profile.id = UUID(); profile.customizedForDestinationID = destination.id
+                let name = destination.name + " Customized"
+                profile.name = name.utf8.count <= 160 ? name : "Customized Output"
+                next.profiles.append(profile)
+                next.destinations[change.destinationIndex].profileID = profile.id
             } else {
-                doc.profiles.append(profile)
-                doc.destinations[destinationIndex].profileID = profile.id
+                next.profiles[change.profileIndex] = profile
             }
         }
-        return self.profile(profile.id) == profile ? profile.id : nil
+        guard next.isValid else { return "The appearance change contains invalid settings and could not be saved." }
+        edit { $0 = next }
+        return nil
     }
 
     init(defaults: UserDefaults? = nil, monitor: ProjectionMonitorTarget? = nil,
-         retirementCleanup: OutputRetirementCleanup? = nil) {
+         retirementCleanup: OutputRetirementCleanup? = nil,
+         backgroundPreferences: WorkspaceBackgroundPreferences? = nil) {
         self.defaults = defaults
+        self.backgroundPreferences = backgroundPreferences ?? WorkspaceBackgroundPreferences(defaults: defaults)
         persistence = defaults.map { OutputProfilePersistence(defaults: $0, cleanup: retirementCleanup) }
         let fallback = OutputProfileMigration.migrate(defaults: defaults, monitor: monitor)
+        var allowsLegacyGlobalVisual = true
         if let data = persistence?.load(documentKey: Self.key) {
+            allowsLegacyGlobalVisual = false
             do {
-                guard data.count <= 1_048_576 else { throw StoreError.invalid }
+                guard data.count <= OutputLegacyMigration.maximumDocumentBytes else { throw StoreError.invalid }
                 let saved = try OutputLegacyMigration.decode(data)
                 document = saved
+                if let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    allowsLegacyGlobalVisual = (root["version"] as? Int).map { $0 < 6 } == true
+                }
                 if let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                    (root["version"] as? Int ?? 0) < 6,
                    defaults?.data(forKey: "outputProfilesWorkspaceMigrationBackup") == nil {
                     defaults?.set(data, forKey: "outputProfilesWorkspaceMigrationBackup")
+                }
+                if let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   (root["version"] as? Int ?? 0) < 7,
+                   defaults?.data(forKey: "outputProfilesOMTMigrationBackup") == nil {
+                    defaults?.set(data, forKey: "outputProfilesOMTMigrationBackup")
                 }
                 let defaultsRevision = defaults?.integer(forKey: Self.defaultsRevisionKey) ?? 0
                 if defaultsRevision < 1 {
@@ -129,49 +190,25 @@ final class OutputProfileStore: ObservableObject {
                 }
                 // Revision 2 also saves the removal of compatibility-decoded
                 // scripture roles and typography overrides in version 3 files.
-                persist()
             } catch {
-                document = Self.salvageAssignments(data, fallback: fallback)
-                recoveryNotice = "Saved output settings could not be read. The original data is retained; choose Recover Settings to save a fresh configuration."
+                document = OutputLegacyMigration.recover(data, fallback: fallback)
+                recoveryOriginalData = data
+                recoveryNotice = "Saved output settings could not be read completely. The original data is retained; choose Recover Settings to save readable settings with all outputs disabled."
             }
         } else {
             document = fallback
-            persist()
         }
-    }
-    private static func salvageAssignments(_ data: Data, fallback: OutputProfileDocument) -> OutputProfileDocument {
-        var result = fallback
-        for index in result.destinations.indices { result.destinations[index].enabled = false }
-        guard data.count <= 1_048_576, let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let rows = object["destinations"] as? [[String: Any]], rows.count <= 16 else { return result }
-        var recovered: [OutputDestinationConfiguration] = []
-        for row in rows {
-            guard let native = OutputLegacyMigration.nativeRow(row),
-                  let encoded = try? JSONSerialization.data(withJSONObject: native),
-                  var destination = try? JSONDecoder().decode(OutputDestinationConfiguration.self, from: encoded),
-                  !recovered.contains(where: { $0.id == destination.id }) else { continue }
-            if !result.profiles.contains(where: { $0.id == destination.profileID }) {
-                result.profiles.append(.init(id: destination.profileID, name: "Recovered profile", kind: .audience))
-            }
-            if !result.workspaces.contains(where: { $0.id == destination.workspaceID }) { destination.workspaceID = nil }
-            destination.enabled = false // Recovery never starts a partially understood output.
-            recovered.append(destination)
-        }
-        result.destinations = recovered
-        result.defaultDestinationID = object.keys.contains("defaultDestinationID")
-            ? (object["defaultDestinationID"] as? String).flatMap(UUID.init(uuidString:))
-            : (rows.first?["id"] as? String).flatMap(UUID.init(uuidString:))
-        if !recovered.contains(where: { $0.id == result.defaultDestinationID }) { result.defaultDestinationID = nil }
-        return result.isValid ? result : fallback
+        persist(allowsLegacyGlobalVisual: allowsLegacyGlobalVisual)
     }
     private enum StoreError: Error { case invalid }
     func profile(_ id: UUID) -> OutputProfile? { document.profiles.first { $0.id == id } }
     func assignmentProblem(for destination: OutputDestinationConfiguration) -> String? {
         guard destination.enabled else { return nil }
-        if let ndi = destination.ndi {
-            guard ndi.isValid else { return "Choose a valid NDI source name and the supported 1920 × 1080, 30 fps format." }
-            if let other = document.destinations.first(where: { $0.id != destination.id && $0.enabled && $0.ndi?.normalizedName == ndi.normalizedName }) {
-                return "This NDI source name is used by \(other.name). Choose a different name."
+        if let settings = destination.networkSettings {
+            let technology = destination.networkTechnology == .omt ? "OMT" : "NDI"
+            guard settings.isValid else { return "Choose a valid \(technology) source name and the supported 1920 × 1080, 30 fps format." }
+            if let other = document.destinations.first(where: { $0.id != destination.id && $0.enabled && $0.networkTechnology == destination.networkTechnology && $0.networkSettings?.normalizedName == settings.normalizedName }) {
+                return "This \(technology) source name is used by \(other.name). Choose a different name."
             }
         }
         if let target = destination.monitor,
@@ -204,11 +241,11 @@ final class OutputProfileStore: ObservableObject {
         }
     }
     @discardableResult
-    func setNDISettings(_ settings: NDIOutputSettings, for destinationID: UUID) -> String? {
+    func setNetworkSettings(_ settings: NetworkOutputSettings, for destinationID: UUID) -> String? {
         guard recoveryNotice == nil else { return recoveryNotice }
         guard settings.isValid else { return "Use a source name of up to 120 UTF-8 bytes without control characters or \\ / : * ? \" < > |." }
-        guard var destination = document.destinations.first(where: { $0.id == destinationID && $0.ndi != nil }) else { return "This NDI output no longer exists." }
-        destination.ndi = settings
+        guard var destination = document.destinations.first(where: { $0.id == destinationID && $0.isNetworkDestination }) else { return "This network output no longer exists." }
+        destination.networkSettings = settings
         if let problem = assignmentProblem(for: destination) { return problem }
         edit { doc in
             if let index = doc.destinations.firstIndex(where: { $0.id == destinationID }) { doc.destinations[index] = destination }
@@ -218,14 +255,14 @@ final class OutputProfileStore: ObservableObject {
     var conflictingDestinationIDs: Set<UUID> {
         let assigned = document.destinations.filter { $0.enabled && $0.monitor != nil }
         let grouped = Dictionary(grouping: assigned, by: { $0.monitor!.identity })
-        let ndi = Dictionary(grouping: document.destinations.filter { $0.enabled && $0.ndi != nil }, by: { $0.ndi!.normalizedName })
-        return Set((grouped.values.filter { $0.count > 1 } + ndi.values.filter { $0.count > 1 }).flatMap { $0.map(\.id) })
+        let network = Dictionary(grouping: document.destinations.filter { $0.enabled && $0.isNetworkDestination }, by: { ($0.networkTechnology == .omt ? "omt:" : "ndi:") + $0.networkSettings!.normalizedName })
+        return Set((grouped.values.filter { $0.count > 1 } + network.values.filter { $0.count > 1 }).flatMap { $0.map(\.id) })
     }
     var monitorConflictNotice: String? {
         let conflicts = conflictingDestinationIDs
         guard !conflicts.isEmpty else { return nil }
         let names = document.destinations.filter { conflicts.contains($0.id) }.map(\.name).joined(separator: ", ")
-        return "\(names) share a destination. Choose a different monitor or NDI source name for each enabled output."
+        return "\(names) share a destination. Choose a different monitor or source name for each enabled output of the same protocol."
     }
     var audience: OutputProfile {
         if let destination = document.destinations.first, let profile = profile(destination.profileID), profile.kind == .audience { return profile }
@@ -238,7 +275,7 @@ final class OutputProfileStore: ObservableObject {
     func edit(_ action: (inout OutputProfileDocument) -> Void) {
         var next = document; action(&next)
         if !next.destinations.contains(where: { $0.id == next.defaultDestinationID }) { next.defaultDestinationID = nil }
-        if !next.destinations.contains(where: { $0.id == next.backgroundAudioDestinationID && $0.ndi != nil }) { next.backgroundAudioDestinationID = nil }
+        if !next.destinations.contains(where: { $0.id == next.backgroundAudioDestinationID && $0.isNetworkDestination }) { next.backgroundAudioDestinationID = nil }
         guard next.isValid, next != document else { return }
         let previousDefault = defaultDestination
         let nextDefault = next.destinations.first { $0.id == next.defaultDestinationID }
@@ -262,7 +299,6 @@ final class OutputProfileStore: ObservableObject {
         defaults.set(profile.position, forKey: "presentationVerticalPosition")
         defaults.set(profile.padding, forKey: "presentationPaddingScale")
         defaults.set(profile.typography.size / 84, forKey: "presentationFontScale")
-        defaults.set(profile.background.bookmark ?? "", forKey: "backgroundVisualBookmark")
     }
     func update(_ profile: OutputProfile) {
         edit { doc in
@@ -270,24 +306,55 @@ final class OutputProfileStore: ObservableObject {
         }
     }
     func recover() {
-        if let original = defaults?.data(forKey: Self.key) { defaults?.set(original, forKey: "outputProfilesRecoveryBackup") }
-        recoveryNotice = nil; persist()
+        guard recoveryNotice != nil else { return }
+        guard document.isValid else {
+            recoveryNotice = "The recovered settings still contain unsupported values. The original saved output settings are retained."
+            return
+        }
+        guard let original = recoveryOriginalData, original.count <= OutputLegacyMigration.maximumDocumentBytes else {
+            recoveryNotice = "Saved output settings exceed the recovery size limit. The original data is retained."
+            return
+        }
+        if let defaults {
+            guard persistence?.load(documentKey: Self.key) == original else {
+                recoveryNotice = "Saved output settings changed while recovery was open. The current saved settings have been retained."
+                return
+            }
+            let canonicalKey = "outputProfilesRecoveryBackup"
+            let backupKey: String
+            if defaults.object(forKey: canonicalKey) == nil || defaults.data(forKey: canonicalKey) == original {
+                backupKey = canonicalKey
+            } else {
+                let digest = SHA256.hash(data: original).map { String(format: "%02x", $0) }.joined()
+                backupKey = "outputProfilesRecoverySnapshot." + digest
+            }
+            if defaults.object(forKey: backupKey) == nil { defaults.set(original, forKey: backupKey) }
+            guard defaults.data(forKey: backupKey) == original else {
+                recoveryNotice = "A recovery backup could not be verified. The original saved output settings have not been replaced."
+                return
+            }
+        }
+        recoveryNotice = nil; recoveryOriginalData = nil; persist()
     }
-    func clearDestinationBackground(_ destinationID: UUID) {
-        let keepsKey = document.destinations.first { $0.id == destinationID }?.ndi != nil
-        editDestinationProfile(destinationID) { $0.clearBackground(preservingKeyColour: keepsKey) }
+    @discardableResult
+    func clearDestinationBackground(_ destinationID: UUID) -> String? {
+        editDestinationProfiles([destinationID]) { profile, destination in
+            profile.clearBackground(preservingKeyColour: destination.isNetworkDestination)
+        }
     }
     func clearBackgrounds() {
         edit { doc in
             let enabled = doc.destinations.filter(\.enabled)
             let ids = Set(enabled.map(\.profileID))
-            let keys = Set(enabled.filter { $0.ndi != nil }.map(\.profileID))
+            let keys = Set(enabled.filter(\.isNetworkDestination).map(\.profileID))
             for index in doc.profiles.indices where ids.contains(doc.profiles[index].id) {
                 doc.profiles[index].clearBackground(preservingKeyColour: keys.contains(doc.profiles[index].id))
             }
         }
     }
-    private func persist() {
+    private func persist(allowsLegacyGlobalVisual: Bool = false) {
+        backgroundPreferences.prepare(document: document, allowsLegacyGlobalVisual: allowsLegacyGlobalVisual,
+                                      access: recoveryNotice == nil ? .editable : .recoveryPreview)
         guard recoveryNotice == nil else { return }
         persistence?.save(document, documentKey: Self.key, revisionKey: Self.defaultsRevisionKey,
                           defaultsRevision: Self.currentDefaultsRevision)

@@ -120,7 +120,9 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
         affectedOutputs.stringValue = names.isEmpty ? "No outputs currently use this profile." : "Used by: " + names.joined(separator: ", ")
         let consumers = store.document.destinations.filter { $0.profileID == profileID }
         let hasNative = consumers.isEmpty || consumers.contains { $0.isMonitorDestination }
-        let hasNDI = consumers.contains { $0.ndi != nil }
+        let hasNetwork = consumers.contains { $0.isNetworkDestination }
+        let technologies = Set(consumers.compactMap(\.networkTechnology))
+        let networkName = technologies.count == 1 ? technologies.first!.title : "Network"
         appearanceHeading.stringValue = profile.isReusable ? "Reusable Profile" : "Output Appearance"
         nameField.setAccessibilityLabel(profile.isReusable ? "Profile name" : "Appearance name")
         if profile.isReusable {
@@ -130,13 +132,13 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
         } else {
             scopeNotice.stringValue = "Changes apply immediately to the outputs listed above. Use + to save a reusable copy without changing their appearance."
         }
-        usageNotice.stringValue = consumers.contains { $0.ndi != nil } ? "NDI outputs use the owning workspace’s lyrics, images, PDFs and video, with independent backgrounds." : ""
+        usageNotice.stringValue = hasNetwork ? networkName + " outputs use the owning workspace’s lyrics, images, PDFs and video, with independent backgrounds." : ""
         usageNotice.isHidden = usageNotice.stringValue.isEmpty
-        backgroundColourRow?.isHidden = hasNDI && !hasNative
-        if hasNDI && !hasNative {
-            backgroundColourNotice.stringValue = "Set transparency and chroma colour on each NDI output. Visual backgrounds below apply in either mode."
-        } else if hasNDI {
-            backgroundColourNotice.stringValue = "Native outputs use Colour as their solid background. NDI outputs use it only in Chroma Colour mode; Alpha leaves solid surroundings transparent. Image and video backgrounds remain independent."
+        backgroundColourRow?.isHidden = hasNetwork && !hasNative
+        if hasNetwork && !hasNative {
+            backgroundColourNotice.stringValue = "Set transparency and chroma colour on each " + networkName + " output. Visual backgrounds below apply in either mode."
+        } else if hasNetwork {
+            backgroundColourNotice.stringValue = "Native outputs use Colour as their solid background. " + networkName + " outputs use it only in Chroma Colour mode; Alpha leaves solid surroundings transparent. Image and video backgrounds remain independent."
         } else {
             backgroundColourNotice.stringValue = "Colour sets the solid background. Background images and videos use the controls below."
         }

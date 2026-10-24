@@ -20,7 +20,8 @@ nonisolated enum OutputContentAdapter {
 nonisolated enum OutputDestination: Codable, Equatable, Sendable {
     case none
     case monitor(ProjectionMonitorTarget)
-    case ndi(NDIOutputSettings)
+    case ndi(NetworkOutputSettings)
+    case omt(NetworkOutputSettings)
 }
 
 nonisolated struct OutputDestinationConfiguration: Codable, Equatable, Identifiable {
@@ -30,11 +31,40 @@ nonisolated struct OutputDestinationConfiguration: Codable, Equatable, Identifia
     var destination: OutputDestination = .none
     var enabled = true
     var workspaceID: UUID? = OutputWorkspaceRecord.primaryID
-    var ndi: NDIOutputSettings? {
+    var ndi: NetworkOutputSettings? {
         get { if case .ndi(let settings) = destination { return settings }; return nil }
         set { destination = newValue.map(OutputDestination.ndi) ?? .none }
     }
-    var isMonitorDestination: Bool { ndi == nil }
+    var omt: NetworkOutputSettings? {
+        get { if case .omt(let settings) = destination { return settings }; return nil }
+        set { destination = newValue.map(OutputDestination.omt) ?? .none }
+    }
+    var networkTechnology: NetworkOutputTechnology? {
+        switch destination {
+        case .ndi: .ndi
+        case .omt: .omt
+        case .none, .monitor: nil
+        }
+    }
+    var networkSettings: NetworkOutputSettings? {
+        get {
+            switch destination {
+            case .ndi(let settings), .omt(let settings): settings
+            case .none, .monitor: nil
+            }
+        }
+        set {
+            guard let newValue else { destination = .none; return }
+            destination = networkTechnology == .omt ? .omt(newValue) : .ndi(newValue)
+        }
+    }
+    var isNetworkDestination: Bool { networkTechnology != nil }
+    var isMonitorDestination: Bool {
+        switch destination {
+        case .none, .monitor: true
+        case .ndi, .omt: false
+        }
+    }
     var monitor: ProjectionMonitorTarget? {
         get { if case .monitor(let target) = destination { return target }; return nil }
         set { destination = newValue.map(OutputDestination.monitor) ?? .none }
@@ -46,14 +76,14 @@ nonisolated struct OutputDestinationConfiguration: Codable, Equatable, Identifia
 }
 
 nonisolated struct OutputProfileDocument: Codable, Equatable {
-    var version = 6
+    var version = 7
     var workspaces: [OutputWorkspaceRecord] = [.primary]
     var profiles: [OutputProfile]
     var destinations: [OutputDestinationConfiguration]
     var defaultDestinationID: UUID? = nil
     var backgroundAudioDestinationID: UUID? = nil
 
-    init(version: Int = 6, profiles: [OutputProfile], destinations: [OutputDestinationConfiguration], defaultDestinationID: UUID? = nil) {
+    init(version: Int = 7, profiles: [OutputProfile], destinations: [OutputDestinationConfiguration], defaultDestinationID: UUID? = nil) {
         self.version = version; self.profiles = profiles; self.destinations = destinations
         self.defaultDestinationID = defaultDestinationID
     }
@@ -115,10 +145,10 @@ nonisolated struct OutputContentSnapshot {
 
 nonisolated extension OutputProfileDocument {
     var isValid: Bool {
-        let ndi = destinations.compactMap(\.ndi)
-        guard ndi.allSatisfy(\.isValid), Set(ndi.map(\.sourceID)).count == ndi.count,
-              backgroundAudioDestinationID == nil || destinations.contains(where: { $0.id == backgroundAudioDestinationID && $0.ndi != nil }) else { return false }
-        guard version == 6, (1...OutputWorkspaceRecord.legacyPersistenceLimit).contains(workspaces.count),
+        let network = destinations.compactMap(\.networkSettings)
+        guard network.allSatisfy(\.isValid), Set(network.map(\.sourceID)).count == network.count,
+              backgroundAudioDestinationID == nil || destinations.contains(where: { $0.id == backgroundAudioDestinationID && $0.isNetworkDestination }) else { return false }
+        guard version == 7, (1...OutputWorkspaceRecord.legacyPersistenceLimit).contains(workspaces.count),
               Set(workspaces.map(\.id)).count == workspaces.count,
               workspaces.allSatisfy({ !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.name.utf8.count <= 160 }),
               destinations.allSatisfy({ destination in destination.workspaceID == nil || workspaces.contains(where: { $0.id == destination.workspaceID }) }), (1...128).contains(profiles.count), destinations.count <= 16,

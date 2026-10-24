@@ -54,7 +54,7 @@ final class OutputCoordinator: ObservableObject {
     }
     let profiles: OutputProfileStore
     let displays: ProjectionDisplayManager
-    let ndi: any NDIOutputDriving
+    let network: any NetworkOutputDriving
     private let retainsPreparedSessions: Bool
     private let sleepPrevention: ProjectionSleepPrevention
     private let keyWindow: @MainActor () -> NSWindow?
@@ -73,12 +73,12 @@ final class OutputCoordinator: ObservableObject {
     private var standbySuppressed: Set<UUID> = []
     private var standbyScheduled = false
     private var workspaceReady = false
-    private var dismissedNDIPerformance: Set<UUID> = []
-    private var dismissedNDIFailures: [UUID: String] = [:]
+    private var dismissedNetworkPerformance: Set<UUID> = []
+    private var dismissedNetworkFailures: [UUID: String] = [:]
     private var issues: [UUID: String] = [:]
     private var pendingFileRemoval: PendingFileRemoval?
     private var fileAcquisitionTickets: [WeakFileAcquisitionTicket] = []
-    private enum IssueReason { case presentation, background, assignment(UUID, ProjectionMonitorTarget), disconnected, transfer, capture, fileAction }
+    private enum IssueReason { case presentation, background, assignment(UUID, ProjectionMonitorTarget), disconnected, transfer, capture, fileAction, appearanceEdit, backgroundAudioEdit }
     private var issueReasons: [UUID: IssueReason] = [:]
     @Published private(set) var focusedWorkspaceID: UUID?
     @Published private(set) var revision: UInt64 = 0
@@ -122,7 +122,7 @@ final class OutputCoordinator: ObservableObject {
     var media: OutputMediaRuntime { focusedProgram.media }
     var ownership: OutputOwnership { focusedProgram.ownership }
     var actionClock: OutputActionClock { focusedProgram.actionClock }
-    var isRunning: Bool { !windows.isEmpty || !ndi.activeIDs.isEmpty }
+    var isRunning: Bool { !windows.isEmpty || !network.activeIDs.isEmpty }
     var isPresenting: Bool { isPresenting(workspace: focusedProgram.id) }
     var hasEnabledConfidenceOutput: Bool { hasEnabledConfidenceOutput(workspace: focusedProgram.id) }
     var hasOpenAudienceOutput: Bool { hasOpenAudienceOutput(workspace: focusedProgram.id) }
@@ -134,7 +134,7 @@ final class OutputCoordinator: ObservableObject {
     }
 
     init(profiles: OutputProfileStore, displays: ProjectionDisplayManager, retainsPreparedSessions: Bool = false,
-         media: OutputMediaRuntime? = nil, ndi: (any NDIOutputDriving)? = nil,
+         media: OutputMediaRuntime? = nil, network: (any NetworkOutputDriving)? = nil,
          captureManager: ScreenCaptureManager? = nil,
          sleepPrevention: ProjectionSleepPrevention = ProjectionSleepPrevention(),
          keyWindow: @escaping @MainActor () -> NSWindow? = { NSApp.keyWindow },
@@ -142,15 +142,15 @@ final class OutputCoordinator: ObservableObject {
         self.profiles = profiles; self.displays = displays; self.retainsPreparedSessions = retainsPreparedSessions
         self.keyWindow = keyWindow
         self.captureManager = captureManager ?? (AppLaunchContext.isRunningTests ? nil : .shared)
-        self.ndi = ndi ?? NDIOutputRouter(); self.sleepPrevention = sleepPrevention; self.driverFactory = driverFactory
+        self.network = network ?? NetworkOutputRouter(); self.sleepPrevention = sleepPrevention; self.driverFactory = driverFactory
         standbyConfigurations = profiles.document.destinations; legacyMonitorTarget = displays.target
         confidenceDestinationIDs = Set(profiles.document.destinations.filter { profiles.profile($0.profileID)?.kind == .confidence }.map(\.id))
         for (index, record) in profiles.document.workspaces.enumerated() {
             programs[record.id] = OutputWorkspaceProgram(id: record.id, media: index == 0 ? media ?? OutputMediaRuntime() : OutputMediaRuntime())
         }
-        self.ndi.stateChanged = { [weak self] id, state in
+        self.network.stateChanged = { [weak self] id, state in
             DispatchQueue.main.async { [weak self] in
-                guard let self, self.ndi.state(id) == state else { return }
+                guard let self, self.network.state(id) == state else { return }
                 if state.failureReason != nil, let owner = self.destination(id)?.workspaceID {
                     self.programs[owner]?.session?.cancelPendingProjection()
                 }
@@ -264,6 +264,16 @@ final class OutputCoordinator: ObservableObject {
     func reportFileActionIssue(_ message: String, workspace: UUID) {
         guard profiles.document.workspaces.contains(where: { $0.id == workspace }) else { return }
         setIssue(message, workspace: workspace, reason: .fileAction)
+    }
+    func reportAppearanceEditIssue(_ message: String?, workspace: UUID) {
+        guard profiles.document.workspaces.contains(where: { $0.id == workspace }) else { return }
+        if let message { setIssue(message, workspace: workspace, reason: .appearanceEdit) }
+        else if case .appearanceEdit? = issueReasons[workspace] { setIssue(nil, workspace: workspace) }
+    }
+    func reportBackgroundAudioEditIssue(_ message: String?, workspace: UUID) {
+        guard profiles.document.workspaces.contains(where: { $0.id == workspace }) else { return }
+        if let message { setIssue(message, workspace: workspace, reason: .backgroundAudioEdit) }
+        else if case .backgroundAudioEdit? = issueReasons[workspace] { setIssue(nil, workspace: workspace) }
     }
     @discardableResult
     func finishFileRemoval(_ reservation: FileRemovalReservation, removed: Bool, resultingURL: URL? = nil) -> Bool {
@@ -419,7 +429,7 @@ final class OutputCoordinator: ObservableObject {
     func localBackgroundAudioEnabled(workspace: UUID) -> Bool {
         return monitorAudioLocally(workspace: workspace)
             || hasOpenNativeOutput(workspace: workspace)
-            // Retain explicit standalone local music. A saved NDI music route
+            // Retain explicit standalone local music. A saved network music route
             // never falls back to local speakers when its sender stops/moves.
             || hasStandaloneLocalAudio(workspace: workspace)
     }
@@ -431,7 +441,7 @@ final class OutputCoordinator: ObservableObject {
             && canPlayStandaloneBackgroundAudio(workspace: workspace)
     }
     func canPlayStandaloneBackgroundAudio(workspace: UUID) -> Bool {
-        profiles.document.backgroundAudioDestinationID == nil && !destinations(workspace: workspace).contains { $0.ndi != nil }
+        profiles.document.backgroundAudioDestinationID == nil && !destinations(workspace: workspace).contains { $0.isNetworkDestination }
     }
     func profile(for destination: UUID) -> OutputProfile? { self.destination(destination).flatMap { profiles.profile($0.profileID) } }
     func snapshot(for destination: UUID) -> OutputContentSnapshot {
@@ -439,7 +449,7 @@ final class OutputCoordinator: ObservableObject {
     }
     func session(for destination: UUID) -> PresentationSession? { self.destination(destination)?.workspaceID.flatMap { programs[$0]?.session } }
     func media(for destination: UUID) -> OutputMediaRuntime? { self.destination(destination)?.workspaceID.flatMap { programs[$0]?.media } }
-    func isOpen(_ id: UUID) -> Bool { windows[id] != nil || ndi.activeIDs.contains(id) }
+    func isOpen(_ id: UUID) -> Bool { windows[id] != nil || network.activeIDs.contains(id) }
     func isRunning(workspace: UUID) -> Bool { destinations(workspace: workspace).contains { isOpen($0.id) } }
     func isPresenting(workspace: UUID) -> Bool { programs[workspace]?.started == true && isRunning(workspace: workspace) }
     func hasEnabledConfidenceOutput(workspace: UUID) -> Bool {
@@ -466,7 +476,7 @@ final class OutputCoordinator: ObservableObject {
     func thumbnailGeometry(workspace: UUID) -> CGSize? {
         let rows = destinations(workspace: workspace).filter(\.enabled)
         let row = rows.first { $0.isMonitorDestination && profiles.profile($0.profileID)?.kind == .audience } ?? rows.first
-        if let settings = row?.ndi { return .init(width: settings.width, height: settings.height) }
+        if let settings = row?.networkSettings { return .init(width: settings.width, height: settings.height) }
         return row?.monitor.flatMap { displays.resolve($0)?.frame.size }
     }
     func tabStatus(workspace: UUID) -> String {
@@ -477,8 +487,8 @@ final class OutputCoordinator: ObservableObject {
         if count > 0 {
             let state = programs[workspace]
             let activity = state?.started == true ? (state?.snapshot.visible == true ? "Live" : "Hidden") : state?.backgroundOpen == true ? "Background" : "Standby"
-            let blank = state?.snapshot.localMedia.map { !OutputContentClassifier.supportsNDI($0) } == true && rows.contains { $0.ndi != nil && isOpen($0.id) }
-            return "\(count) output\(count == 1 ? "" : "s") · " + activity + (blank ? " · NDI blank" : "")
+            let blank = state?.snapshot.localMedia.map { !OutputContentClassifier.supportsNetworkOutput($0) } == true && rows.contains { $0.isNetworkDestination && isOpen($0.id) }
+            return "\(count) output\(count == 1 ? "" : "s") · " + activity + (blank ? " · " + networkOutputNames(rows) + " blank" : "")
         }
         return rows.isEmpty ? "No outputs" : "Stopped"
     }
@@ -504,8 +514,8 @@ final class OutputCoordinator: ObservableObject {
             setIssue(problem, workspace: workspaceID ?? session.outputSourceID, reason: .transfer); return false
         }
         var proposed = destinations(workspace: session.outputSourceID); proposed.append(row)
-        if let slide = session.currentSlide, row.ndi != nil, !OutputContentClassifier.supportsNDI(slide) {
-            setIssue("Cannot move \(profiles.destinationLabel(row)) to \(profiles.workspaceName(session.outputSourceID)). NDI supports lyrics, PDFs, images and video files. Choose supported Current content before moving this output.",
+        if let slide = session.currentSlide, row.isNetworkDestination, !OutputContentClassifier.supportsNetworkOutput(slide) {
+            setIssue("Cannot move \(profiles.destinationLabel(row)) to \(profiles.workspaceName(session.outputSourceID)). \(networkOutputNames([row])) supports lyrics, PDFs, images and video files. Choose supported Current content before moving this output.",
                      workspace: workspaceID ?? session.outputSourceID, reason: .transfer)
             return false
         }
@@ -535,12 +545,12 @@ final class OutputCoordinator: ObservableObject {
     func toggleSlides() {
         commandSession?.toggleSlidesVisibility()
     }
-    func startNDI(_ id: UUID) {
-        guard let row = destination(id), row.enabled, row.ndi != nil, let owner = row.workspaceID,
-              ndi.state(id).canStart || ndi.state(id).active else { return }
+    func startNetworkOutput(_ id: UUID) {
+        guard let row = destination(id), row.enabled, row.isNetworkDestination, let owner = row.workspaceID,
+              network.state(id).canStart || network.state(id).active else { return }
         let session = session(workspace: owner)
-        if let slide = session.currentSlide, !OutputContentClassifier.supportsNDI(slide) {
-            setIssue("NDI supports lyrics, PDFs, images and video files. Choose supported Current content before starting this source.", workspace: owner); return
+        if let slide = session.currentSlide, !OutputContentClassifier.supportsNetworkOutput(slide) {
+            setIssue("\(networkOutputNames([row])) supports lyrics, PDFs, images and video files. Choose supported Current content before starting this source.", workspace: owner); return
         }
         _ = presentLocal(session, onlyDestinationID: id)
     }
@@ -568,7 +578,7 @@ final class OutputCoordinator: ObservableObject {
         guard activation == .show ? openDestinations(rows) : !rows.isEmpty else {
             setIssue(profiles.monitorConflictNotice ?? "Choose an available output assigned to this workspace in Manage Outputs before presenting.", workspace: state.id); return false
         }
-        if let slide = session.currentSlide, !OutputContentClassifier.supportsNDI(slide),
+        if let slide = session.currentSlide, !OutputContentClassifier.supportsNetworkOutput(slide),
            !rows.contains(where: { windows[$0.id] != nil }) {
             setIssue("This content needs an available native output.", workspace: state.id); return false
         }
@@ -590,10 +600,17 @@ final class OutputCoordinator: ObservableObject {
     }
     private func presentationProblem(for slide: Slide?, rows: [OutputDestinationConfiguration]) -> String? {
         let available = availableDestinations(rows)
-        if let slide, !OutputContentClassifier.supportsNDI(slide), !available.contains(where: { $0.isMonitorDestination }) {
-            return "NDI supports lyrics, PDFs, images and video files. Use a native monitor for picked windows."
+        if let slide, !OutputContentClassifier.supportsNetworkOutput(slide), !available.contains(where: { $0.isMonitorDestination }) {
+            let verb = rows.contains { $0.networkTechnology == .ndi } && rows.contains { $0.networkTechnology == .omt } ? "support" : "supports"
+            return "\(networkOutputNames(rows)) \(verb) lyrics, PDFs, images and video files. Use a native monitor for picked windows."
         }
         return nil
+    }
+    private func networkOutputNames(_ rows: [OutputDestinationConfiguration]) -> String {
+        let hasNDI = rows.contains { $0.networkTechnology == .ndi }
+        let hasOMT = rows.contains { $0.networkTechnology == .omt }
+        if hasOMT { return hasNDI ? "NDI and OMT" : "OMT" }
+        return "NDI"
     }
     private var windowCaptureStartProblem: String? {
         captureManager?.pendingPickerRequest == nil ? nil : "Finish or cancel Pick Window before showing a picked window."
@@ -604,7 +621,7 @@ final class OutputCoordinator: ObservableObject {
         let state = program(session.outputSourceID)
         guard state.ownership.source == state.id else { return }
         // A model refresh only updates surviving consumers. A closed native
-        // companion cannot make picked-window content supported by live NDI.
+        // companion cannot make picked-window content supported by network outputs.
         let rows = destinations(workspace: state.id).filter { $0.enabled && isOpen($0.id) }
         if session.currentSlide?.captureWindowID != nil, rows.contains(where: \.isMonitorDestination),
            let problem = windowCaptureStartProblem {
@@ -643,19 +660,19 @@ final class OutputCoordinator: ObservableObject {
         guard profiles.document.workspaces.contains(where: { $0.id == workspace }) else { return }
         let state = program(workspace); cancelRequests(state); state.ownership.revoke(); state.started = false; state.backgroundOpen = false
         for row in destinations(workspace: workspace) {
-            standbySuppressed.insert(row.id); closeDestination(row.id); ndi.stop(row.id)
+            standbySuppressed.insert(row.id); closeDestination(row.id); network.stop(row.id)
         }
         state.snapshot = .init(source: workspace, visible: false, revision: state.snapshot.revision &+ 1)
     }
     func stopAllOutputs() {
         for id in Array(programs.keys) { stopProgram(workspace: id) }
-        for id in ndi.activeIDs { ndi.stop(id) }
+        for id in network.activeIDs { network.stop(id) }
         changed()
     }
     func closeOutput(_ id: UUID) {
         guard let owner = destination(id)?.workspaceID else { return }
         cancelRequests(program(owner)); standbySuppressed.insert(id)
-        closeDestination(id); ndi.stop(id); changed(workspace: owner)
+        closeDestination(id); network.stop(id); changed(workspace: owner)
     }
     func destinationClosed(_ id: UUID, generation: UUID) {
         guard windows[id]?.generation == generation else { return }; closeOutput(id)
@@ -679,7 +696,7 @@ final class OutputCoordinator: ObservableObject {
         let conflicts = profiles.conflictingDestinationIDs
         return rows.filter { row in
             guard row.enabled, !conflicts.contains(row.id) else { return false }
-            if row.ndi?.isValid == true { return true }
+            if row.networkSettings?.isValid == true { return true }
             guard let target = row.monitor, displays.resolve(target) != nil else { return false }
             return windows[row.id] != nil || !displays.isReserved(target)
         }
@@ -687,7 +704,7 @@ final class OutputCoordinator: ObservableObject {
     private func openDestinations(_ rows: [OutputDestinationConfiguration]) -> Bool {
         displays.refresh(); var ready = false
         for row in availableDestinations(rows) {
-            if row.ndi != nil { if ndi.start(row) { ready = true } }
+            if row.isNetworkDestination { if network.start(row) { ready = true } }
             else if openDestination(row, activate: true) { ready = true }
         }
         return ready
@@ -735,8 +752,8 @@ final class OutputCoordinator: ObservableObject {
         profiles.document.destinations.filter(\.enabled).map { row in
             let state: OutputReadiness
             if profiles.conflictingDestinationIDs.contains(row.id) { state = .unavailable }
-            else if row.ndi != nil {
-                switch ndi.state(row.id) {
+            else if row.isNetworkDestination {
+                switch network.state(row.id) {
                 case .stopped: state = .closed
                 case .starting: state = .starting
                 case .stopping: state = .stopping
@@ -751,7 +768,7 @@ final class OutputCoordinator: ObservableObject {
         }
     }
     private func profilesChanged() {
-        ndi.reconcile(profiles.document)
+        network.reconcile(profiles.document)
         let previous = standbyConfigurations; standbyConfigurations = profiles.document.destinations
         let previousConfidence = confidenceDestinationIDs
         confidenceDestinationIDs = Set(standbyConfigurations.filter { profiles.profile($0.profileID)?.kind == .confidence }.map(\.id))
@@ -795,24 +812,47 @@ final class OutputCoordinator: ObservableObject {
         guard audioSession !== session else { return }; audioSession?.stopBackgroundAudioPlayback()
         audioWeak = session; retainedAudio = retainsPreparedSessions ? session : nil; refreshMedia()
     }
-    func setBackgroundVisualBookmark(_ bookmark: String, for session: PresentationSession) {
-        for row in destinations(workspace: session.outputSourceID) where row.enabled {
-            profiles.editDestinationProfile(row.id) {
-                $0.background.bookmark = bookmark.isEmpty ? nil : bookmark
-                $0.background.visible = !bookmark.isEmpty
-            }
-        }
+    func releaseBackgroundAudio(_ session: PresentationSession) {
+        if audioSession === session { audioWeak = nil; retainedAudio = nil }
+        refreshMedia()
     }
     func clearAudio() { commandSession?.clearBackgroundAudio() }
-    func clearAllLayers() { hide(); clearBackgrounds(); clearAudio() }
-    func clearBackgrounds(for session: PresentationSession? = nil) {
-        let id = session?.outputSourceID ?? commandProgram.id
-        for row in destinations(workspace: id) where row.enabled { profiles.clearDestinationBackground(row.id) }
-        programs[id]?.session?.setBackgroundVisual(nil)
+    @discardableResult
+    func clearAllLayers(for session: PresentationSession? = nil) -> Bool {
+        guard let session = session ?? commandSession,
+              clearBackgrounds(for: session) else { return false }
+        hide(for: session)
+        session.clearBackgroundAudio()
+        return true
     }
-    func setAudienceBackgroundVisibility(_ visible: Bool, for session: PresentationSession? = nil) {
-        let id = session?.outputSourceID ?? commandProgram.id
-        for row in destinations(workspace: id) where row.enabled { profiles.editDestinationProfile(row.id) { $0.background.visible = visible } }
+    @discardableResult
+    func clearBackgrounds(for session: PresentationSession? = nil) -> Bool {
+        guard let id = backgroundWorkspace(for: session) else { return false }
+        let problem = profiles.editDestinationProfiles(destinations(workspace: id).filter(\.enabled).map(\.id)) { profile, row in
+            profile.clearBackground(preservingKeyColour: row.isNetworkDestination)
+        }
+        reportAppearanceEditIssue(problem, workspace: id)
+        guard problem == nil else { return false }
+        profiles.backgroundPreferences.settings(for: id).setVisualBookmark("")
+        programs[id]?.session?.setBackgroundVisual(nil)
+        return true
+    }
+    @discardableResult
+    func setAudienceBackgroundVisibility(_ visible: Bool, for session: PresentationSession? = nil) -> Bool {
+        guard let id = backgroundWorkspace(for: session) else { return false }
+        let problem = profiles.editDestinationProfiles(destinations(workspace: id).filter(\.enabled).map(\.id)) { profile, _ in
+            profile.background.visible = visible
+        }
+        reportAppearanceEditIssue(problem, workspace: id)
+        guard problem == nil else { return false }
+        programs[id]?.session?.isBackgroundVisualVisible = visible
+        return true
+    }
+    private func backgroundWorkspace(for session: PresentationSession?) -> UUID? {
+        if let session, session.outputCoordinator !== self { return nil }
+        guard let id = session?.outputSourceID ?? commandWorkspaceID,
+              profiles.document.workspaces.contains(where: { $0.id == id }) else { return nil }
+        return id
     }
     func refreshMedia(publish: Bool = true) {
         for state in Array(programs.values) { refreshMedia(state, publish: publish) }
@@ -820,7 +860,7 @@ final class OutputCoordinator: ObservableObject {
     private func refreshMedia(_ state: OutputWorkspaceProgram, publish: Bool) {
         let rows = destinations(workspace: state.id)
         let live = rows.filter { isOpen($0.id) }
-        let playbackReady = live.contains { $0.isMonitorDestination || ndi.state($0.id) != .starting }
+        let playbackReady = live.contains { $0.isMonitorDestination || network.state($0.id) != .starting }
         state.session?.updateBackgroundAudioLocalPlayback(enabled: localBackgroundAudioEnabled(workspace: state.id))
         state.media.updateProgram(slide: state.snapshot.localMedia, session: state.session,
             running: state.started && !live.isEmpty, visible: state.snapshot.visible && playbackReady,
@@ -835,7 +875,7 @@ final class OutputCoordinator: ObservableObject {
             makeFileAcquisitionGuard: { [weak self] in self?.makeFileAcquisitionGuard() ?? { _ in .removed } }) { [weak self] in self?.changed(workspace: workspaceID) }
         if publish {
             var document = profiles.document; document.destinations = rows
-            ndi.publish(state.snapshot, document: document, media: state.media, audioSession: audioSession)
+            network.publish(state.snapshot, document: document, media: state.media, audioSession: audioSession)
         }
     }
     private func changed(workspace: UUID? = nil) {
@@ -853,10 +893,10 @@ final class OutputCoordinator: ObservableObject {
         // Observers must see the completed ownership/media transaction.
         revision &+= 1
     }
-    private func ndiMessage(_ message: String, id: UUID) -> String {
-        guard let row = destination(id) else { return "NDI output: " + message }
+    private func networkMessage(_ message: String, id: UUID) -> String {
+        guard let row = destination(id) else { return "Network output: " + message }
         let duplicate = profiles.document.destinations.filter { $0.name == row.name }.count > 1
-        return row.name + (duplicate ? " (" + (row.ndi?.sourceName ?? profiles.workspaceName(row.workspaceID)) + ")" : "") + ": " + message
+        return row.name + (duplicate ? " (" + (row.networkSettings?.sourceName ?? profiles.workspaceName(row.workspaceID)) + ")" : "") + ": " + message
     }
     private func refreshIssues() {
         for (id, reason) in issueReasons {
@@ -876,7 +916,7 @@ final class OutputCoordinator: ObservableObject {
                 // A failed move leaves ownership unchanged. Keep its explanation
                 // in the requesting workspace until retry succeeds or dismissal.
                 message = issues[id]
-            case .capture, .fileAction:
+            case .capture, .fileAction, .appearanceEdit, .backgroundAudioEdit:
                 message = issues[id]
             }
             setIssue(message, workspace: id, reason: reason)
@@ -890,19 +930,19 @@ final class OutputCoordinator: ObservableObject {
     private func workspaceIssue(_ id: UUID) -> String? {
         let rows = destinations(workspace: id).filter(\.enabled)
         let failures = rows.compactMap { row -> String? in
-            guard let reason = ndi.state(row.id).failureReason, dismissedNDIFailures[row.id] != reason else { return nil }
-            return ndiMessage(reason, id: row.id)
+            guard let reason = network.state(row.id).failureReason, dismissedNetworkFailures[row.id] != reason else { return nil }
+            return networkMessage(reason, id: row.id)
         }
         let warnings = rows.compactMap { row -> String? in
-            guard !dismissedNDIPerformance.contains(row.id), let notice = ndi.performanceNotice(row.id) else { return nil }
-            return ndiMessage(notice, id: row.id)
+            guard !dismissedNetworkPerformance.contains(row.id), let notice = network.performanceNotice(row.id) else { return nil }
+            return networkMessage(notice, id: row.id)
         }
         let messages = [issues[id]].compactMap { $0 } + failures + warnings
         return messages.isEmpty ? nil : messages.joined(separator: "\n")
     }
     private func publishIssues() {
-        dismissedNDIPerformance = dismissedNDIPerformance.filter { destination($0)?.enabled == true && ndi.performanceNotice($0) != nil }
-        dismissedNDIFailures = dismissedNDIFailures.filter { destination($0.key)?.enabled == true && ndi.state($0.key).failureReason == $0.value }
+        dismissedNetworkPerformance = dismissedNetworkPerformance.filter { destination($0)?.enabled == true && network.performanceNotice($0) != nil }
+        dismissedNetworkFailures = dismissedNetworkFailures.filter { destination($0.key)?.enabled == true && network.state($0.key).failureReason == $0.value }
         for state in programs.values {
             let message = workspaceIssue(state.id)
             if state.session?.projectionDisplayIssue != message { state.session?.projectionDisplayIssue = message }
@@ -913,8 +953,8 @@ final class OutputCoordinator: ObservableObject {
     func dismissIssue(workspace: UUID? = nil) {
         let id = workspace ?? focusedProgram.id
         for row in destinations(workspace: id) {
-            if ndi.performanceNotice(row.id) != nil { dismissedNDIPerformance.insert(row.id) }
-            if let reason = ndi.state(row.id).failureReason { dismissedNDIFailures[row.id] = reason }
+            if network.performanceNotice(row.id) != nil { dismissedNetworkPerformance.insert(row.id) }
+            if let reason = network.state(row.id).failureReason { dismissedNetworkFailures[row.id] = reason }
         }
         setIssue(nil, workspace: id)
     }

@@ -12,6 +12,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     let addOutputMenu = NSPopUpButton(frame: .zero, pullsDown: true)
     let addNative = NSMenuItem(title: "Native Monitor Output", action: nil, keyEquivalent: "")
     let addNDI = NSMenuItem(title: "NDI Output", action: nil, keyEquivalent: "")
+    let addOMT = NSMenuItem(title: "OMT Output", action: nil, keyEquivalent: "")
     let removeOutput = NSButton(title: "−", target: nil, action: nil)
     let makeDefault = NSButton(title: "Make Default", target: nil, action: nil)
     let addProfile = NSButton()
@@ -74,10 +75,11 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         list.heightAnchor.constraint(greaterThanOrEqualToConstant: 190).isActive = true
         addNative.target = self; addNative.action = #selector(addNativeOutput(_:))
         addNDI.target = self; addNDI.action = #selector(addNDIOutput(_:))
+        addOMT.target = self; addOMT.action = #selector(addOMTOutput(_:))
         let menu = NSMenu(); menu.autoenablesItems = false
         let glyph = NSMenuItem(title: "+", action: nil, keyEquivalent: "")
         glyph.image = NSImage(named: NSImage.addTemplateName)
-        menu.addItem(glyph); menu.addItem(addNative); menu.addItem(addNDI)
+        menu.addItem(glyph); menu.addItem(addNative); menu.addItem(addNDI); menu.addItem(addOMT)
         addOutputMenu.menu = menu; addOutputMenu.imagePosition = .imageOnly
         addOutputMenu.setAccessibilityLabel("Add Output")
         addOutputMenu.toolTip = "Add a disabled, unassigned output."
@@ -147,7 +149,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         guard isViewLoaded else { return }
         finishOutputSettingsFieldEditing(in: view)
         profileEditor?.finishEditing()
-        destinationEditor?.ndiEditor?.finishEditing()
+        destinationEditor?.networkEditor?.finishEditing()
     }
     func scheduleReload() {
         guard !isSuspended, reloadTask == nil else { return }
@@ -163,7 +165,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         let fresh = profilesMode ? profileRows() : store.document.destinations.map { output in
             ListRow(id: output.id, title: store.destinationLabel(output),
                 detail: (output.id == store.document.defaultDestinationID ? "Default · " : "")
-                    + store.workspaceName(output.workspaceID) + " · " + (output.ndi == nil ? "Native" : "NDI") + " · " + (statuses[output.id] ?? "Disabled"))
+                    + store.workspaceName(output.workspaceID) + " · " + (output.networkTechnology?.title ?? "Native") + " · " + (statuses[output.id] ?? "Disabled"))
         }
         if selectedID == nil || !fresh.contains(where: { $0.id == selectedID }) {
             finishEditing(); selectedID = fresh.compactMap(\.id).first
@@ -188,6 +190,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         let canAdd = !profilesMode && store.document.destinations.count < 16 && store.recoveryNotice == nil
         addNative.isEnabled = canAdd && store.profile(OutputProfile.audienceID) != nil
         addNDI.isEnabled = canAdd && store.document.profiles.count < 128
+        addOMT.isEnabled = addNDI.isEnabled
         addOutputMenu.isEnabled = canAdd
         removeOutput.isEnabled = !profilesMode && selectedID != nil && store.recoveryNotice == nil
         let isDefault = !profilesMode && selectedID != nil && selectedID == store.document.defaultDestinationID
@@ -337,19 +340,25 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         finishEditing(); selectedID = profilesMode ? profileSelection : outputSelection; reload()
     }
     @objc private func addNativeOutput(_ sender: Any?) { addOutput(name: "Native Output", profileID: OutputProfile.audienceID) }
-    @objc private func addNDIOutput(_ sender: Any?) {
+    @objc private func addNDIOutput(_ sender: Any?) { addNetworkOutput(.ndi) }
+    @objc private func addOMTOutput(_ sender: Any?) { addNetworkOutput(.omt) }
+    private func addNetworkOutput(_ technology: NetworkOutputTechnology) {
         guard !profilesMode, store.recoveryNotice == nil, store.document.destinations.count < 16,
               store.document.profiles.count < 128 else { return }
         finishEditing()
         var sourceName = "eucaly", number = 2
-        while store.document.destinations.contains(where: { $0.ndi?.sourceName.caseInsensitiveCompare(sourceName) == .orderedSame }) {
+        while store.document.destinations.contains(where: {
+            $0.networkTechnology == technology && $0.networkSettings?.sourceName.caseInsensitiveCompare(sourceName) == .orderedSame
+        }) {
             sourceName = "eucaly \(number)"; number += 1
         }
         var profile = store.audience; profile.id = UUID(); profile.name = sourceName + " Appearance"
         profile.usesLegacySizing = false; profile.background = OutputBackground(); profile.background.colour = .chromaGreen
-        var output = OutputDestinationConfiguration(name: "NDI Output", profileID: profile.id, monitor: nil,
+        var output = OutputDestinationConfiguration(name: technology.title + " Output", profileID: profile.id, monitor: nil,
             enabled: false, workspaceID: coordinator.focusedWorkspaceID)
-        output.ndi = NDIOutputSettings(sourceName: sourceName); profile.customizedForDestinationID = output.id
+        let settings = NetworkOutputSettings(sourceName: sourceName)
+        output.destination = technology == .ndi ? .ndi(settings) : .omt(settings)
+        profile.customizedForDestinationID = output.id
         store.edit { $0.profiles.append(profile); $0.destinations.append(output) }
         selectDestination(output.id)
     }
@@ -427,7 +436,7 @@ private struct OutputSettingsReadabilityInput: Equatable {
         assignments = coordinator.profiles.document.destinations.compactMap { destination in
             guard let profile = coordinator.profile(for: destination.id) else { return nil }
             let size: CGSize
-            if let ndi = destination.ndi { size = .init(width: ndi.width, height: ndi.height) }
+            if let settings = destination.networkSettings { size = .init(width: settings.width, height: settings.height) }
             else if let target = destination.monitor, let monitor = coordinator.displays.resolve(target) { size = monitor.frame.size }
             else { return nil }
             let snapshot = coordinator.snapshot(for: destination.id)

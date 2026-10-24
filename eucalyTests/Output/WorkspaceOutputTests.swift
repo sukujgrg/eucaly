@@ -6,6 +6,126 @@ import Combine
 
 @MainActor
 final class WorkspaceOutputTests: XCTestCase {
+    func testMixedNativeNDIAndOMTFollowOnlyExplicitWorkspaceCurrentAndMoves() throws {
+        let f = Fixture(networkTechnology: .omt); defer { f.outputs.stopAllOutputs() }
+        XCTAssertTrue(f.outputs.moveOutput(f.online, to: f.a))
+        f.load(f.a, "House"); f.a.showSlides()
+        XCTAssertEqual(Set(f.transport.starts), [f.network, f.online])
+        XCTAssertTrue(f.outputs.isOpen(f.house))
+        let settings = try XCTUnwrap(f.outputs.destination(f.network)?.omt)
+        let starts = f.transport.starts
+        let accepted = f.outputs.snapshot(for: f.network).revision
+        f.load(f.b, "Online")
+        f.outputs.program(f.b.outputSourceID).flow.setPreviewSlides(LyricsParser.parseDocument("Verse\nPrivate draft").slides)
+        f.outputs.focusWorkspace(f.b)
+        f.b.showSlides()
+        XCTAssertEqual(f.outputs.snapshot(for: f.network).revision, accepted)
+        XCTAssertEqual(f.outputs.snapshot(for: f.network).current.components.first?.text, "House")
+        XCTAssertEqual(f.outputs.snapshot(for: f.online).current.components.first?.text, "House")
+        XCTAssertFalse(f.b.isPresenting)
+
+        XCTAssertTrue(f.outputs.moveOutput(f.network, to: f.b))
+        XCTAssertEqual(f.transport.starts, starts)
+        XCTAssertEqual(f.outputs.destination(f.network)?.omt, settings)
+        XCTAssertEqual(f.transport.routedSnapshots[f.network]?.current.components.first?.text, "Online")
+        XCTAssertEqual(f.transport.routedSnapshots[f.online]?.current.components.first?.text, "House")
+        XCTAssertEqual(f.outputs.snapshot(for: f.house).current.components.first?.text, "House")
+        f.b.hideSlides()
+        XCTAssertFalse(f.outputs.snapshot(for: f.network).visible)
+        XCTAssertTrue(f.outputs.snapshot(for: f.online).visible)
+        f.b.stopPresentation()
+        XCTAssertFalse(f.outputs.isOpen(f.network))
+        XCTAssertTrue(f.outputs.isOpen(f.online))
+        XCTAssertTrue(f.outputs.isOpen(f.house))
+        XCTAssertTrue(f.a.isPresenting)
+    }
+
+    func testOMTCapturedWindowPreflightKeepsAcceptedContentAndOwner() async throws {
+        let f = Fixture(networkTechnology: .omt); defer { f.outputs.stopAllOutputs() }
+        f.load(f.a, "Accepted lyrics"); f.a.showSlides()
+        f.b.setSlides([pickedWindow()])
+        let original = f.outputs.destination(f.network)
+        let action = f.a.outputActionClock.current
+        XCTAssertFalse(f.outputs.moveOutput(f.network, to: f.b))
+        XCTAssertEqual(f.outputs.destination(f.network), original)
+        XCTAssertEqual(f.a.outputActionClock.current, action)
+        XCTAssertTrue(f.b.projectionDisplayIssue?.contains("OMT supports lyrics") == true)
+        f.outputs.closeOutput(f.house)
+        f.a.setSlides([pickedWindow()])
+        f.a.requestCurrentProjection()
+        await settle()
+        XCTAssertEqual(f.outputs.snapshot(for: f.network).current.components.first?.text, "Accepted lyrics")
+        XCTAssertNil(f.outputs.snapshot(for: f.network).localMedia?.captureWindowID)
+        XCTAssertTrue(f.outputs.isOpen(f.network))
+        let starts = f.transport.starts
+        f.outputs.startNetworkOutput(f.network)
+        XCTAssertEqual(f.transport.starts, starts)
+        XCTAssertEqual(f.outputs.destination(f.network), original)
+    }
+
+    func testOMTFailureRequiresExplicitRetryAndPreservesNativeAndNDIPeers() async throws {
+        let f = Fixture(networkTechnology: .omt); defer { f.outputs.stopAllOutputs() }
+        XCTAssertTrue(f.outputs.moveOutput(f.online, to: f.b))
+        f.load(f.a, "First\n\nChorus\nSecond"); f.a.showSlides()
+        f.load(f.b, "Independent NDI"); f.b.showSlides()
+        f.transport.fail(f.network)
+        await settle()
+        let starts = f.transport.starts
+        XCTAssertFalse(f.outputs.isOpen(f.network))
+        XCTAssertTrue(f.outputs.isOpen(f.house))
+        XCTAssertTrue(f.outputs.isOpen(f.online))
+        f.a.moveSelection(1)
+        await settle()
+        XCTAssertEqual(f.outputs.snapshot(for: f.house).current.components.first?.text, "Second")
+        XCTAssertEqual(f.outputs.snapshot(for: f.online).current.components.first?.text, "Independent NDI")
+        XCTAssertEqual(f.transport.starts, starts, "Current navigation cannot restart a failed OMT output.")
+        f.outputs.startNetworkOutput(f.network)
+        XCTAssertEqual(f.transport.starts, starts + [f.network])
+        XCTAssertTrue(f.outputs.isOpen(f.network))
+        XCTAssertEqual(f.transport.routedSnapshots[f.network]?.current.components.first?.text, "Second")
+    }
+
+    func testOMTConfidenceAppearanceNeverTriggersNativeStandby() async throws {
+        let f = Fixture(networkTechnology: .omt); defer { f.outputs.stopAllOutputs() }
+        XCTAssertNil(f.store.setEnabled(false, for: f.house))
+        f.store.selectProfile(OutputProfile.confidenceID, for: f.network)
+        f.outputs.workspaceWindowReady(f.a)
+        f.outputs.openConfidence(f.network)
+        await settle()
+        XCTAssertFalse(f.outputs.hasEnabledConfidenceOutput(workspace: f.a.outputSourceID))
+        XCTAssertTrue(f.transport.starts.isEmpty)
+        XCTAssertFalse(f.outputs.isRunning)
+        XCTAssertFalse(f.a.isPresenting)
+        XCTAssertEqual(f.outputs.thumbnailGeometry(workspace: f.a.outputSourceID), CGSize(width: 1920, height: 1080))
+        XCTAssertEqual(f.outputs.destinationStatuses().first { $0.id == f.network }?.readiness, .closed)
+    }
+
+    func testOMTPassiveSettingsAndStoppedTransferKeepSourceUnpreparedAndRequireExplicitStart() throws {
+        let store = OutputProfileStore(), transport = RecordingNetworkOutput()
+        let owner = try XCTUnwrap(store.addWorkspace(name: "Closed"))
+        var row = OutputDestinationConfiguration(name: "OMT", profileID: OutputProfile.audienceID,
+            monitor: nil, enabled: false, workspaceID: owner)
+        row.omt = .init(sourceName: "eucaly")
+        store.edit { $0.destinations = [row] }
+        let outputs = OutputCoordinator(profiles: store, displays: ProjectionDisplayManager(displays: { [] }),
+            retainsPreparedSessions: true, network: transport)
+        defer { outputs.stopAllOutputs() }
+        XCTAssertNil(store.setEnabled(true, for: row.id))
+        store.editDestinationProfile(row.id) { $0.position = "bottom" }
+        var settings = try XCTUnwrap(row.omt)
+        settings.keyMode = .chroma
+        XCTAssertNil(store.setNetworkSettings(settings, for: row.id))
+        XCTAssertTrue(transport.starts.isEmpty)
+        XCTAssertNil(outputs.preparedSession(workspace: owner))
+        XCTAssertTrue(outputs.moveOutput(row.id, toWorkspace: OutputWorkspaceRecord.primaryID))
+        XCTAssertTrue(transport.starts.isEmpty)
+        XCTAssertFalse(outputs.isOpen(row.id))
+        XCTAssertNil(outputs.preparedSession(workspace: owner))
+        outputs.startNetworkOutput(row.id)
+        XCTAssertEqual(transport.starts, [row.id])
+        XCTAssertEqual(outputs.session(for: row.id)?.outputSourceID, OutputWorkspaceRecord.primaryID)
+    }
+
     func testNativeImageIdentityUsesOnlyAcceptedWorkspaceLoadAcrossPrivateAndRejectedChanges() async throws {
         let f = Fixture(); defer { f.outputs.stopAllOutputs() }
         let url = URL(fileURLWithPath: "/tmp/accepted-native-identity.png")
@@ -217,11 +337,13 @@ final class WorkspaceOutputTests: XCTestCase {
         XCTAssertEqual(f.outputs.profile(for: f.network)?.background.colour, .chromaGreen)
     }
 
-    func testBackgroundSelectionAndClearOnlyCustomizeAssignedWorkspaceOutputs() throws {
+    func testBackgroundClearOnlyCustomizesAssignedWorkspaceOutputs() throws {
         let f = Fixture(); defer { f.outputs.stopAllOutputs() }
         XCTAssertTrue(f.outputs.moveOutput(f.online, to: f.b))
-        f.outputs.setBackgroundVisualBookmark("house visual", for: f.a)
-        f.outputs.setBackgroundVisualBookmark("online visual", for: f.b)
+        XCTAssertNil(f.store.editDestinationProfiles([f.house, f.network]) { profile, _ in
+            profile.background.bookmark = "house visual"
+        })
+        XCTAssertNil(f.store.editDestinationProfile(f.online) { $0.background.bookmark = "online visual" })
         XCTAssertEqual(f.outputs.profile(for: f.house)?.background.bookmark, "house visual")
         XCTAssertEqual(f.outputs.profile(for: f.network)?.background.bookmark, "house visual")
         XCTAssertEqual(f.outputs.profile(for: f.online)?.background.bookmark, "online visual")
@@ -239,10 +361,10 @@ final class WorkspaceOutputTests: XCTestCase {
         XCTAssertTrue(f.outputs.moveOutput(f.online, to: f.b))
         var other = try XCTUnwrap(f.outputs.destination(f.online)?.ndi)
         other.sourceName = "EUCALY"
-        XCTAssertNotNil(f.store.setNDISettings(other, for: f.online))
+        XCTAssertNotNil(f.store.setNetworkSettings(other, for: f.online))
         XCTAssertEqual(f.outputs.destination(f.online)?.ndi?.sourceName, "Online")
         XCTAssertNil(f.store.setEnabled(false, for: f.online))
-        XCTAssertNil(f.store.setNDISettings(other, for: f.online))
+        XCTAssertNil(f.store.setNetworkSettings(other, for: f.online))
         XCTAssertNotNil(f.store.setEnabled(true, for: f.online))
         XCTAssertFalse(try XCTUnwrap(f.outputs.destination(f.online)).enabled)
         var native = OutputDestinationConfiguration(name: "Other Monitor", profileID: OutputProfile.audienceID,
@@ -265,8 +387,8 @@ final class WorkspaceOutputTests: XCTestCase {
         store.edit { $0.destinations.append(output) }; store.flush()
         let restored = OutputProfileStore(defaults: defaults)
         XCTAssertEqual(restored.document, store.document)
-        let transport = RecordingNDIOutput()
-        let outputs = OutputCoordinator(profiles: restored, displays: ProjectionDisplayManager(displays: { [] }), ndi: transport)
+        let transport = RecordingNetworkOutput()
+        let outputs = OutputCoordinator(profiles: restored, displays: ProjectionDisplayManager(displays: { [] }), network: transport)
         let restoredSession = outputs.session(workspace: id)
         outputs.focusWorkspace(restoredSession); outputs.workspaceWindowReady(restoredSession)
         XCTAssertTrue(transport.starts.isEmpty); XCTAssertFalse(outputs.isRunning)
@@ -341,7 +463,7 @@ final class WorkspaceOutputTests: XCTestCase {
     }
 
     func testRejectedWindowLoadPreservesAcceptedVideoPositionThroughLaterRefreshAndReload() async throws {
-        let url = try await NDIRegressionTests.makePortraitVideoFixture()
+        let url = try await NetworkRegressionTests.makePortraitVideoFixture()
         defer { try? FileManager.default.removeItem(at: url) }
         let f = Fixture(); defer { f.outputs.stopAllOutputs() }
         XCTAssertNil(f.store.setEnabled(false, for: f.house))
@@ -496,18 +618,18 @@ final class WorkspaceOutputTests: XCTestCase {
     }
 
     func testExplicitNDIStartPreparesAnUnopenedRestoredWorkspace() throws {
-        let store = OutputProfileStore(), transport = RecordingNDIOutput()
+        let store = OutputProfileStore(), transport = RecordingNetworkOutput()
         let owner = try XCTUnwrap(store.addWorkspace(name: "Online"))
         var row = OutputDestinationConfiguration(name: "Online NDI", profileID: OutputProfile.audienceID,
                                                  monitor: nil, workspaceID: owner)
         row.ndi = .init()
         store.edit { $0.destinations = [row] }
         let outputs = OutputCoordinator(profiles: store, displays: ProjectionDisplayManager(displays: { [] }),
-                                        retainsPreparedSessions: true, ndi: transport)
+                                        retainsPreparedSessions: true, network: transport)
         defer { outputs.stopAllOutputs() }
         let main = outputs.session(workspace: OutputWorkspaceRecord.primaryID)
         XCTAssertNil(outputs.session(for: row.id))
-        let editor = NDIOutputSettingsEditor(coordinator: outputs, destinationID: row.id)
+        let editor = NetworkOutputSettingsEditor(coordinator: outputs, destinationID: row.id)
         _ = editor.view
         XCTAssertTrue(editor.startButton.isEnabled)
         let controlsBefore = Set(NSApp.windows.map(ObjectIdentifier.init))
@@ -537,20 +659,22 @@ final class WorkspaceOutputTests: XCTestCase {
     }
     @MainActor private final class Fixture {
         let store: OutputProfileStore
-        let transport = RecordingNDIOutput()
+        let transport = RecordingNetworkOutput()
         let outputs: OutputCoordinator
         let a: PresentationSession, b: PresentationSession
         let house: UUID, network: UUID, online: UUID
-        init(keyWindow: @escaping @MainActor () -> NSWindow? = { NSApp.keyWindow }) {
+        init(networkTechnology: NetworkOutputTechnology = .ndi,
+             keyWindow: @escaping @MainActor () -> NSWindow? = { NSApp.keyWindow }) {
             let monitor = ProjectionMonitor(id: 1, identity: UUID().uuidString, name: "House", frame: .init(x: 0, y: 0, width: 1920, height: 1080))
             let displays = ProjectionDisplayManager(displays: { [monitor] }); displays.select(monitor.target)
             store = OutputProfileStore(monitor: monitor.target); house = store.document.destinations[0].id
-            var network = OutputDestinationConfiguration(name: "NDI Output", profileID: OutputProfile.audienceID, monitor: nil)
-            network.ndi = .init(); self.network = network.id
+            var network = OutputDestinationConfiguration(name: "\(networkTechnology.title) Output", profileID: OutputProfile.audienceID, monitor: nil)
+            network.destination = networkTechnology == .omt ? .omt(.init()) : .ndi(.init())
+            self.network = network.id
             var online = OutputDestinationConfiguration(name: "Online Output", profileID: OutputProfile.audienceID, monitor: nil, workspaceID: nil)
             online.ndi = .init(sourceName: "Online"); self.online = online.id
             store.edit { $0.destinations += [network, online] }
-            outputs = OutputCoordinator(profiles: store, displays: displays, ndi: transport, keyWindow: keyWindow,
+            outputs = OutputCoordinator(profiles: store, displays: displays, network: transport, keyWindow: keyWindow,
                                         driverFactory: { FakeOutputDriver() })
             a = PresentationSession(projectionDisplays: displays, outputCoordinator: outputs)
             b = PresentationSession(projectionDisplays: displays, outputCoordinator: outputs)

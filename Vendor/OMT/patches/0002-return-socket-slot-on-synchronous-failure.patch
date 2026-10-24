@@ -1,0 +1,36 @@
+diff --git a/src/OMTSocketAsyncPool.cs b/src/OMTSocketAsyncPool.cs
+index 98fbac7..e2305b1 100644
+--- a/src/OMTSocketAsyncPool.cs
++++ b/src/OMTSocketAsyncPool.cs
+@@ -83,12 +83,26 @@ namespace libomtnet
+         {
+             lock (lockSync)
+             {
+-                if (socket != null)
++                if (socket == null)
+                 {
+-                    if (socket.SendAsync(e) == false)
+-                    {
+-                        OnCompleted(this, e);
+-                    }
++                    ReturnEventArgs(e);
++                    return;
++                }
++
++                bool pending;
++                try
++                {
++                    pending = socket.SendAsync(e);
++                }
++                catch
++                {
++                    ReturnEventArgs(e);
++                    throw;
++                }
++
++                if (!pending)
++                {
++                    OnCompleted(this, e);
+                 }
+             }
+         }

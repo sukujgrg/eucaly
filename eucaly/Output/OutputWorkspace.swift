@@ -78,7 +78,7 @@ extension OutputProfileStore {
         return nil
     }
     func destinationLabel(_ destination: OutputDestinationConfiguration) -> String {
-        destination.name + (destination.ndi.map { " (" + $0.sourceName + ")" } ?? "")
+        destination.name + (destination.networkSettings.map { " (" + (destination.networkTechnology?.title ?? "Network") + ": " + $0.sourceName + ")" } ?? "")
     }
     func workspaceName(_ id: UUID?) -> String {
         document.workspaces.first { $0.id == id }?.name ?? "Unassigned"

@@ -377,7 +377,7 @@ final class WorkspaceManagementTests: XCTestCase {
         let suite = "WorkspaceManagement.\(UUID())"
         let defaults: UserDefaults
         let store: OutputProfileStore
-        let ndi = RecordingNDIOutput()
+        let ndi = RecordingNetworkOutput()
         let outputs: OutputCoordinator
         let session: PresentationSession
         let windows: OutputWorkspaceWindows
@@ -385,7 +385,7 @@ final class WorkspaceManagementTests: XCTestCase {
         init() {
             defaults = UserDefaults(suiteName: suite)!
             store = OutputProfileStore(defaults: defaults)
-            outputs = OutputCoordinator(profiles: store, displays: ProjectionDisplayManager(displays: { [] }), retainsPreparedSessions: true, ndi: ndi)
+            outputs = OutputCoordinator(profiles: store, displays: ProjectionDisplayManager(displays: { [] }), retainsPreparedSessions: true, network: ndi)
             session = PresentationSession(projectionDisplays: outputs.displays, outputCoordinator: outputs)
             windows = makeWorkspaceWindows(outputs: outputs, defaults: defaults)
             settings = SettingsWindowController(outputs: outputs, workspaces: windows,

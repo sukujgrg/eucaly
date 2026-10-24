@@ -19,6 +19,7 @@ public struct ContentView: View {
     @State private var lyricsCleanupController = LyricsCleanupController()
     @StateObject private var session: PresentationSession
     @ObservedObject private var outputProfiles: OutputProfileStore
+    @ObservedObject private var backgroundSettings: WorkspaceBackgroundSettings
     @ObservedObject private var projectionDisplays: ProjectionDisplayManager
     @StateObject private var flow: PresentationFlowController
     @State private var folderURL: URL?
@@ -29,10 +30,6 @@ public struct ContentView: View {
     @StateObject private var playlistStore = PlaylistStore.shared
     @AppStorage("libraryRootPath") private var libraryRootPath: String = ""
     @AppStorage("libraryRootBookmark") private var libraryRootBookmark: String = ""
-    @AppStorage("backgroundVisualBookmark") private var backgroundVisualBookmark: String = ""
-    @AppStorage("backgroundAudioBookmark") private var backgroundAudioBookmark: String = ""
-    @AppStorage("backgroundAudioVolume") private var backgroundAudioVolume: Double = 1.0
-    @AppStorage("backgroundAudioLoop") private var backgroundAudioLoop: Bool = true
     @AppStorage("thumbnailScale") private var thumbnailScale: Double = 1.0
     @AppStorage("windowCaptureFrameRate") private var windowCaptureFrameRate: Int = 30
     @State private var backgroundAudioVolumeDraft: Double = 1.0
@@ -53,8 +50,6 @@ public struct ContentView: View {
     @State private var lyricsProjectionSize: CGSize?
     @FocusState private var focusedDetailTarget: DetailFocusTarget?
     @State private var securityScopedRoot: URL? = nil
-    @State private var securityScopedBackgroundVisual: URL? = nil
-    @State private var securityScopedBackgroundAudio: URL? = nil
     @StateObject private var screenCaptureManager = ScreenCaptureManager.shared
     @EnvironmentObject private var appUpdateViewModel: AppUpdateViewModel
     @State private var isEditorPreviewAreaCollapsed: Bool = false
@@ -68,13 +63,11 @@ public struct ContentView: View {
         _session = StateObject(wrappedValue: session)
         _flow = StateObject(wrappedValue: session.outputCoordinator.program(session.outputSourceID).flow)
         _outputProfiles = ObservedObject(wrappedValue: session.outputCoordinator.profiles)
-        let prefix = "workspace." + session.outputSourceID.uuidString + "."
-        let legacy = session.outputSourceID == OutputWorkspaceRecord.primaryID
-        _backgroundVisualBookmark = AppStorage(wrappedValue: legacy ? UserDefaults.standard.string(forKey: "backgroundVisualBookmark") ?? "" : "", prefix + "backgroundVisualBookmark")
-        _backgroundAudioBookmark = AppStorage(wrappedValue: legacy ? UserDefaults.standard.string(forKey: "backgroundAudioBookmark") ?? "" : "", prefix + "backgroundAudioBookmark")
-        _backgroundAudioVolume = AppStorage(wrappedValue: legacy ? UserDefaults.standard.object(forKey: "backgroundAudioVolume") as? Double ?? 1 : 1, prefix + "backgroundAudioVolume")
-        _backgroundAudioLoop = AppStorage(wrappedValue: legacy ? UserDefaults.standard.object(forKey: "backgroundAudioLoop") as? Bool ?? true : true, prefix + "backgroundAudioLoop")
+        _backgroundSettings = ObservedObject(wrappedValue: session.backgroundSettings)
     }
+
+    private var backgroundAudioVolume: Double { backgroundSettings.values.audioVolume }
+    private var backgroundAudioLoop: Bool { backgroundSettings.values.audioLoop }
 
     private typealias PreviewSource = PresentationFlowController.PreviewSource
     private var previewSource: PreviewSource {
@@ -243,14 +236,6 @@ public struct ContentView: View {
         .onChange(of: playlistStore.entries) { _, _ in
             reconcilePlaylistSelection()
         }
-        .onChange(of: backgroundVisualBookmark) { _, _ in
-            let bookmark = backgroundVisualBookmark
-            deferSessionChange { session.outputCoordinator.setBackgroundVisualBookmark(bookmark, for: session) }
-            refreshBackgroundVisualAccess()
-        }
-        .onChange(of: backgroundAudioBookmark) { _, _ in
-            refreshBackgroundAudioAccess()
-        }
         .onChange(of: session.backgroundAudioURL) { _, newValue in
             selectedAudioURL = newValue?.standardizedFileURL
         }
@@ -265,11 +250,6 @@ public struct ContentView: View {
         }
         .onChange(of: backgroundAudioVolume) { _, newValue in
             handleBackgroundAudioVolumeChange(newValue)
-        }
-        .onChange(of: backgroundAudioLoop) { _, newValue in
-            deferSessionChange {
-                session.setBackgroundAudioLoop(newValue)
-            }
         }
         .onChange(of: windowCaptureFrameRate) { _, _ in
             syncWindowCaptureFrameRate()
@@ -374,7 +354,7 @@ public struct ContentView: View {
                 importSelectionGeneration = UUID()
                 selectedAudioURL = selection
             },
-            setBackgroundAudioLoop: { backgroundAudioLoop = $0 },
+            setBackgroundAudioLoop: { session.setBackgroundAudioLoop($0) },
             setBackgroundAudioVolumeDraft: { backgroundAudioVolumeDraft = $0 },
             setWindowCaptureFrameRate: { windowCaptureFrameRate = $0 }
         ))
@@ -422,14 +402,9 @@ public struct ContentView: View {
             updateLyricsProjectionSize()
         }
         refreshLibraryRootAccess()
-        refreshBackgroundVisualAccess()
-        refreshBackgroundAudioAccess()
         loadPlaylists()
+        selectedAudioURL = session.backgroundAudioURL?.standardizedFileURL
         backgroundAudioVolumeDraft = backgroundAudioVolume
-        deferSessionChange {
-            session.setBackgroundAudioLoop(backgroundAudioLoop)
-            session.setBackgroundAudioVolume(backgroundAudioVolume)
-        }
     }
 
     private func handleBackgroundAudioVolumeChange(_ newValue: Double) {
@@ -490,10 +465,7 @@ public struct ContentView: View {
     private func handleClearAllLayersNotification(_ notification: Notification) {
         guard workspaceCommands.isActive else { return }
         deferSessionChange {
-            session.outputCoordinator.clearBackgrounds(for: session)
-            flow.hideSlides(in: session)
-            clearBackgroundVisual()
-            clearBackgroundAudio()
+            session.outputCoordinator.clearAllLayers(for: session)
         }
     }
 
@@ -501,7 +473,6 @@ public struct ContentView: View {
         guard workspaceCommands.isActive else { return }
         deferSessionChange {
             session.outputCoordinator.clearBackgrounds(for: session)
-            clearBackgroundVisual()
         }
     }
 
@@ -1268,50 +1239,6 @@ public struct ContentView: View {
         }
     }
 
-    private func refreshBackgroundVisualAccess() {
-        guard !backgroundVisualBookmark.isEmpty else {
-            updateBackgroundVisualSelection(nil)
-            return
-        }
-        if let result = SecurityScopedBookmarks.resolve(backgroundVisualBookmark) {
-            if let updated = result.updatedBookmark {
-                backgroundVisualBookmark = updated
-            }
-            updateBackgroundVisualSelection(result.url)
-        } else {
-            updateBackgroundVisualSelection(nil)
-        }
-    }
-
-    private func refreshBackgroundAudioAccess() {
-        guard !backgroundAudioBookmark.isEmpty else {
-            restoreBackgroundAudioSelection(nil)
-            return
-        }
-        if let result = SecurityScopedBookmarks.resolve(backgroundAudioBookmark) {
-            if let updated = result.updatedBookmark {
-                backgroundAudioBookmark = updated
-            }
-            restoreBackgroundAudioSelection(result.url)
-        } else {
-            restoreBackgroundAudioSelection(nil)
-        }
-    }
-
-    private func updateBackgroundVisualSelection(_ url: URL?) {
-        guard permitFileUse(url) else { return }
-        deferSessionChange {
-            guard permitFileUse(url) else { return }
-            let didChangeAccess = securityScopedBackgroundVisual != url
-            if didChangeAccess {
-                securityScopedBackgroundVisual?.stopAccessingSecurityScopedResource()
-            }
-            securityScopedBackgroundVisual = url
-            if didChangeAccess, let url { _ = url.startAccessingSecurityScopedResource() }
-            session.setBackgroundVisual(url)
-        }
-    }
-
     private func updateLibraryRootAccess(_ url: URL?) {
         guard securityScopedRoot != url else { return }
         fileTrashController.cancel()
@@ -1325,66 +1252,26 @@ public struct ContentView: View {
     private func releaseSecurityScopedAccess() {
         securityScopedRoot?.stopAccessingSecurityScopedResource()
         securityScopedRoot = nil
-        securityScopedBackgroundVisual?.stopAccessingSecurityScopedResource()
-        securityScopedBackgroundVisual = nil
-        securityScopedBackgroundAudio?.stopAccessingSecurityScopedResource()
-        securityScopedBackgroundAudio = nil
-    }
-
-    private func updateBackgroundAudioAccess(_ url: URL?) {
-        let didChangeAccess = securityScopedBackgroundAudio != url
-        if didChangeAccess {
-            securityScopedBackgroundAudio?.stopAccessingSecurityScopedResource()
-        }
-        securityScopedBackgroundAudio = url
-        if didChangeAccess, let url {
-            _ = url.startAccessingSecurityScopedResource()
-        }
-    }
-
-    private func applyBackgroundAudioSelection(_ url: URL?, autoplay: Bool) {
-        guard permitFileUse(url) else { return }
-        session.setBackgroundAudioLoop(backgroundAudioLoop)
-        session.setBackgroundAudioVolume(backgroundAudioVolume)
-        session.setBackgroundAudio(url: url, autoplay: autoplay)
-    }
-
-    private func restoreBackgroundAudioSelection(_ url: URL?) {
-        guard permitFileUse(url) else { return }
-        deferSessionChange {
-            guard permitFileUse(url) else { return }
-            updateBackgroundAudioAccess(url)
-            applyBackgroundAudioSelection(url, autoplay: false)
-        }
     }
 
     private func selectBackgroundAudio(_ url: URL) {
         guard permitFileUse(url) else { return }
         importSelectionGeneration = UUID()
-        updateBackgroundAudioAccess(url)
-        applyBackgroundAudioSelection(url, autoplay: true)
-        if let bookmark = SecurityScopedBookmarks.createBookmark(for: url) {
-            backgroundAudioBookmark = bookmark
-        }
+        session.selectBackgroundAudio(url)
     }
 
-    private func clearBackgroundVisual() {
-        updateBackgroundVisualSelection(nil)
-        backgroundVisualBookmark = ""
-    }
-
-    private func clearBackgroundAudio() {
+    @discardableResult
+    private func clearBackgroundAudio() -> Bool {
         importSelectionGeneration = UUID()
-        updateBackgroundAudioAccess(nil)
-        applyBackgroundAudioSelection(nil, autoplay: false)
-        backgroundAudioBookmark = ""
+        return session.clearBackgroundAudio()
     }
 
     private func applyBackgroundAudioVolume(_ value: Double) {
         let clamped = min(max(value, 0.0), 1.0)
-        backgroundAudioVolume = clamped
         deferSessionChange {
-            session.setBackgroundAudioVolume(clamped)
+            if !session.setBackgroundAudioVolume(clamped) {
+                backgroundAudioVolumeDraft = session.backgroundAudioVolume
+            }
         }
     }
 

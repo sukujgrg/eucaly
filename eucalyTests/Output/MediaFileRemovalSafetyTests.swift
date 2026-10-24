@@ -299,7 +299,7 @@ final class MediaFileRemovalSafetyTests: XCTestCase {
 
     private func coordinator() -> OutputCoordinator {
         OutputCoordinator(profiles: OutputProfileStore(), displays: ProjectionDisplayManager(displays: { [] }),
-                          retainsPreparedSessions: true, ndi: RecordingNDIOutput(), driverFactory: { FakeOutputDriver() })
+                          retainsPreparedSessions: true, network: RecordingNetworkOutput(), driverFactory: { FakeOutputDriver() })
     }
     private func reserve(_ url: URL, outputs: OutputCoordinator, requester: UUID) throws -> OutputCoordinator.FileRemovalReservation {
         if case .admitted(let reservation) = outputs.beginFileRemoval(at: url, requesterWorkspaceID: requester, matchingFile: { $0 == url }) {

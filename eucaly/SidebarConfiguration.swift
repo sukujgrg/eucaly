@@ -45,7 +45,7 @@ struct SidebarConfiguration {
     let onSelectBackgroundAudio: (URL) -> Void
     let onPlayPauseBackgroundAudio: () -> Void
     let onStopBackgroundAudio: () -> Void
-    let onClearBackgroundAudio: () -> Void
+    let onClearBackgroundAudio: () -> Bool
     let onApplyBackgroundAudioVolume: (Double) -> Void
     let onSeekBackgroundAudio: (Double) -> Void
     let onSelectionRequest: (SidebarSelection?, Set<UUID>) -> Bool
@@ -53,7 +53,7 @@ struct SidebarConfiguration {
     let onClearSelectedWindow: () -> Void
 
     let setSelectedAudioURL: (URL?) -> Void
-    let setBackgroundAudioLoop: (Bool) -> Void
+    let setBackgroundAudioLoop: (Bool) -> Bool
     let setBackgroundAudioVolumeDraft: (Double) -> Void
     let setWindowCaptureFrameRate: (Int) -> Void
 }

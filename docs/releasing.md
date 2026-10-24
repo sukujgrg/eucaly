@@ -29,15 +29,25 @@ The repository is derived from the single HTTPS GitHub push URL on `origin`
 and must match the embedded update-feed URL. No version, tag, build-number,
 repository, or validation-bypass flags are needed or accepted.
 
-## NDI helper and external runtime
+## Network helper and media runtimes
 
-The app embeds and signs the arm64 `Contents/Helpers/eucalyNDIHelper` executable
+The app embeds and signs the arm64 `Contents/Helpers/eucalyNetworkHelper` executable
 with the same team as eucaly. Release validation checks its architecture, hardened
 runtime and absence of debugging entitlements. Only this helper has the library
 validation exception needed to load the separately signed NDI runtime. The main
 application must retain library validation. Never copy `libndi.dylib`, an NDI
 installer or NDI Tools into the bundle; the release pipeline rejects bundled NDI
 libraries. Only the MIT-licensed SDK headers and their notices live in the source.
+
+The same helper executable selects OMT through explicit bootstrap configuration.
+OMT uses the pinned MIT SDK 1.0.0.19 libraries in `Vendor/OMT`; Xcode copies and
+signs `libomt.dylib` and `libvmx.dylib` into `Contents/Frameworks/OMT` with the app
+identity. Their license and provenance are included in `Contents/Resources/OMT`.
+Release validation requires both libraries, their arm64 slices and matching
+signatures, as well as those notices. OMT never requires a separately installed
+SDK or .NET runtime. The OMT helper verifies its bundled libraries before loading
+them. Run its `--check-omt-runtime` command after `make build` to verify the signed
+packaging without starting a source. See [OMT outputs](omt-runtime.md).
 
 After `make build`, verify the signed helper can load the installed runtime with
 its `--check-runtime` command. Verify missing-runtime behavior on a separate test

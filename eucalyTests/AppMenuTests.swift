@@ -106,6 +106,8 @@ final class AppMenuTests: XCTestCase {
         slides.performActionForItem(at: slides.index(of: toggle))
         XCTAssertEqual(hub.session.outputActionClock.current, action)
         XCTAssertTrue(hub.outputs.isOpen(hub.nativeRow))
+        hub.session.setBackgroundAudio(url: URL(fileURLWithPath: "/tmp/menu-selected-track.caf"), autoplay: false)
+        defer { hub.session.clearBackgroundAudio() }
         for title in ["Stop Workspace Outputs", "Show/Hide Background", "Pause/Play Background Audio", "Clear All Layers"] {
             XCTAssertTrue(menus.validateMenuItem(try XCTUnwrap(slides.item(withTitle: title))))
         }

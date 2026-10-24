@@ -1,0 +1,93 @@
+{
+  "sdk_version": "1.0.0.19",
+  "source": "https://github.com/openmediatransport/libomtnet/releases/tag/v1.0.0.19",
+  "sdk_archive_sha256": "c62460174499dabe703e3e57372daf5f1dd95f890355d11e30052b9ed35bdac4",
+  "architectures": [
+    "arm64"
+  ],
+  "runtime_bundled": true,
+  "files_sha256": {
+    "BUILDING.md": "6074a3f7b5ad00184409a7dbffa812eb1809e10ecb7e21f8bd8a6b5e08ca88c8",
+    "LICENSE.txt": "5d4b3307ef2b09580c3129b2813963eaeda4b338eaceb87cf6956be40eeb686e",
+    "PATCHES.md": "e8c0e848e143ebade66f3af575cff206394c70521449cd986e5908514dbe9ed0",
+    "README.md": "7f923703f77408184374c4d82ad57a43a2e2baa80e3c527d320b8bcad1c4f0b6",
+    "build-packages.json": "9dd9de94daef1250a0676da6929d6125f398e0105ba7fea866f8b69e0b9c30cd",
+    "include/libomt.h": "863b4b4a642810d9a77bd1e6861b7836990a720182d6e4669a33ac3e3eee4ec9",
+    "lib/libomt.dylib": "d55a2a4ab39b597284a9f7f77660f21331004525d10c3ef675642afbbcbeeb57",
+    "lib/libvmx.dylib": "8a69beac08f040851a88dfd1127b8a4d0141ce3864c56d66e4c08cd287883f37",
+    "patches/0002-return-socket-slot-on-synchronous-failure.patch": "dea0049345ee2a2a49352a1a48ee7765bf17130d97202c4370b92461b72e62ac",
+    "patches/0003-increase-bounded-tcp-send-buffer-to-512k.patch": "ac69c2756251be9b2c389a5be2b69230397f619194b53f79ca7ad6fe30749371",
+    "tests/.gitignore": "bed6308a89cccf01b2576cade9bc0e84c47e1b496ad8fc21750722966ce27692",
+    "tests/Program.cs": "82645a9bacee275ebe1fddb301a1eea9d020285975fd430d1a43ccae3380a02d",
+    "tests/SocketPoolRegression.csproj": "2ca107cc7e1d0b6055f2701f25552c273e3ffcac251c5e2b3f38c3d79471663e"
+  },
+  "notes": "libomt is built from unmodified pinned upstream .19 managed/native sources, using the upstream 64 KiB send-buffer request and four async slots. The unchanged VMX codec and prototype-corrected SDK header retain their recorded release origin. Packaging signs copied binaries with the app identity. No separate .NET runtime is required. Qualification is separate.",
+  "header_local_patch": "omt_shutdown(void) uses a C prototype; unchanged ABI, documented in PATCHES.md.",
+  "runtime_architectures": [
+    "arm64"
+  ],
+  "codec_architectures": [
+    "arm64",
+    "x86_64"
+  ],
+  "local_runtime_build": {
+    "managedCommit": "5395139d45cf47bf9f90364bf68f9960183e7638",
+    "nativeCommit": "bb4b67be8e5964f1017592b9fc5406495e704e5d",
+    "managedTag": "v1.0.0.19",
+    "sdkVersion": "8.0.426",
+    "scope": "Source-built arm64 runtime from unmodified pinned upstream sources; no runtime source patches.",
+    "bufferBytes": 65536,
+    "sha256": "d55a2a4ab39b597284a9f7f77660f21331004525d10c3ef675642afbbcbeeb57",
+    "runtimeArchitecture": "arm64",
+    "sourceChanges": [],
+    "variant": "unmodified upstream 1.0.0.19",
+    "managedSourceState": {
+      "commit": "5395139d45cf47bf9f90364bf68f9960183e7638",
+      "patches": [],
+      "sourceBytesUnmodifiedAfterBuild": true
+    },
+    "sourceArchivesSHA256": {
+      "libomtnet": "97e7596ef0369696cbde522a812169c5ee46747bc29b9cbb1e2574de045893d8",
+      "libomt": "0b678326a18d877105bf00361faeff157f93904024887f46d03a83580edd4fc1"
+    },
+    "buildCommands": [
+      "dotnet build libomtnet.csproj -c Release -f netstandard2.0 -p:TargetFrameworks=netstandard2.0 -p:RestoreConfigFile=/temporary/NuGet.Config -p:NuGetAudit=false",
+      "dotnet publish libomt.csproj -c Release -r osx-arm64 -p:RestoreConfigFile=/temporary/NuGet.Config -p:NuGetAudit=false"
+    ],
+    "buildEnvironment": {
+      "DOTNET_CLI_TELEMETRY_OPTOUT": "1",
+      "DOTNET_GENERATE_ASPNET_CERTIFICATE": "false",
+      "DOTNET_SKIP_FIRST_TIME_EXPERIENCE": "1",
+      "isolatedTemporaryDotnetHome": true,
+      "packageSources": "disabled; verified existing offline cache"
+    },
+    "managedAssemblySHA256": "e00ce87e3697ee500ddbdf27be231f0517caa64a3b2d1b567f99d559757342ad",
+    "codecSHA256": "8a69beac08f040851a88dfd1127b8a4d0141ce3864c56d66e4c08cd287883f37",
+    "nativeAOTRuntime": {
+      "version": "8.0.32",
+      "package": "runtime.osx-arm64.Microsoft.DotNet.ILCompiler",
+      "noticesSHA256": {
+        "LICENSE.TXT": "cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310",
+        "THIRD-PARTY-NOTICES.TXT": "97c1a7b3da6a4c6ad516448719f45114b41a4d4c5aa300a944476e2e4f5da438"
+      }
+    }
+  },
+  "inactive_historical_patches": [
+    {
+      "path": "patches/0002-return-socket-slot-on-synchronous-failure.patch",
+      "sha256": "dea0049345ee2a2a49352a1a48ee7765bf17130d97202c4370b92461b72e62ac",
+      "applied": false
+    },
+    {
+      "path": "patches/0003-increase-bounded-tcp-send-buffer-to-512k.patch",
+      "sha256": "ac69c2756251be9b2c389a5be2b69230397f619194b53f79ca7ad6fe30749371",
+      "applied": false
+    }
+  ],
+  "superseded_runtime": {
+    "version": "1.0.0.19+eucaly.1",
+    "sha256": "425f8ad3d87b7b4e0c8381ca0b2f3b499bbc7f59fecb250a8402b21511920cb9",
+    "variant": "512 KiB buffer + synchronous failure slot ownership repair",
+    "retirementReason": "Public-API lifecycle checks did not reproduce persistent pool capacity loss; application pacing was independently defective. See PATCHES.md and docs/omt-runtime.md."
+  }
+}

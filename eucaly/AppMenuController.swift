@@ -148,7 +148,8 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         case .newLyrics, .searchLibrary, .refresh, .save: return app.workspaceWindows.activeWorkspaceID != nil
         case .slides: return app.outputs.commandSession?.isEmpty == false
         case .stop: return app.outputs.commandWorkspaceID != nil
-        case .background, .audio, .clearBackground, .clearAudio, .clearAll:
+        case .audio: return app.outputs.commandSession?.backgroundAudioURL != nil
+        case .background, .clearBackground, .clearAudio, .clearAll:
             return app.outputs.commandSession != nil
         case .stopAll: return app.outputs.isRunning
         case .settings, .notices, .support, .manageOutputs: return true

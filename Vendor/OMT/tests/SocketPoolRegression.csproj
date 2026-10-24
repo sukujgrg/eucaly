@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <Target Name="CheckUpstreamPath" BeforeTargets="PrepareForBuild" Condition="'$(OMTUpstreamRoot)' == ''">
+    <Error Text="Set OMTUpstreamRoot to a libomtnet checkout containing src/." />
+  </Target>
+  <ItemGroup>
+    <Compile Include="$(OMTUpstreamRoot)/src/OMTSocketAsyncPool.cs" Link="OMTSocketAsyncPool.cs" />
+    <Compile Include="$(OMTUpstreamRoot)/src/OMTBase.cs" Link="OMTBase.cs" />
+  </ItemGroup>
+</Project>

@@ -327,7 +327,7 @@ final class WorkspaceFileRemovalTests: XCTestCase {
         let defaults: UserDefaults
         let root: URL
         let store: OutputProfileStore
-        let ndi = RecordingNDIOutput()
+        let ndi = RecordingNetworkOutput()
         let outputs: OutputCoordinator
         let session: PresentationSession
         let windows: OutputWorkspaceWindows
@@ -338,7 +338,7 @@ final class WorkspaceFileRemovalTests: XCTestCase {
             store = OutputProfileStore(defaults: defaults)
             store.edit { $0.destinations = []; $0.defaultDestinationID = nil }
             outputs = OutputCoordinator(profiles: store, displays: ProjectionDisplayManager(displays: { [] }),
-                                        retainsPreparedSessions: true, ndi: ndi)
+                                        retainsPreparedSessions: true, network: ndi)
             session = outputs.session(workspace: OutputWorkspaceRecord.primaryID)
             windows = makeWorkspaceWindows(outputs: outputs, defaults: defaults)
         }

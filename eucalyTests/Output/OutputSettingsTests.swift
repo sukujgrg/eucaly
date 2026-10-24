@@ -90,49 +90,208 @@ final class OutputSettingsTests: XCTestCase {
         XCTAssertTrue(fixture.controller.removeProfile.isEnabled)
     }
 
-    func testNDITransparencyAndColourEditsPreserveSourceAndOtherOutputs() throws {
+    func testNetworkTransparencyAndColourEditsPreserveSourceAndOtherOutputs() throws {
+        for technology in NetworkOutputTechnology.allCases {
+            let fixture = OutputSettingsFixture(); defer { fixture.close() }
+            fixture.window.setContentSize(.init(width: 820, height: 650))
+            var output = OutputDestinationConfiguration(name: "Online", profileID: OutputProfile.lowerThirdID, monitor: nil)
+            let settings = NetworkOutputSettings(sourceName: "Existing source")
+            output.destination = technology == .ndi ? .ndi(settings) : .omt(settings)
+            let shared = try XCTUnwrap(fixture.store.profile(output.profileID))
+            fixture.store.edit { $0.destinations.append(output); $0.backgroundAudioDestinationID = output.id }
+            fixture.controller.selectDestination(output.id)
+            let editor = try XCTUnwrap(fixture.controller.destinationEditor?.networkEditor)
+            XCTAssertEqual(editor.keyMode.accessibilityLabel(), technology.title + " transparency")
+            XCTAssertTrue(editor.chromaColour.isHiddenOrHasHiddenAncestor)
+            XCTAssertTrue(editor.transparencyNotice.stringValue.contains("inactive"))
+            try fixture.capture(technology.rawValue + "-alpha")
+            let saved = fixture.store.document
+            editor.keyMode.selectItem(at: 1)
+            NSApp.sendAction(try XCTUnwrap(editor.keyMode.action), to: editor.keyMode.target, from: editor.keyMode)
+            XCTAssertFalse(editor.chromaColour.isHiddenOrHasHiddenAncestor)
+            XCTAssertTrue(editor.transparencyNotice.stringValue.contains("receiver"))
+            try fixture.capture(technology.rawValue + "-chroma")
+            XCTAssertEqual(fixture.store.profile(output.profileID), shared)
+            XCTAssertEqual(fixture.store.document.destinations.last?.profileID, output.profileID)
+            editor.chromaColour.color = NSColor(srgbRed: 0.2, green: 0.4, blue: 0.6, alpha: 0.5)
+            NSApp.sendAction(try XCTUnwrap(editor.chromaColour.action), to: editor.chromaColour.target, from: editor.chromaColour)
+            let changed = try XCTUnwrap(fixture.store.document.destinations.last)
+            XCTAssertNotEqual(changed.profileID, output.profileID)
+            XCTAssertEqual(fixture.store.profile(output.profileID), shared)
+            XCTAssertEqual(changed.networkSettings?.sourceID, output.networkSettings?.sourceID)
+            XCTAssertEqual(changed.networkSettings?.sourceName, output.networkSettings?.sourceName)
+            XCTAssertEqual(changed.workspaceID, output.workspaceID)
+            XCTAssertEqual(changed.networkTechnology, technology)
+            XCTAssertEqual(fixture.store.document.destinations[0], saved.destinations[0])
+            XCTAssertEqual(fixture.store.document.backgroundAudioDestinationID, output.id)
+            let colour = try XCTUnwrap(fixture.store.profile(changed.profileID)).background.colour
+            XCTAssertEqual(colour.red, 0.2, accuracy: 0.001); XCTAssertEqual(colour.alpha, 1)
+            editor.keyMode.selectItem(at: 0)
+            NSApp.sendAction(try XCTUnwrap(editor.keyMode.action), to: editor.keyMode.target, from: editor.keyMode)
+            XCTAssertTrue(editor.chromaColour.isHiddenOrHasHiddenAncestor)
+            XCTAssertEqual(fixture.store.profile(changed.profileID)?.background.colour, colour)
+            editor.chromaColour.color = .red
+            NSApp.sendAction(try XCTUnwrap(editor.chromaColour.action), to: editor.chromaColour.target, from: editor.chromaColour)
+            XCTAssertEqual(fixture.store.profile(changed.profileID)?.background.colour, colour, "A late colour-panel callback in Alpha must not alter the remembered key")
+            XCTAssertTrue(fixture.outputs.network.activeIDs.isEmpty)
+            fixture.store.flush()
+            XCTAssertEqual(OutputProfileStore(defaults: fixture.defaults).document, fixture.store.document)
+        }
+    }
+
+    func testAddOMTUsesControlledWorkspaceWithoutChangingNDIOrStartingOutputs() throws {
         let fixture = OutputSettingsFixture(); defer { fixture.close() }
-        fixture.window.setContentSize(.init(width: 820, height: 650))
-        var output = OutputDestinationConfiguration(name: "Online", profileID: OutputProfile.lowerThirdID, monitor: nil)
-        output.ndi = NDIOutputSettings(sourceName: "Existing source")
-        let shared = try XCTUnwrap(fixture.store.profile(output.profileID))
-        fixture.store.edit { $0.destinations.append(output); $0.backgroundAudioDestinationID = output.id }
-        fixture.controller.selectDestination(output.id)
-        let editor = try XCTUnwrap(fixture.controller.destinationEditor?.ndiEditor)
-        XCTAssertEqual(editor.keyMode.accessibilityLabel(), "NDI transparency")
-        XCTAssertTrue(editor.chromaColour.isHiddenOrHasHiddenAncestor)
-        XCTAssertTrue(editor.transparencyNotice.stringValue.contains("inactive"))
-        try fixture.capture("ndi-alpha")
+        let workspace = try XCTUnwrap(fixture.store.addWorkspace(name: "Online"))
+        let session = fixture.outputs.session(workspace: workspace)
+        session.setSlides(LyricsParser.parseDocument("Verse\nRetain this Current").slides)
+        fixture.outputs.focusWorkspace(session)
+        let current = session.currentSlideID
+        let native = fixture.store.document.destinations[0]
+        let defaultID = fixture.store.document.defaultDestinationID
+        NSApp.sendAction(try XCTUnwrap(fixture.controller.addNDI.action), to: fixture.controller.addNDI.target, from: fixture.controller.addNDI)
+        let ndi = try XCTUnwrap(fixture.controller.destinationEditor?.destination)
+        NSApp.sendAction(try XCTUnwrap(fixture.controller.addOMT.action), to: fixture.controller.addOMT.target, from: fixture.controller.addOMT)
+        let omt = try XCTUnwrap(fixture.controller.destinationEditor?.destination)
+        let editor = try XCTUnwrap(fixture.controller.destinationEditor?.networkEditor)
+        XCTAssertEqual(omt.networkTechnology, .omt)
+        XCTAssertNil(omt.ndi); XCTAssertNil(omt.monitor)
+        XCTAssertFalse(omt.isMonitorDestination)
+        XCTAssertFalse(omt.enabled); XCTAssertEqual(omt.workspaceID, workspace)
+        XCTAssertEqual(omt.omt?.sourceName, "eucaly", "NDI and OMT have separate discovery namespaces")
+        XCTAssertEqual(editor.sourceName.accessibilityLabel(), "OMT source name")
+        XCTAssertTrue(editor.formatLabel.stringValue.contains("30 fps"))
+        XCTAssertTrue(editor.formatLabel.stringValue.contains("48 kHz"))
+        XCTAssertEqual(editor.informationButton.title, "OMT Information…")
+        XCTAssertFalse(editor.startButton.isEnabled)
+        let profile = try XCTUnwrap(fixture.store.profile(omt.profileID))
+        XCTAssertEqual(profile.customizedForDestinationID, omt.id)
+        XCTAssertNotEqual(omt.profileID, ndi.profileID)
+        XCTAssertEqual(fixture.store.document.destinations[0], native)
+        XCTAssertEqual(fixture.outputs.destination(ndi.id), ndi)
+        XCTAssertEqual(fixture.store.document.defaultDestinationID, defaultID)
+        XCTAssertEqual(session.currentSlideID, current)
+        XCTAssertTrue(fixture.outputs.network.activeIDs.isEmpty)
+        XCTAssertFalse(fixture.outputs.isRunning)
+        NSApp.sendAction(try XCTUnwrap(fixture.controller.addOMT.action), to: fixture.controller.addOMT.target, from: fixture.controller.addOMT)
+        XCTAssertEqual(fixture.controller.destinationEditor?.destination?.omt?.sourceName, "eucaly 2")
+        fixture.controller.selectProfile(profile.id)
+        XCTAssertTrue(fixture.controller.profileEditor?.usageNotice.stringValue.hasPrefix("OMT outputs") == true)
         let saved = fixture.store.document
-        editor.keyMode.selectItem(at: 1)
-        NSApp.sendAction(try XCTUnwrap(editor.keyMode.action), to: editor.keyMode.target, from: editor.keyMode)
-        XCTAssertFalse(editor.chromaColour.isHiddenOrHasHiddenAncestor)
-        XCTAssertTrue(editor.transparencyNotice.stringValue.contains("receiver"))
-        try fixture.capture("ndi-chroma")
-        XCTAssertEqual(fixture.store.profile(output.profileID), shared)
-        XCTAssertEqual(fixture.store.document.destinations.last?.profileID, output.profileID)
-        editor.chromaColour.color = NSColor(srgbRed: 0.2, green: 0.4, blue: 0.6, alpha: 0.5)
-        NSApp.sendAction(try XCTUnwrap(editor.chromaColour.action), to: editor.chromaColour.target, from: editor.chromaColour)
-        let changed = try XCTUnwrap(fixture.store.document.destinations.last)
-        XCTAssertNotEqual(changed.profileID, output.profileID)
-        XCTAssertEqual(fixture.store.profile(output.profileID), shared)
-        XCTAssertEqual(changed.ndi?.sourceID, output.ndi?.sourceID)
-        XCTAssertEqual(changed.ndi?.sourceName, output.ndi?.sourceName)
-        XCTAssertEqual(changed.workspaceID, output.workspaceID)
-        XCTAssertEqual(fixture.store.document.destinations[0], saved.destinations[0])
-        XCTAssertEqual(fixture.store.document.backgroundAudioDestinationID, output.id)
-        let colour = try XCTUnwrap(fixture.store.profile(changed.profileID)).background.colour
-        XCTAssertEqual(colour.red, 0.2, accuracy: 0.001); XCTAssertEqual(colour.alpha, 1)
-        editor.keyMode.selectItem(at: 0)
-        NSApp.sendAction(try XCTUnwrap(editor.keyMode.action), to: editor.keyMode.target, from: editor.keyMode)
-        XCTAssertTrue(editor.chromaColour.isHiddenOrHasHiddenAncestor)
-        XCTAssertEqual(fixture.store.profile(changed.profileID)?.background.colour, colour)
-        editor.chromaColour.color = .red
-        NSApp.sendAction(try XCTUnwrap(editor.chromaColour.action), to: editor.chromaColour.target, from: editor.chromaColour)
-        XCTAssertEqual(fixture.store.profile(changed.profileID)?.background.colour, colour, "A late colour-panel callback in Alpha must not alter the remembered key")
-        XCTAssertTrue(fixture.outputs.ndi.activeIDs.isEmpty)
+        fixture.controller.setPresented(false); fixture.controller.setPresented(true)
+        XCTAssertEqual(fixture.store.document, saved)
+        XCTAssertTrue(fixture.outputs.network.activeIDs.isEmpty)
+    }
+
+    func testNetworkMusicChoicesUseDestinationIdentityAndOMTNameEditingCommitsAcrossSelection() throws {
+        let fixture = OutputSettingsFixture(); defer { fixture.close() }
+        NSApp.sendAction(try XCTUnwrap(fixture.controller.addNDI.action), to: fixture.controller.addNDI.target, from: fixture.controller.addNDI)
+        var ndi = try XCTUnwrap(fixture.controller.destinationEditor?.destination)
+        NSApp.sendAction(try XCTUnwrap(fixture.controller.addOMT.action), to: fixture.controller.addOMT.target, from: fixture.controller.addOMT)
+        let omt = try XCTUnwrap(fixture.controller.destinationEditor?.destination)
+        ndi.name = "Shared output"
+        fixture.store.edit { document in
+            for index in document.destinations.indices where [ndi.id, omt.id].contains(document.destinations[index].id) {
+                document.destinations[index].name = "Shared output"
+            }
+        }
+        let editor = try XCTUnwrap(fixture.controller.destinationEditor?.networkEditor)
+        editor.render()
+        let choices = editor.audioRoute.itemArray.dropFirst()
+        XCTAssertEqual(Set(choices.compactMap { $0.representedObject as? UUID }), Set([ndi.id, omt.id]))
+        XCTAssertTrue(choices.contains { $0.title.contains("NDI:") })
+        XCTAssertTrue(choices.contains { $0.title.contains("OMT:") })
+        editor.audioRoute.select(editor.audioRoute.itemArray.first { $0.representedObject as? UUID == omt.id })
+        NSApp.sendAction(try XCTUnwrap(editor.audioRoute.action), to: editor.audioRoute.target, from: editor.audioRoute)
+        XCTAssertEqual(fixture.store.document.backgroundAudioDestinationID, omt.id)
+        XCTAssertTrue(fixture.window.makeFirstResponder(editor.sourceName))
+        try XCTUnwrap(editor.sourceName.currentEditor()).string = "Stage OMT"
+        fixture.controller.selectDestination(ndi.id)
+        XCTAssertEqual(fixture.outputs.destination(omt.id)?.omt?.sourceName, "Stage OMT")
+        XCTAssertEqual(fixture.outputs.destination(omt.id)?.omt?.sourceID, omt.omt?.sourceID)
+        XCTAssertEqual(fixture.outputs.destination(ndi.id), ndi)
+        let networkEditor = try XCTUnwrap(fixture.controller.destinationEditor?.networkEditor)
+        XCTAssertEqual(networkEditor.audioRoute.selectedItem?.representedObject as? UUID, omt.id)
+        networkEditor.audioRoute.selectItem(at: 0)
+        NSApp.sendAction(try XCTUnwrap(networkEditor.audioRoute.action), to: networkEditor.audioRoute.target, from: networkEditor.audioRoute)
+        XCTAssertNil(fixture.store.document.backgroundAudioDestinationID)
+        fixture.controller.selectDestination(omt.id)
+        XCTAssertTrue(fixture.window.makeFirstResponder(editor.sourceName))
+        try XCTUnwrap(editor.sourceName.currentEditor()).string = "Invalid/Source"
+        try pressReturn(in: editor.sourceName, window: fixture.window)
+        XCTAssertFalse(editor.validationLabel.stringValue.isEmpty)
+        XCTAssertEqual(fixture.outputs.destination(omt.id)?.omt?.sourceName, "Stage OMT")
+        XCTAssertTrue(fixture.window.makeFirstResponder(editor.sourceName))
+        try XCTUnwrap(editor.sourceName.currentEditor()).string = "Recovered OMT"
+        try pressReturn(in: editor.sourceName, window: fixture.window)
+        XCTAssertTrue(editor.validationLabel.stringValue.isEmpty)
+        XCTAssertEqual(fixture.outputs.destination(omt.id)?.omt?.sourceName, "Recovered OMT")
+        XCTAssertTrue(fixture.outputs.network.activeIDs.isEmpty)
         fixture.store.flush()
         XCTAssertEqual(OutputProfileStore(defaults: fixture.defaults).document, fixture.store.document)
+    }
+
+    func testOMTStartStopAndRetryRemainExplicitAndNameEditsRetireOnlyThatSource() throws {
+        let driver = RecordingNetworkOutput()
+        let fixture = OutputSettingsFixture(network: driver); defer { fixture.close() }
+        let session = fixture.outputs.session(workspace: OutputWorkspaceRecord.primaryID)
+        session.setSlides(LyricsParser.parseDocument("Verse\nPrepared OMT Current").slides)
+        let current = session.currentSlideID
+        NSApp.sendAction(try XCTUnwrap(fixture.controller.addOMT.action), to: fixture.controller.addOMT.target, from: fixture.controller.addOMT)
+        let destination = try XCTUnwrap(fixture.controller.destinationEditor)
+        let editor = try XCTUnwrap(destination.networkEditor)
+        let id = destination.destinationID
+        XCTAssertFalse(editor.startButton.isEnabled)
+        destination.enabledButton.performClick(nil)
+        fixture.controller.reload()
+        XCTAssertTrue(editor.startButton.isEnabled)
+        XCTAssertTrue(driver.starts.isEmpty)
+        editor.startButton.performClick(nil)
+        XCTAssertEqual(driver.starts, [id])
+        XCTAssertEqual(editor.startButton.title, "Stop Output")
+        editor.startButton.performClick(nil)
+        XCTAssertFalse(driver.activeIDs.contains(id))
+        XCTAssertEqual(editor.startButton.title, "Start Output")
+        editor.startButton.performClick(nil)
+        driver.fail(id); editor.render()
+        XCTAssertEqual(editor.startButton.title, "Retry")
+        editor.startButton.performClick(nil)
+        XCTAssertTrue(driver.activeIDs.contains(id))
+        XCTAssertTrue(fixture.window.makeFirstResponder(editor.sourceName))
+        try XCTUnwrap(editor.sourceName.currentEditor()).string = "Renamed OMT"
+        XCTAssertTrue(fixture.window.makeFirstResponder(nil))
+        XCTAssertFalse(driver.activeIDs.contains(id), "Changing source identity requires a new explicit Start")
+        XCTAssertEqual(fixture.outputs.destination(id)?.omt?.sourceName, "Renamed OMT")
+        XCTAssertEqual(session.currentSlideID, current)
+        XCTAssertEqual(fixture.outputs.destination(id)?.workspaceID, session.outputSourceID)
+        XCTAssertEqual(driver.starts, [id, id, id])
+    }
+
+    func testOMTOperationsStayVisibleAtMinimumSizeAndWhileConfigurationScrolls() throws {
+        let fixture = OutputSettingsFixture(); defer { fixture.close() }
+        NSApp.sendAction(try XCTUnwrap(fixture.controller.addOMT.action), to: fixture.controller.addOMT.target, from: fixture.controller.addOMT)
+        let editor = try XCTUnwrap(fixture.controller.destinationEditor?.networkEditor)
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            fixture.window.appearance = NSAppearance(named: appearance)
+            for size in [NSSize(width: 780, height: 580), NSSize(width: 1100, height: 820)] {
+                fixture.window.setContentSize(size)
+                editor.publishedNameLabel.stringValue = "Published: " + String(repeating: "OMT source ", count: 15)
+                editor.publishedNameLabel.isHidden = false
+                editor.performanceLabel.stringValue = "30.0 / 30 fps · New frame age 20 ms"
+                editor.performanceLabel.isHidden = false
+                fixture.window.layoutIfNeeded(); fixture.controller.view.layoutSubtreeIfNeeded()
+                let before = fixture.controller.view.convert(editor.startButton.bounds, from: editor.startButton)
+                XCTAssertTrue(fixture.controller.view.bounds.contains(before))
+                XCTAssertNil(editor.startButton.enclosingScrollView)
+                XCTAssertNil(editor.statusLabel.enclosingScrollView)
+                let form = try XCTUnwrap(editor.sourceName.enclosingScrollView)
+                XCTAssertLessThanOrEqual(fixture.controller.view.bounds.width, size.width)
+                form.documentView?.scroll(.init(x: 0, y: form.documentView?.bounds.height ?? 0))
+                fixture.window.layoutIfNeeded()
+                XCTAssertEqual(fixture.controller.view.convert(editor.startButton.bounds, from: editor.startButton), before)
+                form.documentView?.scroll(.zero)
+                try fixture.capture("omt-settings-\(Int(size.width))-\(appearance.rawValue)")
+            }
+        }
     }
 
     func testOutputsNavigationPerformance() {
@@ -703,7 +862,7 @@ final class OutputSettingsTests: XCTestCase {
         let first = try XCTUnwrap(controller.destinationEditor)
         let creationMenu = controller.addOutputMenu.menu
         XCTAssertNotNil(creationMenu?.items.first?.image, "The pull-down's first item owns the + glyph")
-        XCTAssertEqual(creationMenu?.items.map(\.title), ["+", "Native Monitor Output", "NDI Output"])
+        XCTAssertEqual(creationMenu?.items.map(\.title), ["+", "Native Monitor Output", "NDI Output", "OMT Output"])
         XCTAssertEqual(controller.makeDefault.title, "Default")
         XCTAssertFalse(controller.makeDefault.isEnabled)
         XCTAssertTrue(fixture.window.makeFirstResponder(first.nameField))
@@ -766,7 +925,7 @@ final class OutputSettingsTests: XCTestCase {
         controller.selectDestination(original.id)
         XCTAssertFalse(controller.addOutputMenu.isHiddenOrHasHiddenAncestor)
         XCTAssertTrue(controller.addProfile.isHiddenOrHasHiddenAncestor)
-        XCTAssertEqual(controller.addOutputMenu.menu?.numberOfItems, 3)
+        XCTAssertEqual(controller.addOutputMenu.menu?.numberOfItems, 4)
         // Removing the old compatibility row must not turn inventory updates
         // into an assignment on the new first output.
         NSApp.sendAction(try XCTUnwrap(controller.addNative.action), to: controller.addNative.target, from: controller.addNative)
@@ -1141,6 +1300,14 @@ final class OutputSettingsTests: XCTestCase {
     }
 
 
+    private func pressReturn(in field: NSTextField, window: NSWindow) throws {
+        let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
+        let key = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
+            characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
+        editor.keyDown(with: key)
+    }
+
     private func alignmentFrame(_ view: NSView, in ancestor: NSView) -> NSRect {
         view.superview!.convert(view.alignmentRect(forFrame: view.frame), to: ancestor)
     }
@@ -1162,13 +1329,13 @@ private final class OutputSettingsFixture {
     let controller: ManageOutputsController
     let window: NSWindow
 
-    init(monitors: Bool = false) {
+    init(monitors: Bool = false, network: (any NetworkOutputDriving)? = nil) {
         defaults = UserDefaults(suiteName: suite)!
         let monitor = ProjectionMonitor(id: 1, identity: UUID().uuidString, name: "Audience monitor", frame: CGRect(x: 0, y: 0, width: 1920, height: 1080))
         displays = ProjectionDisplayManager(displays: { monitors ? [monitor] : [] })
         if monitors { displays.select(monitor.target) }
         store = OutputProfileStore(defaults: defaults, monitor: monitors ? monitor.target : nil)
-        outputs = OutputCoordinator(profiles: store, displays: displays, driverFactory: { FakeOutputDriver() })
+        outputs = OutputCoordinator(profiles: store, displays: displays, network: network ?? NetworkOutputRouter(), driverFactory: { FakeOutputDriver() })
         controller = ManageOutputsController(coordinator: outputs)
         window = NSWindow(contentRect: .init(x: -10000, y: -10000, width: 820, height: 650),
             styleMask: [.titled, .resizable], backing: .buffered, defer: false)

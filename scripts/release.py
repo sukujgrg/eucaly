@@ -363,12 +363,13 @@ def verify_arm64_app(app):
     info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
     framework = app / "Contents/Frameworks/Sparkle.framework"
     binaries = [app / "Contents/MacOS" / info["CFBundleExecutable"]]
-    helper = app / "Contents/Helpers/eucalyNDIHelper"
+    helper = app / "Contents/Helpers/eucalyNetworkHelper"
     binaries.append(helper)
     binaries.extend(framework / path for path in (
         "Sparkle", "Autoupdate", "Updater.app/Contents/MacOS/Updater",
         "XPCServices/Installer.xpc/Contents/MacOS/Installer",
         "XPCServices/Downloader.xpc/Contents/MacOS/Downloader"))
+    binaries.extend(app / "Contents/Frameworks/OMT" / name for name in ("libomt.dylib", "libvmx.dylib"))
     for binary in binaries:
         if not binary.is_file() or not binary.resolve().is_relative_to(app.resolve()):
             raise ReleaseError(f"Required executable is missing or outside the app: {binary}")
@@ -402,6 +403,10 @@ def verify_app(app, state, team):
     if info.get("SUEnableInstallerLauncherService") or info.get("SUEnableDownloaderService"):
         raise ReleaseError("The unsandboxed app must not enable Sparkle's sandbox XPC services.")
     binaries = verify_arm64_app(app)
+    for name in ("LICENSE.txt", "provenance.json"):
+        notice = app / "Contents/Resources/OMT" / name
+        if not notice.is_file() or not notice.resolve().is_relative_to(app.resolve()):
+            raise ReleaseError(f"The bundled OMT runtime is missing its required notice: {name}")
     if any(app.rglob("libndi*")):
         raise ReleaseError("NDI must use a separately installed runtime; do not bundle libndi.")
     run("codesign", "--verify", "--deep", "--strict", app)
@@ -421,9 +426,9 @@ def verify_app(app, state, team):
         if binary == binaries[0] and entitlements.get("com.apple.security.app-sandbox"):
             raise ReleaseError("eucaly must retain its unsandboxed file access (arm64).")
         if binary == binaries[0] and entitlements.get("com.apple.security.cs.disable-library-validation"):
-            raise ReleaseError("Only the NDI helper may disable library validation, not eucaly.")
+            raise ReleaseError("Only the network helper may disable library validation, not eucaly.")
         if binary == binaries[1] and not entitlements.get("com.apple.security.cs.disable-library-validation"):
-            raise ReleaseError("The NDI helper must permit its separately signed vendor runtime.")
+            raise ReleaseError("The network helper must permit its separately signed vendor runtime.")
 
 
 def notarize(directory, state, args, notary_zip):

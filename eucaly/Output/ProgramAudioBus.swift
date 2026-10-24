@@ -1,4 +1,5 @@
 @preconcurrency import AVFoundation
+import Darwin
 
 /// The programme level sent to outputs, independently of AVPlayer's local
 /// playback volume. The audio callback reads this snapshot off the main actor.
@@ -11,51 +12,123 @@ nonisolated final class ProgramAudioGain: @unchecked Sendable {
     }
 }
 
+/// AVAudioPCMBuffer lazily constructs typed channel tables. Even read-only
+/// access to a cold buffer can race when several destinations first use it.
+/// Capture its metadata and raw planes on the producer before fanout, retaining
+/// the buffer only as the sample-memory owner. No consumer re-enters that owner.
+nonisolated private final class ProgramPCMStorage: @unchecked Sendable {
+    private struct Plane {
+        let channels: UInt32
+        let bytes: UInt32
+        let data: UnsafeMutableRawPointer?
+    }
+    private final class ConversionMetadata {
+        let list: UnsafeMutableAudioBufferListPointer
+        init(_ planes: [Plane]) {
+            list = AudioBufferList.allocate(maximumBuffers: planes.count)
+            for (index, plane) in planes.enumerated() {
+                list[index] = AudioBuffer(mNumberChannels: plane.channels, mDataByteSize: plane.bytes, mData: plane.data)
+            }
+        }
+        deinit { free(list.unsafeMutablePointer) }
+    }
+    struct Stereo {
+        let left: UnsafePointer<Float>
+        let right: UnsafePointer<Float>
+    }
+    private let owner: AVAudioPCMBuffer
+    let format: AVAudioFormat
+    let frameLength: Int
+    let sampleRate: Double
+    private let commonFormat: AVAudioCommonFormat
+    private let planes: [Plane]
+    let stereo: Stereo?
+    let byteCount: Int
+
+    init(_ buffer: AVAudioPCMBuffer) {
+        owner = buffer
+        let format = buffer.format, frames = Int(buffer.frameLength)
+        self.format = format; frameLength = frames; sampleRate = format.sampleRate
+        commonFormat = format.commonFormat
+        let planes: [Plane] = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: buffer.audioBufferList)).map {
+            Plane(channels: $0.mNumberChannels, bytes: $0.mDataByteSize, data: $0.mData)
+        }
+        self.planes = planes; byteCount = planes.reduce(0) { $0 + Int($1.bytes) }
+        if format.commonFormat == .pcmFormatFloat32, !format.isInterleaved, format.channelCount == 2,
+           planes.count == 2, planes.allSatisfy({ $0.channels == 1 && Int($0.bytes) >= frames * MemoryLayout<Float>.stride }),
+           let left = planes[0].data, let right = planes[1].data {
+            stereo = Stereo(left: UnsafePointer(left.assumingMemoryBound(to: Float.self)),
+                            right: UnsafePointer(right.assumingMemoryBound(to: Float.self)))
+        } else { stereo = nil }
+    }
+
+    var isAllZero: Bool {
+        switch commonFormat {
+        case .pcmFormatFloat32, .pcmFormatFloat64, .pcmFormatInt16, .pcmFormatInt32: break
+        default: return false
+        }
+        return !planes.isEmpty && planes.allSatisfy {
+            guard let data = $0.data else { return false }
+            return UnsafeRawBufferPointer(start: data, count: Int($0.bytes)).allSatisfy { $0 == 0 }
+        }
+    }
+
+    /// Converters receive their own AVFoundation metadata and lazy tables while
+    /// the immutable sample memory stays shared. The deallocator retains its
+    /// backing owner through the entire lifetime of this destination-local view.
+    func makeConversionView() -> AVAudioPCMBuffer? {
+        guard frameLength > 0, !planes.isEmpty else { return nil }
+        let metadata = ConversionMetadata(planes)
+        guard let view = AVAudioPCMBuffer(pcmFormat: format, bufferListNoCopy: metadata.list.unsafePointer, deallocator: { [self, metadata] _ in
+            withExtendedLifetime((self, metadata)) {}
+        }) else { return nil }
+        view.frameLength = AVAudioFrameCount(frameLength)
+        return view
+    }
+}
+
 /// Mixes only explicitly selected live program players. Preview playback and other apps can
 /// never enter this bus. AVPlayer's local output volume is independent of asset
 /// PCM; managed players supply their separate programme gain to the output bus.
 nonisolated final class ProgramAudioBus: @unchecked Sendable {
     typealias StemDelivery = @Sendable (AVAudioPCMBuffer, AVAudioPCMBuffer, AVAudioTime) -> Void
     struct Input {
-        let buffer: AVAudioPCMBuffer
+        fileprivate let storage: ProgramPCMStorage
+        var byteCount: Int { storage.byteCount }
         let range: CMTimeRange
         let startsNewStream: Bool
         init(_ buffer: AVAudioPCMBuffer, at time: CMTime, duration: CMTime? = nil, startsNewStream: Bool = false) {
-            self.buffer = buffer
+            let storage = ProgramPCMStorage(buffer)
+            self.storage = storage
             range = CMTimeRange(start: time, duration: duration ?? CMTime(
-                seconds: Double(buffer.frameLength) / buffer.format.sampleRate,
-                preferredTimescale: CMTimeScale(buffer.format.sampleRate.rounded())))
+                seconds: Double(storage.frameLength) / storage.sampleRate,
+                preferredTimescale: CMTimeScale(storage.sampleRate.rounded())))
             self.startsNewStream = startsNewStream
         }
         var isUnmappedPadding: Bool {
             guard range.duration == .zero else { return false }
             // All-zero bytes are silence in these signed/float PCM formats.
             // Keep unknown formats and nonzero processing tails conservatively.
-            switch buffer.format.commonFormat {
-            case .pcmFormatFloat32, .pcmFormatFloat64, .pcmFormatInt16, .pcmFormatInt32: break
-            default: return false
-            }
-            let buffers = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList)
-            return !buffers.isEmpty && buffers.allSatisfy { audio in
-                guard let data = audio.mData else { return false }
-                return UnsafeRawBufferPointer(start: data, count: Int(audio.mDataByteSize)).allSatisfy { $0 == 0 }
-            }
+            return storage.isAllZero
         }
     }
     static let maximumBufferedBytes = 8 * 1024 * 1024
     private struct Segment {
         let start: Int64
-        let buffer: AVAudioPCMBuffer
+        let storage: ProgramPCMStorage
+        let channels: ProgramPCMStorage.Stereo
         let admission: UInt64
         var offset = 0
         var count: Int
         var end: Int64 { start + Int64(count) }
-        init(start: Int64, buffer: AVAudioPCMBuffer, admission: UInt64, offset: Int = 0, count: Int? = nil) {
-            self.start = start; self.buffer = buffer; self.admission = admission
-            self.offset = offset; self.count = count ?? Int(buffer.frameLength)
+        init(start: Int64, storage: ProgramPCMStorage, channels: ProgramPCMStorage.Stereo,
+             admission: UInt64, offset: Int = 0, count: Int? = nil) {
+            self.start = start; self.storage = storage; self.channels = channels; self.admission = admission
+            self.offset = offset; self.count = count ?? storage.frameLength
         }
         func slice(_ begin: Int64, _ end: Int64) -> Self {
-            .init(start: begin, buffer: buffer, admission: admission, offset: offset + Int(begin - start), count: Int(end - begin))
+            .init(start: begin, storage: storage, channels: channels, admission: admission,
+                  offset: offset + Int(begin - start), count: Int(end - begin))
         }
     }
     private let queue = DispatchQueue(label: "eucaly.program-audio", qos: .userInitiated)
@@ -159,7 +232,7 @@ nonisolated final class ProgramAudioBus: @unchecked Sendable {
             history.append(clock)
             clocks[id] = Array(history.suffix(64))
             #if DEBUG
-            NDIAudioTrace.record("playback-clock", sample: clock.start, source: id,
+            NetworkAudioTrace.record("playback-clock", sample: clock.start, source: id,
                 mediaSample: clock.mediaSample(clock.start), rate: clock.rate, gain: clock.gain)
             #endif
         }
@@ -182,7 +255,7 @@ nonisolated final class ProgramAudioBus: @unchecked Sendable {
     }
     // Runs only on the mixer queue.
     private func convert(_ source: Input, id: UUID) {
-        let input = source.buffer, time = source.range.start
+        let input = source.storage, time = source.range.start
         guard time.isNumeric, source.range.duration.isNumeric, source.range.duration >= .zero,
               !source.isUnmappedPadding else { return }
         let timestamp = time.convertScale(48000, method: .roundHalfAwayFromZero).value
@@ -213,11 +286,16 @@ nonisolated final class ProgramAudioBus: @unchecked Sendable {
             state.hasProcessingTail = !mapped
         }
         let converter = state.converter
+        let direct = input.format == format
+        let conversionInput = direct ? nil : input.makeConversionView()
+        guard direct || conversionInput != nil else {
+            sourceFailure?(id, "Programme audio could not prepare its PCM conversion view."); return
+        }
         var supplied = false; var packets = segments[id] ?? []
         var conversion: AVAudioConverterOutputStatus
         repeat {
-            let output: AVAudioPCMBuffer
-            if input.format == format {
+            let output: ProgramPCMStorage
+            if direct {
                 // Streaming conversion batches even identical PCM formats:
                 // a 4,474-frame callback can initially yield only 4,096 frames.
                 // The copied input is immutable, so retain all of it directly
@@ -226,18 +304,21 @@ nonisolated final class ProgramAudioBus: @unchecked Sendable {
                 conversion = .inputRanDry
             } else {
                 guard let converted = AVAudioPCMBuffer(pcmFormat: format,
-                    frameCapacity: AVAudioFrameCount(Double(input.frameLength) * 48000 / input.format.sampleRate + 64)) else { break }
+                    frameCapacity: AVAudioFrameCount(Double(input.frameLength) * 48000 / input.sampleRate + 64)) else { break }
                 var error: NSError?
                 conversion = converter.convert(to: converted, error: &error) { _, status in
                     if supplied { status.pointee = .noDataNow; return nil }
-                    supplied = true; status.pointee = .haveData; return input
+                    supplied = true; status.pointee = .haveData; return conversionInput
                 }
                 guard error == nil else { break }
-                output = converted
+                output = ProgramPCMStorage(converted)
             }
             if output.frameLength > 0 {
+                guard let channels = output.stereo else {
+                    sourceFailure?(id, "Programme audio returned invalid stereo PCM planes."); return
+                }
                 let start = state.outputEnd
-                let replacement = Segment(start: start, buffer: output, admission: nextAdmission)
+                let replacement = Segment(start: start, storage: output, channels: channels, admission: nextAdmission)
                 nextAdmission &+= 1
                 // Decoders can preroll overlapping ranges after resume/seek.
                 // Replace only the overlap, preserving the unplayed prefix/tail.
@@ -253,7 +334,12 @@ nonisolated final class ProgramAudioBus: @unchecked Sendable {
                 } else { packets.append(replacement) }
                 state.outputEnd = start + Int64(output.frameLength)
                 #if DEBUG
-                Self.tracePCM("convert-output", buffer: output, source: id, mediaSample: start)
+                if NetworkAudioTrace.isEnabled {
+                    NetworkAudioTrace.record("convert-output", source: id, mediaSample: start,
+                        frames: output.frameLength, sampleRate: output.sampleRate,
+                        leftRMS: NetworkAudioTrace.rms(channels.left, frames: output.frameLength),
+                        rightRMS: NetworkAudioTrace.rms(channels.right, frames: output.frameLength))
+                }
                 #endif
             }
         } while conversion == .haveData
@@ -263,10 +349,10 @@ nonisolated final class ProgramAudioBus: @unchecked Sendable {
         // dropping the lowest timestamp would repeatedly discard that prefix.
         // Recent tail packets still survive for pending pre-rewind blocks.
         let bytesPerFrame = MemoryLayout<Float>.stride * Int(format.channelCount)
-        var bufferedBytes = packets.reduce(0) { $0 + Int($1.buffer.frameLength) * bytesPerFrame }
+        var bufferedBytes = packets.reduce(0) { $0 + $1.storage.frameLength * bytesPerFrame }
         while !packets.isEmpty && (packets.count > 512 || bufferedBytes > Self.maximumBufferedBytes) {
             guard let oldest = packets.indices.min(by: { packets[$0].admission < packets[$1].admission }) else { break }
-            bufferedBytes -= Int(packets.remove(at: oldest).buffer.frameLength) * bytesPerFrame
+            bufferedBytes -= packets.remove(at: oldest).storage.frameLength * bytesPerFrame
         }
         segments[id] = packets
     }
@@ -315,13 +401,13 @@ nonisolated final class ProgramAudioBus: @unchecked Sendable {
                     while packetIndex < packets.count && packets[packetIndex].end <= sourceSample { packetIndex += 1 }
                     guard clock.gain > 0, !silenced.contains(id), packetIndex < packets.count else { continue }
                     let packet = packets[packetIndex]
-                    guard sourceSample >= packet.start, let source = packet.buffer.floatChannelData else { continue }
+                    guard sourceSample >= packet.start else { continue }
                     #if DEBUG
                     covered += 1
                     #endif
-                    for channel in 0..<2 {
-                        destination[channel][Int(position - sample)] += source[channel][packet.offset + Int(sourceSample - packet.start)] * clock.gain
-                    }
+                    let targetIndex = Int(position - sample), sourceIndex = packet.offset + Int(sourceSample - packet.start)
+                    destination[0][targetIndex] += packet.channels.left[sourceIndex] * clock.gain
+                    destination[1][targetIndex] += packet.channels.right[sourceIndex] * clock.gain
                 }
             }
             // A running player's clock can re-anchor backward during recovery.
@@ -329,7 +415,7 @@ nonisolated final class ProgramAudioBus: @unchecked Sendable {
             // convert(), so that correction never waits for decoding again.
             #if DEBUG
             if requested > 0 {
-                NDIAudioTrace.record("mixer-coverage", sample: sample, source: id,
+                NetworkAudioTrace.record("mixer-coverage", sample: sample, source: id,
                     mediaSample: firstMediaSample, frames: requested, covered: covered, sampleRate: format.sampleRate)
             }
             #endif
@@ -358,13 +444,13 @@ nonisolated final class ProgramAudioBus: @unchecked Sendable {
     #if DEBUG
     fileprivate static func tracePCM(_ event: String, buffer: AVAudioPCMBuffer, sample: Int64 = 0,
                                      source: UUID? = nil, mediaSample: Int64? = nil) {
-        guard NDIAudioTrace.isEnabled, let data = buffer.floatChannelData else { return }
+        guard NetworkAudioTrace.isEnabled, let data = buffer.floatChannelData else { return }
         let frames = Int(buffer.frameLength), stride = buffer.format.isInterleaved ? Int(buffer.format.channelCount) : 1
         let right = buffer.format.channelCount > 1 ? (buffer.format.isInterleaved ? data[0] + 1 : data[1]) : data[0]
-        NDIAudioTrace.record(event, sample: sample, source: source, mediaSample: mediaSample,
+        NetworkAudioTrace.record(event, sample: sample, source: source, mediaSample: mediaSample,
             frames: frames, sampleRate: buffer.format.sampleRate,
-            leftRMS: NDIAudioTrace.rms(data[0], frames: frames, stride: stride),
-            rightRMS: NDIAudioTrace.rms(right, frames: frames, stride: stride))
+            leftRMS: NetworkAudioTrace.rms(data[0], frames: frames, stride: stride),
+            rightRMS: NetworkAudioTrace.rms(right, frames: frames, stride: stride))
     }
     #endif
 }
