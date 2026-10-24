@@ -15,6 +15,7 @@ final class OMTSDKIntegrationTests: XCTestCase {
         sender.start(generation: id, configuration: .init(purpose: .sender, sourceName: "eucaly OMT audio zero \(id)", technology: .omt))
         try await ready(log)
         let source = try XCTUnwrap(log.state.status?.sourceName)
+        let endpoint = try await OMTLoopbackEndpoint.address(for: sender, generation: id)
         let initialPID = await sender.diagnosticProcessIdentifier(generation: id)
         let pid = try XCTUnwrap(initialPID)
         sender.renderMedia(.init(request: .init(generation: id, revision: 1, colour: .chromaGreen), foreground: nil, background: nil))
@@ -24,7 +25,7 @@ final class OMTSDKIntegrationTests: XCTestCase {
         XCTAssertEqual(noClient.sendCalls, noClient.zeroReturnCalls)
         XCTAssertEqual(noClient.positiveReturnCalls, 0); XCTAssertEqual(noClient.bytesReturned, 0)
         XCTAssertEqual(noClient.framesEnqueued, 0); XCTAssertEqual(noClient.framesDropped, 0)
-        probe.start(generation: probeID, configuration: .init(purpose: .loopbackProbe, sourceName: source, technology: .omt))
+        probe.start(generation: probeID, configuration: .init(purpose: .loopbackProbe, sourceName: endpoint, technology: .omt))
         try await ready(video)
         probe.render(request(probeID, revision: 1))
         try await until("decoded video-only subscriber and continued zero audio returns") {
@@ -38,6 +39,7 @@ final class OMTSDKIntegrationTests: XCTestCase {
         await fulfillment(of: [responsive], timeout: 1)
         let continuedPID = await sender.diagnosticProcessIdentifier(generation: id)
         XCTAssertEqual(continuedPID, pid); XCTAssertEqual(log.state.readyCount, 1)
+        XCTAssertEqual(log.state.status?.sourceName, source)
         XCTAssertTrue(log.state.status?.validMetrics == true)
         pcm.stop(); await probe.stopAndWait(); await sender.stopAndWait()
         try healthy(log); try healthy(video)
@@ -51,6 +53,7 @@ final class OMTSDKIntegrationTests: XCTestCase {
         sender.start(generation: id, configuration: .init(purpose: .sender, sourceName: "eucaly OMT statistics \(id)", technology: .omt))
         try await ready(log)
         let source = try XCTUnwrap(log.state.status?.sourceName)
+        let endpoint = try await OMTLoopbackEndpoint.address(for: sender, generation: id)
         sender.renderMedia(.init(request: .init(generation: id, revision: 1, colour: .chromaGreen), foreground: nil, background: nil))
         try await until("no-client OMT zero-return observations") { (log.state.status?.omtVideoStatistics?.zeroReturnCalls ?? 0) >= 3 }
         let noClient = try XCTUnwrap(log.state.status?.omtVideoStatistics)
@@ -69,7 +72,7 @@ final class OMTSDKIntegrationTests: XCTestCase {
         } else {
             XCTAssertNil(log.state.status?.omtVideoDiagnostics, "Normal helper startup must not enable opt-in history")
         }
-        probe.start(generation: probeID, configuration: .init(purpose: .loopbackProbe, sourceName: source, technology: .omt))
+        probe.start(generation: probeID, configuration: .init(purpose: .loopbackProbe, sourceName: endpoint, technology: .omt))
         try await ready(received)
         probe.render(request(probeID, revision: 1))
         try await until("decoded OMT video with enqueue counters") {
@@ -107,8 +110,9 @@ final class OMTSDKIntegrationTests: XCTestCase {
         sender.start(generation: id, configuration: .init(purpose: .sender, sourceName: "eucaly OMT pixels \(id)", technology: .omt))
         try await ready(sendLog)
         let source = try XCTUnwrap(sendLog.state.status?.sourceName)
+        let endpoint = try await OMTLoopbackEndpoint.address(for: sender, generation: id)
         sender.render(request(id, revision: 1))
-        probe.start(generation: probeID, configuration: .init(purpose: .loopbackProbe, sourceName: source, technology: .omt))
+        probe.start(generation: probeID, configuration: .init(purpose: .loopbackProbe, sourceName: endpoint, technology: .omt))
         try await ready(receiveLog)
         var revision: UInt64 = 0, timecode: Int64 = -1
         func receive(_ matches: (OMTPicture) -> Bool) async throws -> OMTPicture {
@@ -155,8 +159,9 @@ final class OMTSDKIntegrationTests: XCTestCase {
         sender.start(generation: id, configuration: .init(purpose: .sender, sourceName: "eucaly OMT audio \(id)", technology: .omt))
         try await ready(sendLog)
         let source = try XCTUnwrap(sendLog.state.status?.sourceName)
+        let endpoint = try await OMTLoopbackEndpoint.address(for: sender, generation: id)
         sender.renderMedia(.init(request: .init(generation: id, revision: 1, colour: .chromaGreen), foreground: nil, background: nil))
-        probe.start(generation: probeID, configuration: .init(purpose: .audioProbe, sourceName: source, technology: .omt))
+        probe.start(generation: probeID, configuration: .init(purpose: .audioProbe, sourceName: endpoint, technology: .omt))
         try await ready(receiveLog)
         pcm.start()
         var revision: UInt64 = 0

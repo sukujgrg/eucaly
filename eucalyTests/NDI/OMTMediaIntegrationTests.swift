@@ -30,10 +30,13 @@ final class OMTMediaIntegrationTests: XCTestCase {
             for index in $0.profiles.indices { $0.profiles[index].background.visible = false }
         }
         let senderEvents = OMTMediaEvents()
+        var sender: NDIHelperSupervisor?
         var senderCount = 0, nativeCount = 0
         let router = NDIOutputRouter(senderFactory: { receive in
             senderCount += 1
-            return NDIHelperSupervisor { senderEvents.record($0); receive($0) }
+            let helper = NDIHelperSupervisor { senderEvents.record($0); receive($0) }
+            sender = helper
+            return helper
         })
         let outputs = OutputCoordinator(profiles: store, displays: displays, retainsPreparedSessions: true,
             ndi: router, driverFactory: { nativeCount += 1; return FakeOutputDriver() })
@@ -51,7 +54,8 @@ final class OMTMediaIntegrationTests: XCTestCase {
             let accepted = try XCTUnwrap(outputs.snapshot(for: row.id).acceptedPDF)
             let source = try XCTUnwrap(router.statistics[row.id]?.sourceName)
             let senderGeneration = try XCTUnwrap(senderEvents.state.generation)
-            let picture = OMTMediaProbe(source: source, audio: false)
+            let endpoint = try await OMTLoopbackEndpoint.address(for: XCTUnwrap(sender), generation: senderGeneration)
+            let picture = OMTMediaProbe(source: endpoint, audio: false)
             videoProbe = picture
             try await picture.start()
             try await until("decoded red PDF page") { picture.events.state.pictures.contains { $0.pixel.isRed } }
@@ -87,7 +91,7 @@ final class OMTMediaIntegrationTests: XCTestCase {
             // must not play through the operator's default macOS audio output.
             outputs.closeOutput(native)
 
-            let sound = OMTMediaProbe(source: source, audio: true)
+            let sound = OMTMediaProbe(source: endpoint, audio: true)
             audioProbe = sound
             try await sound.start()
             let videoBoundary = Self.now100ns

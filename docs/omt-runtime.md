@@ -109,6 +109,16 @@ video/audio properties. They do not establish physical Apple TV HDMI delivery,
 audible quality, end-to-end latency or sustained performance. Those require
 separate device observation. Screen sharing remains deferred for both protocols.
 
+The required loopback fixtures connect to the exact test-owned sender helper's
+TCP listener at `127.0.0.1`. They inspect only that helper's current PID and use
+its actual port; they never assume port 6400 or select another process's source.
+The SDK's advertised `HOSTNAME (NAME)` requires independent Bonjour discovery
+and hostname resolution in each receiver; loopback fixtures must also work on
+hosted CI runners without those LAN services. Numeric loopback keeps these codec,
+media and teardown regressions independent of LAN discovery. The fixtures still
+check the SDK's published source identity; these tests do not establish Bonjour
+discovery on a physical network.
+
 Validation recorded on 23 October 2026:
 
 - `make build` archived and exported the signed app successfully; the final build
