@@ -64,17 +64,27 @@ final class NDISubmissionWorker: @unchecked Sendable {
     private var metrics = NDISubmissionMetrics()
     private var stopping = false // protected by lock; blocks late GPU/audio handoffs
     private var videoFenceScheduled = false // protected by lock; latest epoch only
+    private var diagnosticGeneration: UUID? // SDK video-owner queue only.
+    private var videoDiagnostics: OMTVideoSDKDiagnostics? // SDK video-owner queue only.
     #if DEBUG
     private var videoInProgress = false // protected by lock
     #endif
 
-    func start(name: String, technology: NetworkOutputTechnology = .ndi, completion: @escaping @Sendable (NDIHelperStatus?, String?) -> Void) {
+    func start(name: String, technology: NetworkOutputTechnology = .ndi, generation: UUID? = nil,
+               completion: @escaping @Sendable (NDIHelperStatus?, String?) -> Void) {
         queue.async { [self] in
             do {
                 let runtime = try NetworkHelperRuntime(technology: technology)
                 guard runtime.createSender(name: name), let actual = runtime.sourceName else {
                     throw NDIRuntime.RuntimeError.message("The \(technology.title) source could not be created.")
                 }
+                #if DEBUG
+                if technology == .omt, let generation,
+                   ProcessInfo.processInfo.environment["EUCALY_OMT_VIDEO_DIAGNOSTICS"] == "1" {
+                    diagnosticGeneration = generation
+                    videoDiagnostics = .init()
+                }
+                #endif
                 lock.lock()
                 self.runtime = runtime
                 report.runtimeVersion = runtime.version; report.sourceName = actual
@@ -200,7 +210,12 @@ final class NDISubmissionWorker: @unchecked Sendable {
     private func tick() {
         lock.lock()
         guard !stopping else { lock.unlock(); return }
-        let next = pending, epoch = contentEpoch; pending = nil; let fault = self.fault; lock.unlock()
+        let next = pending, epoch = contentEpoch; pending = nil; let fault = self.fault
+        let previousStatistics = report.omtVideoStatistics
+        let previousConnections = previousStatistics == nil ? nil : report.connections
+        let previousTimecode = previousStatistics == nil ? nil : report.lastTimecode
+        let callIndex = report.submittedFrames &+ 1
+        lock.unlock()
         if currentEpoch != epoch { current = nil; currentEpoch = epoch }
         if let next { current = next }
         guard let current, let runtime else { return }
@@ -215,7 +230,7 @@ final class NDISubmissionWorker: @unchecked Sendable {
         let tick = started / 100
         let timecode = max(tick, lastTick + 1); lastTick = timecode
         let previous = borrowed
-        runtime.sendVideo(current.baseAddress, format: current.format, timecode: Int64(timecode))
+        let returnedBytes = runtime.sendVideo(current.baseAddress, format: current.format, timecode: Int64(timecode))
         let finished = DispatchTime.now().uptimeNanoseconds
         metrics.submitted(at: finished, newPictureProducedAt: current !== submittedPicture ? current.producedAtNanoseconds : nil)
         withExtendedLifetime(previous) {} // Previous async borrow is now synchronized.
@@ -223,11 +238,19 @@ final class NDISubmissionWorker: @unchecked Sendable {
         borrowed = runtime.borrowsVideoAfterReturn ? current : nil
         let connections = runtime.connections
         let omtStatistics = runtime.omtVideoStatistics
+        if let generation = diagnosticGeneration, let returnedBytes, let omtStatistics {
+            videoDiagnostics?.record(.init(generation: generation, contentEpoch: epoch, callIndex: callIndex,
+                timecode: Int64(timecode), startedNanoseconds: started, finishedNanoseconds: finished,
+                format: current.format, rawByteCount: current.format.byteCount, returnedBytes: returnedBytes,
+                connectionsAfter: max(0, Int(connections)), previousConnections: previousConnections,
+                previousTimecode: previousTimecode, previousStatistics: previousStatistics, statistics: omtStatistics))
+        }
         lock.lock(); report.submittedFrames &+= 1; report.lastTimecode = Int64(timecode)
         report.effectiveFramesPerSecond = metrics.framesPerSecond
         report.slowCadence = metrics.slowCadence; report.frameAgeMilliseconds = metrics.frameAgeMilliseconds
         report.submissionMilliseconds = Double(finished - started) / 1_000_000
         report.omtVideoStatistics = omtStatistics
+        report.omtVideoDiagnostics = videoDiagnostics
         report.connections = max(0, Int(connections)); lock.unlock()
     }
     func stop(colour: OutputColour, completion: @escaping @Sendable (NDIHelperShutdown) -> Void) {
@@ -272,7 +295,7 @@ final class NDISubmissionWorker: @unchecked Sendable {
         }
         let timecode = max(DispatchTime.now().uptimeNanoseconds / 100, lastTick + 1)
         pixels.withUnsafeMutableBytes { bytes in
-            runtime.sendVideo(bytes.baseAddress!, format: format, timecode: Int64(timecode))
+            _ = runtime.sendVideo(bytes.baseAddress!, format: format, timecode: Int64(timecode))
             runtime.flush()
         }
         return .init(terminalPixelBGRA: pixel, videoFormat: format, terminalUYVY: pair, terminalAlpha: UInt8(byte(colour.alpha)))

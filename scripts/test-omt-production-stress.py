@@ -19,8 +19,8 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTROL = Path("/tmp/eucaly-omt-production-stress-20261024")
-# Renewed by the operator for the coordinated wired audio-warning investigation.
-CUTOFF = datetime.fromisoformat("2026-10-24T13:00:00+11:00").timestamp()
+# Renewed when the operator requested native, NDI and OMT output together.
+CUTOFF = datetime.fromisoformat("2026-10-24T14:25:00+11:00").timestamp()
 ACTIONS = ("stablehold", "hold", "marker", "status", "lyrics", "slides", "video", "generated", "image", "pdf",
            "preview", "loadpreview", "select", "next", "hide", "show", "clear", "pause", "play", "seek", "transfer",
            "start", "retry", "restart", "stop", "enable", "disable", "fault", "music", "musicstop", "position", "finish")
@@ -54,7 +54,7 @@ def submit(control, payload, wait=0):
 
 def measure_processes(parent, output, control, lan_host, stop, errors, identities):
     """Record only this launch's tree and exact test-host PID, never process args."""
-    with (output / "processes.csv").open("w", newline="") as stream:
+    with (output / "processes.csv").open("w", newline="") as stream, (output / "other-eucaly-processes.jsonl").open("w") as other_stream:
         writer = csv.writer(stream)
         writer.writerow(("elapsed_seconds", "pid", "ppid", "rss_kib", "cpu_percent", "command"))
         start = time.monotonic()
@@ -82,6 +82,14 @@ def measure_processes(parent, output, control, lan_host, stop, errors, identitie
                     if len(row) == 5 and int(row[0]) in owned:
                         writer.writerow((round(time.monotonic() - start, 3), *row))
                 stream.flush()
+                # Reuse this exact process snapshot to record competing app/test
+                # work without extra polling, arguments or environment data.
+                unrelated = [{"pid": int(row[0]), "ppid": int(row[1]), "executable": row[4]}
+                             for row in rows if len(row) == 5 and int(row[0]) not in owned
+                             and Path(row[4]).name in ("eucaly", "eucalyNDIHelper", "xcodebuild", "swift-frontend", "swiftc", "clang")]
+                other_stream.write(json.dumps({"observedAtUTC": datetime.now(timezone.utc).isoformat(),
+                    "elapsedSeconds": round(time.monotonic() - start, 3), "processes": unrelated}, sort_keys=True) + "\n")
+                other_stream.flush()
                 status_file = output / "status.json"
                 if status_file.exists():
                     status = read_json(status_file)
@@ -184,8 +192,36 @@ def summarize(output, require_complete=False):
                         violations.add("Program player failed: " + source["playerError"])
                     if sdk.get("surfacePoolHighWaterMark", 0) > 4:
                         violations.add("GPU pool exceeded four leases: " + source.get("name", ""))
-                    if source.get("localPlayerVolume", 0) != 0:
-                        violations.add("Network-only player became audible locally: " + source.get("name", ""))
+                    expected_volume = source.get("expectedLocalPlayerVolume", 0)
+                    has_program_player = bool(source["playerIdentity"]) if "playerIdentity" in source else True
+                    if expected_volume not in (0, 1) or (has_program_player and source.get("localPlayerVolume", 0) != expected_volume):
+                        violations.add("Program player violated local route policy: " + source.get("name", ""))
+                    if "expectedMusicLocalVolume" in source and source.get("musicLocalVolume", 0) != source["expectedMusicLocalVolume"]:
+                        violations.add("Background music violated local route policy: " + source.get("name", ""))
+                    if source.get("technology") == "native":
+                        native = source.get("native", {})
+                        driver = native.get("driver", {})
+                        if source.get("expectedOpen"):
+                            if not source.get("active") or not driver.get("windowVisible"):
+                                violations.add("Expected native projection was not visible")
+                            if driver.get("physicalDisplayUUID") != native.get("requestedPhysicalDisplayUUID"):
+                                violations.add("Native projection used a different physical display")
+                            if source.get("expectedProgramVideoVisible", bool(source.get("playerIdentity"))) and (not native.get("programVideoReady")
+                                    or driver.get("nativePlayerIdentity") != source.get("playerIdentity")
+                                    or driver.get("nativePlayerItemIdentity") != source.get("playerItemIdentity")):
+                                violations.add("Native projection did not retain the shared ready program player")
+                        if source.get("active"):
+                            native_phase = item.setdefault("nativeOutputs", {}).setdefault(source["id"], {
+                                "observations": 0, "firstPlayerTime": source.get("playerTime"),
+                                "lastPlayerTime": source.get("playerTime"), "windowNumbers": [],
+                                "physicalDisplayUUID": driver.get("physicalDisplayUUID"),
+                                "presentedFrameCadenceMeasured": False})
+                            native_phase["observations"] += 1
+                            native_phase["lastPlayerTime"] = source.get("playerTime")
+                            number = driver.get("windowNumber")
+                            if number and number not in native_phase["windowNumbers"]:
+                                native_phase["windowNumbers"].append(number)
+                        continue
                     if not source.get("active"):
                         continue
                     source_phase = item["sources"].setdefault(source["id"], {"sourceName": source.get("sourceName"),
@@ -217,6 +253,9 @@ def summarize(output, require_complete=False):
             violations.add("The sender run did not reach complete")
         if not latest.get("allOwnedHelpersExited", False) or latest.get("activeOutputs", 1) != 0:
             violations.add("Exact-child cleanup was not established")
+        if latest.get("nativeOutputConfigured") and (not latest.get("allOwnedNativeWindowsClosed", False)
+                or latest.get("coordinatorHasActiveOutputs", True)):
+            violations.add("Native output cleanup was not established")
     return {"observations": observations, "senderState": latest.get("state", "no status"),
             "runID": latest.get("runID"), "invariantViolations": sorted(violations), "performanceWarnings": sorted(warnings),
             "audioTotals": latest.get("audioOracle", {}).get("totals", {}), "phases": phases,
@@ -231,7 +270,7 @@ def run(args):
         raise ValueError("--seconds must be between 30 and 10800")
     deadline = datetime.fromisoformat(args.deadline).timestamp()
     if not time.time() + 45 < deadline <= CUTOFF:
-        raise ValueError("Run deadline must be future and no later than 2026-10-24 13:00 Sydney")
+        raise ValueError("Run deadline must be future and no later than 2026-10-24 14:25 Sydney")
     ipaddress.ip_address(args.lan_host)
     media = args.media.expanduser().resolve(strict=True) if args.media else None
     if media and (not media.is_file() or not os.access(media, os.R_OK)):
@@ -262,6 +301,16 @@ def run(args):
     else:
         env.pop("EUCALY_NDI_AUDIO_TRACE_DIRECTORY", None)
         env.pop("TEST_RUNNER_EUCALY_NDI_AUDIO_TRACE_DIRECTORY", None)
+    if args.video_diagnostics:
+        settings["EUCALY_OMT_VIDEO_DIAGNOSTICS"] = "1"
+    else:
+        env.pop("EUCALY_OMT_VIDEO_DIAGNOSTICS", None)
+        env.pop("TEST_RUNNER_EUCALY_OMT_VIDEO_DIAGNOSTICS", None)
+    if args.native_display_uuid:
+        settings["EUCALY_OMT_PRODUCTION_NATIVE_DISPLAY_UUID"] = str(uuid.UUID(args.native_display_uuid)).upper()
+    else:
+        env.pop("EUCALY_OMT_PRODUCTION_NATIVE_DISPLAY_UUID", None)
+        env.pop("TEST_RUNNER_EUCALY_OMT_PRODUCTION_NATIVE_DISPLAY_UUID", None)
     if media:
         settings["EUCALY_OMT_PRODUCTION_MEDIA_PATH"] = str(media)
     else:
@@ -325,7 +374,7 @@ def main():
     modes = parser.add_subparsers(dest="mode", required=True)
     launch = modes.add_parser("run", help="launch the genuine source; hold its initial movie until explicit commands")
     launch.add_argument("--seconds", type=int, default=7200)
-    launch.add_argument("--deadline", default="2026-10-24T13:00:00+11:00")
+    launch.add_argument("--deadline", default="2026-10-24T14:25:00+11:00")
     launch.add_argument("--output", type=Path, default=ROOT / "build/OMTProductionStress-20261024")
     launch.add_argument("--control-dir", type=Path, default=CONTROL)
     launch.add_argument("--derived-data", type=Path, default=ROOT / "build/DerivedDataOMTProduction")
@@ -333,11 +382,13 @@ def main():
     launch.add_argument("--lan-host", default="192.168.1.3")
     launch.add_argument("--without-building", action="store_true", help="use already built optimized Debug tests; performs no compilation")
     launch.add_argument("--audio-trace", action="store_true", help="enable bounded existing per-block app/helper timing traces in this run's evidence directory")
+    launch.add_argument("--video-diagnostics", action="store_true", help="retain bounded exact-call OMT video zero-return/drop observations")
+    launch.add_argument("--native-display-uuid", help="allow an isolated native output only on this explicitly selected physical display; start it with a separate command")
     send = modes.add_parser("command", help="queue one explicit phase and wait for its acknowledgement")
     send.add_argument("action", choices=ACTIONS)
     send.add_argument("--control-dir", type=Path, default=CONTROL)
     send.add_argument("--workspace", choices=("Home", "Online"))
-    send.add_argument("--source", choices=("primary", "second", "ndi"))
+    send.add_argument("--source", choices=("primary", "second", "ndi", "native"))
     send.add_argument("--path", type=Path)
     send.add_argument("--phase")
     send.add_argument("--text")

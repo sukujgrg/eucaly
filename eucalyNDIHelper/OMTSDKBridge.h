@@ -18,8 +18,10 @@ int eucaly_omt_send_video(eucaly_omt *omt, void *bytes, int width, int height,
 int eucaly_omt_send_audio(eucaly_omt *omt, const void *planar_pcm, int64_t sample_time);
 // SDK-video-owner queue only. Vendor counters describe the FIRST connected
 // video channel, not delivery or all clients; they reset with channel changes.
-// Drops include exhausted async pools and oversized frames. Zero returns also
-// include no subscribers and remain sender-lifetime observations, not errors.
+// These generic channel totals include metadata sends and any received media.
+// Drops include send-pool/oversize and incoming-media-pool rejection; ordinary
+// receiver metadata is consumed before the receive-drop branch. Zero returns
+// also include no subscribers and are sender-lifetime observations, not errors.
 typedef struct {
     int64_t frames_enqueued;
     int64_t frames_dropped;
@@ -29,8 +31,9 @@ typedef struct {
 } eucaly_omt_video_statistics;
 void eucaly_omt_get_video_statistics(eucaly_omt *omt, eucaly_omt_video_statistics *statistics);
 // SDK-audio-owner thread only. Channel totals describe the FIRST connected
-// audio subscriber and may reset/disappear on reconnect. They count enqueue
-// attempts, not async completion or delivery. Return totals span sender life;
+// audio subscriber and may reset/disappear on reconnect. These generic totals
+// include metadata sends and any received media/rejection, not async completion
+// or delivery. Return totals span sender life;
 // zero also means no audio subscriber/handshake and is not an output failure.
 typedef struct {
     int64_t frames_enqueued;

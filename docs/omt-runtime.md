@@ -511,3 +511,188 @@ full app regression and signed-build checks above belong to the preceding
 diagnostics commit; they were not rerun for this documentation follow-up.
 Python syntax and `git diff --check` passed. Independent review found no
 actionable issues in this follow-up or its evidence claims.
+
+### Video rejection investigation with native, NDI and OMT together
+
+The next authorized check investigated the baseline's single SDK video rejection
+and added a real native projection alongside one NDI Monitor and one Apple TV
+OMT receiver. The sender retained its wired gigabit interface; the remote NDI
+Mac retained its 100 Mbps link. The movie, 1080p30 Medium VMX output, stereo audio
+and shipping `1.0.0.19+eucaly.1` transport remained unchanged. These were optimized
+Debug test-host runs, not sustained performance tests of the signed Release GUI.
+
+The original rejection can be bracketed to 29 SDK calls between source
+checkpoints at 01:19:06–07 UTC: 28 enqueues, one additional zero return and one
+additional channel drop. The retained first-channel counters are generic and
+can include metadata or received media; they do not alone identify a rejected
+video call. The exact call was not retained and cannot be reconstructed from
+the one-second status export. The source kept the same player, item, helper,
+format and content epoch, away from an EOF or operator transition. Four kernel
+samples showed the 512 KiB video socket full in this bracket, and the retained
+header trace's largest video PSH gap was 302.824 ms within the same cluster.
+Audio was not observed full there. This supports bounded video-send pressure;
+it does not identify a receiving NIC, cable or scheduling component as the cause.
+The separate earlier EOF-window admission dip remains a different event.
+
+The follow-up adds opt-in `EUCALY_OMT_VIDEO_DIAGNOSTICS=1` history to Debug OMT
+helpers. It pairs the synchronous return with its generation, content epoch,
+call index, explicit timestamp, packed format, raw byte count, host start/end,
+connection context and the existing before/after channel queries on the video
+owner queue. Separate first-four/recent-four sets retain connected zero-return
+observations and observed drop-counter increases. No payloads, unbounded trace,
+new SDK query, retry, delay or admission-policy change is added. No-subscriber
+zeros and channel-counter resets retain their existing meaning. Normal helpers
+leave this field absent, Release does not enable it, and NDI retains its void
+async API and buffer leases. Terminal shutdown pictures are outside this live
+call history.
+
+Two isolated product directories used identical app, helper and VMX bytes, the
+same pinned managed/native sources and the same NativeAOT dependency hashes.
+The control kept the slot-return repair but requested 64 KiB; the shipping arm
+kept 512 KiB. The 64 KiB transport hash was
+`96584ea4ef060ff0fd22cb93521c6ae2e01b4c6ae462aeac86ebf997404491a3`;
+the repository's 512 KiB library stayed
+`425f8ad3d87b7b4e0c8381ca0b2f3b499bbc7f59fecb250a8402b21511920cb9`.
+The control was never installed in `Vendor/OMT` or the operator's app.
+
+Both arms explicitly started the normal native Audience window on the auxiliary
+DELL P2721Q, physical UUID `D3C19136-E594-42E7-938E-942EFB5ADE85`, at its full
+1920×1080-point frame with backing scale 2. Native activation retained the exact
+program player/item, one frame sampler and both network helper generations.
+One matching AVPlayerView reported ready video with nonempty bounds. Native
+window 393 remained open from 02:56:54–03:09:06 UTC in the control; window 939
+remained open from 03:11:52–03:24:30 in the shipping arm. The operator confirmed
+the control's native picture was visible and smooth, for an unspecified duration.
+Window/readiness checks and player progression do not count native presented
+frames or establish sustained physical scanout. Normal native local audio was
+enabled without changing network gain or adding standalone music.
+
+Seek acknowledgements initially reported an actual position of 96.3 seconds,
+so comparison used observed first-pass movie positions, not the nominal seek
+label or source elapsed time. Both receivers were connected in these interiors:
+
+| Arm | Actual movie positions | Interior duration | SDK calls / enqueues | SDK zero + drop increments |
+| --- | --- | ---: | ---: | ---: |
+| 64 KiB + slot repair | 140.438–209.173 s | 68.733 s | 2,056 / 2,048 | 8 / 8 |
+| 512 KiB + slot repair | 140.582–209.480 s | 68.896 s | 2,057 / 2,057 | 0 / 0 |
+
+All eight control exceptions are retained exactly: each returned zero with a
+one-frame drop increase, no enqueue/byte increase, two connections and a
+3.260–4.650 ms synchronous call. They occurred around movie positions
+151.250–183.351 seconds. Both windows retained epoch 1, one player/item/helper
+generation, UYVY 4,147,200-byte input, one sampler, native output and two NDI SDK
+connections; the four-surface pool's high-water mark was three. A later empty
+peer state does not erase the retained observations. First/recent sets cover
+these eight events, not a complete per-frame history.
+
+| TV receiver arm | Measured interval | Video admissions / rate | Audio admissions | Runtime gates |
+| --- | ---: | ---: | ---: | --- |
+| 64 KiB + slot repair | 184.989 s | 5,527 / 29.877380 fps | 9,251 | Failed cadence; memory sample coverage insufficient |
+| 512 KiB + slot repair | 604.9996 s | 18,107 / 29.928946 fps | 30,250 | All 23 passed |
+
+Neither arm reported late audio, route-horizon violations, audio timestamp
+discontinuities, timeline resets, pool stalls, reconnects or corrupt frames.
+The source PCM oracle observed 75,522 blocks in the control and 77,011 in the
+shipping arm with no invalid/nonfinite/out-of-range samples, timestamp gaps,
+regressions, duplicates or overlaps. Those are source-admission observations,
+not a complete per-block receiving or listening trace.
+Receiver baseline/latest video timestamps select source checkpoint interiors
+containing 9,187 and 30,212 OMT audio calls respectively: all were positive with
+matching enqueue increments and no zero-return/drop increase. These interior
+counts omit checkpoint edges and must not be substituted for receiver totals;
+positive 40–7,720-byte encodings include valid silent-channel blocks.
+The 512 KiB arm's minimum audio lead including warmup was 140.684 ms against a
+101.333 ms route horizon. Its TV native renderer reported three drops among
+17,957 frames over 599.997 seconds (0.01671%); these receiver drops are distinct
+from the source's zero SDK video rejections. Receiver memory remained
+48.89–53.84 MiB with nominal thermal state. The control's memory gate did not
+establish a 20 MiB leak: its short post-warmup record lacked the required coverage.
+Neither arm establishes continuous audible quality or physical HDMI latency.
+
+Kernel queue telemetry supports retaining 512 KiB on this wired setup: the
+64 KiB video socket was full in 99 of 875 retained samples, versus 12 of 5,902
+for 512 KiB. The control's telemetry ended before its receiver measurement did,
+so these unequal and partly covered samples are not normalized stall rates.
+Audio peaked at 15,440 bytes without an observed full queue in either arm.
+One NDI UDP stream was present in each retained Monitor snapshot. Queue
+occupancy is not a measurement of unsent delay.
+
+The first control Monitor selection delivered audio without UDP video; selecting
+None and then the same source restored 1080/30p with the same source helpers and
+native window. This setup recovery was retained, not attributed to an app fix.
+The control SDK log later discovered unrelated test-source names on port 6401;
+the matched comparison and all eight exceptions preceded that discovery. DNS
+records alone neither prove a concurrent workload nor exclude earlier activity.
+The shipping arm's existing process sampler found no unowned eucaly/helper; one
+brief xcodebuild observation coincided with a read-only VMX disassembly query,
+not an observed build/test. These limits prevent claiming perfect environmental
+isolation or that Ethernet alone solved the earlier Wi-Fi warnings.
+
+The source audit narrows the rejection mechanism. At fixed 1920×1080 the largest
+possible input buffer is BGRA 8,294,400 bytes. The bridge zero-initializes the
+OMT frame and supplies zero frame metadata; the pinned encoder's destination
+buffer grows only to input length plus that metadata. Its actual bundled arm64
+VMX_SaveTo checks capacity and returns zero on overflow, or the written length
+on success. Even a buffer retained after an earlier BGRA frame therefore cannot
+exceed 8,294,448 bytes including the 48-byte video headers, below the SDK's
+10 MiB channel limit. Ordinary receiver control metadata is consumed before
+the SDK's incoming-AV drop branch, and OMTReceiver sends no AV backchannel.
+The normal helper path excludes oversize and incoming-media rejection here;
+the paired returns and queue pressure support bounded send-pool exhaustion.
+This does not recover the original unrecorded call or prove arbitrary VMX inputs
+safe; the binary audit establishes the relevant bound, not complete source and
+binary identity.
+
+No new eucaly retry, pool growth or quality change is justified by this evidence.
+Keep both existing local SDK patches. The actual pinned socket-pool regression
+still loses one of four slots on null/disposed synchronous sends without the
+repair and passes all four cases with it; Cat6 cannot repair that ownership bug.
+A separate actual-SDK channel harness passes the same bounded-pressure policy
+with original and repaired sources: four paused-peer slots fill, a fifth frame
+is rejected once, then all four frames return byte-identically and sending
+recovers after the peer resumes. That behavior is intentional bounded admission,
+not a reason to hide drops. The matched wired comparison gives positive evidence
+for the 512 KiB request independently of the earlier Wi-Fi measurements. It does
+not establish the optimal buffer size for every receiver/network or authorize an
+upstream/fork push.
+
+The result supports supervised 1080p30 wired use on this tested topology, while
+retaining the two documented patches. It is not an unqualified production
+certification: the earlier 20-minute run still had one pressure rejection,
+the new three-output run was about ten minutes, hardware used an instrumented
+Debug host, the NDI Mac had a 100 Mbps constraint, and sustained Release-GUI
+behavior, physical A/V latency, continuous listening and other topologies remain
+unmeasured. Existing failures and gate thresholds were not relaxed.
+
+Both source runs completed with zero source invariant violations or unexpected
+router failures. All exact helpers exited, both native windows closed and the
+coordinator had no active outputs. The 512 KiB source retired automatically at
+03:24:30 UTC before the authorized 03:25 cutoff. TV returned to its ordinary
+unselected source picker, NDI Monitor was left on None and temporary telemetry
+and keep-awake processes ended. No further hardware work was run.
+
+Source evidence is retained under
+`build/OMTProductionStress-20261024/three-output-20261024/{arm-64k,arm-512k}`;
+toolchain, pool regression and offline common-position analysis are under
+`build/OMTProductionStress-20261024/video-rejection-followup`.
+Receiver/network/VMX evidence belongs to OMTReceiver's
+`build/WiredThreeOutput-20261024`, with receiver run IDs
+`E446FCD6-FA33-4ECC-956B-66F4ADF121BA` and
+`5D1267C9-6DA6-4172-ADE4-F38ADB3E4402`. These local raw artifacts are not
+shipping app resources. Rebuild the shipping package using
+`Vendor/OMT/BUILDING.md`; the 64 KiB control used the same procedure with only
+the send-buffer constant reverted, retaining the slot repair and dependency pins.
+
+Final integration passed `make test`: 1,020 XCTest cases, six expected opt-in
+skips and zero failures, plus one Swift Testing case, seven feed regressions and
+103 release-workflow regressions. A focused optimized run passed 21 observation,
+native-input, audio-oracle, harness and real-SDK cases; the isolated 64 KiB SDK
+diagnostic check also passed. Eight offline Python evidence-gate regressions,
+Python syntax and `git diff --check` passed. `make build` archived/exported the
+signed Release app; deep/strict signature verification and finite no-source OMT
+and NDI load checks passed. All nine unique packaged Mach-O binaries contain
+arm64; app/helper/transport remain arm64-only, the packaged transport executable
+text matches the shipping 512 KiB library, and packaged OMT notices/provenance
+match their repository bytes. Independent integrated review found no actionable
+issues. Building and loading the Release package do not supply the missing
+sustained Release-GUI or physical-output qualification.

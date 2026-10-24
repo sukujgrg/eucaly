@@ -214,7 +214,7 @@ final class HelperService: @unchecked Sendable {
         case .renderOnly, .renderYUV: ready(nil)
         case .sender:
             let sender = NDISubmissionWorker(); self.sender = sender
-            sender.start(name: configuration.sourceName, technology: configuration.technology) { [self] status, error in
+            sender.start(name: configuration.sourceName, technology: configuration.technology, generation: self.generation) { [self] status, error in
                 queue.async { [self] in
                     guard !stopping else { return }
                     guard let status else { fail(error ?? "\(configuration.technology.title) startup failed"); return }

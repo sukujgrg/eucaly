@@ -130,7 +130,8 @@ enum NetworkHelperRuntime {
             zeroReturnCalls: value.zero_return_calls, positiveReturnCalls: value.positive_return_calls,
             bytesReturned: value.bytes_returned)
     }
-    func sendVideo(_ bytes: UnsafeMutableRawPointer, format: NDIVideoPixelFormat, timecode: Int64) {
+    @discardableResult
+    func sendVideo(_ bytes: UnsafeMutableRawPointer, format: NDIVideoPixelFormat, timecode: Int64) -> Int32? {
         switch self {
         case .ndi(let runtime):
             if format == .bgra {
@@ -138,11 +139,12 @@ enum NetworkHelperRuntime {
             } else {
                 eucaly_ndi_send_yuv(runtime.handle, bytes, Int32(NDIHelperWire.width), Int32(NDIHelperWire.height), Int32(format.bytesPerRow), format == .uyva, timecode)
             }
+            return nil // NDI's asynchronous API supplies no enqueue result.
         case .omt(let runtime):
             // The SDK returns bytes offered to its bounded TCP channel pools.
             // Zero is valid with no subscribers or a full channel pool. As for
             // NDI, submission counters do not claim receiver delivery.
-            _ = eucaly_omt_send_video(runtime.handle, bytes, Int32(NDIHelperWire.width), Int32(NDIHelperWire.height), Int32(format.bytesPerRow), format.rawValue, timecode)
+            return eucaly_omt_send_video(runtime.handle, bytes, Int32(NDIHelperWire.width), Int32(NDIHelperWire.height), Int32(format.bytesPerRow), format.rawValue, timecode)
         }
     }
     func sendAudio(_ bytes: UnsafeRawPointer, sampleTime: Int64) -> Int32? {

@@ -44,6 +44,7 @@ final class OMTSDKIntegrationTests: XCTestCase {
     }
 
     func testVideoStatisticsDistinguishNoClientCallsFromEnqueuedFrames() async throws {
+        let expectsDiagnostics = ProcessInfo.processInfo.environment["EUCALY_OMT_VIDEO_DIAGNOSTICS"] == "1"
         let log = OMTEvents(), received = OMTEvents(), id = UUID(), probeID = UUID()
         let sender = NDIHelperSupervisor(event: log.record), probe = NDIHelperSupervisor(event: received.record)
         defer { sender.stop(); probe.stop() }
@@ -57,16 +58,36 @@ final class OMTSDKIntegrationTests: XCTestCase {
         XCTAssertEqual(noClient.framesEnqueued, 0); XCTAssertEqual(noClient.bytesEnqueued, 0)
         XCTAssertEqual(noClient.framesDropped, 0, "No subscriber is not a pool rejection")
         XCTAssertTrue(noClient.isValid); try healthy(log)
+        if expectsDiagnostics {
+            let history = try XCTUnwrap(log.state.status?.omtVideoDiagnostics)
+            let call = try XCTUnwrap(history.lastCall)
+            XCTAssertEqual(call.generation, id)
+            XCTAssertEqual(call.returnedBytes, 0)
+            XCTAssertEqual(call.connectionsAfter, 0)
+            XCTAssertTrue(history.firstZeroReturnsWithConnections.isEmpty)
+            XCTAssertTrue(history.isValid)
+        } else {
+            XCTAssertNil(log.state.status?.omtVideoDiagnostics, "Normal helper startup must not enable opt-in history")
+        }
         probe.start(generation: probeID, configuration: .init(purpose: .loopbackProbe, sourceName: source, technology: .omt))
         try await ready(received)
         probe.render(request(probeID, revision: 1))
         try await until("decoded OMT video with enqueue counters") {
             received.state.picture != nil && (log.state.status?.omtVideoStatistics?.framesEnqueued ?? 0) > 0
+                && (!expectsDiagnostics || (log.state.status?.omtVideoDiagnostics?.lastCall?.returnedBytes ?? 0) > 0)
         }
         let connected = try XCTUnwrap(log.state.status?.omtVideoStatistics)
         XCTAssertGreaterThan(connected.bytesEnqueued, 0)
         XCTAssertGreaterThanOrEqual(connected.zeroReturnCalls, noClient.zeroReturnCalls)
         XCTAssertTrue(log.state.status?.validMetrics == true)
+        if expectsDiagnostics {
+            let call = try XCTUnwrap(log.state.status?.omtVideoDiagnostics?.lastCall)
+            XCTAssertEqual(call.generation, id)
+            XCTAssertGreaterThan(call.returnedBytes, 0)
+            XCTAssertGreaterThan(call.statistics.framesEnqueued, 0)
+            XCTAssertGreaterThan(call.connectionsAfter, 0)
+            XCTAssertGreaterThanOrEqual(call.finishedNanoseconds, call.startedNanoseconds)
+        }
         await probe.stopAndWait()
         try await until("disconnected OMT channel and further zero returns") {
             log.state.status?.connections == 0 && (log.state.status?.omtVideoStatistics?.zeroReturnCalls ?? 0) > connected.zeroReturnCalls

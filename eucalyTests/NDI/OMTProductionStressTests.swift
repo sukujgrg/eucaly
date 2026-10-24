@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import AVKit
 import ImageIO
 import PDFKit
 import XCTest
@@ -7,7 +8,8 @@ import XCTest
 
 /// Explicitly opted-in LAN qualification through real eucaly state, players,
 /// media acquisition, audio mixing, helper composition and transport. No normal
-/// controls window, library, preferences or physical native output is opened.
+/// controls window, library or preferences are opened. A physical native output
+/// requires an explicit display UUID and a separate native start command.
 @MainActor
 final class OMTProductionStressTests: XCTestCase {
     func testControlledProductionSource() async throws {
@@ -20,10 +22,10 @@ final class OMTProductionStressTests: XCTestCase {
               let directory = env["EUCALY_OMT_PRODUCTION_DIRECTORY"] else {
             throw OMTProductionFailure.invalid("Missing bounded duration, deadline or evidence directory")
         }
-        // Operator resumed wired qualification through 13:00 Sydney.
-        let lastAuthorizedStart = ISO8601DateFormatter().date(from: "2026-10-24T02:00:00Z")!
+        // Operator requested a fresh three-output run through 14:25 Sydney.
+        let lastAuthorizedStart = ISO8601DateFormatter().date(from: "2026-10-24T03:25:00Z")!
         guard Date().timeIntervalSince1970 + 45 < deadline, deadline <= lastAuthorizedStart.timeIntervalSince1970 else {
-            throw OMTProductionFailure.invalid("The authorized 2026-10-24 13:00 Sydney hardware deadline has passed or was exceeded")
+            throw OMTProductionFailure.invalid("The authorized 2026-10-24 14:25 Sydney hardware deadline has passed or was exceeded")
         }
         executionTimeAllowance = min(seconds + 120, deadline - Date().timeIntervalSince1970 + 30)
         continueAfterFailure = true
@@ -33,7 +35,8 @@ final class OMTProductionStressTests: XCTestCase {
             throw OMTProductionFailure.invalid("A unique production run ID is required")
         }
         let media = env["EUCALY_OMT_PRODUCTION_MEDIA_PATH"].map { URL(fileURLWithPath: $0) }
-        let runner = try OMTProductionRun(directory: evidence, control: control, runID: runID, seconds: seconds, hardDeadline: deadline, initialMedia: media)
+        let runner = try OMTProductionRun(directory: evidence, control: control, runID: runID, seconds: seconds,
+            hardDeadline: deadline, initialMedia: media, nativeDisplayIdentity: env["EUCALY_OMT_PRODUCTION_NATIVE_DISPLAY_UUID"])
         try await runner.run()
     }
 }
@@ -144,8 +147,10 @@ private final class OMTProductionRun {
     private let factory: OMTProductionFactory
     private let journal: OMTProductionJournal
     private let routerFailures: OMTProductionRouterFailureObserver
+    private let nativeEvidence: OMTProductionNativeEvidence
     private let audio = OMTProductionAudioOracle()
     private let primary: UUID, secondary: UUID, ndi: UUID, online: UUID
+    private let native: UUID?
     private let initialMedia: URL?
     private var generatedMedia: URL?
     private var phase = "preparing"
@@ -153,18 +158,25 @@ private final class OMTProductionRun {
     private var handled: Set<UUID> = []
     private var expectedFailures: Set<UUID> = []
     private var finishRequested = false
+    private var nativeExpectedOpen = false
     private var violations: Set<String> = []
     private var knownPositionBlocks: UInt64 = 0
     private var knownPositionCoverage: [[String: Any]] = []
 
-    init(directory: URL, control: URL, runID: UUID, seconds: Double, hardDeadline: Double, initialMedia: URL?) throws {
+    init(directory: URL, control: URL, runID: UUID, seconds: Double, hardDeadline: Double, initialMedia: URL?,
+         nativeDisplayIdentity: String?) throws {
         self.directory = directory; self.control = control; self.runID = runID
         self.seconds = seconds; self.hardDeadline = hardDeadline; self.initialMedia = initialMedia
+        // Validate before constructing any sender or accepting program content.
+        // An omitted input preserves the original no-native fixture.
+        let nativeTarget = try OMTProductionNativeSelection.target(rawIdentity: nativeDisplayIdentity,
+            monitors: nativeDisplayIdentity == nil ? [] : ProjectionScreenResolver.currentMonitors())
         for folder in [directory, control, control.appendingPathComponent("commands"), control.appendingPathComponent("acks"), directory.appendingPathComponent("fixtures")] {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         }
         journal = try OMTProductionJournal(directory.appendingPathComponent("checkpoints.jsonl"))
         routerFailures = try OMTProductionRouterFailureObserver(url: directory.appendingPathComponent("router-failures.jsonl"))
+        nativeEvidence = try OMTProductionNativeEvidence(target: nativeTarget, directory: directory)
         fixtures = try OMTProductionFixtures(directory: directory.appendingPathComponent("fixtures"))
         store = OutputProfileStore(defaults: nil)
         online = try Self.unwrap(store.addWorkspace(name: "Online"), "Could not create isolated Online workspace")
@@ -173,21 +185,28 @@ private final class OMTProductionRun {
         var two = OutputDestinationConfiguration(name: "Second OMT", profileID: OutputProfile.audienceID, monitor: nil, enabled: false)
         two.omt = .init(sourceName: "eucaly Production Stress Secondary"); secondary = two.id
         var companion = OutputDestinationConfiguration(name: "NDI Companion", profileID: OutputProfile.audienceID, monitor: nil, enabled: false)
-        companion.ndi = .init(sourceName: "eucaly Wired Audio NDI"); ndi = companion.id
+        companion.ndi = .init(sourceName: "eucaly Three Output NDI"); ndi = companion.id
+        let nativeRow = nativeTarget.map {
+            OutputDestinationConfiguration(name: "Native Companion", profileID: OutputProfile.audienceID, monitor: $0, enabled: false)
+        }
+        native = nativeRow?.id
         store.edit { doc in
             doc.destinations = [one, two, companion]
+            if let nativeRow { doc.destinations.append(nativeRow) }
             doc.defaultDestinationID = one.id
             doc.backgroundAudioDestinationID = nil
             for index in doc.workspaces.indices { doc.workspaces[index].monitorAudioLocally = false }
             for index in doc.profiles.indices { doc.profiles[index].background.visible = false }
         }
         let lookup = ["omt:eucaly Production Stress": one.id, "omt:eucaly Production Stress Secondary": two.id,
-                      "ndi:eucaly Wired Audio NDI": companion.id]
+                      "ndi:eucaly Three Output NDI": companion.id]
         factory = try OMTProductionFactory(lookup: lookup, oracle: audio, events: directory.appendingPathComponent("helper-events.jsonl"))
         let factory = factory
         router = NetworkOutputRouter(senderFactory: { receive in factory.make(receive) })
-        outputs = OutputCoordinator(profiles: store, displays: ProjectionDisplayManager(defaults: nil, displays: { [] }),
-            retainsPreparedSessions: true, ndi: router)
+        let nativeEvidence = nativeEvidence
+        let displays = nativeTarget == nil ? ProjectionDisplayManager(defaults: nil, displays: { [] }) : ProjectionDisplayManager(defaults: nil)
+        outputs = OutputCoordinator(profiles: store, displays: displays,
+            retainsPreparedSessions: true, ndi: router, driverFactory: { nativeEvidence.makeDriver() })
         routerFailures.install(on: router, generation: { id in factory.senders.last(where: { $0.state.destinationID == id })?.state.generation },
             phase: { [weak self] in self?.phase ?? "initializing" }, expected: { [weak self] generation in
                 generation.map { self?.expectedFailures.contains($0) == true } ?? false
@@ -200,7 +219,9 @@ private final class OMTProductionRun {
         do {
             let manifest: [String: Any] = ["runID": runID.uuidString, "evidenceDirectory": directory.path,
                 "controlDirectory": control.path, "startedUTC": Date().ISO8601Format(), "automaticTransitions": false,
-                "hardDeadlineUnix": hardDeadline, "sourceName": "eucaly Production Stress"]
+                "hardDeadlineUnix": hardDeadline, "sourceName": "eucaly Production Stress",
+                "nativeDisplayUUID": nativeEvidence.target?.identity ?? "", "nativeDestinationID": native?.uuidString ?? "",
+                "nativeStartsAutomatically": false]
             try await writeJSON(manifest, to: "run.json")
             try JSONSerialization.data(withJSONObject: manifest, options: .sortedKeys).write(to: control.appendingPathComponent("run.json"), options: .atomic)
             let home = outputs.session(workspace: OutputWorkspaceRecord.primaryID)
@@ -217,7 +238,9 @@ private final class OMTProductionRun {
             try await until("primary OMT production sender", timeout: 30) { (self.router.statistics[self.primary]?.submittedFrames ?? 0) > 3 }
             try await checkpoint(state: "running")
             try await writeJSON(["sourceName": "eucaly Production Stress", "advertisedSource": router.statistics[primary]?.sourceName ?? "",
-                "sourceMedia": video.path, "automaticTransitions": false, "localAudio": false,
+                "sourceMedia": video.path, "automaticTransitions": false, "localAudioAtSourceStart": false,
+                "nativeDisplayUUID": nativeEvidence.target?.identity ?? "", "nativeStartsAutomatically": false,
+                "localAudioPolicy": "Normal app policy: muted for network-only playback; native projection enables the same player's local audio",
                 "hardDeadlineUTC": Date(timeIntervalSince1970: hardDeadline).ISO8601Format(),
                 "path": "OutputCoordinator → NetworkOutputRouter → shared AVPlayer/ProgramAudioBus → helper compositor → bundled OMT SDK",
                 "instrumentation": "XCTest app host; optimized Debug when launcher requested -O; no claim of signed Release or physical delivery"],
@@ -243,6 +266,7 @@ private final class OMTProductionRun {
         // The final barrier always retires this run's outputs, even when a
         // command, evidence write or source setup fails. No SDK calls run here.
         for record in store.document.workspaces { outputs.session(workspace: record.id).clearBackgroundAudio() }
+        nativeExpectedOpen = false
         outputs.stopAllOutputs(); await router.shutdown()
         var failures = factory.senders.compactMap { sender -> String? in
             let value = sender.state
@@ -252,9 +276,12 @@ private final class OMTProductionRun {
         failures += routerFailures.unexpected.map(\.message)
         if routerFailures.unexpectedCount > 0 { violations.insert("Unexpected app-side router failure") }
         if !failures.isEmpty || !violations.isEmpty { result = "failed" }
+        if !nativeEvidence.allOwnedWindowsClosed { violations.insert("Owned native projection window survived cleanup"); result = "failed" }
         try await checkpoint(state: result, extra: ["finishReason": reason, "unexpectedSourceFailures": failures,
-            "allOwnedHelpersExited": factory.senders.allSatisfy { $0.state.exited }, "activeOutputs": router.activeIDs.count])
-        guard result == "complete", violations.isEmpty, router.activeIDs.isEmpty, factory.senders.allSatisfy({ $0.state.exited }) else {
+            "allOwnedHelpersExited": factory.senders.allSatisfy { $0.state.exited }, "activeOutputs": router.activeIDs.count,
+            "allOwnedNativeWindowsClosed": nativeEvidence.allOwnedWindowsClosed, "coordinatorHasActiveOutputs": outputs.isRunning])
+        guard result == "complete", violations.isEmpty, !outputs.isRunning, router.activeIDs.isEmpty,
+              nativeEvidence.allOwnedWindowsClosed, factory.senders.allSatisfy({ $0.state.exited }) else {
             XCTFail("OMT production stress did not complete cleanly: \(reason); \(failures)")
             throw OMTProductionFailure.invalid(reason)
         }
@@ -309,6 +336,9 @@ private final class OMTProductionRun {
         let source = command["source"] as? String ?? "primary"
         let destination: UUID
         switch source { case "primary": destination = primary; case "second": destination = secondary; case "ndi": destination = ndi
+        case "native":
+            guard let native else { throw OMTProductionFailure.invalid("Native output needs an explicitly supplied physical display UUID") }
+            destination = native
         default: throw OMTProductionFailure.invalid("Unknown owned source") }
         switch action {
         case "stablehold", "hold", "marker", "status": break
@@ -366,6 +396,14 @@ private final class OMTProductionRun {
                 throw OMTProductionFailure.invalid("Workspace transfer rejected: \(session.projectionDisplayIssue ?? "unknown reason")")
             }
         case "start", "retry", "restart", "stop", "enable", "disable":
+            if destination == native {
+                do { try await executeNative(action, destination: destination) }
+                catch {
+                    violations.insert("Native output command failed: \(action): \(error)")
+                    throw error
+                }
+                return
+            }
             if action == "stop" || action == "restart" || action == "disable" {
                 outputs.closeOutput(destination)
                 try await until("exact source retirement") { self.router.state(destination).canStart }
@@ -392,6 +430,54 @@ private final class OMTProductionRun {
             try await until("explicit fault installed", timeout: 3) { accepted.value }
         case "finish": finishRequested = true
         default: throw OMTProductionFailure.invalid("Unsupported command action: \(action)")
+        }
+    }
+
+    private func executeNative(_ action: String, destination: UUID) async throws {
+        if ["stop", "restart", "disable"].contains(action) {
+            nativeExpectedOpen = false
+            outputs.closeOutput(destination)
+            guard nativeEvidence.allOwnedWindowsClosed else { throw OMTProductionFailure.invalid("Native window did not close") }
+        }
+        if action == "disable" {
+            if let error = store.setEnabled(false, for: destination) { throw OMTProductionFailure.invalid(error) }
+            return
+        }
+        if action == "stop" { return }
+        outputs.displays.refresh()
+        guard let target = nativeEvidence.target, let row = outputs.destination(destination), row.monitor == target,
+              let owner = row.workspaceID, outputs.displays.problem(for: target) == nil else {
+            throw OMTProductionFailure.invalid("The exact native display is unavailable; no fallback is permitted")
+        }
+        let session = outputs.session(workspace: owner), media = outputs.program(owner).media
+        let previousPlayer = media.program, previousItem = previousPlayer?.currentItem
+        let previousSamplers = media.ndiVideoFrames.sourceCount
+        let previousHelpers = factory.senders.filter { !$0.state.exited }.compactMap { $0.state.generation }
+        let helpersCreated = factory.senders.count
+        if let error = store.setEnabled(true, for: destination) { throw OMTProductionFailure.invalid(error) }
+        guard outputs.presentLocal(session, onlyDestinationID: destination) else {
+            throw OMTProductionFailure.invalid(session.projectionDisplayIssue ?? "Native projection did not open")
+        }
+        nativeExpectedOpen = true
+        let snapshot = outputs.snapshot(for: destination)
+        if snapshot.visible && snapshot.kind == .video {
+            try await until("native AVPlayerView first frame on the chosen physical display") {
+                self.nativeEvidence.videoIsReady(program: media.program)
+            }
+        }
+        // Native presentation must attach another view to the accepted program,
+        // without creating another decoder/sampler or replacing a live helper.
+        if let previousPlayer {
+            guard media.program === previousPlayer, media.program?.currentItem === previousItem,
+                  media.ndiVideoFrames.sourceCount == previousSamplers else {
+                violations.insert("Native activation replaced shared media resources")
+                throw OMTProductionFailure.invalid("Native activation replaced shared media resources")
+            }
+        }
+        guard factory.senders.count == helpersCreated,
+              factory.senders.filter({ !$0.state.exited }).compactMap({ $0.state.generation }) == previousHelpers else {
+            violations.insert("Native activation replaced network helpers")
+            throw OMTProductionFailure.invalid("Native activation replaced network helpers")
         }
     }
 
@@ -491,6 +577,8 @@ private final class OMTProductionRun {
     private func checkpoint(state: String, extra: [String: Any] = [:]) async throws {
         if let failure = factory.evidenceFailure { throw OMTProductionFailure.invalid("Helper evidence write failed: \(failure)") }
         if let failure = routerFailures.writeFailure { throw OMTProductionFailure.invalid("Router evidence write failed: \(failure)") }
+        if let failure = nativeEvidence.writeFailure { throw OMTProductionFailure.invalid("Native evidence write failed: \(failure)") }
+        if nativeExpectedOpen, let native, !outputs.isOpen(native) { violations.insert("Native projection closed without an explicit fixture stop") }
         if routerFailures.unexpectedCount > 0 { violations.insert("Unexpected app-side router failure") }
         let audioReport = audio.report()
         if let totals = audioReport["totals"] as? [String: Any] {
@@ -503,10 +591,16 @@ private final class OMTProductionRun {
         for row in store.document.destinations {
             let session = row.workspaceID.map { outputs.session(workspace: $0) }
             let snapshot = outputs.snapshot(for: row.id), media = outputs.media(for: row.id)
-            var value: [String: Any] = ["id": row.id.uuidString, "name": row.name, "technology": row.networkTechnology?.rawValue ?? "none",
+            let nativeLocalRoute = row.workspaceID.map { outputs.hasOpenNativeOutput(workspace: $0) } ?? false
+            let localProgramAudioExpected = nativeLocalRoute || (row.workspaceID.map { outputs.monitorAudioLocally(workspace: $0) } ?? false)
+            let expectedLocalPlayerVolume: Float = localProgramAudioExpected ? 1 : 0
+            var value: [String: Any] = ["id": row.id.uuidString, "name": row.name, "technology": row.networkTechnology?.rawValue ?? "native",
                 "enabled": row.enabled, "workspaceID": row.workspaceID?.uuidString ?? "", "sourceName": row.networkSettings?.sourceName ?? "",
-                "state": router.state(row.id).title(for: row.networkTechnology ?? .omt), "active": router.activeIDs.contains(row.id),
+                "state": row.isMonitorDestination ? outputs.readiness[row.id]?.title ?? "Stopped" : router.state(row.id).title(for: row.networkTechnology ?? .omt),
+                "active": outputs.isOpen(row.id), "nativeLocalAudioRoute": nativeLocalRoute,
+                "localProgramAudioExpected": localProgramAudioExpected, "expectedLocalPlayerVolume": expectedLocalPlayerVolume,
                 "failureReason": router.state(row.id).failureReason ?? "",
+                "workspaceOutputIssue": session?.projectionDisplayIssue ?? "",
                 "failureIsExplicitInjectedFault": factory.senders.last(where: { $0.state.destinationID == row.id })?.state.generation.map { expectedFailures.contains($0) } ?? false,
                 "currentKind": String(describing: snapshot.kind), "visible": snapshot.visible, "acceptedDocumentRevision": snapshot.documentRevision,
                 "currentLabel": session?.currentSlide?.label ?? "", "previewCount": row.workspaceID.map { outputs.program($0).flow.previewSlides.count } ?? 0,
@@ -522,13 +616,21 @@ private final class OMTProductionRun {
                 value["musicPlayerIdentity"] = String(describing: ObjectIdentifier(music))
                 value["musicLocalVolume"] = music.volume
                 value["musicTime"] = Self.number(music.currentTime().seconds)
-                if music.volume != 0 { violations.insert("Background music became audible locally: \(row.name)") }
+                let localMusicExpected = row.workspaceID.map { outputs.localBackgroundAudioEnabled(workspace: $0) } ?? false
+                let expectedMusicVolume = localMusicExpected ? Float(session?.backgroundAudioVolume ?? 0) : 0
+                value["expectedMusicLocalVolume"] = expectedMusicVolume
+                if music.volume != expectedMusicVolume { violations.insert("Background music violated local route policy: \(row.name)") }
             }
             if let status = router.statistics[row.id] {
                 value["sdk"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(status))
                 if status.surfacePoolHighWaterMark > 4 { violations.insert("Surface pool exceeds four leases: \(row.name)") }
             }
-            if let player = media?.program, player.volume != 0 { violations.insert("Network-only player became audible locally: \(row.name)") }
+            if let player = media?.program, player.volume != expectedLocalPlayerVolume { violations.insert("Program player violated local route policy: \(row.name)") }
+            if row.id == native {
+                value["expectedProgramVideoVisible"] = snapshot.visible && snapshot.kind == .video
+                value["native"] = nativeEvidence.report(program: media?.program)
+                value["expectedOpen"] = nativeExpectedOpen
+            }
             rows.append(value)
         }
         let recent = factory.senders.enumerated().filter { !$0.element.state.exited || $0.offset >= factory.senders.count - 3 }
@@ -558,7 +660,10 @@ private final class OMTProductionRun {
             "unexpectedRouterFailureCount": routerFailures.unexpectedCount,
             "expectedFailureGenerations": expectedFailures.map(\.uuidString).sorted(),
             "backgroundAudioDestinationID": store.document.backgroundAudioDestinationID?.uuidString ?? "",
-            "evidenceScope": "actual eucaly sender path; SDK submissions and sender PCM only; receiver/physical metrics remain separate"]
+            "nativeOutputConfigured": native != nil, "nativeExpectedOpen": nativeExpectedOpen,
+            "allOwnedNativeWindowsClosed": nativeEvidence.allOwnedWindowsClosed,
+            "nativeRenderCadenceMeasured": false,
+            "evidenceScope": "actual eucaly sender and optional native window/AVPlayerView readiness; no native presented-frame counter or physical delivery measurement; receiver metrics remain separate"]
         for (key, extraValue) in extra { value[key] = extraValue }
         try journal.append(value)
         try await writeJSON(value, to: "status.json")
@@ -576,6 +681,142 @@ private final class OMTProductionRun {
     private static var host100ns: UInt64 { DispatchTime.now().uptimeNanoseconds / 100 }
     private static func number(_ value: Double) -> Any { value.isFinite ? value : "non-finite" }
     private static func unwrap<T>(_ value: T?, _ reason: String) throws -> T { guard let value else { throw OMTProductionFailure.invalid(reason) }; return value }
+}
+
+/// Pure opt-in validation. A runtime display ID, model name or empty input is
+/// never a substitute for the coordinator's selected physical UUID.
+nonisolated enum OMTProductionNativeSelection {
+    enum Failure: Error { case invalid(String) }
+    static func target(rawIdentity: String?, monitors: [ProjectionMonitor]) throws -> ProjectionMonitorTarget? {
+        guard let rawIdentity else { return nil }
+        guard let requested = UUID(uuidString: rawIdentity) else {
+            throw Failure.invalid("Native output requires a complete physical display UUID")
+        }
+        let matches = monitors.filter { $0.identity.flatMap(UUID.init(uuidString:)) == requested }
+        guard matches.count == 1, let monitor = matches.first else {
+            throw Failure.invalid("The requested native display is missing or has an ambiguous identity")
+        }
+        guard !monitor.isMirrored, monitor.frame.width > 0, monitor.frame.height > 0 else {
+            throw Failure.invalid("The requested native display is mirrored or not ready")
+        }
+        return monitor.target
+    }
+}
+
+/// Observes the actual native driver. No capture, alternate renderer or extra
+/// AVPlayerItemVideoOutput is introduced. AVKit readiness proves only that its
+/// first picture is prepared; it is not a scanout or presented-frame counter.
+@MainActor
+private final class OMTProductionNativeEvidence {
+    let target: ProjectionMonitorTarget?
+    private let journal: OMTProductionJournal?
+    private var drivers: [OMTProductionNativeDriver] = []
+    private var eventCount = 0
+    private var observedReady = false
+    var writeFailure: String? { journal?.writeFailure }
+    var allOwnedWindowsClosed: Bool { drivers.allSatisfy(\.isClosed) }
+
+    init(target: ProjectionMonitorTarget?, directory: URL) throws {
+        self.target = target
+        journal = try target.map { _ in try OMTProductionJournal(directory.appendingPathComponent("native-events.jsonl")) }
+    }
+    func makeDriver() -> any OutputDestinationDriving {
+        let driver = OMTProductionNativeDriver(owner: self)
+        drivers.append(driver)
+        return driver
+    }
+    func record(_ action: String, driver: OMTProductionNativeDriver, extra: [String: Any] = [:]) {
+        eventCount += 1
+        var event: [String: Any] = ["action": action, "driverGeneration": driver.generation.uuidString,
+            "destinationID": driver.destinationID?.uuidString ?? "", "windowNumber": driver.windowNumber ?? 0,
+            "requestedPhysicalDisplayUUID": target?.identity ?? "", "host100ns": DispatchTime.now().uptimeNanoseconds / 100,
+            "observedAtUTC": Date().ISO8601Format()]
+        for (key, value) in extra { event[key] = value }
+        journal?.record(event)
+    }
+    func videoIsReady(program: AVPlayer?) -> Bool {
+        let ready = drivers.last(where: { !$0.isClosed })?.videoIsReady(program: program, target: target) == true
+        observedReady = observedReady || ready
+        return ready
+    }
+    func report(program: AVPlayer?) -> [String: Any] {
+        let ready = videoIsReady(program: program)
+        var value: [String: Any] = ["configured": target != nil, "requestedPhysicalDisplayUUID": target?.identity ?? "",
+            "driverInstances": drivers.count, "eventCount": eventCount, "allOwnedWindowsClosed": allOwnedWindowsClosed,
+            "programVideoReady": ready, "programVideoReadinessObserved": observedReady,
+            "nativePresentedFrameCadenceMeasured": false, "physicalPictureOrAudioMeasured": false,
+            "cadenceEvidence": "Window visibility, public AVPlayerView readiness and shared player progress only; AVKit exposes no presented-frame counter here",
+            "visualObservation": "Collect separately on the explicitly selected native display"]
+        if let driver = drivers.last { value["driver"] = driver.report(program: program) }
+        return value
+    }
+}
+
+@MainActor
+private final class OMTProductionNativeDriver: OutputDestinationDriving {
+    private let driver = OutputWindowDestination()
+    private weak var owner: OMTProductionNativeEvidence?
+    private weak var window: NSWindow?
+    private(set) var destinationID: UUID?
+    var generation: UUID { driver.generation }
+    var windowNumber: UInt32? { driver.windowNumber }
+    var isClosed: Bool { driver.windowNumber == nil && window?.isVisible != true }
+
+    init(owner: OMTProductionNativeEvidence) { self.owner = owner }
+    func open(monitor: ProjectionMonitor, coordinator: OutputCoordinator, destinationID: UUID, activate: Bool) -> Bool {
+        self.destinationID = destinationID
+        guard let target = owner?.target, monitor.identity == target.identity else {
+            owner?.record("open-rejected", driver: self, extra: ["reason": "The driver received another physical display"])
+            return false
+        }
+        let opened = driver.open(monitor: monitor, coordinator: coordinator, destinationID: destinationID, activate: activate)
+        if let number = driver.windowNumber { window = NSApp.windows.first { $0.windowNumber == Int(number) } }
+        owner?.record(opened ? "opened" : "open-rejected", driver: self, extra: ["resolvedPhysicalDisplayUUID": monitor.identity ?? "",
+            "runtimeDisplayID": monitor.id, "requestedFrame": NSStringFromRect(monitor.frame), "activatesWindow": activate])
+        return opened
+    }
+    func reposition(monitor: ProjectionMonitor) -> Bool {
+        guard monitor.identity == owner?.target?.identity else {
+            owner?.record("reposition-rejected", driver: self)
+            return false
+        }
+        let before = window?.frame
+        let result = driver.reposition(monitor: monitor)
+        if !result || before != window?.frame { owner?.record(result ? "repositioned" : "reposition-rejected", driver: self) }
+        return result
+    }
+    func close() {
+        let number = driver.windowNumber ?? 0
+        driver.close()
+        owner?.record("closed", driver: self, extra: ["retiredWindowNumber": number, "windowVisibleAfterClose": window?.isVisible ?? false])
+    }
+    func videoIsReady(program: AVPlayer?, target: ProjectionMonitorTarget?) -> Bool {
+        guard let program, let window, window.isVisible, window.screen?.displayIdentity == target?.identity else { return false }
+        return playerViews().contains { $0.player === program && $0.isReadyForDisplay && $0.videoBounds.width > 0 && $0.videoBounds.height > 0 }
+    }
+    func report(program: AVPlayer?) -> [String: Any] {
+        let views = playerViews()
+        let matching = program.map { player in views.filter { $0.player === player } } ?? []
+        let nativePlayer = matching.first?.player
+        return ["generation": generation.uuidString, "destinationID": destinationID?.uuidString ?? "", "windowNumber": windowNumber ?? 0,
+            "closed": isClosed, "windowExists": window != nil, "windowVisible": window?.isVisible ?? false,
+            "windowOcclusionVisible": window?.occlusionState.contains(.visible) ?? false,
+            "windowFrame": window.map { NSStringFromRect($0.frame) } ?? "", "contentBounds": window?.contentView.map { NSStringFromRect($0.bounds) } ?? "",
+            "physicalDisplayUUID": window?.screen?.displayIdentity ?? "", "displayName": window?.screen?.localizedName ?? "",
+            "backingScaleFactor": window?.backingScaleFactor ?? 0, "displayMaximumFramesPerSecond": window?.screen?.maximumFramesPerSecond ?? 0,
+            "isRestorable": window?.isRestorable ?? false, "isMainWindow": window?.isMainWindow ?? false,
+            "avPlayerViewCount": views.count, "matchingProgramPlayerViewCount": matching.count,
+            "nativePlayerIdentity": nativePlayer.map { String(describing: ObjectIdentifier($0)) } ?? "",
+            "nativePlayerItemIdentity": nativePlayer?.currentItem.map { String(describing: ObjectIdentifier($0)) } ?? "",
+            "readyForDisplay": matching.first?.isReadyForDisplay ?? false,
+            "videoBounds": matching.first.map { NSStringFromRect($0.videoBounds) } ?? ""]
+    }
+    private func playerViews() -> [AVPlayerView] {
+        func descend(_ view: NSView) -> [AVPlayerView] {
+            (view as? AVPlayerView).map { [$0] } ?? view.subviews.flatMap(descend)
+        }
+        return window?.contentView.map(descend) ?? []
+    }
 }
 
 nonisolated private struct OMTProductionRouterFailure: Codable, Sendable {
