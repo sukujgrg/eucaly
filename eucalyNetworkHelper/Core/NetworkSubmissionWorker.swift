@@ -34,9 +34,10 @@ final class NetworkSubmissionWorker: @unchecked Sendable {
     private var videoInProgress = false // protected by lock
     private let recordingAdapter: (any NetworkRuntimeAdapter)?
     private let recordingWakeDelayNanoseconds: UInt64
+    private let recordingScheduler: NetworkSubmissionControlledScheduler?
     private var videoTrace: NetworkVideoTrace?
 
-    init() { recordingAdapter = nil; recordingWakeDelayNanoseconds = 0 }
+    init() { recordingAdapter = nil; recordingWakeDelayNanoseconds = 0; recordingScheduler = nil }
 
     /// The fixture uses the actual timer, fences, mailbox and buffer leases;
     /// only the SDK boundary is replaced. Neither vendor runtime is loaded.
@@ -44,7 +45,15 @@ final class NetworkSubmissionWorker: @unchecked Sendable {
         precondition(wakeDelayNanoseconds <= 1_000_000)
         recordingAdapter = adapter
         recordingWakeDelayNanoseconds = wakeDelayNanoseconds
+        recordingScheduler = nil
         videoTrace = trace
+    }
+
+    /// Controlled scheduling is available only with a recording adapter. Its
+    /// logical clock never supplies transport timestamps or observational traces.
+    init(recording adapter: any NetworkRuntimeAdapter, scheduler: NetworkSubmissionControlledScheduler) {
+        recordingAdapter = adapter; recordingScheduler = scheduler
+        recordingWakeDelayNanoseconds = 0
     }
     #else
     init() {}
@@ -58,7 +67,7 @@ final class NetworkSubmissionWorker: @unchecked Sendable {
                 #if DEBUG
                 if let recordingAdapter { runtime = .recording(recordingAdapter) }
                 else { runtime = try NetworkHelperRuntime(technology: technology, generation: generation) }
-                if videoTrace == nil {
+                if videoTrace == nil, recordingScheduler == nil {
                     videoTrace = NetworkVideoTrace.fromEnvironment(generation: generation, technology: technology)
                 }
                 #else
@@ -72,6 +81,18 @@ final class NetworkSubmissionWorker: @unchecked Sendable {
                 report.runtimeVersion = runtime.version; report.sourceName = actual
                 let initial = report
                 lock.unlock()
+                #if DEBUG
+                if let recordingScheduler {
+                    nextVideoOpportunityNanoseconds = recordingScheduler.now
+                    recordingScheduler.install { [weak self] completed in
+                        guard let self else { completed(); return }
+                        queue.async { [self] in tick(); completed() }
+                    }
+                    recordingScheduler.schedule(at: recordingScheduler.now)
+                    completion(initial, nil)
+                    return
+                }
+                #endif
                 // A live frame deadline needs the strict timer's best effort,
                 // rather than ordinary timer coalescing. This grants neither
                 // foreground nor real-time priority; early wakes are guarded.
@@ -220,7 +241,7 @@ final class NetworkSubmissionWorker: @unchecked Sendable {
         guard !stopping else { lock.unlock(); return }
         // Dispatch deadlines are not a minimum-spacing guarantee. Re-arm an
         // early wake without taking the pending latest frame or an SDK borrow.
-        let now = DispatchTime.now().uptimeNanoseconds
+        let now = videoSchedulingNow()
         let earliestEntry = lastVideoEntryNanoseconds.map { $0 + Self.minimumVideoSpacingNanoseconds } ?? 0
         if now < max(earliestEntry, nextVideoOpportunityNanoseconds ?? 0) {
             lock.unlock(); return
@@ -253,12 +274,13 @@ final class NetworkSubmissionWorker: @unchecked Sendable {
         #endif
         // Timecode is monotonic and never follows a source player's seek/loop.
         let started = DispatchTime.now().uptimeNanoseconds
-        lastVideoEntryNanoseconds = started
+        let schedulingEntry = videoSchedulingNow(fallback: started)
+        lastVideoEntryNanoseconds = schedulingEntry
         // Consume one current opportunity and skip every nominal slot already
         // obsolete at this real entry. Ordinary wake lateness does not become
         // an added offset on every subsequent deadline. There is no replay loop.
-        let opportunity = nextVideoOpportunityNanoseconds ?? started
-        let elapsed = started >= opportunity ? started - opportunity : 0
+        let opportunity = nextVideoOpportunityNanoseconds ?? schedulingEntry
+        let elapsed = schedulingEntry >= opportunity ? schedulingEntry - opportunity : 0
         nextVideoOpportunityNanoseconds = opportunity + (elapsed / Self.videoPeriodNanoseconds + 1) * Self.videoPeriodNanoseconds
         let tick = started / 100
         let timecode = max(tick, lastTick + 1); lastTick = timecode
@@ -295,9 +317,20 @@ final class NetworkSubmissionWorker: @unchecked Sendable {
         observation.transport?.apply(to: &report)
         report.connections = observation.connections; lock.unlock()
     }
+    private func videoSchedulingNow(fallback: UInt64? = nil) -> UInt64 {
+        #if DEBUG
+        if let recordingScheduler { return recordingScheduler.now }
+        #endif
+        return fallback ?? DispatchTime.now().uptimeNanoseconds
+    }
     private func scheduleNextVideoTick() {
-        guard let timer, !lock.withLock({ stopping }) else { return }
-        let now = DispatchTime.now().uptimeNanoseconds
+        #if DEBUG
+        guard timer != nil || recordingScheduler?.isActive == true else { return }
+        #else
+        guard timer != nil else { return }
+        #endif
+        guard !lock.withLock({ stopping }) else { return }
+        let now = videoSchedulingNow()
         let earliest = lastVideoEntryNanoseconds.map { $0 + Self.minimumVideoSpacingNanoseconds } ?? 0
         let deadline: UInt64
         if current == nil {
@@ -314,11 +347,17 @@ final class NetworkSubmissionWorker: @unchecked Sendable {
             // Codec/observation time remains inside the frame period.
             deadline = max(now, max(earliest, nextVideoOpportunityNanoseconds ?? now))
         }
-        timer.schedule(deadline: DispatchTime(uptimeNanoseconds: deadline), leeway: .nanoseconds(0))
+        #if DEBUG
+        if let recordingScheduler { recordingScheduler.schedule(at: deadline); return }
+        #endif
+        timer?.schedule(deadline: DispatchTime(uptimeNanoseconds: deadline), leeway: .nanoseconds(0))
     }
     func stop(colour: OutputColour, completion: @escaping @Sendable (NetworkHelperShutdown) -> Void) {
         queue.async { [self] in
             timer?.cancel(); timer = nil
+            #if DEBUG
+            recordingScheduler?.cancel()
+            #endif
             lock.lock()
             stopping = true; pending = nil
             let retiring = runtime; runtime = nil

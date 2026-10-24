@@ -50,6 +50,10 @@ enum NetworkSubmissionPacingFixture {
 
     static func run(directory: URL) throws {
         guard directory.path.hasPrefix("/") else { throw Failure.invalid("An absolute evidence directory is required") }
+        if ProcessInfo.processInfo.environment["EUCALY_NETWORK_CONTROLLED_SCHEDULING"] == "1" {
+            try NetworkSubmissionControlledFixture.run(directory: directory)
+            return
+        }
         // main's diagnostic branch intentionally precedes AppKit/bootstrap.
         // Match the live service's public application task category and scoped
         // latency activity before creating its worker or release-timer threads.

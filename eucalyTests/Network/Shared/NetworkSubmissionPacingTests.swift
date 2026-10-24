@@ -4,10 +4,81 @@ import Darwin
 
 @MainActor
 final class NetworkSubmissionPacingTests: XCTestCase {
+    /// Shared-runner CI verifies worker decisions in logical scheduling time.
+    /// Actual transport timestamps remain real and are never cadence evidence.
+    func testActualWorkerControlledSchedulingPreservesCadenceAndContracts() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("eucaly-controlled-scheduling-\(UUID())", isDirectory: true)
+        let process = Process(), output = Pipe()
+        process.executableURL = NetworkHelperSupervisor.bundledExecutable
+        process.arguments = ["--diagnose-video-pacing", directory.path]
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = output; process.standardError = output
+        var environment = ProcessInfo.processInfo.environment
+        environment.removeValue(forKey: "EUCALY_NETWORK_VIDEO_TRACE_DIRECTORY")
+        environment["EUCALY_NETWORK_CONTROLLED_SCHEDULING"] = "1"
+        process.environment = environment
+        let exited = expectation(description: "Bounded controlled scheduler fixture exits")
+        process.terminationHandler = { _ in exited.fulfill() }
+        try process.run()
+        await fulfillment(of: [exited], timeout: 18)
+        if process.isRunning {
+            _ = Darwin.kill(process.processIdentifier, SIGKILL)
+            XCTFail("Owned controlled fixture exceeded its deadline; evidence: \(directory.path)")
+            return
+        }
+        let diagnostic = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        XCTAssertEqual(process.terminationReason, .exit, diagnostic)
+        XCTAssertEqual(process.terminationStatus, 0, diagnostic)
+        guard process.terminationReason == .exit, process.terminationStatus == 0 else { return }
+        let data = try Data(contentsOf: directory.appendingPathComponent("controlled-scheduling-report.json"))
+        let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.json")
+        attachment.name = "Actual worker with logical scheduling (not runtime qualification)"
+        attachment.lifetime = .keepAlways; add(attachment)
+        let report = try JSONDecoder().decode(ControlledReport.self, from: data)
+        XCTAssertEqual(report.schemaVersion, 1)
+        XCTAssertEqual(report.periodNanoseconds, 33_333_333)
+        XCTAssertEqual(report.injectedLogicalWakeLatenessNanoseconds, 500_000)
+        XCTAssertEqual(report.results.count, 4)
+        XCTAssertEqual(Set(report.results.map(\.consumption)), ["synchronous", "borrowedUntilNextSendOrFlush"])
+        XCTAssertEqual(Set(report.results.map(\.scenario)), ["ordinary-lateness", "stalls-fences-idle-stop"])
+        XCTAssertEqual(Set(report.results.map { $0.scenario + ":" + $0.consumption }).count, 4)
+        for result in report.results {
+            XCTAssertTrue(result.contractFailures.isEmpty, result.contractFailures.joined(separator: "; "))
+            XCTAssertEqual(result.overflowCount, 0)
+            XCTAssertEqual(result.entries.map(\.callIndex), (0..<result.entries.count).map { UInt64($0 + 1) })
+            XCTAssertTrue(result.stoppedCallbackRejected, "Canceled callbacks must not submit or rearm")
+            XCTAssertEqual(result.terminalCallCount, 1)
+            XCTAssertGreaterThanOrEqual(result.minimumLogicalEntrySpacingNanoseconds, 32_333_333)
+            let timecodes = result.entries.map(\.transportTimecode100ns)
+            XCTAssertTrue(zip(timecodes, timecodes.dropFirst()).allSatisfy { $1 > $0 }, "Real transport timestamps must remain monotonic")
+            XCTAssertTrue(result.entries.allSatisfy { $0.actualSDKReturnUptimeNanoseconds >= $0.actualSDKEntryUptimeNanoseconds })
+            if result.scenario == "ordinary-lateness" {
+                XCTAssertEqual(result.entries.count, 300)
+                XCTAssertGreaterThanOrEqual(result.logicalFramesPerSecond, 29.9,
+                    "Actual-entry+period scheduling must fail this controlled drift regression")
+                XCTAssertEqual(result.releasedLeaseMarkers, [1])
+            } else {
+                XCTAssertEqual(result.scenario, "stalls-fences-idle-stop")
+                XCTAssertEqual(result.entries.count, 16)
+                XCTAssertEqual(result.earlyCallbacksRejected, 3)
+                XCTAssertEqual(result.idleCallbacksRejected, 2)
+                XCTAssertTrue(result.idleDeadlineIsFuture, "An idle owner must not replay obsolete opportunities")
+                XCTAssertEqual(result.audioSamples, [48_000, 48_960, 49_920])
+                XCTAssertEqual(result.releasedLeaseMarkers, [1, 2, 3, 4, 5])
+                XCTAssertEqual(result.entries.prefix(4).map(\.contentEpoch), [0, 0, 0, 0])
+                XCTAssertEqual(Set(result.entries.dropFirst(4).prefix(8).map(\.contentEpoch)), [1])
+                XCTAssertEqual(Set(result.entries.dropFirst(12).map(\.contentEpoch)), [2])
+                XCTAssertEqual(Set(result.entries.map(\.marker)), [1, 4, 5])
+            }
+        }
+    }
+
     /// Each wake receives a real finite 500 us delay, outside the SDK wrapper.
     /// A scheduler that adds ordinary lateness to every next period drifts below
     /// the unchanged cadence gate even though every individual gap is bounded.
     func testActualWorkerRetainsCadenceWithOrdinaryFiniteWakeLateness() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["EUCALY_NETWORK_REALTIME_PACING"] == "1",
+            "Real-clock cadence qualification is opt-in; default CI runs controlled scheduling")
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("eucaly-video-cadence-\(UUID())", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         let process = Process(), output = Pipe()
@@ -17,6 +88,7 @@ final class NetworkSubmissionPacingTests: XCTestCase {
         process.standardOutput = output; process.standardError = output
         var environment = ProcessInfo.processInfo.environment
         environment.removeValue(forKey: "EUCALY_NETWORK_VIDEO_TRACE_DIRECTORY")
+        environment.removeValue(forKey: "EUCALY_NETWORK_CONTROLLED_SCHEDULING")
         process.environment = environment
         let exited = expectation(description: "Bounded no-SDK cadence fixture exits")
         process.terminationHandler = { _ in exited.fulfill() }
@@ -70,6 +142,8 @@ final class NetworkSubmissionPacingTests: XCTestCase {
     /// algorithm. The measurement-only baseline is expected to expose bursts;
     /// retained attachments establish the failure before any pacing repair.
     func testActualWorkerEntrySpacingSurvivesControlledSendAndObservationStalls() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["EUCALY_NETWORK_REALTIME_PACING"] == "1",
+            "Real-clock phase qualification is opt-in; default CI runs controlled scheduling")
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("eucaly-video-pacing-\(UUID())", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         let process = Process(), output = Pipe()
@@ -81,6 +155,7 @@ final class NetworkSubmissionPacingTests: XCTestCase {
         // diagnostic settings must not change its experiment or output path.
         var environment = ProcessInfo.processInfo.environment
         environment.removeValue(forKey: "EUCALY_NETWORK_VIDEO_TRACE_DIRECTORY")
+        environment.removeValue(forKey: "EUCALY_NETWORK_CONTROLLED_SCHEDULING")
         process.environment = environment
         let exited = expectation(description: "Bounded no-SDK helper fixture exits")
         process.terminationHandler = { _ in exited.fulfill() }
@@ -138,6 +213,36 @@ final class NetworkSubmissionPacingTests: XCTestCase {
         }
     }
 
+    private struct ControlledReport: Decodable {
+        let schemaVersion: Int
+        let periodNanoseconds: UInt64
+        let injectedLogicalWakeLatenessNanoseconds: UInt64
+        let results: [ControlledResult]
+    }
+    private struct ControlledResult: Decodable {
+        let scenario: String
+        let consumption: String
+        let entries: [ControlledEntry]
+        let logicalFramesPerSecond: Double
+        let minimumLogicalEntrySpacingNanoseconds: UInt64
+        let earlyCallbacksRejected: Int
+        let idleCallbacksRejected: Int
+        let idleDeadlineIsFuture: Bool
+        let stoppedCallbackRejected: Bool
+        let terminalCallCount: Int
+        let audioSamples: [Int64]
+        let releasedLeaseMarkers: [UInt32]
+        let overflowCount: Int
+        let contractFailures: [String]
+    }
+    private struct ControlledEntry: Decodable {
+        let callIndex: UInt64
+        let contentEpoch: UInt64
+        let marker: UInt32
+        let transportTimecode100ns: Int64
+        let actualSDKEntryUptimeNanoseconds: UInt64
+        let actualSDKReturnUptimeNanoseconds: UInt64
+    }
     private struct Report: Decodable {
         let schemaVersion: Int
         let periodNanoseconds: UInt64

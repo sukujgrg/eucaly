@@ -1225,3 +1225,82 @@ cleanup findings were repaired. Evidence is
 The exact optimized source products are recorded in
 `restart-source-manifest-20261025.json`; their bundled SDK matches stock hash
 `d55a2a4ab39b597284a9f7f77660f21331004525d10c3ef675642afbbcbeeb57`.
+
+#### Shared-runner pacing checks and fixture restoration, 25 October 2026
+
+GitHub Validate run `40117126710`, at `4b28e73`, failed three assertions in
+two real-clock recording-adapter experiments. The stall experiment missed its
+measured timer-release phase in both consumption modes; the ordinary-lateness
+experiment measured 27.280486 fps against the unchanged 29.9 fps gate. The
+retained CI log does not isolate scheduler delays from the intended injected
+delay. This failure remains recorded; passing local timing measurements do not
+establish shared-runner scheduling or production throughput.
+
+After the readiness repair was committed as `c87e3b7`, an unattributed writer
+replaced `OMTProductionStressTests.swift` with an older buffer twice, including
+once after the restored file passed 24 offline Python and four Swift harness
+checks. Neither the user nor the active review/implementation agents reported
+making those replacements. The user authorized restoring the reviewed file and
+then closed its editor tab. Editor autosave is a hypothesis, not an identified
+cause. The reviewed content's Git blob is
+`dca9be9b72da2dd69476b2f347ca0bbf6a8acc66`; its SHA-256 is
+`8c35ebde9e2368caee488608210d90fea23ae918517d70a48ae47f5f4c45020e`.
+Pre-restoration diffs and the finite read-only metadata/hash monitor are retained
+under `build/OMTStockSDK-20261024`. Committed-source validation and working-copy
+stability are separate evidence.
+
+Normal CI now exercises the actual submission worker with a DEBUG-only
+recording adapter and controlled deadline delivery on its owner queue. The
+driver observes the worker's requested deadlines; it implements no pacing
+policy. The four bounded scenarios cover 300 ordinary 500 microsecond late
+wakes and held send/observation, ownership changes, stale/latest admission,
+borrowed leases, independent audio/status, idle recovery, Stop and canceled
+callbacks in both consumption modes. Logical scheduling times are separate
+from real 100 ns transport timecodes and SDK context uptime, and are never
+written into ordinary runtime trace fields. The live factory cannot select
+this driver; its types and selection are compiled out of Release.
+
+The two original real-clock XCTest experiments are explicit qualification:
+set `EUCALY_NETWORK_REALTIME_PACING=1` when selecting
+`NetworkSubmissionPacingTests`. Their complete traces, phase-validity checks,
+29.9 fps and 32.333333 ms gates are unchanged. The existing standalone CLI
+diagnostics still use real time unless the recording-only controlled mode is
+explicitly selected. No retry or relaxed threshold was added. Controlled CI
+establishes scheduling decisions, not OS cadence, SDK throughput or delivery.
+
+The focused run passed seven tests with the two real-clock opt-in skips and no
+failures, including all four restored readiness harness tests. In both
+consumption modes, the correct worker's logical cadence was 30.0000003 fps
+with 33.333333 ms minimum ordinary spacing; the stall scenario retained
+32.833333 ms minimum spacing. Isolated copied helper sources/products then
+reintroduced each defect without editing the working tree: entry-plus-period
+produced 29.5566505 fps and failed the unchanged cadence gate; removing the
+actual-entry spacing floor produced 4.999999 ms gaps and failed the unchanged
+spacing gate. These are report-based negative evaluations of the same worker
+fixture and gates, not real-clock or physical measurements. Both variants,
+build logs, source hashes and reports are retained as
+`controlled-negative-{drift,burst}*`; the passing report and scoped tests are
+`controlled-ci-reviewed-report.json` and
+`controlled-ci-focused-20261025.{log,xcresult}` under
+`build/OMTStockSDK-20261024`. Independent review found no actionable issues in
+the scheduling seam, real-clock opt-ins or protected stress fixture.
+
+The subsequent full `make test` passed 1,074 XCTest cases with nine opt-in
+skips and zero failures, one Swift Testing case, seven feed checks, 103
+release-workflow checks and the 38-source network-ownership guard.
+`make test-codex-agents` and whitespace checks passed. `make build` archived
+and exported the signed arm64 application; deep/strict signature verification
+passed. Controlled scheduler/type/environment markers were present in the
+Debug helper and absent from the exported Release helper, and the UI binary
+linked neither SDK. The restored stress fixture stayed unchanged throughout
+a completed 15-minute metadata/hash observation covering the full suite and
+archive/export; a second finite observation covers the push/CI window.
+
+Evidence is `controlled-ci-full-20261025.log`,
+`build/DerivedData/Logs/Test/Test-eucaly-2026.10.25_05-57-30-+1100.xcresult`,
+`controlled-ci-make-build-20261025.log`,
+`controlled-ci-release-signatures-20261025.log`,
+`controlled-ci-release-boundary-20261025.json` and
+`restored-source{,-ci}-watch-20261025.jsonl`, with the named files under
+`build/OMTStockSDK-20261024`. No new physical-output or sustained runtime
+qualification was performed for this CI-only repair.
