@@ -1082,20 +1082,33 @@ passed again. Evidence is `recovery-final-make-build.log` and
 `final-make-build.log` and `signed-package-verification.{json,log}` are retained
 under `build/OMTStockSDK-20261024`.
 
-The latest full `make test` ran 1,071 XCTest cases with seven opt-in skips.
+The locked-session full `make test` ran 1,071 XCTest cases with seven opt-in skips.
 All network, NDI/OMT, pacing and functional-recovery cases passed. The retained
 receiver measured 248.663, 5,266.211 and 929.760 ms, explicitly marking the late
-second cycle as a four-second miss. The full command remains failed: four
+second cycle as a four-second miss. That command failed: four
 assertions, including two caught errors, belong to two unrelated native-focus
 setups. `LibrarySearchNavigationTests.testRepeatedLibrarySearchFocusSelectsExistingQueryAndPreservesCandidateAndReturnFocus`
 and `LyricsTextViewTests.testNativeLyricsFindRoutesDocumentAndFindBarKeysWithoutSearchingOtherFields`
 received neither app-active nor window-key readiness before their five-second
 deadline, so their keyboard assertions did not run. A subsequent read-only GUI
 session check reported `CGSSessionScreenIsLocked=1` and foreground `loginwindow`.
-The unchanged tests passed in the earlier full run. An unlocked-session rerun
-remains a validation gap; neither test, timeout nor product focus behavior was
-changed. Evidence is `recovery-final-make-test.log` and
+The unchanged tests passed in the earlier full run. Neither test, timeout nor
+product focus behavior was changed during investigation. Evidence is
+`recovery-final-make-test.log` and
 `build/DerivedData/Logs/Test/Test-eucaly-2026.10.24_22-34-56-+1100.xcresult`.
+
+After the user unlocked the Mac on 25 October 2026, both unchanged native focus
+tests passed in a targeted run (0.325 and 0.701 seconds). The subsequent full
+`make test` passed: 1,071 XCTest cases, seven opt-in skips and zero failures,
+plus the feed, release-workflow and network-architecture checks. The two focus
+tests also passed in the full suite's normal order (0.105 and 0.460 seconds),
+closing the GUI validation gap without a code or timeout change. Evidence is
+`unlocked-focus-20261025.{log,xcresult}`, `unlocked-full-20261025.log` and
+`build/DerivedData/Logs/Test/Test-eucaly-2026.10.25_04-17-31-+1100.xcresult`.
+The retained receiver recovered at 236.219, 914.150 and 5,244.965 ms; the late
+third cycle remains explicitly marked as a four-second diagnostic miss while
+the separate functional-recovery case passed. No network helpers remained
+after the run. The earlier locked-session failure is retained above.
 
 `make test-codex-agents`, all eight production-harness checks and
 `git diff --check` passed; no network helpers remained after validation.
