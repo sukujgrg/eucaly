@@ -169,8 +169,10 @@ The opt-in `scripts/test-omt-production-stress.py` fixture drives the real
 OutputCoordinator, accepted Current, shared player/audio bus, compositor and
 per-destination helpers with isolated in-memory settings. It never restores the
 operator's library or outputs. Its initial source holds one supplied movie;
-explicit, run-ID-fenced commands control subsequent phases. The dated fixture
-enforces its dated authorization cutoff and retains checkpoints, exact child
+explicit, run-ID-fenced commands control subsequent phases. The fixture requires
+an explicit timezone-aware deadline at launch, no more than 30 minutes away,
+and starts source cleanup 30 seconds before that immutable cutoff. The launcher
+reserves the remaining time for exact-owned-process containment. It retains checkpoints, exact child
 identities, process samples and command acknowledgements under
 `build/OMTProductionStress-20261024`. The receiver project owns Apple TV and
 remote NDI measurements. This optimized Debug host is not a signed Release
@@ -734,6 +736,83 @@ settings patches. Source files were verified unchanged after building; the
 8.0.426 toolchain, NativeAOT 8.0.32 dependency hashes and unchanged VMX codec
 match the earlier comparison. This stock arm64 library's SHA-256 is
 `d55a2a4ab39b597284a9f7f77660f21331004525d10c3ef675642afbbcbeeb57`.
+
+The coordinated TV analysis established eight fully observed immediate sender
+recoveries: three in `TV-Recovery` and five in `TV-RapidRecovery`. Within each
+run the TV app retained its process and instance identity. Last-old to
+first-new video renderer admission was 1.232806–1.360708 seconds (median
+1.285281); audio admission was 1.120088–1.234167 seconds, including the receiver's
+existing one-second retry. Neither run recorded late audio or pool stalls.
+These are renderer-admission measurements; HDMI scanout and acoustic latency
+remain unmeasured. The Mac probe's intermittent five-second branch did not
+appear in these eight observations. The receiver project owns the TCP reset
+analysis and its inference about BSD reset recognition; no kernel, SDK or
+production timeout repair was made here.
+
+Coverage ends at the authoritative final TV snapshots, 17:57:26Z and 18:02:21Z
+on 24 October UTC. The first intended two-second outage actually lasted
+9.687822 seconds from exact exit to replacement start because separate tool
+round trips added delay; its recovery is censored by the first snapshot.
+Controlled repeats measured 2.283582 and 2.338705 seconds including command
+overhead, but fell outside the corresponding TV capture windows. The batch
+tail is likewise censored. None is a TV pass or failure. A fresh source later
+bound port 6400; the coordinator incorrectly reported the previous port 6401,
+so that TV setup received no media and never created a playback marker. Its
+watchers timed out or rejected the expired source budget. The final newly
+started source was explicitly finished after the revised readiness window
+closed, without starting another TV collector. No synchronized-outage recovery
+was qualified.
+
+All three source runs completed with zero invariant/router failures, no forced
+cleanup and all 17 helpers gracefully retired. Stop to exact exit ranged from
+10.239 to 37.470 ms. Their final helper exits were 18:03:47Z, 18:07:28Z and
+18:08:44Z, before the unchanged 18:10Z device cutoff. Exact source/test-host PID
+verification subsequently found none alive. The receiver restored ordinary TV
+launch before that cutoff. A sender phase summary retained a 13.747 fps warning
+during a restart phase; intentional fault intervals are not steady-cadence
+qualification. Source/command evidence, setup failures, copied TV analysis and
+cleanup records are under `physical/restart-delay-20261025`,
+`physical/restart-outage-final-20261025`,
+`physical/restart-outage-verified-20261025`,
+`physical/restart-source-final-report-20261025.json` and
+`physical/restart-cleanup-20261025.json`, within `build/OMTStockSDK-20261024`.
+The pre-run manifest records the bytes used for those observations; subsequent
+test-only rebuilds update the live DerivedData products.
+
+The local harness repair adds `ready` and `watch-outage` commands. `ready`
+requires the expected run UUID, explicit source LAN address and remaining
+capture budget. It checks fresh running state, the primary destination and
+generation, exact process identity before and after `lsof`, and derives the
+current TCP port from that PID. Cached endpoint files cannot establish readiness.
+With `--watcher-ready`, it also verifies a live waiting watcher for that exact
+source. Emit a readiness message only after this command succeeds, using its
+returned endpoint. Recheck immediately before starting a receiver collector.
+
+For a synchronized outage, start `watch-outage` with `--control-dir`, `--run-id`,
+`--lan-host`, `--minimum-remaining`, a fresh `--marker` path, `--ready-file` and
+`--result-file`. Verify source and watcher together with `ready --watcher-ready`.
+Only after fresh receiver playback may the receiver controller atomically write
+marker JSON containing the verified source `runID` and the waiting watcher's
+`watcherToken`. The bounded watcher revalidates the source and capture budget,
+then performs Stop, confirms SDK shutdown and exact exit, sleeps the requested
+interval and starts one replacement on the verified endpoint. Stop and Start
+carry destination/generation expectations; the fixture owner rejects stale
+commands immediately before mutation, including an intervening activation.
+Start acknowledgements return the generation actually created; a later queued
+replacement cannot be mistaken for the watcher's own completed Start.
+Failed, expired or replaced watchers cannot produce a successful readiness
+proof. The normal finite source lifetime remains the cleanup authority.
+
+The final repair passed 24 offline Python regressions and four offline Swift
+harness tests, including controlled replacement after verification but before
+queued command execution. `make test-network-architecture`, the retired-source
+readiness rejection and `git diff --check` passed. Evidence is
+`readiness-offline-20261025.log`, `readiness-reviewed-harness-20261025.{log,xcresult}` and
+`readiness-retired-source-20261025.log`. No SDK sender or device was launched to
+validate this post-cutoff repair; another physical synchronized-outage test
+requires a fresh coordinated window.
+Independent re-review cleared the final generation, acknowledgement, native
+target and watcher-expiry repairs with no remaining actionable findings.
 It was first placed only in isolated copied test products. Those helpers retain
 the previous hard-coded package version label, so the source manifest and actual
 library hash establish stock identity; that label alone does not.
@@ -1118,3 +1197,31 @@ dump was removed. Functional recovery does not turn the four-second diagnostic
 miss into a pass, establish a hidden capacity leak or explain the eight
 historical rejections. No speculative SDK patch, producer linger or production
 timeout change was introduced.
+
+#### Sender restart investigation, 25 October 2026
+
+The coordinated source harness now requires a fresh explicit deadline with a
+UTC offset, at most 30 minutes from launch. XCTest independently rejects stale,
+non-finite or longer windows. Fixture waits end at the cleanup reserve and a
+replacement start rechecks it after exact old-child retirement. The launcher
+reserves its final 20 seconds for containment. No sender pacing, SDK or
+production timeout changed.
+
+The retained-receiver regression now requires the SDK shutdown report before
+replacing a sender; an exact exit alone could otherwise represent forced
+containment. A missing report also awaits receiver retirement before failing.
+Stop-to-exact-exit timing is collected after Stop without adding a pre-Stop
+linger. The reviewed optimized Debug checks passed all four scoped cases:
+three offline harness cases and the real-SDK retained-receiver case. The latter
+recovered at 64.480, 815.098 and 882.407 ms, with SDK shutdown confirmed and
+Stop-to-exact-exit times of 7.585, 7.719 and 8.533 ms. This run did not reproduce
+the intermittent slow branch. The four-second diagnostic and eight-second
+functional scopes remain separate.
+
+All ten offline Python harness checks and independent review passed after two
+cleanup findings were repaired. Evidence is
+`restart-window-reviewed-20261025.{log,xcresult}` and
+`restart-window-offline-20261025.log` under `build/OMTStockSDK-20261024`.
+The exact optimized source products are recorded in
+`restart-source-manifest-20261025.json`; their bundled SDK matches stock hash
+`d55a2a4ab39b597284a9f7f77660f21331004525d10c3ef675642afbbcbeeb57`.

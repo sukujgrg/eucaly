@@ -9,9 +9,11 @@ import csv
 from datetime import datetime, timezone
 import ipaddress
 import json
+import math
 import os
 from pathlib import Path
 import signal
+import stat
 import subprocess
 import threading
 import time
@@ -19,8 +21,6 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTROL = Path("/tmp/eucaly-omt-production-stress-20261024")
-# Fresh 30-minute stock-SDK session, including final preparation and cleanup.
-CUTOFF = datetime.fromisoformat("2026-10-24T21:41:36+11:00").timestamp()
 ACTIONS = ("stablehold", "hold", "marker", "status", "lyrics", "slides", "video", "generated", "image", "pdf",
            "preview", "loadpreview", "select", "next", "hide", "show", "clear", "pause", "play", "seek", "transfer",
            "start", "retry", "restart", "stop", "enable", "disable", "fault", "music", "musicstop", "position", "finish")
@@ -36,8 +36,163 @@ def atomic_json(path, value):
     temporary.replace(path)
 
 
-def submit(control, payload, wait=0):
+def process_identity(pid):
+    result = subprocess.run(["/bin/ps", "-p", str(pid), "-o", "lstart=,comm="],
+                            capture_output=True, text=True, timeout=5, check=False)
+    if result.returncode != 0 or not result.stdout.strip():
+        raise ValueError(f"Exact process {pid} is no longer alive")
+    return result.stdout.strip()
+
+
+def source_snapshot(control, expected_run_id, minimum_remaining, now):
     manifest = read_json(control / "run.json")
+    value = read_json(control / "status.json")
+    launch = read_json(Path(manifest["evidenceDirectory"]) / "launch.json")
+    if any(item.get("runID") != expected_run_id for item in (manifest, value, launch)):
+        raise ValueError("Source run identity changed; readiness is stale")
+    if value.get("state") != "running" or value.get("invariantViolations") or value.get("unexpectedRouterFailureCount"):
+        raise ValueError("The isolated source is not running without errors")
+    observed = datetime.fromisoformat(value["observedAtUTC"].replace("Z", "+00:00")).timestamp()
+    elapsed = float(value["elapsedSeconds"])
+    duration = float(launch["environment"]["EUCALY_OMT_PRODUCTION_SECONDS"])
+    remaining = min(duration - elapsed, float(value["hardDeadlineUnix"]) - now - 30) - max(0, now - observed)
+    if not all(math.isfinite(x) for x in (now, elapsed, duration, remaining)) or elapsed < 0 or not 30 <= duration <= 1800 or not -1 <= now - observed <= 5 or remaining < minimum_remaining:
+        raise ValueError("Source status is stale or lacks the remaining capture budget")
+    rows = {row["id"]: row for row in value.get("destinations", [])}
+    helpers = [helper for helper in value.get("helpers", []) if helper.get("technology") == "omt"
+               and helper.get("sourceName") == manifest["sourceName"]
+               and not helper.get("exited") and helper.get("ready") and not helper.get("failure")
+               and rows.get(helper.get("destinationID"), {}).get("active")]
+    if len(helpers) != 1 or int(helpers[0].get("pid", 0)) <= 0:
+        raise ValueError("Readiness requires the one live primary OMT source")
+    helper = helpers[0]
+    return {"runID": expected_run_id, "destinationID": helper["destinationID"],
+            "generation": helper["generation"], "pid": int(helper["pid"]),
+            "sourceName": helper["sourceName"], "remainingSeconds": remaining,
+            "evidenceDirectory": manifest["evidenceDirectory"]}
+
+
+def listener_port(output, pid):
+    current, ports = None, set()
+    for line in output.splitlines():
+        if line.startswith("p"):
+            current = int(line[1:])
+        elif line.startswith("n"):
+            if current != pid:
+                raise ValueError("Listener evidence belongs to another process")
+            port = int(line.rsplit(":", 1)[-1])
+            if not 1 <= port <= 65535:
+                raise ValueError("Invalid listener port")
+            ports.add(port)
+    if ports and len(ports) == 1:
+        return ports.pop()
+    raise ValueError("The exact helper must have one unambiguous TCP listener")
+
+
+def verified_readiness(control, run_id, lan_host, minimum_remaining, watcher_ready=None):
+    ipaddress.IPv4Address(lan_host)
+    if not math.isfinite(minimum_remaining) or not 1 <= minimum_remaining <= 1800:
+        raise ValueError("A finite remaining capture budget is required")
+    first = source_snapshot(control, run_id, minimum_remaining, time.time())
+    identity = process_identity(first["pid"])
+    if Path(identity.rsplit(None, 1)[-1]).name != "eucalyNetworkHelper":
+        raise ValueError("The exact PID is not the bundled network helper")
+    result = subprocess.run(["/usr/sbin/lsof", "-nP", "-a", "-p", str(first["pid"]),
+                             "-iTCP", "-sTCP:LISTEN", "-Fpn"],
+                            capture_output=True, text=True, timeout=5, check=False)
+    if result.returncode != 0:
+        raise ValueError("Could not verify the exact helper's current TCP listener")
+    port = listener_port(result.stdout, first["pid"])
+    second = source_snapshot(control, run_id, minimum_remaining, time.time())
+    if any(first[key] != second[key] for key in ("runID", "generation", "pid", "destinationID")) or process_identity(first["pid"]) != identity:
+        raise ValueError("Source changed during endpoint verification")
+    proof = dict(second, ready=True, endpoint=f"omt://{lan_host}:{port}", port=port,
+                 processIdentity=identity, verifiedUnixSeconds=time.time(), host100ns=time.monotonic_ns() // 100)
+    if watcher_ready:
+        watcher = read_json(watcher_ready)
+        if watcher.get("state") != "waitingForPlayback" or any(watcher["source"].get(key) != proof[key]
+                for key in ("runID", "generation", "pid", "endpoint")):
+            raise ValueError("The outage watcher is not waiting for this exact source")
+        if watcher.get("waitUntilHost100ns", 0) <= time.monotonic_ns() // 100:
+            raise ValueError("The outage watcher's playback window has expired")
+        if process_identity(watcher["pid"]) != watcher["processIdentity"]:
+            raise ValueError("The outage watcher process was replaced")
+        if read_json(watcher_ready) != watcher:
+            raise ValueError("The outage watcher changed during verification")
+        proof["watcher"] = watcher
+    return proof
+
+
+def playback_marker(path, run_id, token):
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 16_384:
+            raise ValueError("Playback marker must be a small regular JSON file")
+        value = json.loads(stream.read(16_385))
+    if value.get("runID") != run_id or value.get("watcherToken") != token:
+        raise ValueError("Playback marker does not match the waiting source/watcher")
+    return value
+
+
+def watch_outage(args):
+    if not 0.1 <= args.outage_seconds <= 10 or not 1 <= args.marker_timeout <= 90:
+        raise ValueError("Outage must be 0.1–10 seconds; marker wait must be 1–90 seconds")
+    if os.path.lexists(args.marker):
+        raise ValueError("Refusing an existing playback marker")
+    source = verified_readiness(args.control_dir, args.run_id, args.lan_host, args.minimum_remaining)
+    wait_seconds = min(args.marker_timeout, source["remainingSeconds"] - args.outage_seconds - 15)
+    state = {"state": "waitingForPlayback", "pid": os.getpid(), "processIdentity": process_identity(os.getpid()),
+             "watcherToken": str(uuid.uuid4()), "source": source, "marker": str(args.marker),
+             "createdUnixSeconds": time.time(), "waitUntilHost100ns": time.monotonic_ns() // 100 + int(wait_seconds * 10_000_000)}
+    atomic_json(args.ready_file, state)
+    try:
+        end = time.monotonic() + wait_seconds
+        while not os.path.lexists(args.marker):
+            if time.monotonic() >= end:
+                raise ValueError("Fresh playback marker did not arrive within the source budget")
+            time.sleep(0.02)
+        marker = playback_marker(args.marker, args.run_id, state["watcherToken"])
+        current = verified_readiness(args.control_dir, args.run_id, args.lan_host, args.minimum_remaining)
+        if any(current[key] != source[key] for key in ("runID", "generation", "pid", "endpoint")):
+            raise ValueError("The source changed while the watcher waited for playback")
+        state["state"] = "performingOutage"; atomic_json(args.ready_file, state)
+        began = {"unixSeconds": time.time(), "host100ns": time.monotonic_ns() // 100}
+        expected = {"expectedDestinationID": source["destinationID"], "expectedGeneration": source["generation"]}
+        stop = submit(args.control_dir, dict(expected, action="stop", source="primary", phase="synchronized-outage-stop"),
+                      wait=10, expected_run_id=args.run_id)
+        if stop.get("result") != "completed" or stop.get("runID") != args.run_id:
+            raise ValueError("Exact sender retirement was not acknowledged")
+        events = [json.loads(line) for line in (Path(source["evidenceDirectory"]) / "helper-events.jsonl").read_text().splitlines()]
+        old = {event["event"]: event for event in events if event.get("generation") == source["generation"]}
+        if not all(key in old for key in ("shutdown-complete", "exited")):
+            raise ValueError("Sender exit did not establish graceful SDK shutdown")
+        time.sleep(args.outage_seconds)
+        start = submit(args.control_dir, dict(expected, action="start", source="primary", phase="synchronized-outage-start"),
+                       wait=10, expected_run_id=args.run_id)
+        if start.get("result") != "completed" or start.get("runID") != args.run_id:
+            raise ValueError("Replacement source was not acknowledged")
+        replacement = verified_readiness(args.control_dir, args.run_id, args.lan_host, 5)
+        if (replacement["endpoint"] != source["endpoint"] or replacement["destinationID"] != source["destinationID"]
+                or replacement["generation"] == source["generation"] or replacement["generation"] != start.get("resultGeneration")):
+            raise ValueError("Replacement does not match the exact acknowledged Start generation/endpoint")
+        result = {"marker": marker, "began": began, "oldSource": source, "newSource": replacement,
+                  "requestedSleepSeconds": args.outage_seconds, "stopAck": stop, "startAck": start,
+                  "sdkShutdownComplete": old["shutdown-complete"], "exactExit": old["exited"],
+                  "finishedUnixSeconds": time.time()}
+        atomic_json(args.result_file, result)
+        state["state"] = "complete"; atomic_json(args.ready_file, state)
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+    except BaseException as error:
+        state.update(state="failed", error=str(error)); atomic_json(args.ready_file, state)
+        raise
+
+
+def submit(control, payload, wait=0, expected_run_id=None):
+    manifest = read_json(control / "run.json")
+    if expected_run_id is not None and manifest.get("runID") != expected_run_id:
+        raise ValueError("Source run changed before command admission")
     identifier = str(uuid.uuid4()).upper()
     value = dict(payload, id=identifier, runID=manifest["runID"])
     commands = control / "commands"
@@ -265,12 +420,21 @@ def summarize(output, require_complete=False):
             "qualification": "Sender invariants and workload observations only; receiver delivery, physical picture/audio and sustained qualification are separate"}
 
 
+def run_deadline(value, now):
+    """Require a fresh explicit window; naive local dates cannot authorize a run."""
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("--deadline must include its UTC offset")
+    deadline = parsed.timestamp()
+    if not now + 45 < deadline <= now + 1800:
+        raise ValueError("--deadline must be more than 45 seconds and at most 30 minutes from launch")
+    return deadline
+
+
 def run(args):
-    if not 30 <= args.seconds <= 10800:
-        raise ValueError("--seconds must be between 30 and 10800")
-    deadline = datetime.fromisoformat(args.deadline).timestamp()
-    if not time.time() + 45 < deadline <= CUTOFF:
-        raise ValueError("Run deadline must be future and no later than 2026-10-24 21:41:36 Sydney")
+    if not 30 <= args.seconds <= 1800:
+        raise ValueError("--seconds must be between 30 and 1800")
+    deadline = run_deadline(args.deadline, time.time())
     ipaddress.ip_address(args.lan_host)
     media = args.media.expanduser().resolve(strict=True) if args.media else None
     if media and (not media.is_file() or not os.access(media, os.R_OK)):
@@ -347,21 +511,23 @@ def run(args):
         monitor = threading.Thread(target=measure_processes, args=(process.pid, output, control, args.lan_host, stop, errors, identities), daemon=True)
         monitor.start()
         try:
-            status = process.wait(timeout=max(30, min(args.seconds + 600, deadline - time.time() + 10)))
+            # The source begins normal teardown at deadline - 30. Reserve the
+            # last 20 seconds for exact-owned-process containment if it stalls.
+            status = process.wait(timeout=max(1, min(args.seconds + 120, deadline - time.time() - 20)))
         except (subprocess.TimeoutExpired, KeyboardInterrupt):
             forced = True
             try:
                 if read_json(control / "run.json").get("runID") == run_id:
-                    submit(control, {"action": "finish", "phase": "launcher-cleanup"}, wait=10)
-                status = process.wait(timeout=15)
+                    submit(control, {"action": "finish", "phase": "launcher-cleanup"})
+                status = process.wait(timeout=5)
             except (OSError, ValueError, subprocess.TimeoutExpired):
                 end_owned_host(identities, output)
                 os.killpg(process.pid, signal.SIGTERM)
                 try:
-                    status = process.wait(timeout=15)
+                    status = process.wait(timeout=3)
                 except subprocess.TimeoutExpired:
                     os.killpg(process.pid, signal.SIGKILL)
-                    status = process.wait(timeout=10)
+                    status = process.wait(timeout=3)
         finally:
             stop.set(); monitor.join(timeout=10)
     latest = read_json(output / "status.json") if (output / "status.json").exists() else {}
@@ -380,8 +546,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_subparsers(dest="mode", required=True)
     launch = modes.add_parser("run", help="launch the genuine source; hold its initial movie until explicit commands")
-    launch.add_argument("--seconds", type=int, default=7200)
-    launch.add_argument("--deadline", default="2026-10-24T21:41:36+11:00")
+    launch.add_argument("--seconds", type=int, default=1200)
+    launch.add_argument("--deadline", required=True, help="explicit ISO 8601 cutoff with UTC offset, at most 30 minutes from launch")
     launch.add_argument("--output", type=Path, default=ROOT / "build/OMTProductionStress-20261024")
     launch.add_argument("--control-dir", type=Path, default=CONTROL)
     launch.add_argument("--derived-data", type=Path, default=ROOT / "build/DerivedDataOMTProduction")
@@ -406,11 +572,30 @@ def main():
     send.add_argument("--wait", type=float, default=30)
     report = modes.add_parser("status", help="read latest sender and listener status")
     report.add_argument("--control-dir", type=Path, default=CONTROL)
+    readiness = modes.add_parser("ready", help="verify current exact-PID endpoint and optional waiting watcher; launches nothing")
+    watcher = modes.add_parser("watch-outage", help="wait for a run/token-fenced playback marker, then stop/sleep/start once")
+    for mode in (readiness, watcher):
+        mode.add_argument("--control-dir", type=Path, required=True)
+        mode.add_argument("--run-id", required=True)
+        mode.add_argument("--lan-host", required=True)
+        mode.add_argument("--minimum-remaining", type=float, default=75)
+    readiness.add_argument("--watcher-ready", type=Path)
+    watcher.add_argument("--marker", type=Path, required=True)
+    watcher.add_argument("--ready-file", type=Path, required=True)
+    watcher.add_argument("--result-file", type=Path, required=True)
+    watcher.add_argument("--marker-timeout", type=float, default=45)
+    watcher.add_argument("--outage-seconds", type=float, default=2)
     check = modes.add_parser("check", help="evaluate retained sender invariants and phase counters without starting anything")
     check.add_argument("--output", type=Path, default=ROOT / "build/OMTProductionStress-20261024")
     check.add_argument("--require-complete", action="store_true")
     args = parser.parse_args()
     try:
+        if args.mode == "ready":
+            value = verified_readiness(args.control_dir, args.run_id, args.lan_host, args.minimum_remaining, args.watcher_ready)
+            print(json.dumps(value, indent=2, sort_keys=True))
+            return 0
+        if args.mode == "watch-outage":
+            return watch_outage(args)
         if args.mode == "run":
             return run(args)
         if args.mode == "check":

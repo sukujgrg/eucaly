@@ -17,17 +17,16 @@ final class OMTProductionStressTests: XCTestCase {
         guard env["EUCALY_OMT_PRODUCTION_ENABLE"] == "1" else {
             throw XCTSkip("Run scripts/test-omt-production-stress.py for explicitly coordinated production stress.")
         }
-        guard let raw = env["EUCALY_OMT_PRODUCTION_SECONDS"], let seconds = Double(raw), (30...10800).contains(seconds),
+        guard let raw = env["EUCALY_OMT_PRODUCTION_SECONDS"], let seconds = Double(raw), (30...1800).contains(seconds),
               let end = env["EUCALY_OMT_PRODUCTION_DEADLINE"], let deadline = Double(end),
               let directory = env["EUCALY_OMT_PRODUCTION_DIRECTORY"] else {
             throw OMTProductionFailure.invalid("Missing bounded duration, deadline or evidence directory")
         }
-        // Final phase-clock session includes preparation and cleanup in 30 minutes.
-        let lastAuthorizedStart = ISO8601DateFormatter().date(from: "2026-10-24T10:41:36Z")!
-        guard Date().timeIntervalSince1970 + 45 < deadline, deadline <= lastAuthorizedStart.timeIntervalSince1970 else {
-            throw OMTProductionFailure.invalid("The authorized 2026-10-24 21:41:36 Sydney hardware deadline has passed or was exceeded")
+        let now = Date().timeIntervalSince1970
+        guard OMTProductionRunWindow.permits(deadline: deadline, now: now) else {
+            throw OMTProductionFailure.invalid("An explicit deadline 45 seconds to 30 minutes from launch is required")
         }
-        executionTimeAllowance = min(seconds + 120, deadline - Date().timeIntervalSince1970 + 30)
+        executionTimeAllowance = min(seconds + 120, deadline - now)
         continueAfterFailure = true
         let evidence = URL(fileURLWithPath: directory, isDirectory: true)
         let control = URL(fileURLWithPath: env["EUCALY_OMT_STRESS_CONTROL_DIR"] ?? "/tmp/eucaly-omt-production-stress-20261024", isDirectory: true)
@@ -41,9 +40,65 @@ final class OMTProductionStressTests: XCTestCase {
     }
 }
 
+nonisolated private enum OMTProductionRunWindow {
+    static func permits(deadline: Double, now: Double) -> Bool {
+        deadline.isFinite && now.isFinite && now + 45 < deadline && deadline <= now + 1800
+    }
+}
+
+nonisolated private enum OMTProductionSourceFence {
+    struct Token: Equatable {
+        let destinationID: UUID
+        let generation: UUID
+    }
+    static func perform(expected: Token?, current: Token?, retired: Bool, starting: Bool,
+                        readyState: Bool, _ operation: () -> Void) throws {
+        if let expected {
+            guard expected == current, retired == starting, readyState else {
+                throw OMTProductionFailure.invalid("The verified source changed before command execution")
+            }
+        }
+        operation()
+    }
+}
+
 /// Offline regressions for evidence collection; no helper or SDK is launched.
 @MainActor
 final class OMTProductionHarnessTests: XCTestCase {
+    func testQueuedSourceCommandsCannotMutateAReplacementAfterVerification() throws {
+        let destination = UUID()
+        let old = OMTProductionSourceFence.Token(destinationID: destination, generation: UUID())
+        let replacement = OMTProductionSourceFence.Token(destinationID: destination, generation: UUID())
+        var current = old, mutations = 0
+        let verifiedStop = {
+            try OMTProductionSourceFence.perform(expected: old, current: current, retired: false,
+                starting: false, readyState: true) { mutations += 1 }
+        }
+        // Controlled replacement after verification but before queued execution.
+        current = replacement
+        XCTAssertThrowsError(try verifiedStop())
+        XCTAssertThrowsError(try OMTProductionSourceFence.perform(expected: old, current: current,
+            retired: true, starting: true, readyState: true) { mutations += 1 })
+        XCTAssertEqual(mutations, 0)
+        current = old
+        try verifiedStop()
+        XCTAssertThrowsError(try OMTProductionSourceFence.perform(expected: old, current: current,
+            retired: false, starting: true, readyState: false) { mutations += 1 })
+        try OMTProductionSourceFence.perform(expected: old, current: current, retired: true,
+            starting: true, readyState: true) { mutations += 1 }
+        XCTAssertEqual(mutations, 2)
+    }
+
+    func testExplicitRunDeadlineIsFutureFiniteAndWithinThirtyMinutes() {
+        let now = 1_000_000.0
+        XCTAssertTrue(OMTProductionRunWindow.permits(deadline: now + 46, now: now))
+        XCTAssertTrue(OMTProductionRunWindow.permits(deadline: now + 1800, now: now))
+        for deadline in [now - 1, now + 45, now + 1801, .infinity, -.infinity, .nan] {
+            XCTAssertFalse(OMTProductionRunWindow.permits(deadline: deadline, now: now))
+        }
+        XCTAssertFalse(OMTProductionRunWindow.permits(deadline: now + 60, now: .nan))
+    }
+
     func testAppMediaFailureSurvivesNormalHelperExitAndRetryWithoutReplacingCoordinatorCallback() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("OMTProductionHarness-\(UUID())", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -310,7 +365,9 @@ private final class OMTProductionRun {
                 phase = String((command["phase"] as? String ?? action).prefix(160))
                 if !["stablehold", "hold", "marker", "status", "preview"].contains(action) { audio.beginPhase(phase) }
                 try await checkpoint(state: "command", extra: ["commandID": idText, "action": action, "boundary": "before"])
-                try await execute(command)
+                if let generation = try await execute(command) {
+                    acknowledgement["resultGeneration"] = generation.uuidString
+                }
                 acknowledgement["result"] = "completed"
             } catch {
                 acknowledgement["result"] = "rejected"
@@ -326,8 +383,18 @@ private final class OMTProductionRun {
         }
     }
 
-    private func execute(_ command: [String: Any]) async throws {
+    private func execute(_ command: [String: Any]) async throws -> UUID? {
         let action = command["action"] as? String ?? ""
+        var resultGeneration: UUID?
+        let expectedSource: OMTProductionSourceFence.Token?
+        if command["expectedDestinationID"] != nil || command["expectedGeneration"] != nil {
+            guard ["stop", "start"].contains(action),
+                  let destination = (command["expectedDestinationID"] as? String).flatMap(UUID.init(uuidString:)),
+                  let generation = (command["expectedGeneration"] as? String).flatMap(UUID.init(uuidString:)) else {
+                throw OMTProductionFailure.invalid("A fenced command requires an exact destination and generation")
+            }
+            expectedSource = .init(destinationID: destination, generation: generation)
+        } else { expectedSource = nil }
         let workspace = command["workspace"] as? String ?? "Home"
         guard let workspaceID = store.document.workspaces.first(where: { $0.name == workspace || $0.id.uuidString == workspace })?.id else {
             throw OMTProductionFailure.invalid("Unknown owned workspace")
@@ -397,24 +464,35 @@ private final class OMTProductionRun {
             }
         case "start", "retry", "restart", "stop", "enable", "disable":
             if destination == native {
+                guard expectedSource == nil else {
+                    throw OMTProductionFailure.invalid("Network source fences cannot target native outputs")
+                }
                 do { try await executeNative(action, destination: destination) }
                 catch {
                     violations.insert("Native output command failed: \(action): \(error)")
                     throw error
                 }
-                return
+                return nil
             }
             if action == "stop" || action == "restart" || action == "disable" {
-                outputs.closeOutput(destination)
+                try performNetworkCommand(expected: expectedSource, destination: destination, starting: false) {
+                    outputs.closeOutput(destination)
+                }
                 try await until("exact source retirement") { self.router.state(destination).canStart }
             }
             if action == "disable" { store.setEnabled(false, for: destination) }
             else if action != "stop" {
+                guard Date().timeIntervalSince1970 < hardDeadline - 30 else {
+                    throw OMTProductionFailure.invalid("Source start reached the cleanup reserve")
+                }
                 if source == "ndi", !NDIRuntimeInstallation.searchPaths.contains(where: { FileManager.default.fileExists(atPath: $0) }) {
                     throw OMTProductionFailure.invalid("The optional NDI runtime is not installed")
                 }
-                store.setEnabled(true, for: destination)
-                outputs.startNetworkOutput(destination)
+                try performNetworkCommand(expected: expectedSource, destination: destination, starting: true) {
+                    store.setEnabled(true, for: destination)
+                    outputs.startNetworkOutput(destination)
+                    resultGeneration = factory.senders.last(where: { $0.state.destinationID == destination })?.state.generation
+                }
                 try await until("source publishing") { (self.router.statistics[destination]?.submittedFrames ?? 0) > 3 || self.router.state(destination).failureReason != nil }
                 if let failure = router.state(destination).failureReason { throw OMTProductionFailure.invalid(failure) }
             }
@@ -431,6 +509,7 @@ private final class OMTProductionRun {
         case "finish": finishRequested = true
         default: throw OMTProductionFailure.invalid("Unsupported command action: \(action)")
         }
+        return resultGeneration
     }
 
     private func executeNative(_ action: String, destination: UUID) async throws {
@@ -674,9 +753,20 @@ private final class OMTProductionRun {
         try data.write(to: directory.appendingPathComponent(name), options: .atomic)
     }
     private func until(_ description: String, timeout: Double = 10, _ check: () -> Bool) async throws {
-        let end = min(ProcessInfo.processInfo.systemUptime + timeout, ProcessInfo.processInfo.systemUptime + hardDeadline - Date().timeIntervalSince1970 - 20)
+        let end = min(ProcessInfo.processInfo.systemUptime + timeout, ProcessInfo.processInfo.systemUptime + hardDeadline - Date().timeIntervalSince1970 - 30)
         while !check(), ProcessInfo.processInfo.systemUptime < end { try await Task.sleep(for: .milliseconds(20)) }
         guard check() else { throw OMTProductionFailure.invalid("Timed out: \(description)") }
+    }
+    private func performNetworkCommand(expected: OMTProductionSourceFence.Token?, destination: UUID,
+                                       starting: Bool, _ operation: () -> Void) throws {
+        let latest = factory.senders.last(where: { $0.state.destinationID == destination })?.state
+        let current = latest.flatMap { value -> OMTProductionSourceFence.Token? in
+            guard let destination = value.destinationID, let generation = value.generation else { return nil }
+            return .init(destinationID: destination, generation: generation)
+        }
+        try OMTProductionSourceFence.perform(expected: expected, current: current, retired: latest?.exited ?? false,
+            starting: starting, readyState: starting ? router.state(destination).canStart : router.state(destination) == .publishing,
+            operation)
     }
     private static var host100ns: UInt64 { DispatchTime.now().uptimeNanoseconds / 100 }
     private static func number(_ value: Double) -> Any { value.isFinite ? value : "non-finite" }

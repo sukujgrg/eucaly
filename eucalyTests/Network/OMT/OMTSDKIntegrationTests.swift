@@ -472,15 +472,25 @@ final class OMTSDKIntegrationTests: XCTestCase {
             let firstFreshMilliseconds = Double(DispatchTime.now().uptimeNanoseconds - recoveryStarted) / 1_000_000
             XCTAssertEqual(videoEvents.state.readyCount, 1, "The receiver helper must survive sender replacement")
             try healthy(sourceEvents); try healthy(videoEvents)
+            let stopStarted = DispatchTime.now().uptimeNanoseconds
             await nextSender.stopAndWait()
+            let stopToExitMilliseconds = Double(DispatchTime.now().uptimeNanoseconds - stopStarted) / 1_000_000
             XCTAssertTrue(sourceEvents.state.exited)
             let retiredPID = await nextSender.diagnosticProcessIdentifier(generation: generation)
             XCTAssertNil(retiredPID)
+            do {
+                _ = try XCTUnwrap(sourceEvents.state.shutdown,
+                    "Sender replacement must follow SDK shutdown-complete, not forced exact-process containment")
+            } catch {
+                await probe.stopAndWait()
+                throw error
+            }
             sender = nil
             // Retain timing only after exact sender exit. Logging/attachments
             // must not add a grace period before the immediate Stop ordering.
             recoveryTimings.append("cycle=\(cycle), firstFreshMs=\(String(format: "%.3f", firstFreshMilliseconds)), "
-                + "fourSecondDiagnosticTargetMet=\(firstFreshMilliseconds <= 4_000), functionalBudgetMs=8000")
+                + "fourSecondDiagnosticTargetMet=\(firstFreshMilliseconds <= 4_000), functionalBudgetMs=8000, "
+                + "sdkShutdownComplete=true, stopToExactExitMs=\(String(format: "%.3f", stopToExitMilliseconds))")
             XCTAssertLessThanOrEqual(firstFreshMilliseconds, 8_000,
                 "Functional SDK recovery exceeded keepalive + retry + slack; the separate 4 s diagnostic target is not a pass criterion here")
         }
