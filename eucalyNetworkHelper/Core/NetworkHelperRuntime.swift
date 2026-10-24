@@ -5,6 +5,11 @@ import Foundation
 enum NetworkHelperRuntime {
     case ndi(NDIRuntime)
     case omt(OMTRuntime)
+    #if DEBUG
+    // Only the bounded, no-SDK helper fixture supplies this adapter. Production
+    // startup continues to select the explicit technology above.
+    case recording(any NetworkRuntimeAdapter)
+    #endif
 
     init(technology: NetworkOutputTechnology, generation: UUID? = nil) throws {
         switch technology {
@@ -17,6 +22,9 @@ enum NetworkHelperRuntime {
         switch self {
         case .ndi(let runtime): runtime
         case .omt(let runtime): runtime
+        #if DEBUG
+        case .recording(let runtime): runtime
+        #endif
         }
     }
 

@@ -8,7 +8,7 @@ final class OMTRuntime: NetworkRuntimeAdapter {
     private let storage: URL
     private let ownsStorage: Bool
     private var closed = false
-    private static let runtimeVersion = "OMT 1.0.0.19+eucaly.1 (bundled)"
+    private static let runtimeVersion = "OMT 1.0.0.19 (bundled)"
     // These observations and the bounded opt-in history belong exclusively to
     // this adapter's SDK-video lane, independently of the SDK-audio reader.
     private var diagnosticGeneration: UUID?

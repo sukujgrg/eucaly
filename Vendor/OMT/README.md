@@ -1,10 +1,9 @@
 # Bundled Open Media Transport SDK
 
-Bundled SDK: **1.0.0.19+eucaly.1**, based on upstream **1.0.0.19** with two
-documented local sender repairs.
+Bundled SDK: **1.0.0.19**, built from unmodified pinned upstream runtime sources.
 The source-built `libomt.dylib` is arm64, matching eucaly and its helper.
 `libvmx.dylib` remains the unchanged universal upstream codec. The base archive,
-source commits, toolchain, patches and retained-file hashes are recorded in
+source commits, toolchain and retained-file hashes are recorded in
 `provenance.json`. See `PATCHES.md` and `BUILDING.md` before rebuilding.
 
 Only an explicitly started, separately supervised helper loads these libraries.
@@ -14,13 +13,12 @@ settings/logs; exact-child retirement releases its process-lifetime NativeAOT
 runtime. No separate .NET installation is needed to run eucaly. NDI continues
 using its independent vendor-installed runtime.
 
-The local build requests a 512 KiB kernel send buffer per TCP channel and keeps
-four encoded async slots per channel. The request applies to video, audio and
-metadata connections. It adds nominally 448 KiB per socket over upstream's
-64 KiB request; bounded storage does not guarantee bounded network delay under
-a stalled peer. Encoding quality, wire format and raw-buffer consumption rules
-are unchanged. SDK enqueue counts do not prove socket completion or decoded
-receiver delivery. Connection counts describe TCP channels, not receiver devices.
+The runtime retains upstream's 64 KiB send-buffer request and four encoded
+async slots per channel. The previously bundled socket-pool and 512 KiB patches
+are inactive historical artifacts; see `PATCHES.md` for the reassessment and
+public-API evidence. Frame pacing is owned by eucaly's submission worker.
+SDK enqueue counts do not prove socket completion or decoded receiver delivery.
+Connection counts describe TCP channels, not receiver devices.
 
 Output remains progressive SDR Rec.709 1920x1080 at 30/1 fps, UYVY or
 straight-alpha UYVA, Medium VMX quality and stereo 48 kHz planar Float32 audio.
@@ -30,12 +28,12 @@ libraries or search paths.
 `LICENSE.txt` retains the upstream MIT license and the source-built NativeAOT
 runtime's supplied license/third-party notices. The existing build copies the
 notices and provenance into the signed app. Open Media Transport and associated
-marks belong to their owners. No upstream repository has been pushed.
+marks belong to their owners.
 
 A finite read-only load check is available with the installed signed helper:
 
 ```sh
-"$HOME/Applications/eucaly.app/Contents/Helpers/eucalyNDIHelper" --check-omt-runtime
+"$HOME/Applications/eucaly.app/Contents/Helpers/eucalyNetworkHelper" --check-omt-runtime
 ```
 
 It creates no source or window. Use a finite process deadline in automation.

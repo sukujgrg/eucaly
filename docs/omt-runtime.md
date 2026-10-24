@@ -73,9 +73,11 @@ Failure and teardown are per destination and never block the UI on SDK calls.
 
 ## Dependencies and persistence
 
-OMT SDK 1.0.0.19+eucaly.1 is pinned under `Vendor/OMT`. The arm64 transport
-runtime is built from pinned upstream source with the two local sender repairs
-in `PATCHES.md`; the VMX codec remains unchanged. Source commits, patches,
+OMT SDK 1.0.0.19 is pinned under `Vendor/OMT`. The arm64 transport runtime is
+built from unmodified pinned upstream managed/native sources, with the upstream
+64 KiB buffer request and four async slots. The earlier local runtime patches
+are inactive historical artifacts, reassessed below; the VMX codec is unchanged.
+Source commits,
 toolchain, dependency and file hashes are recorded in `provenance.json`, with
 rebuild instructions in `BUILDING.md`. MIT and NativeAOT notices are retained.
 The C header also has an ABI-equivalent function-prototype correction. Xcode embeds
@@ -706,3 +708,400 @@ text matches the shipping 512 KiB library, and packaged OMT notices/provenance
 match their repository bytes. Independent integrated review found no actionable
 issues. Building and loading the Release package do not supply the missing
 sustained Release-GUI or physical-output qualification.
+
+### Stock SDK reassessment and application frame pacing
+
+This reassessment supersedes the earlier recommendation to retain both local
+runtime patches. The current bundle uses unmodified upstream .19 runtime source.
+Historical results above remain evidence of their particular builds and networks;
+they do not qualify the current application pacing implementation.
+
+The later upstream review changes the scope of the earlier patch conclusions.
+The internal socket-pool regression retained and inspected a pool after a failed
+send, without exercising the owning channel's invalidation and disposal. It did
+not establish a persistent public-API capacity leak. The maintainer explains
+that the failed channel retires its pool, and recommends externally spacing
+frames while retaining the deliberately small 64 KiB send buffer. Both proposed
+PRs were closed without merging. See the primary feedback on
+[channel cleanup](https://github.com/openmediatransport/libomtnet/pull/62#issuecomment-6381388937)
+and [frame pacing](https://github.com/openmediatransport/libomtnet/pull/63#issuecomment-6381480869).
+Neither explanation by itself establishes the cause of the eight old rejections.
+
+A fresh source build used completely unmodified managed commit
+`5395139d45cf47bf9f90364bf68f9960183e7638` and native wrapper
+`bb4b67be8e5964f1017592b9fc5406495e704e5d`, with no slot, buffer or configurable
+settings patches. Source files were verified unchanged after building; the
+8.0.426 toolchain, NativeAOT 8.0.32 dependency hashes and unchanged VMX codec
+match the earlier comparison. This stock arm64 library's SHA-256 is
+`d55a2a4ab39b597284a9f7f77660f21331004525d10c3ef675642afbbcbeeb57`.
+It was first placed only in isolated copied test products. Those helpers retain
+the previous hard-coded package version label, so the source manifest and actual
+library hash establish stock identity; that label alone does not.
+
+Independent public-API tests in OMTReceiver exercised pristine .19 and .20,
+real codecs and low-resolution loopback: eight receiver dispose/recreate cycles,
+eight abrupt receiver-process exits and eight sender restarts with a retained
+receiver per version. All 24 cycles in each version received fresh decoded video
+and audio, with connections retiring and no persistent capacity-loss defect
+reproduced. These are functional lifecycle checks, not throughput qualification.
+Eucaly's actual stock-.19 helper tests also passed six receiver cycles (including
+three exact-child SIGKILLs while companion audio stayed usable) and three sender
+stop/start cycles. Helper identity and fresh payload/timestamp markers were
+checked instead of inferring recovery from an internal pool counter.
+
+The application did have a separately reproduced pacing bug. Its repeating
+DispatchSource timer coalesced missed events but did not enforce spacing between
+actual SDK entries. A finite worker fixture holds an SDK call or its post-call
+observation behind controlled gates, then captures every tick and wrapper entry,
+return and observation. It uses the actual worker with recording adapters for
+synchronous consumption and NDI-style borrowing, including ownership fences,
+independent audio/status, lease release and Stop. It loads no SDK or window.
+The first experiment missed its gate-release phase and was explicitly invalid;
+no production repair was justified by that capture. Matching live helper task
+category/latency activity, strict diagnostic release timers and measured phase
+validation produced valid fail-before evidence.
+
+The unchanged worker then made post-stall calls only 2.666–4.076 ms apart in the
+regression, with complete records and no other contract failures. A separate
+actual stock-.19 SDK helper test injected one bounded 95 ms owner-queue delay
+outside the timed SDK call and observed a 5.626459 ms recovery interval. Both
+regressions failed their unchanged 32.333333 ms minimum criterion before the
+repair. This establishes an application scheduling defect. The eight historical
+rejects had approximately 33.26–33.40 ms immediate predecessor intervals, so the
+new reproducer does not prove that catch-up caused those particular events.
+
+The initial application repair used a strict one-shot timer, with the next
+opportunity based on the previous actual SDK entry plus 33,333,333 ns. Early
+wakes rearm before consuming pending frames. An over-budget call may resume
+when eligible; it does not replay an obsolete timer grid. Codec and observation
+time remain inside the period, rather than adding a whole period after return.
+Empty/fenced states scheduled a future wake, ownership changes retained the anchor
+and Stop prevented rearming. Video continued to use actual host uptime in 100 ns units;
+audio's independent 48 kHz clock, bounded admission, epochs, quality and NDI's
+previous-buffer borrow through the next send/flush remain intact. No retry,
+larger buffer, synthesized timestamp or `Timestamp = -1` substitution was added.
+
+After that initial repair, the unchanged regressions and all nine stock SDK tests passed
+(ten focused cases total). Both recording modes had valid captures and no
+contract failures, with minimum entry intervals around 33.39 ms. The opted-in
+local source-cadence test measured 1,796 SDK calls over a 60.0406-second window,
+29.923191 fps, minimum spacing 33.348333 ms and maximum 51.535542 ms. Complete
+traces were valid and measured-window returns positive. The unchanged 29.9 fps
+source gate passed. This is SDK-wrapper cadence with draining decoded loopback
+video/audio peers, not receiver display FPS or physical latency. The independent
+review's stale report-label finding was corrected to a neutral actual-worker
+description; no production pacing/ownership defect remained in review.
+
+Stock build, source manifests, invalid and valid baseline captures, fail-before
+XCTest logs, repaired traces and the local cadence report are retained under
+`build/OMTStockSDK-20261024`. The independent public-API artifacts are in
+OMTReceiver's `build/StockSDK-20261024/{PublicApi19-Final,PublicApi20-Final}`.
+
+#### Physical stock comparison: initial one-shot cadence failure
+
+A new, fixed 30-minute hardware window ended at 20:54:27 Sydney on October 24.
+It included preparation and cleanup. Both arms used the same unmodified .19
+transport and VMX hashes, the same read-only 4K countdown movie, Apple TV build
+1.0.0 (5), one remote NDI Monitor and the existing DELL P2721Q native output
+(`D3C19136-E594-42E7-938E-942EFB5ADE85`). The sender and remote Mac were both
+wired at 1000baseT; the remote Mac had been 100baseTX in the previous comparison.
+That topology change prevents attributing differences from the old 64/512 KiB
+experiment solely to this application's timing. No builds or separate tests ran
+during either measured arm. Native evidence establishes the selected window's
+visibility, AVPlayerView readiness and shared-player progress; it does not
+measure physical presentation cadence or HDMI/audio delivery.
+
+The old repeating timer's TV interval was 184.994510 seconds, with 5,538 decoded
+admissions at 29.936023 fps and 9,250 audio packets. Twenty-two of 23 unchanged
+gates passed. The memory gate had only 13 post-warmup samples against its required
+24, so it remains insufficient evidence. It must not be reported as a pass.
+The initial strict one-shot interval was 484.993641 seconds, with 14,475 decoded
+admissions at 29.845752 fps and 24,250 audio packets. Twenty-one of 23 gates
+passed: both admission and output-sample cadence missed the unchanged 29.9 fps
+minimum. Its memory gate passed with 74 post-warmup samples and about 0.043 MiB
+mean growth. Neither arm reported audio late/horizon warnings, timestamp
+discontinuities or reconnects. The longer run also reported no corruption or
+pool stalls. These observations do not turn its cadence failure into a pass.
+
+All complete source traces were valid without overflow or missing calls;
+terminal shutdown sends were explicitly excluded from live spacing analysis.
+Across its entire lifetime, including setup, seek, loops and disconnection, the
+old OMT source made 12,750 calls at 29.953004 fps, minimum interval 9.787833 ms,
+with 82 intervals below the unchanged 32.333333 ms regression floor. The initial
+one-shot source made 16,569 calls at 29.847830 fps, minimum 33.347792 ms, with no
+short intervals. Its median was 33.383958 ms and 95th percentile 33.409625 ms;
+43 intervals exceeded 40 ms and 20 exceeded two frame periods. Thus the initial
+repair removed bursts but accumulated ordinary wake lateness and retained some
+longer source stalls. SDK drop counters did not explain the observed deficit.
+
+The first contiguous source-checkpoint ranges covering movie positions 140–210
+were approximately matched, not identical exact boundaries:
+
+| Timer | Actual movie range | Source OMT calls / entry FPS | Minimum interval | Zero returns |
+| --- | --- | --- | --- | --- |
+| Old repeating | 140.111550–209.171574 s | 2,067 / 29.927338 | 19.788542 ms | 0 |
+| Initial strict one-shot | 140.180350–209.353595 s | 2,066 / 29.861124 | 33.359458 ms | 0 |
+
+The old common range contained ten short entries; the initial one-shot contained
+none. Corresponding NDI entry rates were 29.912662 and 29.924944 fps, with minima
+21.864084 and 33.357959 ms. These are complete SDK-wrapper entry measurements,
+not receiver counts or measured native presentation rates.
+
+Both source runs finished normally, with no source invariant/router failures,
+PCM discontinuities, stable audio gaps or invalid PCM blocks. All owned helpers
+and native windows closed, and the exact host/helper processes exited. The last
+source finished at 20:50:29, before the original hard cutoff; the TV returned to
+its normal picker and the remote Monitor disconnected. No further hardware arm
+was run within that window. Evidence is under `build/OMTStockSDK-20261024/physical/{old-timer,fixed-timer}`
+with the combined `source-timing-analysis.json`.
+
+The bundle was subsequently restored to the verified unmodified .19 library.
+The public-API lifecycle results and zero transport-drop observations support
+retiring the unproven runtime patches, while the application's cadence failure
+requires its own correction and validation. The physical result above belongs
+to the initial strict one-shot implementation, not any subsequent clock repair.
+
+#### Final phase-clock repair and local regression evidence
+
+The longer physical gaps were mostly inside the preceding synchronous
+`runtime.sendVideo` wrapper. For example, a 223.268583 ms entry gap followed a
+223.235041 ms wrapper call; observation took 0.007625 ms and the next wake after
+observation took 0.022834 ms. A 149.134833 ms gap followed a 149.048750 ms call.
+The wrapper duration can include SDK/codec execution, waiting and process
+descheduling; this trace does not isolate those internal causes. Ordinary timer
+drift is a separate, independently reproduced application issue. A pacing repair
+cannot eliminate every slow synchronous call.
+
+A new finite diagnostic runs the actual submission worker for 300 calls with
+an explicitly measured 500 microsecond owner-queue wake delay before admission,
+outside SDK timing. It uses a recording adapter, no SDK/player/socket/window,
+real entry timestamps and complete bounded traces. An injection longer than
+2 ms invalidates the ordinary-delay experiment. The first baseline capture had
+one 2.161959 ms injection and remains invalid evidence. An unchanged recheck
+was valid: injection 0.526833–0.768584 ms, no contract failures, and 29.365847 fps.
+Only the unchanged 29.9 fps assertion failed. Both records and the initial
+one-shot helper executable were retained before the final scheduling change.
+
+The final worker retains a nominal 30 Hz opportunity clock rather than moving
+every deadline by the preceding wake's lateness. It consumes at most one latest
+picture per callback and advances arithmetically past obsolete nominal slots.
+Actual SDK entries retain the existing regression's period-minus-1-ms minimum,
+32.333333 ms: a bounded ordinary jitter allowance, not the old 6–12 ms catch-up
+bursts. The next strict one-shot deadline is the latest of that floor, the
+nominal opportunity and now. An eligible overdue call can proceed without an
+unnecessary additional grid period. An empty/fenced canvas moves only its nominal
+opportunity into the future; it retains the actual-entry floor and accumulates
+no idle debt. Timestamps still use actual entry uptime, and audio clocks,
+admission, quality, priorities, ownership fences, NDI borrows and cleanup remain
+unchanged.
+
+The parent agent's review of the
+[OBS OMT output](https://github.com/openmediatransport/omtplugin/blob/master/src/OBSOutput.cs)
+found direct forwarding of OBS's raw video/audio callbacks with producer
+timestamps, without a separate output timer or buffer patch. Its output ends
+capture before sender disposal; the separate
+[receive implementation](https://github.com/openmediatransport/omtplugin/blob/master/src/OBSReceiveInstance.cs)
+retains its receiver across polling timeouts. These support the public-API
+lifecycle checks. eucaly retains independent audio/video lanes and its own
+borrow/shutdown fences; OBS's shared callback lock is not copied.
+
+All 11 focused tests passed after the final repair: both actual-worker
+regressions and all nine real-SDK cases, including the opted-in 60-second local
+cadence run. The ordinary-delay regression measured 29.999813 fps with a valid
+300-call trace, no contract failures and minimum interval 33.090667 ms. Both
+unchanged controlled-stall modes passed, with minimum intervals 32.389292 ms
+(synchronous) and 32.387250 ms (NDI borrowing). The real stock-SDK run measured
+1,797 calls over 60.002680 seconds at 29.949955 fps, minimum 32.365042 ms and
+maximum 78.131542 ms; its complete trace was valid and measured returns positive.
+The 29.9 fps gate and spacing criteria were not relaxed. These are bounded local
+source checks, not a rerun of the three-output physical experiment.
+
+Evidence is retained in `build/OMTStockSDK-20261024/phase-baseline-{invalid,valid}`,
+`phase-baseline-validity-recheck.{log,xcresult}`, `phase-fixed-focused.{log,xcresult}`,
+`phase-fixed-headless` and `phase-fixed-sdk-traces`. This focused run did not
+complete physical qualification; the subsequent bounded steady-output check is
+recorded below. The historical eight rejections remain unattributed.
+
+#### Retained-receiver timing and functional recovery
+
+The first integrated `make test` after the phase repair ran 1,070 XCTest cases,
+with seven opt-in skips, and failed the new
+`testReceiverHelperSurvivesExactSenderStopAndStart` case. Its DEBUG incoming
+loopback probe received no valid picture; the other cases passed. This failure
+must remain distinct from the successful optimized focused run and is not
+covered by steady-output physical testing.
+
+Diagnostic-only changes retained the probe's 40-call budget, 100 ms maximum SDK
+wait and immediate invalid-frame failure, while reporting termination, pending
+count and elapsed time. Three isolated unoptimized iterations passed, but the
+surrounding real-SDK sequence reproduced two failures with 40 pending returns
+over 4,128.777 and 4,136.074 ms. Thus early exhaustion of a call counter does not
+explain these failures. No timeout extension or polling-policy change was made.
+
+Further captures failed at cycle 2, the third quick sender, while the original
+video-only receiver retained `omt://127.0.0.1:6400`. The new sender was healthy,
+with 140–142 wrapper calls near 30 fps, zero connected peers and zero drops;
+the receiver retained the previous sender's last timecode. All pending reads
+lasted about 4.25 seconds. The sender's SDK log registered the expected listener
+without a receiver connection. A later sequence with bounded receiver-log
+capture passed; adding diagnostics is not evidence of a causal repair.
+
+The earlier public managed tests used A/V reception with discovery and newly
+allocated ports, so their success does not settle this direct-URL video-only
+case. Exact native-helper logs, SDK state and corresponding public-API cases
+were retained separately. Failure artifacts are
+`final-make-test.log`, `restart-probe-diagnostic.{log,xcresult}`,
+`restart-sequence-diagnostic.{log,xcresult}`, `restart-state-diagnostic.{log,xcresult}`
+and `restart-receiver-log.{log,xcresult}` under `build/OMTStockSDK-20261024`.
+
+A subsequent unoptimized sequence removed periodic log reads entirely and
+retained logs only after the exact failed probe child had exited, before its
+private storage was deleted. Two of three retained-receiver iterations failed
+at the third and second sender respectively: 40 pending calls over 4,243.575
+and 4,278.577 ms. Both complete retained SDK logs showed the preceding connection,
+but no disconnect or new connection attempt after the last old sender exited.
+This narrows the observation; it does not establish the SDK or application cause.
+Evidence is `restart-post-exit-capture.{log,xcresult}` and `failed-probe-capture`.
+
+For this failure-only DEBUG capture, set
+`EUCALY_OMT_FAILED_PROBE_LOG_DIRECTORY` to an absolute canonical directory.
+Only failed OMT video/audio probes are retained, after matched PID/generation
+exit. Each capture contains exit/failure metadata and at most eight 64 KiB
+regular log tails, using no-follow descriptor access. Capture errors preserve
+the original failure. No log polling occurs during reception; final unwritten
+SDK logging-queue entries may be absent after abrupt exit.
+
+The parent subsequently matched video-only direct-URL sender-process replacement
+through the public API. Unmodified managed .19 and .20 each passed eight cycles,
+including the pause in receive calls across sender exit and replacement readiness.
+A minimal native C API case then matched one fresh picture, an identical opaque
+UYVY terminal send, destroy/shutdown and `_exit`, without Swift or Mach IPC.
+It missed the four-second target and recovered without replacing the receiver
+at 5,138.558 ms. A repeat with `POSIX_SPAWN_CLOEXEC_DEFAULT` excluded the obvious
+inherited-descriptor confound: cycle 3 recovered at 5,054.157 ms after 47 pending
+reads. Earlier cycles were 10.125, 1,073.714 and 997.696 ms. Both native reports
+remain failed against their unchanged four-second diagnostic target. They show
+delayed public recovery, not permanent capacity loss or a proven internal cause.
+Evidence is in the receiver project's `build/StockSDK-20261024` directories
+`NativeDirect19-OneFrameOpaqueExit` and `NativeDirect19-OpaqueExit-Cloexec`.
+An otherwise identical clean-descriptor arm using normal process return also
+recovered late, at 5,105.405 ms in cycle 7. Its report is
+`NativeDirect19-OpaqueNormal-Cloexec`. This supplies no basis for changing the
+helper's exit path; the SDK header's destroy, shutdown, process-exit sequence is
+already followed.
+
+Four seconds was the existing DEBUG loopback probe's request budget, not a
+documented SDK reconnect guarantee. The pinned SDK configures a five-second
+TCP keepalive in `OMTChannel.cs` and throttles connection attempts to one second
+in `OMTReceive.cs`. The new functional retained-receiver test therefore opts
+into a separate DEBUG `senderRecovery` budget: 80 requests of at most 100 ms,
+with an eight-second first-fresh-picture assertion and a ten-second fixture-only
+supervisor watchdog. This allows keepalive, retry and two seconds of slack;
+it does not promise an SDK recovery bound or turn the four-second miss into a
+pass. Ordinary video/audio probes keep 40 requests. The optional bootstrap field
+defaults to ordinary when absent and rejects recovery outside OMT video probes;
+Release contains no alternative budget. Timing is retained after sender exit,
+with the four-second diagnostic result reported separately. No producer linger,
+receiver recreation, SDK patch or production timeout change was introduced.
+
+The resulting focused run completed 34 test executions with one opt-in skip and
+no failures, covering three iterations of shared pacing, SDK lifecycle and
+budget-validation cases. In its first retained-receiver iteration, first-fresh
+times were 266.301, 5,210.847 and 5,235.105 ms: two explicit four-second misses,
+while functional recovery passed. The other iterations recovered in about
+0.23–0.92 seconds. Evidence is `recovery-functional-focused.{log,xcresult}`.
+
+#### Final steady-output physical check
+
+After fresh user authorization, a separate 30-minute device window ran from
+21:11:36 to 21:41:36 Sydney. The fixture and launcher both enforced Unix
+1792838496, with automatic source retirement 30 seconds earlier. Final optimized
+Debug products were frozen under `FinalPhaseStockProducts`; the manifest is
+`final-phase-products.json`. The helper SHA-256 was
+`613e41367e87a4af977d1ae0db326a3ae50e3f5d75bd2d98f5a128cb599f22a0`;
+the unmodified stock transport and unchanged VMX hashes remained as above.
+This run assesses steady output, not short receiver-restart latency or
+general production qualification.
+
+The same read-only movie, native Dell, one remote NDI Monitor and one Apple TV
+receiver ran together on the verified gigabit links. All three were ready before
+the seek-to-100 command completed at 21:31:12. The TV's measurement baseline
+preceded that seek, so setup and seek effects remain included. The movie crossed
+two EOF/rewind boundaries. No builds, separate tests or probes ran during
+measurement.
+
+The TV measured 605.000562 seconds, 18,096 decoded admissions at 29.910716 fps
+and 30,251 audio packets. All 23 unchanged runtime targets passed, including
+the 29.9 fps admission/output-sample gates. There were no audio horizon or late
+warnings, timestamp/timeline resets, pool stalls or failures, and one connection
+attempt. Ninety-seven post-warmup memory samples ranged from 48.266 to 53.173 MiB,
+with mean growth -1.636719 MiB. The receiver renderer reported 17,946 frames over
+599.997140 seconds, one drop (0.005572%) and no corruption. These counters do not
+measure physical HDMI presentation or acoustic delivery. Native evidence remains
+window/AVPlayerView readiness and shared-player progress; NDI Monitor was selected
+and connected, without an independent presented-frame counter.
+
+Both source traces were complete and valid, with no overflow, missing calls or
+live interval below 32.333333 ms. Whole sender lifetimes included setup and
+disconnection: OMT made 23,889 calls at 29.919839 fps, minimum 32.354125 ms,
+median 33.333042 ms and maximum 181.021167 ms. NDI made 23,539 calls at
+29.944024 fps with minimum 32.352333 ms. Slow synchronous calls remained, while
+the old closely spaced catch-up calls were absent.
+
+The first actual post-seek common movie range was 140.775114–209.153120 seconds,
+bounded by source checkpoints at 21:31:57–21:33:05. OMT made 2,049 calls at
+29.965227 fps, minimum 32.366375 ms and zero SDK zero returns; NDI made 2,050 at
+29.985402 fps, minimum 32.365833 ms. Approximate checkpoint movie boundaries
+differ slightly from the earlier arms. Terminal shutdown sends are excluded.
+
+The TV returned to its ordinary picker and NDI Monitor disconnected. The source
+retired normally at 21:41:06 through its automatic authorized-deadline path;
+an explicit finish request arrived afterward and was queued without an ACK.
+All owned helpers and native windows closed, exact PIDs exited, active outputs
+were zero, and collection completed with exit 0 and no forced cleanup. Source
+invariants, router failures, PCM discontinuities, stable gaps and invalid blocks
+were zero. Logs, commands, ACKs and traces are retained in
+`physical/final-phase`; analysis is `physical/source-timing-final-analysis.json`,
+both under `build/OMTStockSDK-20261024`.
+
+This bounded final run supplies steady three-output evidence for the phase
+repair with stock .19. It does not establish four-second direct-URL receiver
+restart recovery, qualify every receiver/network/load, or establish the
+cause of the eight historical rejections.
+
+#### Integrated build status
+
+The final `make build` archived and exported the signed arm64 application to
+`~/Applications/eucaly.app`. Deep/strict signature verification, finite
+OMT/NDI runtime-load checks, architecture checks, all 13 vendor file hashes,
+and packaged notices/provenance comparisons passed. The signed bundled
+`libomt` executable text matched the verified unmodified stock source build.
+After the DEBUG budget correction, `make build` and the same package checks
+passed again. Evidence is `recovery-final-make-build.log` and
+`recovery-signed-package-verification.{json,log}`; the earlier
+`final-make-build.log` and `signed-package-verification.{json,log}` are retained
+under `build/OMTStockSDK-20261024`.
+
+The latest full `make test` ran 1,071 XCTest cases with seven opt-in skips.
+All network, NDI/OMT, pacing and functional-recovery cases passed. The retained
+receiver measured 248.663, 5,266.211 and 929.760 ms, explicitly marking the late
+second cycle as a four-second miss. The full command remains failed: four
+assertions, including two caught errors, belong to two unrelated native-focus
+setups. `LibrarySearchNavigationTests.testRepeatedLibrarySearchFocusSelectsExistingQueryAndPreservesCandidateAndReturnFocus`
+and `LyricsTextViewTests.testNativeLyricsFindRoutesDocumentAndFindBarKeysWithoutSearchingOtherFields`
+received neither app-active nor window-key readiness before their five-second
+deadline, so their keyboard assertions did not run. A subsequent read-only GUI
+session check reported `CGSSessionScreenIsLocked=1` and foreground `loginwindow`.
+The unchanged tests passed in the earlier full run. An unlocked-session rerun
+remains a validation gap; neither test, timeout nor product focus behavior was
+changed. Evidence is `recovery-final-make-test.log` and
+`build/DerivedData/Logs/Test/Test-eucaly-2026.10.24_22-34-56-+1100.xcresult`.
+
+`make test-codex-agents`, all eight production-harness checks and
+`git diff --check` passed; no network helpers remained after validation.
+Independent review cleared the pacing/provenance changes, bounded failure-only
+diagnostics and explicit recovery-test scope. The unbounded ad hoc sender-log
+dump was removed. Functional recovery does not turn the four-second diagnostic
+miss into a pass, establish a hidden capacity leak or explain the eight
+historical rejections. No speculative SDK patch, producer linger or production
+timeout change was introduced.

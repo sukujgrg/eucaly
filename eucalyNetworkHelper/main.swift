@@ -7,6 +7,31 @@ import Darwin
 // loading, runtime checks, bootstrap or service worker creation.
 _ = Darwin.signal(SIGPIPE, SIG_IGN)
 
+#if DEBUG
+// Standalone bounded recording-adapter experiment. It runs before AppKit,
+// private bootstrap and runtime loading; it cannot publish a network source.
+if CommandLine.arguments.count == 3,
+   ["--diagnose-video-pacing", "--diagnose-video-cadence"].contains(CommandLine.arguments[1]) {
+    let deadline = DispatchWorkItem { _exit(75) }
+    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .seconds(15), execute: deadline)
+    do {
+        guard CommandLine.arguments[2].hasPrefix("/") else { throw NetworkSubmissionPacingFixture.Failure.invalid("Use an absolute output directory") }
+        let directory = URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true)
+        if CommandLine.arguments[1] == "--diagnose-video-cadence" {
+            try NetworkSubmissionCadenceFixture.run(directory: directory)
+        } else {
+            try NetworkSubmissionPacingFixture.run(directory: directory)
+        }
+        deadline.cancel()
+        exit(0) // A complete measurement may expose a pacing failure in its report.
+    } catch {
+        deadline.cancel()
+        FileHandle.standardError.write(Data("Pacing fixture failed: \(error)\n".utf8))
+        exit(74)
+    }
+}
+#endif
+
 // Explicit read-only qualification command for the installed, signed helper.
 // It neither creates a sender nor opens a window. The caller owns a finite
 // process deadline just as the app supervisor does.

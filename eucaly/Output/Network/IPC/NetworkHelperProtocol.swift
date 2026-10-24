@@ -164,8 +164,22 @@ nonisolated struct NetworkHelperConfiguration: Codable, Sendable {
     // Debug-only comparison against the previous SDK input path. Never saved or
     // exposed as an operator setting; Release always submits GPU-produced YUV.
     var referenceBGRA = false
+    #if DEBUG
+    enum ReceiveBudget: String, Codable, Sendable {
+        case ordinary, senderRecovery
+        var maximumAttempts: Int { self == .ordinary ? 40 : 80 }
+        // Each SDK receive requests at most 100 ms. This is a finite request
+        // budget, not an elapsed-time SLA or a guaranteed minimum wait.
+        var nominalMaximumWaitMilliseconds: Int { maximumAttempts * 100 }
+    }
+    // Missing on older bootstrap messages means the ordinary four-second
+    // request budget. Recovery is an explicit functional-test allowance only.
+    var receiveBudget: ReceiveBudget? = nil
+    #endif
     var isValid: Bool {
-        #if !DEBUG
+        #if DEBUG
+        guard receiveBudget != .senderRecovery || (technology == .omt && purpose == .loopbackProbe) else { return false }
+        #else
         guard !referenceBGRA, purpose != .renderYUV else { return false }
         #endif
         switch purpose {

@@ -2,7 +2,7 @@ import Foundation
 
 /// The raw-pixel lifetime is an SDK contract, independent of encoded network
 /// queues. A synchronous consumer releases its borrow before the call returns.
-enum NetworkVideoConsumption: Sendable {
+enum NetworkVideoConsumption: String, Sendable {
     case synchronous
     case borrowedUntilNextSendOrFlush
 }

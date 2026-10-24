@@ -1,9 +1,12 @@
 import Foundation
 import Darwin
 
-/// One bounded latest-frame mailbox. DispatchSource coalesces clock ticks if
-/// the SDK blocks. Neither SDK calls nor cleanup run on control/UI queues.
+/// One bounded latest-frame mailbox. A nominal 30 Hz phase preserves cadence;
+/// actual-entry spacing bounds recovery without replaying obsolete opportunities.
+/// Neither SDK calls nor cleanup run on control/UI queues.
 final class NetworkSubmissionWorker: @unchecked Sendable {
+    private static let videoPeriodNanoseconds: UInt64 = 1_000_000_000 / 30
+    private static let minimumVideoSpacingNanoseconds = videoPeriodNanoseconds - 1_000_000
     private let queue = DispatchQueue(label: "com.suku.eucaly.network.sdk-submission", qos: .userInitiated)
     private let fences = DispatchQueue(label: "com.suku.eucaly.network.audio-fences", qos: .userInitiated)
     private let audioCalls = DispatchGroup()
@@ -22,18 +25,45 @@ final class NetworkSubmissionWorker: @unchecked Sendable {
     private var borrowed: GPUFrameLease?
     private weak var submittedPicture: GPUFrameLease?
     private var lastTick: UInt64 = 0
+    private var lastVideoEntryNanoseconds: UInt64? // SDK-video queue; survives owner/empty changes.
+    private var nextVideoOpportunityNanoseconds: UInt64? // SDK-video queue; nominal phase, not wake time.
     private var metrics = NetworkSubmissionMetrics()
     private var stopping = false // protected by lock; blocks late GPU/audio handoffs
     private var videoFenceScheduled = false // protected by lock; latest epoch only
     #if DEBUG
     private var videoInProgress = false // protected by lock
+    private let recordingAdapter: (any NetworkRuntimeAdapter)?
+    private let recordingWakeDelayNanoseconds: UInt64
+    private var videoTrace: NetworkVideoTrace?
+
+    init() { recordingAdapter = nil; recordingWakeDelayNanoseconds = 0 }
+
+    /// The fixture uses the actual timer, fences, mailbox and buffer leases;
+    /// only the SDK boundary is replaced. Neither vendor runtime is loaded.
+    init(recording adapter: any NetworkRuntimeAdapter, trace: NetworkVideoTrace, wakeDelayNanoseconds: UInt64 = 0) {
+        precondition(wakeDelayNanoseconds <= 1_000_000)
+        recordingAdapter = adapter
+        recordingWakeDelayNanoseconds = wakeDelayNanoseconds
+        videoTrace = trace
+    }
+    #else
+    init() {}
     #endif
 
     func start(name: String, technology: NetworkOutputTechnology, generation: UUID? = nil,
                completion: @escaping @Sendable (NetworkHelperStatus?, String?) -> Void) {
         queue.async { [self] in
             do {
-                let runtime = try NetworkHelperRuntime(technology: technology, generation: generation)
+                let runtime: NetworkHelperRuntime
+                #if DEBUG
+                if let recordingAdapter { runtime = .recording(recordingAdapter) }
+                else { runtime = try NetworkHelperRuntime(technology: technology, generation: generation) }
+                if videoTrace == nil {
+                    videoTrace = NetworkVideoTrace.fromEnvironment(generation: generation, technology: technology)
+                }
+                #else
+                runtime = try NetworkHelperRuntime(technology: technology, generation: generation)
+                #endif
                 guard runtime.createSender(name: name), let actual = runtime.sourceName else {
                     throw NetworkHelperError.message("The \(technology.title) source could not be created.")
                 }
@@ -42,8 +72,16 @@ final class NetworkSubmissionWorker: @unchecked Sendable {
                 report.runtimeVersion = runtime.version; report.sourceName = actual
                 let initial = report
                 lock.unlock()
-                let timer = DispatchSource.makeTimerSource(queue: queue)
-                timer.schedule(deadline: .now(), repeating: .nanoseconds(1_000_000_000 / 30), leeway: .milliseconds(1))
+                // A live frame deadline needs the strict timer's best effort,
+                // rather than ordinary timer coalescing. This grants neither
+                // foreground nor real-time priority; early wakes are guarded.
+                let timer = DispatchSource.makeTimerSource(flags: .strict, queue: queue)
+                let timerStart = DispatchTime.now()
+                nextVideoOpportunityNanoseconds = timerStart.uptimeNanoseconds
+                timer.schedule(deadline: timerStart, leeway: .nanoseconds(0))
+                #if DEBUG
+                videoTrace?.started(runtimeVersion: runtime.version, timerAnchor: timerStart.uptimeNanoseconds)
+                #endif
                 timer.setEventHandler { [weak self] in self?.tick() }
                 self.timer = timer; timer.resume()
                 completion(initial, nil)
@@ -160,27 +198,83 @@ final class NetworkSubmissionWorker: @unchecked Sendable {
     func injectFault(_ value: String) { lock.lock(); fault = value; lock.unlock() }
     #endif
     private func tick() {
+        defer { scheduleNextVideoTick() }
+        #if DEBUG
+        var trace = videoTrace?.tick(firings: UInt64(timer?.data ?? 0))
+        defer {
+            if var trace {
+                trace.tickFinishedNanoseconds = DispatchTime.now().uptimeNanoseconds
+                videoTrace?.record(trace)
+            }
+        }
+        if recordingWakeDelayNanoseconds != 0 {
+            // Recording fixture only: model finite owner-queue wake lateness
+            // before admission/SDK entry, using real elapsed host time. This
+            // changes neither the production scheduler nor the transmitted clock.
+            trace?.injectedWakeDelayStartedNanoseconds = DispatchTime.now().uptimeNanoseconds
+            _ = DispatchSemaphore(value: 0).wait(timeout: .now() + .nanoseconds(Int(recordingWakeDelayNanoseconds)))
+            trace?.injectedWakeDelayFinishedNanoseconds = DispatchTime.now().uptimeNanoseconds
+        }
+        #endif
         lock.lock()
         guard !stopping else { lock.unlock(); return }
+        // Dispatch deadlines are not a minimum-spacing guarantee. Re-arm an
+        // early wake without taking the pending latest frame or an SDK borrow.
+        let now = DispatchTime.now().uptimeNanoseconds
+        let earliestEntry = lastVideoEntryNanoseconds.map { $0 + Self.minimumVideoSpacingNanoseconds } ?? 0
+        if now < max(earliestEntry, nextVideoOpportunityNanoseconds ?? 0) {
+            lock.unlock(); return
+        }
         let next = pending, epoch = contentEpoch; pending = nil; let fault = self.fault
+        #if DEBUG
+        if fault == "video-queue-delay-once" { self.fault = "" }
+        #endif
         let callIndex = report.submittedFrames &+ 1
         lock.unlock()
         if currentEpoch != epoch { current = nil; currentEpoch = epoch }
         if let next { current = next }
         guard let current, let runtime else { return }
         #if DEBUG
+        trace?.contentEpoch = epoch
+        trace?.consumption = runtime.videoConsumption.rawValue
+        trace?.format = current.format.rawValue
+        trace?.rawByteCount = current.format.byteCount
         lock.withLock { videoInProgress = true }
         defer { lock.withLock { videoInProgress = false } }
         if fault == "sdk-stall" { DispatchSemaphore(value: 0).wait() }
         if fault == "sdk-crash" { _exit(72) }
+        if fault == "video-queue-delay-once" {
+            // Opt-in, finite owner-queue delay, deliberately OUTSIDE the timed
+            // SDK call. It is never a production pacing policy or retry.
+            trace?.injectedDelayStartedNanoseconds = DispatchTime.now().uptimeNanoseconds
+            _ = DispatchSemaphore(value: 0).wait(timeout: .now() + .milliseconds(95))
+            trace?.injectedDelayFinishedNanoseconds = DispatchTime.now().uptimeNanoseconds
+        }
         #endif
         // Timecode is monotonic and never follows a source player's seek/loop.
         let started = DispatchTime.now().uptimeNanoseconds
+        lastVideoEntryNanoseconds = started
+        // Consume one current opportunity and skip every nominal slot already
+        // obsolete at this real entry. Ordinary wake lateness does not become
+        // an added offset on every subsequent deadline. There is no replay loop.
+        let opportunity = nextVideoOpportunityNanoseconds ?? started
+        let elapsed = started >= opportunity ? started - opportunity : 0
+        nextVideoOpportunityNanoseconds = opportunity + (elapsed / Self.videoPeriodNanoseconds + 1) * Self.videoPeriodNanoseconds
         let tick = started / 100
         let timecode = max(tick, lastTick + 1); lastTick = timecode
         let previous = borrowed
+        #if DEBUG
+        trace?.kind = "live"
+        trace?.callIndex = callIndex
+        trace?.timecode = Int64(timecode)
+        trace?.sdkEnteredNanoseconds = started
+        #endif
         let returnedBytes = runtime.sendVideo(current.baseAddress, format: current.format, timecode: Int64(timecode))
         let finished = DispatchTime.now().uptimeNanoseconds
+        #if DEBUG
+        trace?.sdkReturnedNanoseconds = finished
+        trace?.returnedBytes = returnedBytes
+        #endif
         metrics.submitted(at: finished, newPictureProducedAt: current !== submittedPicture ? current.producedAtNanoseconds : nil)
         withExtendedLifetime(previous) {} // Previous async borrow is now synchronized.
         submittedPicture = current
@@ -191,12 +285,36 @@ final class NetworkSubmissionWorker: @unchecked Sendable {
         let observation = runtime.videoSubmissionObservation(.init(contentEpoch: epoch, callIndex: callIndex,
             timecode: Int64(timecode), startedNanoseconds: started, finishedNanoseconds: finished,
             format: current.format, returnedBytes: returnedBytes))
+        #if DEBUG
+        trace?.observationFinishedNanoseconds = DispatchTime.now().uptimeNanoseconds
+        #endif
         lock.lock(); report.submittedFrames &+= 1; report.lastTimecode = Int64(timecode)
         report.effectiveFramesPerSecond = metrics.framesPerSecond
         report.slowCadence = metrics.slowCadence; report.frameAgeMilliseconds = metrics.frameAgeMilliseconds
         report.submissionMilliseconds = Double(finished - started) / 1_000_000
         observation.transport?.apply(to: &report)
         report.connections = observation.connections; lock.unlock()
+    }
+    private func scheduleNextVideoTick() {
+        guard let timer, !lock.withLock({ stopping }) else { return }
+        let now = DispatchTime.now().uptimeNanoseconds
+        let earliest = lastVideoEntryNanoseconds.map { $0 + Self.minimumVideoSpacingNanoseconds } ?? 0
+        let deadline: UInt64
+        if current == nil {
+            // An empty/fenced program has no SDK entry to advance the clock.
+            // Start its next opportunity in the future, retaining the entry
+            // floor while accumulating neither idle debt nor immediate wakes.
+            let future = now + Self.videoPeriodNanoseconds
+            nextVideoOpportunityNanoseconds = future
+            deadline = max(earliest, future)
+        } else {
+            // Keep the nominal phase through ordinary wake lateness. After an
+            // over-budget call, serve one already-due opportunity immediately
+            // if spacing permits, instead of needlessly waiting another slot.
+            // Codec/observation time remains inside the frame period.
+            deadline = max(now, max(earliest, nextVideoOpportunityNanoseconds ?? now))
+        }
+        timer.schedule(deadline: DispatchTime(uptimeNanoseconds: deadline), leeway: .nanoseconds(0))
     }
     func stop(colour: OutputColour, completion: @escaping @Sendable (NetworkHelperShutdown) -> Void) {
         queue.async { [self] in
@@ -216,6 +334,16 @@ final class NetworkSubmissionWorker: @unchecked Sendable {
                     // A local strong reference otherwise postpones deinit forever.
                     retiring.close()
                 }
+                #if DEBUG
+                if let videoTrace {
+                    // Snapshot only on the owner queue. Encoding and file I/O
+                    // happen after SDK cleanup on a separate utility queue.
+                    let expected = lock.withLock { self.report.submittedFrames }
+                    let shutdown = report
+                    videoTrace.exportAfterStop(expectedLiveCalls: expected) { completion(shutdown) }
+                    return
+                }
+                #endif
                 completion(report)
             }
         }
@@ -240,8 +368,24 @@ final class NetworkSubmissionWorker: @unchecked Sendable {
         }
         let timecode = max(DispatchTime.now().uptimeNanoseconds / 100, lastTick + 1)
         pixels.withUnsafeMutableBytes { bytes in
-            _ = runtime.sendVideo(bytes.baseAddress!, format: format, timecode: Int64(timecode))
+            #if DEBUG
+            var trace = videoTrace?.terminal(consumption: runtime.videoConsumption, format: format, timecode: Int64(timecode))
+            trace?.sdkEnteredNanoseconds = DispatchTime.now().uptimeNanoseconds
+            #endif
+            let returned = runtime.sendVideo(bytes.baseAddress!, format: format, timecode: Int64(timecode))
+            #if DEBUG
+            trace?.sdkReturnedNanoseconds = DispatchTime.now().uptimeNanoseconds
+            trace?.returnedBytes = returned
+            #else
+            _ = returned
+            #endif
             runtime.flush()
+            #if DEBUG
+            if var trace {
+                trace.tickFinishedNanoseconds = DispatchTime.now().uptimeNanoseconds
+                videoTrace?.record(trace)
+            }
+            #endif
         }
         return .init(terminalPixelBGRA: pixel, videoFormat: format, terminalUYVY: pair, terminalAlpha: UInt8(byte(colour.alpha)))
     }

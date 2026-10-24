@@ -1,6 +1,7 @@
 import XCTest
 import AppKit
 import IOSurface
+import Darwin
 @testable import eucaly
 
 /// Bundled OMT is a required dependency. These owned helper processes exercise
@@ -226,6 +227,302 @@ final class OMTSDKIntegrationTests: XCTestCase {
         XCTAssertTrue(log.state.exited)
         XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - started, 2)
         try healthy(log)
+    }
+
+    func testFiniteVideoQueueDelayRecoversWithoutBunchingStockSDKEntries() async throws {
+        let events = OMTEvents(), received = OMTEvents(), generation = UUID(), probeID = UUID()
+        let sender = NetworkHelperSupervisor(event: events.record), probe = NetworkHelperSupervisor(event: received.record)
+        let pcm = OMTPCMFixture(sender: sender, generation: generation)
+        defer { pcm.stop(); sender.stop(); probe.stop() }
+        sender.start(generation: generation, configuration: .init(purpose: .sender,
+            sourceName: "eucaly OMT finite pacing \(generation)", technology: .omt))
+        try await ready(events)
+        let process = await sender.diagnosticProcessIdentifier(generation: generation)
+        let pid = try XCTUnwrap(process)
+        let endpoint = try await OMTLoopbackEndpoint.address(for: sender, generation: generation)
+        sender.renderMedia(.init(request: .init(generation: generation, revision: 1, colour: .chromaGreen), foreground: nil, background: nil))
+        probe.start(generation: probeID, configuration: .init(purpose: .loopbackProbe, sourceName: endpoint, technology: .omt))
+        try await ready(received)
+        _ = try await receiveColour(.chromaGreen, after: 0, probe: probe, generation: probeID, events: received, senderEvents: events)
+        pcm.start()
+        try await until("steady SDK entries before finite delay") { (events.state.status?.submittedFrames ?? 0) >= 5 }
+        let frames = events.state.status?.submittedFrames ?? 0, audio = events.state.status?.audioBlocks ?? 0
+        let boundary = Int64(DispatchTime.now().uptimeNanoseconds / 100)
+        let installed = expectation(description: "one bounded owner-queue delay installed")
+        sender.injectFault("video-queue-delay-once") { installed.fulfill() }
+        await fulfillment(of: [installed], timeout: 1)
+        let responsive = expectation(description: "independent control during finite queue delay")
+        sender.ping { responsive.fulfill() }
+        await fulfillment(of: [responsive], timeout: 1)
+        _ = try await receiveColour(.chromaGreen, after: boundary, probe: probe, generation: probeID, events: received, senderEvents: events)
+        try await until("video and independent PCM recover after finite delay") {
+            (events.state.status?.submittedFrames ?? 0) >= frames + 10 && (events.state.status?.audioBlocks ?? 0) >= audio + 10
+        }
+        let continuedPID = await sender.diagnosticProcessIdentifier(generation: generation)
+        XCTAssertEqual(continuedPID, pid); XCTAssertEqual(events.state.readyCount, 1)
+        pcm.stop(); await sender.stopAndWait(); await probe.stopAndWait()
+        try healthy(events); try healthy(received)
+        // Opt-in complete capture makes this the real-SDK fail-before/pass-after
+        // check. Normal runs retain functional recovery; the no-SDK fixture
+        // always checks all-entry spacing without process-wide environment edits.
+        if let directory = ProcessInfo.processInfo.environment["EUCALY_NETWORK_VIDEO_TRACE_DIRECTORY"] {
+            let path = URL(fileURLWithPath: directory).appendingPathComponent("video-trace-\(pid)-\(generation.uuidString).json")
+            let data = try Data(contentsOf: path)
+            let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.json")
+            attachment.name = "Real SDK finite-delay entry trace"; attachment.lifetime = .keepAlways; add(attachment)
+            let trace = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+            XCTAssertEqual(trace["valid"] as? Bool, true)
+            let records = try XCTUnwrap(trace["records"] as? [[String: Any]]).filter { $0["kind"] as? String == "live" }
+            let delayed = records.indices.filter { records[$0]["injectedDelayStartedNanoseconds"] != nil }
+            XCTAssertEqual(delayed.count, 1, "The finite test delay must actually have executed")
+            let index = try XCTUnwrap(delayed.first)
+            XCTAssertLessThan(index + 1, records.count)
+            guard index + 1 < records.count else { return }
+            let first = try XCTUnwrap(records[index]["sdkEnteredNanoseconds"] as? NSNumber).uint64Value
+            let next = try XCTUnwrap(records[index + 1]["sdkEnteredNanoseconds"] as? NSNumber).uint64Value
+            guard next >= first else { XCTFail("SDK entry trace regressed in time"); return }
+            XCTAssertGreaterThanOrEqual(next - first, 1_000_000_000 / 30 - 1_000_000,
+                "A delayed actual SDK entry must not be followed by a catch-up entry; \(path.path)")
+        }
+    }
+
+    /// Optional source-cadence measurement, separate from receiver/render FPS.
+    /// Uses owned loopback peers and an explicit complete trace, never live TV.
+    func testSustainedLocalSDKEntryCadence() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let raw = env["EUCALY_OMT_LOCAL_PACING_SECONDS"] else {
+            throw XCTSkip("Set EUCALY_OMT_LOCAL_PACING_SECONDS and the complete video trace directory for a bounded local cadence check")
+        }
+        guard let seconds = Double(raw), (30...120).contains(seconds),
+              let directory = env["EUCALY_NETWORK_VIDEO_TRACE_DIRECTORY"], directory.hasPrefix("/") else {
+            XCTFail("Local cadence measurement requires 30–120 seconds and an absolute trace directory")
+            return
+        }
+        let events = OMTEvents(), pictureEvents = OMTEvents(), audioEvents = OMTEvents()
+        let generation = UUID(), pictureID = UUID(), audioID = UUID()
+        let sender = NetworkHelperSupervisor(event: events.record)
+        let picture = NetworkHelperSupervisor(event: pictureEvents.record), audio = NetworkHelperSupervisor(event: audioEvents.record)
+        let pcm = OMTPCMFixture(sender: sender, generation: generation)
+        defer { pcm.stop(); sender.stop(); picture.stop(); audio.stop() }
+        sender.start(generation: generation, configuration: .init(purpose: .sender,
+            sourceName: "eucaly OMT local cadence \(generation)", technology: .omt))
+        try await ready(events)
+        let process = await sender.diagnosticProcessIdentifier(generation: generation)
+        let pid = try XCTUnwrap(process)
+        let endpoint = try await OMTLoopbackEndpoint.address(for: sender, generation: generation)
+        sender.renderMedia(.init(request: .init(generation: generation, revision: 1, colour: .chromaGreen), foreground: nil, background: nil))
+        picture.start(generation: pictureID, configuration: .init(purpose: .loopbackProbe, sourceName: endpoint, technology: .omt))
+        audio.start(generation: audioID, configuration: .init(purpose: .audioProbe, sourceName: endpoint, technology: .omt))
+        try await ready(pictureEvents); try await ready(audioEvents); pcm.start()
+        _ = try await receiveColour(.chromaGreen, after: 0, probe: picture, generation: pictureID, events: pictureEvents, senderEvents: events)
+        _ = try await receivePCM(left: 0.05, right: -0.025, after: 0, probe: audio, generation: audioID, events: audioEvents, senderEvents: events)
+        let began = DispatchTime.now().uptimeNanoseconds
+        let deadline = ProcessInfo.processInfo.systemUptime + seconds
+        var pictureRevision = pictureEvents.state.revision, audioRevision = audioEvents.state.revision
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            pictureRevision += 1; audioRevision += 1
+            picture.render(request(pictureID, revision: pictureRevision)); audio.render(request(audioID, revision: audioRevision))
+            try await until("local loopback consumers continue draining") {
+                (pictureEvents.state.revision == pictureRevision && audioEvents.state.revision == audioRevision)
+                    || events.state.failure != nil || pictureEvents.state.failure != nil || audioEvents.state.failure != nil
+            }
+            try healthy(events); try healthy(pictureEvents); try healthy(audioEvents)
+        }
+        let ended = DispatchTime.now().uptimeNanoseconds
+        pcm.stop(); await sender.stopAndWait(); await picture.stopAndWait(); await audio.stopAndWait()
+        try healthy(events); try healthy(pictureEvents); try healthy(audioEvents)
+        let path = URL(fileURLWithPath: directory).appendingPathComponent("video-trace-\(pid)-\(generation.uuidString).json")
+        let data = try Data(contentsOf: path)
+        let trace = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(trace["valid"] as? Bool, true)
+        let records = try XCTUnwrap(trace["records"] as? [[String: Any]]).filter { record in
+            guard record["kind"] as? String == "live", let entry = record["sdkEnteredNanoseconds"] as? NSNumber else { return false }
+            return (began...ended).contains(entry.uint64Value)
+        }
+        let entries = records.compactMap { ($0["sdkEnteredNanoseconds"] as? NSNumber)?.uint64Value }
+        XCTAssertGreaterThanOrEqual(entries.count, Int(seconds * 29.9) - 1)
+        let first = try XCTUnwrap(entries.first), last = try XCTUnwrap(entries.last)
+        guard last > first else { XCTFail("No advancing local SDK entry span"); return }
+        let gaps = zip(entries, entries.dropFirst()).map { Double($0.1) - Double($0.0) }
+        let cadence = Double(entries.count - 1) * 1_000_000_000 / Double(last - first)
+        XCTAssertGreaterThanOrEqual(cadence, 29.9, "One-shot scheduling must retain the unchanged cadence gate")
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(gaps.min()), Double(1_000_000_000 / 30 - 1_000_000))
+        XCTAssertTrue(records.allSatisfy { (($0["returnedBytes"] as? NSNumber)?.intValue ?? 0) > 0 })
+        let report: [String: Any] = ["scope": "Local source SDK-wrapper cadence; not receiver frame rate or physical delivery",
+            "generation": generation.uuidString, "requestedSeconds": seconds, "measurementSeconds": Double(ended - began) / 1e9,
+            "sdkCalls": entries.count, "sdkEntryFPS": cadence, "minimumSpacingMilliseconds": (gaps.min() ?? 0) / 1e6,
+            "maximumSpacingMilliseconds": (gaps.max() ?? 0) / 1e6, "completeTraceValid": trace["valid"] as? Bool ?? false]
+        let reportData = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys, .prettyPrinted])
+        try reportData.write(to: URL(fileURLWithPath: directory).appendingPathComponent("pacing-steady-\(generation.uuidString).json"), options: .atomic)
+        let attachment = XCTAttachment(data: reportData, uniformTypeIdentifier: "public.json")
+        attachment.name = "Sustained local SDK cadence"; attachment.lifetime = .keepAlways; add(attachment)
+        print("Local SDK cadence: \(cadence) fps, \(entries.count) calls over \(seconds) requested seconds")
+    }
+
+    /// Exercise SDK-owned channel retirement through real helper processes.
+    /// Internal pool ownership alone cannot establish a public sender failure.
+    func testRepeatedReceiverDisconnectsKeepTheSameSenderDeliveringFreshVideoAndAudio() async throws {
+        let sourceEvents = OMTEvents(), generation = UUID()
+        let sender = NetworkHelperSupervisor(event: sourceEvents.record)
+        let pcm = OMTPCMFixture(sender: sender, generation: generation)
+        var currentVideo: NetworkHelperSupervisor?, currentAudio: NetworkHelperSupervisor?
+        defer { pcm.stop(); currentVideo?.stop(); currentAudio?.stop(); sender.stop() }
+        sender.start(generation: generation, configuration: .init(purpose: .sender,
+            sourceName: "eucaly OMT reconnect \(generation)", technology: .omt))
+        try await ready(sourceEvents)
+        let endpoint = try await OMTLoopbackEndpoint.address(for: sender, generation: generation)
+        let process = await sender.diagnosticProcessIdentifier(generation: generation)
+        let originalPID = try XCTUnwrap(process)
+        let originalName = try XCTUnwrap(sourceEvents.state.status?.sourceName)
+        pcm.start()
+        for cycle in 0..<6 {
+            let colour = OutputColour(red: 0.1 + Double(cycle) * 0.12, green: 0.8 - Double(cycle) * 0.1, blue: 0.1)
+            let boundary = Int64(DispatchTime.now().uptimeNanoseconds / 100)
+            sender.renderMedia(.init(request: .init(generation: generation, revision: UInt64(cycle + 1), colour: colour),
+                                     foreground: nil, background: nil))
+            let left = Float(cycle + 1) * 0.01, right = -Float(cycle + 1) * 0.005
+            pcm.select(epoch: 0, left: left, right: right)
+            let videoEvents = OMTEvents(), audioEvents = OMTEvents(), videoID = UUID(), audioID = UUID()
+            let video = NetworkHelperSupervisor(event: videoEvents.record), audio = NetworkHelperSupervisor(event: audioEvents.record)
+            currentVideo = video; currentAudio = audio
+            video.start(generation: videoID, configuration: .init(purpose: .loopbackProbe, sourceName: endpoint, technology: .omt))
+            audio.start(generation: audioID, configuration: .init(purpose: .audioProbe, sourceName: endpoint, technology: .omt))
+            try await ready(videoEvents); try await ready(audioEvents)
+            _ = try await receiveColour(colour, after: boundary, probe: video, generation: videoID,
+                                        events: videoEvents, senderEvents: sourceEvents)
+            _ = try await receivePCM(left: Double(left), right: Double(right), after: boundary,
+                                     probe: audio, generation: audioID, events: audioEvents, senderEvents: sourceEvents)
+            try await until("both reconnected OMT subscriptions") { (sourceEvents.state.status?.connections ?? 0) >= 2 }
+            if cycle.isMultiple(of: 2) {
+                await video.stopAndWait()
+                try healthy(videoEvents)
+            } else {
+                let receiverProcess = await video.diagnosticProcessIdentifier(generation: videoID)
+                let receiverPID = try XCTUnwrap(receiverProcess)
+                XCTAssertEqual(Darwin.kill(receiverPID, SIGKILL), 0, "Terminate only this fixture's exact receiver child")
+                try await until("abrupt receiver child exit") { videoEvents.state.exited }
+                await video.stopAndWait()
+                // The video receiver was deliberately killed. Its companion
+                // audio connection must still deliver a newly selected marker.
+                let audioBoundary = Int64(DispatchTime.now().uptimeNanoseconds / 100)
+                pcm.select(epoch: 0, left: left + 0.1, right: right - 0.1)
+                _ = try await receivePCM(left: Double(left + 0.1), right: Double(right - 0.1), after: audioBoundary,
+                                         probe: audio, generation: audioID, events: audioEvents, senderEvents: sourceEvents)
+            }
+            await audio.stopAndWait()
+            try healthy(audioEvents)
+            currentVideo = nil; currentAudio = nil
+            try await until("old OMT subscriptions retired") { sourceEvents.state.status?.connections == 0 }
+            let currentPID = await sender.diagnosticProcessIdentifier(generation: generation)
+            XCTAssertEqual(currentPID, originalPID)
+            XCTAssertEqual(sourceEvents.state.readyCount, 1)
+            XCTAssertEqual(sourceEvents.state.status?.sourceName, originalName)
+            try healthy(sourceEvents)
+        }
+        pcm.stop(); await sender.stopAndWait()
+        XCTAssertTrue(sourceEvents.state.exited)
+        try healthy(sourceEvents)
+    }
+
+    func testReceiverHelperSurvivesExactSenderStopAndStart() async throws {
+        let name = "eucaly OMT sender restart \(UUID())"
+        var sender: NetworkHelperSupervisor?, video: NetworkHelperSupervisor?
+        defer { sender?.stop(); video?.stop() }
+        let videoEvents = OMTEvents(), videoID = UUID()
+        var recoveryTimings: [String] = []
+        var endpoint: String?, previousTimecode: Int64 = -1
+        for cycle in 0..<3 {
+            let sourceEvents = OMTEvents(), generation = UUID()
+            let nextSender = NetworkHelperSupervisor(event: sourceEvents.record)
+            sender = nextSender
+            nextSender.start(generation: generation, configuration: .init(purpose: .sender, sourceName: name, technology: .omt))
+            try await ready(sourceEvents)
+            let address = try await OMTLoopbackEndpoint.address(for: nextSender, generation: generation)
+            if let endpoint { XCTAssertEqual(address, endpoint, "This direct-address fixture requires the same released listener") }
+            else {
+                endpoint = address
+                // SDK keepalive is 5 s, with a 1 s reconnect retry. This new
+                // functional lifecycle case permits 2 s additional slack;
+                // ordinary video/audio probes retain their existing budget.
+                let probe = NetworkHelperSupervisor(progressDeadline: 10, event: videoEvents.record)
+                video = probe
+                probe.start(generation: videoID, configuration: .init(purpose: .loopbackProbe,
+                    sourceName: address, technology: .omt, receiveBudget: .senderRecovery))
+                try await ready(videoEvents)
+            }
+            let colour = OutputColour(red: Double(cycle + 1) * 0.2, green: 0.2, blue: 0.8 - Double(cycle) * 0.2)
+            let recoveryStarted = DispatchTime.now().uptimeNanoseconds
+            let boundary = Int64(recoveryStarted / 100)
+            nextSender.renderMedia(.init(request: .init(generation: generation, revision: 1, colour: colour), foreground: nil, background: nil))
+            let probe = try XCTUnwrap(video)
+            do {
+                previousTimecode = try await receiveColour(colour, after: max(boundary, previousTimecode), probe: probe,
+                    generation: videoID, events: videoEvents, senderEvents: sourceEvents)
+            } catch {
+                print("OMT retained-receiver failure: cycle=\(cycle), endpoint=\(address), senderGeneration=\(generation), receiverGeneration=\(videoID)")
+                print("OMT retained-receiver sender status: \(String(describing: sourceEvents.state.status))")
+                print("OMT retained-receiver receiver status: \(String(describing: videoEvents.state.status)); failure=\(String(describing: videoEvents.state.failure))")
+                // Failure-only SDK log retention runs after the exact child
+                // exits. Finish that cleanup before this failed test returns;
+                // no diagnostic file reads affect the reconnect interval.
+                await probe.stopAndWait()
+                await nextSender.stopAndWait()
+                throw error
+            }
+            let firstFreshMilliseconds = Double(DispatchTime.now().uptimeNanoseconds - recoveryStarted) / 1_000_000
+            XCTAssertEqual(videoEvents.state.readyCount, 1, "The receiver helper must survive sender replacement")
+            try healthy(sourceEvents); try healthy(videoEvents)
+            await nextSender.stopAndWait()
+            XCTAssertTrue(sourceEvents.state.exited)
+            let retiredPID = await nextSender.diagnosticProcessIdentifier(generation: generation)
+            XCTAssertNil(retiredPID)
+            sender = nil
+            // Retain timing only after exact sender exit. Logging/attachments
+            // must not add a grace period before the immediate Stop ordering.
+            recoveryTimings.append("cycle=\(cycle), firstFreshMs=\(String(format: "%.3f", firstFreshMilliseconds)), "
+                + "fourSecondDiagnosticTargetMet=\(firstFreshMilliseconds <= 4_000), functionalBudgetMs=8000")
+            XCTAssertLessThanOrEqual(firstFreshMilliseconds, 8_000,
+                "Functional SDK recovery exceeded keepalive + retry + slack; the separate 4 s diagnostic target is not a pass criterion here")
+        }
+        await video?.stopAndWait()
+        XCTAssertTrue(videoEvents.state.exited)
+        try healthy(videoEvents)
+        let timingReport = recoveryTimings.joined(separator: "\n")
+        let attachment = XCTAttachment(string: timingReport)
+        attachment.name = "OMT retained receiver recovery timing (4 s diagnostic, 8 s functional)"
+        attachment.lifetime = .keepAlways; add(attachment)
+        print("OMT retained-receiver functional timing:\n\(timingReport)")
+    }
+
+    private func receiveColour(_ colour: OutputColour, after boundary: Int64, probe: NetworkHelperSupervisor,
+                               generation: UUID, events: OMTEvents, senderEvents: OMTEvents) async throws -> Int64 {
+        var revision = events.state.revision
+        for _ in 0..<40 {
+            revision += 1; probe.render(request(generation, revision: revision))
+            try await until("fresh OMT lifecycle picture") { events.state.revision == revision || events.state.failure != nil || senderEvents.state.failure != nil }
+            try healthy(events); try healthy(senderEvents)
+            let picture = try XCTUnwrap(events.state.picture), timecode = try XCTUnwrap(events.state.status?.lastTimecode)
+            let target = [colour.blue, colour.green, colour.red].map { $0 * 255 }
+            if timecode >= boundary, zip(picture.corner.prefix(3), target).allSatisfy({ abs(Double($0.0) - $0.1) <= 8 }) {
+                return timecode
+            }
+        }
+        XCTFail("No fresh decoded colour marker after lifecycle transition")
+        throw NetworkHelperWire.Failure.unavailable
+    }
+
+    private func receivePCM(left: Double, right: Double, after boundary: Int64, probe: NetworkHelperSupervisor,
+                            generation: UUID, events: OMTEvents, senderEvents: OMTEvents) async throws -> NetworkAudioObservation {
+        var revision = events.state.revision
+        for _ in 0..<40 {
+            revision += 1; probe.render(request(generation, revision: revision))
+            try await until("fresh OMT lifecycle PCM") { events.state.revision == revision || events.state.failure != nil || senderEvents.state.failure != nil }
+            try healthy(events); try healthy(senderEvents)
+            let value = try XCTUnwrap(events.state.audio)
+            if value.timecode >= boundary, abs(value.left - left) < 0.001, abs(value.right - right) < 0.001 { return value }
+        }
+        XCTFail("No fresh decoded stereo marker after lifecycle transition")
+        throw NetworkHelperWire.Failure.unavailable
     }
 
     private func ready(_ events: OMTEvents) async throws {

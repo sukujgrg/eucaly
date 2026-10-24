@@ -6,6 +6,32 @@ import Darwin
 
 @MainActor
 final class NetworkHelperTests: XCTestCase {
+    func testRecoveryProbeBudgetIsExplicitAndCannotAffectOrdinaryHelpers() throws {
+        let ordinary = NetworkHelperConfiguration(purpose: .loopbackProbe,
+            sourceName: "omt://127.0.0.1:6400", technology: .omt)
+        let encoded = try JSONEncoder().encode(ordinary)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertNil(object["receiveBudget"], "Ordinary bootstrap messages must not opt into recovery waits")
+        let restored = try JSONDecoder().decode(NetworkHelperConfiguration.self, from: encoded)
+        XCTAssertTrue(restored.isValid)
+        XCTAssertEqual((restored.receiveBudget ?? .ordinary).maximumAttempts, 40)
+
+        var recovery = ordinary
+        recovery.receiveBudget = .senderRecovery
+        XCTAssertTrue(recovery.isValid)
+        let restoredRecovery = try JSONDecoder().decode(NetworkHelperConfiguration.self,
+            from: JSONEncoder().encode(recovery))
+        XCTAssertEqual(restoredRecovery.receiveBudget, .senderRecovery)
+        XCTAssertEqual(restoredRecovery.receiveBudget?.maximumAttempts, 80)
+        recovery.technology = .ndi
+        XCTAssertFalse(recovery.isValid)
+        recovery.technology = .omt
+        for purpose in [NetworkHelperConfiguration.Purpose.sender, .audioProbe, .renderOnly, .renderYUV] {
+            recovery.purpose = purpose
+            XCTAssertFalse(recovery.isValid, "Recovery waits must be confined to the OMT video loopback fixture")
+        }
+    }
+
     func testUnexpectedExitMessageConciselyDistinguishesExitFromSignal() {
         let exited = NetworkHelperSupervisor.unexpectedExitMessage(reason: .exit, status: 70)
         let signalled = NetworkHelperSupervisor.unexpectedExitMessage(reason: .uncaughtSignal, status: SIGPIPE)

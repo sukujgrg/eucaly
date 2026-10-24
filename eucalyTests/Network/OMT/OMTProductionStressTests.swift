@@ -22,10 +22,10 @@ final class OMTProductionStressTests: XCTestCase {
               let directory = env["EUCALY_OMT_PRODUCTION_DIRECTORY"] else {
             throw OMTProductionFailure.invalid("Missing bounded duration, deadline or evidence directory")
         }
-        // Operator requested a fresh three-output run through 14:25 Sydney.
-        let lastAuthorizedStart = ISO8601DateFormatter().date(from: "2026-10-24T03:25:00Z")!
+        // Final phase-clock session includes preparation and cleanup in 30 minutes.
+        let lastAuthorizedStart = ISO8601DateFormatter().date(from: "2026-10-24T10:41:36Z")!
         guard Date().timeIntervalSince1970 + 45 < deadline, deadline <= lastAuthorizedStart.timeIntervalSince1970 else {
-            throw OMTProductionFailure.invalid("The authorized 2026-10-24 14:25 Sydney hardware deadline has passed or was exceeded")
+            throw OMTProductionFailure.invalid("The authorized 2026-10-24 21:41:36 Sydney hardware deadline has passed or was exceeded")
         }
         executionTimeAllowance = min(seconds + 120, deadline - Date().timeIntervalSince1970 + 30)
         continueAfterFailure = true

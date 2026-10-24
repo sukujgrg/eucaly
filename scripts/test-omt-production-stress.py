@@ -19,8 +19,8 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTROL = Path("/tmp/eucaly-omt-production-stress-20261024")
-# Renewed when the operator requested native, NDI and OMT output together.
-CUTOFF = datetime.fromisoformat("2026-10-24T14:25:00+11:00").timestamp()
+# Fresh 30-minute stock-SDK session, including final preparation and cleanup.
+CUTOFF = datetime.fromisoformat("2026-10-24T21:41:36+11:00").timestamp()
 ACTIONS = ("stablehold", "hold", "marker", "status", "lyrics", "slides", "video", "generated", "image", "pdf",
            "preview", "loadpreview", "select", "next", "hide", "show", "clear", "pause", "play", "seek", "transfer",
            "start", "retry", "restart", "stop", "enable", "disable", "fault", "music", "musicstop", "position", "finish")
@@ -270,7 +270,7 @@ def run(args):
         raise ValueError("--seconds must be between 30 and 10800")
     deadline = datetime.fromisoformat(args.deadline).timestamp()
     if not time.time() + 45 < deadline <= CUTOFF:
-        raise ValueError("Run deadline must be future and no later than 2026-10-24 14:25 Sydney")
+        raise ValueError("Run deadline must be future and no later than 2026-10-24 21:41:36 Sydney")
     ipaddress.ip_address(args.lan_host)
     media = args.media.expanduser().resolve(strict=True) if args.media else None
     if media and (not media.is_file() or not os.access(media, os.R_OK)):
@@ -306,6 +306,13 @@ def run(args):
     else:
         env.pop("EUCALY_OMT_VIDEO_DIAGNOSTICS", None)
         env.pop("TEST_RUNNER_EUCALY_OMT_VIDEO_DIAGNOSTICS", None)
+    if args.video_trace:
+        trace_directory = output / "video-traces"
+        trace_directory.mkdir(exist_ok=False)
+        settings["EUCALY_NETWORK_VIDEO_TRACE_DIRECTORY"] = str(trace_directory)
+    else:
+        env.pop("EUCALY_NETWORK_VIDEO_TRACE_DIRECTORY", None)
+        env.pop("TEST_RUNNER_EUCALY_NETWORK_VIDEO_TRACE_DIRECTORY", None)
     if args.native_display_uuid:
         settings["EUCALY_OMT_PRODUCTION_NATIVE_DISPLAY_UUID"] = str(uuid.UUID(args.native_display_uuid)).upper()
     else:
@@ -374,7 +381,7 @@ def main():
     modes = parser.add_subparsers(dest="mode", required=True)
     launch = modes.add_parser("run", help="launch the genuine source; hold its initial movie until explicit commands")
     launch.add_argument("--seconds", type=int, default=7200)
-    launch.add_argument("--deadline", default="2026-10-24T14:25:00+11:00")
+    launch.add_argument("--deadline", default="2026-10-24T21:41:36+11:00")
     launch.add_argument("--output", type=Path, default=ROOT / "build/OMTProductionStress-20261024")
     launch.add_argument("--control-dir", type=Path, default=CONTROL)
     launch.add_argument("--derived-data", type=Path, default=ROOT / "build/DerivedDataOMTProduction")
@@ -383,6 +390,7 @@ def main():
     launch.add_argument("--without-building", action="store_true", help="use already built optimized Debug tests; performs no compilation")
     launch.add_argument("--audio-trace", action="store_true", help="enable bounded existing per-block app/helper timing traces in this run's evidence directory")
     launch.add_argument("--video-diagnostics", action="store_true", help="retain bounded exact-call OMT video zero-return/drop observations")
+    launch.add_argument("--video-trace", action="store_true", help="retain complete bounded SDK-wrapper timing traces, exported after owned sender cleanup")
     launch.add_argument("--native-display-uuid", help="allow an isolated native output only on this explicitly selected physical display; start it with a separate command")
     send = modes.add_parser("command", help="queue one explicit phase and wait for its acknowledgement")
     send.add_argument("action", choices=ACTIONS)

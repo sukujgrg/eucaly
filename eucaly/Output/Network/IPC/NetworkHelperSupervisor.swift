@@ -2,6 +2,7 @@ import Foundation
 import IOSurface
 import Security
 import OSLog
+import Darwin
 
 /// Owns the exact launched Process until exit. All launch, IPC and termination
 /// work happens off the UI thread. Each destination gets its own instance.
@@ -43,6 +44,7 @@ nonisolated final class NetworkHelperSupervisor: @unchecked Sendable {
     private var submittedFrames: UInt64 = 0
     #if DEBUG
     private var replies: [UUID: @Sendable () -> Void] = [:]
+    private var diagnosticFailure: String?
     #endif
     private let admission = NSLock()
     private var contentEpoch: UInt64 = 0
@@ -74,6 +76,9 @@ nonisolated final class NetworkHelperSupervisor: @unchecked Sendable {
             self.generation = generation; contentEpoch = 0; stopping = false; readyState = false
             routedEpoch = nil; routeInFlight = nil; routeStartedAt = nil
             self.configuration = configuration; submissionProgressAt = nil; submittedFrames = 0
+            #if DEBUG
+            diagnosticFailure = nil
+            #endif
             // A content fence can arrive while asynchronous launch is pending.
             // Its admission epoch must survive startup until the queued fence runs.
             admission.lock(); admittedGeneration = generation; staged = nil; stagedAudio.removeAll(); admittedAudioCount = 0; audioOverflow = false; admission.unlock()
@@ -114,6 +119,13 @@ nonisolated final class NetworkHelperSupervisor: @unchecked Sendable {
                         if unexpected {
                             Self.logger.error("Unexpected output helper exit: pid=\(pid, privacy: .public) generation=\(generation.uuidString, privacy: .public) terminationReason=\(reason.rawValue, privacy: .public) terminationStatus=\(status, privacy: .public)")
                         }
+                        #if DEBUG
+                        // The exact child has exited. Retain failure evidence
+                        // before cleanup removes its private SDK storage; never
+                        // poll/read logs during the measured reconnect interval.
+                        retainFailedProbeLogs(directory: ended.environment?["EUCALY_OMT_FAILED_PROBE_LOG_DIRECTORY"],
+                            pid: pid, reason: reason, status: status, unexpected: unexpected)
+                        #endif
                         cleanUp()
                         if unexpected { event(.failed(generation, diagnostic)) }
                         event(.exited(generation))
@@ -402,6 +414,9 @@ nonisolated final class NetworkHelperSupervisor: @unchecked Sendable {
     }
     private func fail(_ reason: String) {
         guard !stopping else { return }
+        #if DEBUG
+        diagnosticFailure = String(reason.prefix(512))
+        #endif
         event(.failed(generation, reason)); retire()
     }
     func stop() { queue.async { [self] in retire() } }
@@ -454,6 +469,138 @@ nonisolated final class NetworkHelperSupervisor: @unchecked Sendable {
         for waiter in waiters { waiter.resume() }
     }
     #if DEBUG
+    private struct FailedProbeLog: Encodable {
+        let sourceName: String
+        let retainedName: String
+        let originalBytes: Int64
+        let tailOffset: Int64
+        let retainedBytes: Int
+    }
+    private struct FailedProbeMetadata: Encodable {
+        let schemaVersion: Int
+        let processIdentifier: Int32
+        let generation: UUID
+        let purpose: String
+        let technology: String
+        let terminationReason: String
+        let terminationStatus: Int32
+        let unexpectedExit: Bool
+        let stoppingBeforeExit: Bool
+        let reportedFailure: String?
+        let capturedAt: Date
+        let scope: String
+        let files: [FailedProbeLog]
+        let diagnosticErrors: [String]
+    }
+    private enum ProbeLogError: Error { case invalidDirectory, posix(Int32) }
+
+    /// Opt-in, failure-only, after exact-child exit. File descriptors and
+    /// openat/O_NOFOLLOW keep SDK names inside its private log directory.
+    /// Capture at most eight regular .log tails, 64 KiB each, and scan at most
+    /// 128 directory entries. Diagnostic errors never replace the output error.
+    private func retainFailedProbeLogs(directory path: String?, pid: Int32, reason: Process.TerminationReason,
+                                       status: Int32, unexpected: Bool) {
+        guard configuration.technology == .omt,
+              configuration.purpose == .loopbackProbe || configuration.purpose == .audioProbe,
+              unexpected || diagnosticFailure != nil || reason != .exit || status != 0,
+              let path, !path.isEmpty else { return }
+        do {
+            guard path.hasPrefix("/"), !path.utf8.contains(0),
+                  !path.split(separator: "/").contains(".."), let runtimeStorage else { throw ProbeLogError.invalidDirectory }
+            let destination = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+            // Reject symlink destinations rather than redirecting retained data.
+            guard destination.resolvingSymlinksInPath() == destination else { throw ProbeLogError.invalidDirectory }
+            try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            let destinationFD = open(destination.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard destinationFD >= 0 else { throw ProbeLogError.posix(errno) }
+            defer { close(destinationFD) }
+            let captureName = "failed-probe-\(pid)-\(generation.uuidString)"
+            guard mkdirat(destinationFD, captureName, 0o700) == 0 else { throw ProbeLogError.posix(errno) }
+            let captureFD = openat(destinationFD, captureName, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard captureFD >= 0 else { throw ProbeLogError.posix(errno) }
+            defer { close(captureFD) }
+            var files: [FailedProbeLog] = [], errors: [String] = []
+            do {
+                let storageFD = open(runtimeStorage.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                guard storageFD >= 0 else { throw ProbeLogError.posix(errno) }
+                defer { close(storageFD) }
+                let logsFD = openat(storageFD, "logs", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                guard logsFD >= 0 else { throw ProbeLogError.posix(errno) }
+                defer { close(logsFD) }
+                let listingFD = dup(logsFD)
+                guard listingFD >= 0 else { throw ProbeLogError.posix(errno) }
+                guard let listing = fdopendir(listingFD) else { close(listingFD); throw ProbeLogError.posix(errno) }
+                defer { closedir(listing) }
+                var scanned = 0
+                while scanned < 128, files.count < 8, let entry = readdir(listing) {
+                    scanned += 1
+                    let name = withUnsafePointer(to: entry.pointee.d_name) { pointer in
+                        pointer.withMemoryRebound(to: CChar.self, capacity: Int(entry.pointee.d_namlen) + 1) {
+                            String(validatingCString: $0)
+                        }
+                    }
+                    guard let name, name.hasSuffix(".log"), !name.contains("/") else { continue }
+                    // NONBLOCK also prevents a substituted FIFO from parking
+                    // diagnostics before the regular-file fstat check.
+                    let input = openat(logsFD, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+                    guard input >= 0 else {
+                        if errno != ELOOP { errors.append("open log failed (errno \(errno))") }
+                        continue
+                    }
+                    do {
+                        defer { close(input) }
+                        var info = stat()
+                        guard fstat(input, &info) == 0 else { throw ProbeLogError.posix(errno) }
+                        guard info.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG), info.st_size >= 0 else { continue }
+                        let offset = max(0, info.st_size - 65_536)
+                        var data = Data(count: Int(info.st_size - offset))
+                        let readCount = data.withUnsafeMutableBytes { buffer in
+                            pread(input, buffer.baseAddress, buffer.count, offset)
+                        }
+                        guard readCount >= 0 else { throw ProbeLogError.posix(errno) }
+                        data.count = readCount
+                        let retained = "sdk-log-\(files.count + 1).log"
+                        try Self.writeProbeDiagnostic(data, directory: captureFD, name: retained)
+                        files.append(.init(sourceName: name, retainedName: retained, originalBytes: Int64(info.st_size),
+                            tailOffset: Int64(offset), retainedBytes: readCount))
+                    } catch { errors.append(String(describing: error).prefix(240).description) }
+                }
+            } catch { errors.append(String(describing: error).prefix(240).description) }
+            let termination: String
+            switch reason {
+            case .exit: termination = "exit"
+            case .uncaughtSignal: termination = "uncaughtSignal"
+            @unknown default: termination = "unknown-\(reason.rawValue)"
+            }
+            let metadata = FailedProbeMetadata(schemaVersion: 1, processIdentifier: pid, generation: generation,
+                purpose: configuration.purpose.rawValue, technology: configuration.technology.rawValue,
+                terminationReason: termination, terminationStatus: status, unexpectedExit: unexpected,
+                stoppingBeforeExit: stopping, reportedFailure: diagnosticFailure, capturedAt: Date(),
+                scope: "Failure-only log tails after exact child exit; SDK asynchronous log queue may lose final unwritten lines; no reconnect-time polling",
+                files: files, diagnosticErrors: errors)
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .prettyPrinted]; encoder.dateEncodingStrategy = .iso8601
+            try Self.writeProbeDiagnostic(try encoder.encode(metadata), directory: captureFD, name: "metadata.json")
+            if !errors.isEmpty {
+                Self.logger.error("Failed probe log retention incomplete: pid=\(pid, privacy: .public) generation=\(self.generation.uuidString, privacy: .public) errors=\(errors.joined(separator: "; "), privacy: .public)")
+            }
+        } catch {
+            Self.logger.error("Failed probe log retention failed: pid=\(pid, privacy: .public) generation=\(self.generation.uuidString, privacy: .public) error=\(String(describing: error), privacy: .public)")
+        }
+    }
+    private static func writeProbeDiagnostic(_ data: Data, directory: Int32, name: String) throws {
+        let output = openat(directory, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard output >= 0 else { throw ProbeLogError.posix(errno) }
+        defer { close(output) }
+        try data.withUnsafeBytes { buffer in
+            var offset = 0
+            while offset < buffer.count {
+                let written = write(output, buffer.baseAddress!.advanced(by: offset), buffer.count - offset)
+                guard written > 0 else { throw ProbeLogError.posix(errno) }
+                offset += written
+            }
+        }
+    }
+
     /// Observe only this supervisor's exact current child, on its owner queue.
     /// Qualification never blocks the main actor or discovers helpers by name.
     func diagnosticProcessIdentifier(generation expected: UUID) async -> Int32? {

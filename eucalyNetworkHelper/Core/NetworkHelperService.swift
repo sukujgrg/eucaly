@@ -111,7 +111,7 @@ final class NetworkHelperService: @unchecked Sendable {
             pong(packet.token)
         case .fault:
             #if DEBUG
-            guard let value = packet.detail, ["stall", "crash", "sdk-stall", "sdk-crash", "audio-stall", "broken-pipe"].contains(value) else {
+            guard let value = packet.detail, ["stall", "crash", "sdk-stall", "sdk-crash", "audio-stall", "broken-pipe", "video-queue-delay-once"].contains(value) else {
                 fail("Unknown test fault"); return
             }
             if value == "broken-pipe" {
@@ -378,7 +378,11 @@ final class NetworkHelperService: @unchecked Sendable {
     private func receiveAudioProbe(revision: UInt64) {
         worker.async { [self] in
             guard let probe else { return }
+            let started = DispatchTime.now().uptimeNanoseconds
+            var attempts = 0, pending = 0
+            var termination = "attempt-limit"
             for _ in 0..<40 {
+                attempts += 1
                 let result = probe.probeAudio()
                 if case .received(let observation) = result {
                     NetworkAudioTrace.record("recv-energy", sample: observation.timecode * 48000 / 10000000,
@@ -391,9 +395,12 @@ final class NetworkHelperService: @unchecked Sendable {
                     }
                     return
                 }
-                if case .invalid = result { break }
+                if case .invalid = result { termination = "invalid-frame"; break }
+                pending += 1
             }
-            queue.async { [self] in fail("Loopback did not receive valid stereo audio") }
+            let detail = probeFailureDetail(started: started, attempts: attempts, pending: pending, termination: termination,
+                budget: .ordinary)
+            queue.async { [self] in fail("Loopback did not receive valid stereo audio (\(detail))") }
         }
     }
     private func receiveProbe(revision: UInt64) {
@@ -403,7 +410,12 @@ final class NetworkHelperService: @unchecked Sendable {
                 .allocSize: NetworkHelperWire.maximumSurfaceBytes, .pixelFormat: 0x42475241]) else {
                 queue.async { [self] in fail("Loopback buffer unavailable") }; return
             }
-            for _ in 0..<40 {
+            let started = DispatchTime.now().uptimeNanoseconds
+            let budget = configuration.receiveBudget ?? .ordinary
+            var attempts = 0, pending = 0
+            var termination = "attempt-limit"
+            for _ in 0..<budget.maximumAttempts {
+                attempts += 1
                 let result = probe.probeFrame(bytes: surface.baseAddress, capacity: surface.allocationSize)
                 if case .received(let timecode) = result {
                     let report = NetworkHelperStatus(runtimeVersion: probe.version, sourceName: configuration.sourceName, lastTimecode: timecode)
@@ -415,10 +427,20 @@ final class NetworkHelperService: @unchecked Sendable {
                     }
                     return
                 }
-                if case .invalid = result { break }
+                if case .invalid = result { termination = "invalid-frame"; break }
+                pending += 1
             }
-            queue.async { [self] in fail("Loopback did not receive a valid 1080p30 BGRA frame") }
+            let detail = probeFailureDetail(started: started, attempts: attempts, pending: pending, termination: termination,
+                budget: budget)
+            queue.async { [self] in fail("Loopback did not receive a valid 1080p30 BGRA frame (\(detail))") }
         }
+    }
+    /// A requested 100 ms SDK receive timeout is a maximum wait, not measured
+    /// elapsed time. Only the explicit OMT video recovery test uses 80 calls.
+    private func probeFailureDetail(started: UInt64, attempts: Int, pending: Int, termination: String,
+                                    budget: NetworkHelperConfiguration.ReceiveBudget) -> String {
+        let elapsed = Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000
+        return "technology=\(configuration.technology.rawValue), receiveBudget=\(budget.rawValue), termination=\(termination), attempts=\(attempts)/\(budget.maximumAttempts), pending=\(pending), elapsedMs=\(String(format: "%.3f", elapsed)), nominalMaximumWaitMs=\(budget.nominalMaximumWaitMilliseconds)"
     }
     #endif
 

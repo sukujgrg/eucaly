@@ -15,9 +15,8 @@ exact detached commits, respectively:
 bb4b67be8e5964f1017592b9fc5406495e704e5d
 ```
 
-From the managed checkout, apply only patch 0003 (512 KiB) and patch 0002
-(ownership), using their absolute paths in this directory. Check the resulting
-diff against both recorded patches before building. Use isolated temporary
+Do not apply the historical patches in this directory. Verify both source trees
+are unchanged before and after building. Use isolated temporary
 `DOTNET_CLI_HOME` and `NUGET_PACKAGES` directories; set
 `DOTNET_CLI_TELEMETRY_OPTOUT=1` and `DOTNET_GENERATE_ASPNET_CERTIFICATE=false`.
 Run in the managed directory:
@@ -41,15 +40,15 @@ behavior as well as recording each actual artifact hash. Do not replace the
 unchanged VMX codec, app library search paths or a live helper's mapped files.
 The app/helper support arm64 only; an x64 runtime build is not required.
 
-Run the independent pool regression against that exact managed source:
+The recorded stock build used an offline package cache, disabled package sources
+in a temporary NuGet configuration and passed `-p:NuGetAudit=false`. Its NativeAOT
+package hashes match `build-packages.json`. These build options do not change
+upstream source. NativeAOT build identifiers can vary; retain the actual output
+hash and the verified source-state manifest for each rebuild.
 
-```sh
-dotnet run --project /path/to/eucaly/Vendor/OMT/tests/SocketPoolRegression.csproj \
-  -c Release -p:OMTUpstreamRoot=/absolute/path/to/libomtnet
-```
-
-It needs local loopback permission and has bounded network waits. Preserve its
-before/after results. Run eucaly's existing SDK round-trip/teardown regressions,
-`make test` and `make build`, and verify packaged signatures, both runtime-load
-checks, arm64 slices and notices. SDK call/enqueue counts are separate from
-receiver delivery and sustained/physical qualification.
+Run eucaly's public-API SDK round-trip, receiver disconnect and retained-receiver
+sender-restart regressions, `make test` and `make build`. Verify packaged
+signatures, both runtime-load checks, arm64 slices and notices. The historical
+internal pool experiment is not a public-API leak regression or a release gate;
+see `PATCHES.md`. SDK call/enqueue counts are separate from receiver delivery
+and sustained/physical qualification.
