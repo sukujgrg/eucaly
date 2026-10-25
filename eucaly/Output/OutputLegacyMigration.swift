@@ -3,7 +3,7 @@ import Foundation
 /// Reads the retired wire shapes before decoding the reduced live destination
 /// enum. No legacy connection, secret, SDK or discovery type is instantiated.
 nonisolated enum OutputLegacyMigration {
-    static let maximumDocumentBytes = 1_048_576
+    static let maximumDocumentBytes = OutputProfileDocument.maximumEncodedBytes
     private static let retiredProfiles: Set<String> = [
         "00000000-0000-4000-8000-000000000006", "00000000-0000-4000-8000-000000000007"
     ]

@@ -53,6 +53,133 @@ final class LibraryTextSearchIndexTests: XCTestCase {
         XCTAssertTrue(fresh.isEmpty)
     }
 
+    func testUnreadableNewAndModifiedLyricsRetryWithoutAFingerprintChange() async throws {
+        let (index, directory) = try makeIndex()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = try writeTextFile(in: directory, name: "original.txt", contents: "#title: Original title\nVerse\nolduniquetoken")
+        _ = try await index.refreshLibraryMetadata(root: directory)
+        try "#title: Updated title\nVerse\nupdateduniquetoken".write(to: original, atomically: true, encoding: .utf8)
+        let added = try writeTextFile(in: directory, name: "added.txt", contents: "#title: Added title\nVerse\naddeduniquetoken")
+        let discovery = try LibraryFileScannerService().discoverFiles(in: directory)
+        for url in [original, added] { try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: url.path) }
+        defer { for url in [original, added] { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path) } }
+        let denied = await index.syncLibraryMetadata(root: directory, discoveredFiles: discovery)
+        XCTAssertFalse(denied.isIndexed)
+        XCTAssertEqual(denied.failure?.unreadableFileCount, 2)
+        XCTAssertEqual(denied.metadata.first { $0.url == original }?.title, "Original title")
+        let retained = await index.search(query: "olduniquetoken")
+        XCTAssertEqual(retained.map(\.url), [original])
+        let filename = await index.search(query: "added")
+        XCTAssertEqual(filename.map(\.url), [added])
+        for url in [original, added] { try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path) }
+        // Reuse the exact same size/mtime inventory that failed, including the
+        // new file's first attempted fingerprint.
+        let recovered = await index.syncLibraryMetadata(root: directory, discoveredFiles: discovery)
+        XCTAssertTrue(recovered.isIndexed)
+        XCTAssertEqual(recovered.metadata.first { $0.url == original }?.title, "Updated title")
+        XCTAssertEqual(recovered.metadata.first { $0.url == added }?.title, "Added title")
+        let updated = await index.search(query: "updateduniquetoken")
+        let inserted = await index.search(query: "addeduniquetoken")
+        let stale = await index.search(query: "olduniquetoken")
+        XCTAssertEqual(updated.map(\.url), [original])
+        XCTAssertEqual(inserted.map(\.url), [added])
+        XCTAssertTrue(stale.isEmpty)
+    }
+
+    func testCorruptDerivedDatabaseIsQuarantinedAndRebuiltWithoutChangingLibraryFiles() async throws {
+        let (index, directory) = try makeIndex()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let song = try writeTextFile(in: directory, name: "song.txt", contents: "Verse\nrecovereduniquetoken")
+        let database = directory.appendingPathComponent("library-search.sqlite")
+        // makeIndex uses this path; do not ask SQLite to create it first.
+        let bytes = Data("This is not SQLite".utf8)
+        try bytes.write(to: database)
+        let result = try await index.refreshLibraryMetadata(root: directory)
+        XCTAssertTrue(result.isIndexed)
+        let matches = await index.search(query: "recovereduniquetoken")
+        XCTAssertEqual(matches.map(\.url), [song])
+        let quarantines = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix("library-search.sqlite.corrupt-") }
+        XCTAssertEqual(quarantines.count, 1)
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(quarantines.first)), bytes)
+        XCTAssertEqual(try String(contentsOf: song, encoding: .utf8), "Verse\nrecovereduniquetoken")
+        _ = try await index.refreshLibraryMetadata(root: directory)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix("library-search.sqlite.corrupt-") }.count, 1)
+    }
+
+    func testCancellationAfterQuarantineRebuildsOnTheFirstRetry() async throws {
+        let (index, directory) = try makeIndex()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let song = try writeTextFile(in: directory, name: "song.txt", contents: "Verse\nretrieduniquetoken")
+        let database = directory.appendingPathComponent("library-search.sqlite")
+        let corruptBytes = Data("Invalid SQLite bytes".utf8)
+        try corruptBytes.write(to: database)
+        let quarantined = expectation(description: "Corrupt bytes retired before fresh database creation")
+        let resume = DispatchSemaphore(value: 0)
+        defer { resume.signal() }
+        await index.observeNextDatabaseQuarantine(after: {
+            quarantined.fulfill()
+            XCTAssertEqual(resume.wait(timeout: .now() + 5), .success)
+        })
+        let refresh = Task { try await index.refreshLibraryMetadata(root: directory) }
+        await fulfillment(of: [quarantined], timeout: 3)
+        refresh.cancel()
+        resume.signal()
+        let cancelled = try await refresh.value
+        if case .cancelled = cancelled {} else { XCTFail("Cancelled rebuild must not report an indexing error") }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: database.path))
+        let retry = try await index.refreshLibraryMetadata(root: directory)
+        XCTAssertTrue(retry.isIndexed, "The first Retry must create the fresh database without trying to quarantine a retired path")
+        let matches = await index.search(query: "retrieduniquetoken")
+        XCTAssertEqual(matches.map(\.url), [song])
+        let quarantines = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix("library-search.sqlite.corrupt-") }
+        XCTAssertEqual(quarantines.count, 1)
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(quarantines.first)), corruptBytes)
+    }
+
+    func testInterruptedSidecarQuarantineLeavesCorruptPrimaryUntilSafeRebuild() async throws {
+        let (index, directory) = try makeIndex()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let song = try writeTextFile(in: directory, name: "song.txt", contents: "Verse\nsidecaruniquetoken")
+        let database = directory.appendingPathComponent("library-search.sqlite")
+        let corruptBytes = Data("Invalid SQLite bytes".utf8)
+        try corruptBytes.write(to: database)
+        await index.observeNextDatabaseQuarantine(before: { quarantine in
+            do {
+                for suffix in ["-wal", "-shm", "-journal"] {
+                    try Data("Old sidecar".utf8).write(to: URL(fileURLWithPath: database.path + suffix))
+                }
+                // A real filesystem collision interrupts the second move,
+                // after one sidecar has already been preserved.
+                try Data("Occupied quarantine path".utf8).write(to: URL(fileURLWithPath: quarantine.path + "-shm"))
+            } catch { XCTFail("Could not prepare quarantine interruption: \(error)") }
+        })
+        let interrupted = try await index.refreshLibraryMetadata(root: directory)
+        XCTAssertFalse(interrupted.isIndexed)
+        XCTAssertEqual(try Data(contentsOf: database), corruptBytes,
+                       "Partial quarantine must retain the old primary, never expose a fresh database to leftover sidecars")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: database.path + "-wal"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: database.path + "-shm"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: database.path + "-journal"))
+        let retried = try await index.refreshLibraryMetadata(root: directory)
+        XCTAssertTrue(retried.isIndexed)
+        let matches = await index.search(query: "sidecaruniquetoken")
+        XCTAssertEqual(matches.map(\.url), [song])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: database.path + "-journal"))
+    }
+
+    func testSnippetIncludesMatchingPassageBeyondTheOpeningSlides() async throws {
+        let (index, directory) = try makeIndex()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let song = try writeTextFile(in: directory, name: "song.txt", contents: "Verse 1\nOpening lyrics\n\nVerse 2\nSecond lyrics\n\nVerse 3\nLast section matchinguniquetoken\nFollowing lyric")
+        _ = try await index.refreshLibraryMetadata(root: directory)
+        let matches = await index.search(query: "matchinguniquetoken")
+        XCTAssertTrue(try XCTUnwrap(matches.first).snippet.contains("Last section matchinguniquetoken"))
+        XCTAssertFalse(try XCTUnwrap(matches.first).snippet.contains("Verse 3"))
+    }
+
     func testSearchReturnsEmptyForQueriesUnderThreeCharacters() async throws {
         let (index, directoryURL) = try makeIndex()
         defer { try? FileManager.default.removeItem(at: directoryURL) }
@@ -736,7 +863,8 @@ final class LibraryTextSearchIndexTests: XCTestCase {
         try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: song.path)
         defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: song.path) }
         let denied = await index.syncLibraryMetadata(root: directory, discoveredFiles: discovery)
-        XCTAssertTrue(denied.isIndexed)
+        XCTAssertFalse(denied.isIndexed)
+        XCTAssertEqual(denied.failure?.unreadableFileCount, 1)
         XCTAssertEqual(denied.metadata.first?.title, "Known title")
         let pending = try titleState(for: song, in: directory)
         XCTAssertEqual(pending.title, "#title: Known title")

@@ -19,6 +19,13 @@ Every media type follows Sidebar → Preview → Current. Browsing, selecting a 
 window focus and passive preparation never assign or start an output. Profiles
 contain reusable appearance settings and have no content ownership.
 
+Output settings use one 64 MiB encoded-document budget for validation, persistence,
+restoration and recovery. The 128-profile model can retain a 64 KiB bookmark per
+profile, including independent copies; JSON escaping can expand each byte sixfold.
+The former 1 MiB read-only bound rejected settings the editor could save. The
+shared budget admits that bounded model and still refuses oversized input before
+JSON parsing. Original recovery and migration backups remain immutable.
+
 AppDelegate owns `OutputWorkspaceWindows`, with one AppKit `NSWindowController` per
 open workspace UUID. The native application entry and menus create, reopen and close
 these windows. `NSWindowRestoration` recreates only saved workspace identities and
@@ -148,6 +155,11 @@ owner and the same explicit action. Show/Start operates only on assigned outputs
 it never takes another workspace's destinations. Ordinary Load, navigation,
 playback, Show/Hide, Clear, background controls and Stop are workspace scoped.
 **Stop All Outputs** is a distinct global Slides-menu action without a shortcut.
+When another destination is already carrying a workspace's accepted program,
+per-source Start/Retry joins its accepted content and visibility without accepting
+Current again or revealing hidden peers. After the whole workspace has stopped,
+Start uses Current and shows it as a first start. Show Slides remains the explicit
+workspace-wide accept/reveal action.
 `Cmd+1` stops the controlled workspace; `Cmd+2` toggles its slides; `Cmd+3/4/5` retain
 the existing layer operations within that workspace. Projection-window input and
 Slides-menu shortcuts resolve the owning workspace by destination ID, even when
@@ -202,7 +214,13 @@ requiring a sidebar selection.
 One program AVPlayer is shared by all destinations of a workspace. Other workspaces
 have independent players. Native views and NDI consume the same player; tab changes
 never pause it, and closing one consumer does not reset it. Losing the last consumer
-releases program playback while retaining Current. Muted background-video resources
+releases program playback while retaining Current. Program playback status comes from the owned
+player/item's time-control, readiness, failure and end observations. It is distinct
+from the operator's pause intent. Non-looping EOF offers Replay and survives
+unrelated output refreshes; Replay and seeks resume only after the latest seek
+completes, respecting current pause/visibility intent. Retired item callbacks cannot
+change a replacement program. A failed item requires an explicit new Current load
+to retry, including when the source URL is unchanged. Muted background-video resources
 are pooled inside each workspace. Runtime bookmark resolution, program access and
 the selected music player's access outlive inactive tabs. ScreenCaptureManager
 continues to own one system-picker-approved stream with reference-counted consumers.
@@ -257,13 +275,18 @@ destination. Reconnection requires explicit Show; no fallback monitor is selecte
 Native close callbacks retain their destination generation guard.
 
 Confidence shows full-canvas media or Current/Next text. Empty, cleared and hidden
-Confidence shows its large centered standby clock. Standby may open only after a real
-workspace becomes key or after assignment/enable. It never takes content, starts media
+Confidence shows its large centered standby clock. Passive restoration waits until a real
+workspace becomes key. Explicit Open Native Output and assignment/enable validate the
+saved monitor without requiring key controls, including when all controls are minimized.
+Standby never takes content, starts foreground program media
 or publishes NDI. Stop, close and display loss suppress reopening until explicit
 Open Confidence/Show or a new assignment/enable. Native windows, including standby,
 hold display/system sleep prevention. NDI independently holds system sleep prevention.
 Moving a standby Confidence window retains standby in a prepared workspace; it does
 not start Current or program media.
+Changing an idle window opened for automatic Confidence standby to another appearance
+closes that window. A window carrying a program or explicitly opened background stays
+open. Every native appearance has explicit Open/Close Native Output controls.
 Stop resolves the window's saved workspace identity even when its owner has no
 prepared session or open controls. Menu validation never prepares that session.
 

@@ -32,7 +32,9 @@ struct CurrentPaneContainerView: View {
             HStack(spacing: 8) {
                 let statusText: String = {
                     if session.isPresenting {
-                        return session.areSlidesVisible ? "(Presenting)" : "(Slides hidden)"
+                        if !session.areSlidesVisible { return "(Slides hidden)" }
+                        return session.outputCoordinator.currentMatchesAcceptedProgram(workspace: session.outputSourceID)
+                            ? "(Presenting)" : "(Current is not live)"
                     }
                     return session.isEmpty ? "(Not presenting)" : "(Loaded)"
                 }()
@@ -56,6 +58,8 @@ struct CurrentPaneContainerView: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(isCollapsed ? "Expand Current" : "Collapse Current")
+                    .accessibilityValue(isCollapsed ? "Collapsed" : "Expanded")
                 } else {
                     HStack(spacing: 4) {
                         Image(systemName: "chevron.right")
@@ -243,13 +247,16 @@ struct CurrentPaneContainerView: View {
     private var videoControls: some View {
         HStack(spacing: 8) {
             Button {
-                session.videoPaused.toggle()
+                session.toggleVideoPlayback()
             } label: {
                 Label(
-                    session.videoPaused ? "Play" : "Pause",
-                    systemImage: session.videoPaused ? "play.fill" : "pause.fill"
+                    session.videoPlaybackActionTitle,
+                    systemImage: playbackProgress.videoPlaybackState == .ended ? "arrow.counterclockwise"
+                        : session.videoPaused ? "play.fill" : "pause.fill"
                 )
             }
+            .disabled(playbackProgress.videoPlaybackState.failure != nil)
+            .help(playbackProgress.videoPlaybackState.failure ?? session.videoPlaybackActionTitle)
 
             Button {
                 session.videoMuted.toggle()
@@ -261,11 +268,18 @@ struct CurrentPaneContainerView: View {
             }
             .help("Mute or unmute video audio on every output, including NDI and local monitoring. For local listening through the default macOS audio output, use Output → Listen on This Mac.")
 
-            Button {
-                session.videoLoop.toggle()
-            } label: {
+            Toggle(isOn: $session.videoLoop) {
                 Label("Loop", systemImage: session.videoLoop ? "repeat.1" : "repeat")
             }
+            .toggleStyle(.button)
+            .accessibilityLabel("Video Loop")
+            .accessibilityValue(session.videoLoop ? "On" : "Off")
+
+            Text(playbackProgress.videoPlaybackState.title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Video playback")
+                .accessibilityValue(playbackProgress.videoPlaybackState.title)
 
             Text(formattedVideoTime(videoSeekDraft))
                 .font(.caption.monospacedDigit())

@@ -71,6 +71,8 @@ final class OutputCoordinator: ObservableObject {
     private var standbyConfigurations: [OutputDestinationConfiguration]
     private var confidenceDestinationIDs: Set<UUID>
     private var standbySuppressed: Set<UUID> = []
+    private var automaticConfidenceWindows: Set<UUID> = []
+    private var explicitStandbyRequests: Set<UUID> = []
     private var standbyScheduled = false
     private var workspaceReady = false
     private var dismissedNetworkPerformance: Set<UUID> = []
@@ -78,7 +80,7 @@ final class OutputCoordinator: ObservableObject {
     private var issues: [UUID: String] = [:]
     private var pendingFileRemoval: PendingFileRemoval?
     private var fileAcquisitionTickets: [WeakFileAcquisitionTicket] = []
-    private enum IssueReason { case presentation, background, assignment(UUID, ProjectionMonitorTarget), disconnected, transfer, capture, fileAction, appearanceEdit, backgroundAudioEdit }
+    private enum IssueReason: Equatable { case presentation, contentAdmission, outputAction(UUID), background, assignment(UUID, ProjectionMonitorTarget), disconnected, transfer, capture, fileAction, appearanceEdit, backgroundAudioEdit }
     private var issueReasons: [UUID: IssueReason] = [:]
     @Published private(set) var focusedWorkspaceID: UUID?
     @Published private(set) var revision: UInt64 = 0
@@ -513,16 +515,18 @@ final class OutputCoordinator: ObservableObject {
         if let problem = fileAdmissionProblem(in: session) {
             setIssue(problem, workspace: workspaceID ?? session.outputSourceID, reason: .transfer); return false
         }
+        let transferringProgram = isOpen(id) && row.workspaceID.flatMap { programs[$0]?.started } == true
         var proposed = destinations(workspace: session.outputSourceID); proposed.append(row)
         if let slide = session.currentSlide, row.isNetworkDestination, !OutputContentClassifier.supportsNetworkOutput(slide) {
             setIssue("Cannot move \(profiles.destinationLabel(row)) to \(profiles.workspaceName(session.outputSourceID)). \(networkOutputNames([row])) supports lyrics, PDFs, images and video files. Choose supported Current content before moving this output.",
                      workspace: workspaceID ?? session.outputSourceID, reason: .transfer)
             return false
         }
-        if let problem = presentationProblem(for: session.currentSlide, rows: proposed) {
+        if let problem = presentationTypeProblem(for: session.currentSlide, rows: proposed)
+            ?? (transferringProgram ? networkRenderProblem(content: OutputContentAdapter.text(for: session.currentSlide),
+                                                          rows: proposed.filter { $0.enabled && isOpen($0.id) }) : nil) {
             setIssue(problem, workspace: workspaceID ?? session.outputSourceID, reason: .transfer); return false
         }
-        let transferringProgram = isOpen(id) && row.workspaceID.flatMap { programs[$0]?.started } == true
         if transferringProgram, row.isMonitorDestination, session.currentSlide?.captureWindowID != nil,
            let problem = windowCaptureStartProblem {
             setIssue(problem, workspace: workspaceID ?? session.outputSourceID, reason: .capture); return false
@@ -548,9 +552,30 @@ final class OutputCoordinator: ObservableObject {
     func startNetworkOutput(_ id: UUID) {
         guard let row = destination(id), row.enabled, row.isNetworkDestination, let owner = row.workspaceID,
               network.state(id).canStart || network.state(id).active else { return }
+        let state = program(owner)
+        // Joining a live program must use its accepted content and visibility.
+        // Current may contain a rejected replacement, and Start is not Show.
+        if state.started && isRunning(workspace: owner) {
+            let publishesText = state.snapshot.visible
+                && (state.snapshot.localMedia.map(OutputContentClassifier.supportsNetworkOutput) ?? true)
+            if let problem = networkRenderProblem(content: publishesText ? state.snapshot.current : .empty, rows: [row]) {
+                setIssue(problem, workspace: owner, reason: .contentAdmission); return
+            }
+            guard openDestinations([row]) else {
+                setIssue("This source could not be started. Check its configuration in Manage Outputs.", workspace: owner)
+                return
+            }
+            let rejectedCurrent: Bool = {
+                if case .contentAdmission? = issueReasons[owner] { return !currentMatchesAcceptedProgram(workspace: owner) }
+                return false
+            }()
+            if !rejectedCurrent { setIssue(nil, workspace: owner) }
+            changed(workspace: owner)
+            return
+        }
         let session = session(workspace: owner)
         if let slide = session.currentSlide, !OutputContentClassifier.supportsNetworkOutput(slide) {
-            setIssue("\(networkOutputNames([row])) supports lyrics, PDFs, images and video files. Choose supported Current content before starting this source.", workspace: owner); return
+            setIssue("\(networkOutputNames([row])) supports lyrics, PDFs, images and video files. Choose supported Current content before starting this source.", workspace: owner, reason: .contentAdmission); return
         }
         _ = presentLocal(session, onlyDestinationID: id)
     }
@@ -561,7 +586,7 @@ final class OutputCoordinator: ObservableObject {
         if let problem = fileAdmissionProblem(in: session) {
             setIssue(problem, workspace: session.outputSourceID); return false
         }
-        let state = program(session.outputSourceID); cancelRequests(state)
+        let state = program(session.outputSourceID)
         let rows = destinations(workspace: state.id).filter {
             $0.enabled && (onlyDestinationID == nil || $0.id == onlyDestinationID)
                 && (activation == .show || isOpen($0.id))
@@ -571,8 +596,9 @@ final class OutputCoordinator: ObservableObject {
             setIssue(problem, workspace: state.id, reason: .capture); return false
         }
         if let problem = presentationProblem(for: session.currentSlide, rows: rows) {
-            setIssue(problem, workspace: state.id); return false
+            setIssue(problem, workspace: state.id, reason: .contentAdmission); return false
         }
+        cancelRequests(state)
         // A Current activation updates the surviving consumers. Only explicit
         // Show/Start/Retry may reopen a closed window or restart a failed sender.
         guard activation == .show ? openDestinations(rows) : !rows.isEmpty else {
@@ -580,7 +606,7 @@ final class OutputCoordinator: ObservableObject {
         }
         if let slide = session.currentSlide, !OutputContentClassifier.supportsNetworkOutput(slide),
            !rows.contains(where: { windows[$0.id] != nil }) {
-            setIssue("This content needs an available native output.", workspace: state.id); return false
+            setIssue("This content needs an available native output.", workspace: state.id, reason: .contentAdmission); return false
         }
         state.started = true
         accept(session, into: state, visible: show)
@@ -599,12 +625,44 @@ final class OutputCoordinator: ObservableObject {
             localMedia: slide, acceptedPDF: slide?.pdfURL.flatMap { session.pdfDocumentCache.acceptedSource(for: $0) })
     }
     private func presentationProblem(for slide: Slide?, rows: [OutputDestinationConfiguration]) -> String? {
+        presentationTypeProblem(for: slide, rows: rows)
+            ?? networkRenderProblem(content: OutputContentAdapter.text(for: slide), rows: rows.filter(\.enabled))
+    }
+    private func presentationTypeProblem(for slide: Slide?, rows: [OutputDestinationConfiguration]) -> String? {
         let available = availableDestinations(rows)
         if let slide, !OutputContentClassifier.supportsNetworkOutput(slide), !available.contains(where: { $0.isMonitorDestination }) {
             let verb = rows.contains { $0.networkTechnology == .ndi } && rows.contains { $0.networkTechnology == .omt } ? "support" : "supports"
             return "\(networkOutputNames(rows)) \(verb) lyrics, PDFs, images and video files. Use a native monitor for picked windows."
         }
         return nil
+    }
+    private func networkRenderProblem(content: OutputTextContent, rows: [OutputDestinationConfiguration]) -> String? {
+        for row in rows where row.isNetworkDestination {
+            guard let profile = profiles.profile(row.profileID) else { continue }
+            if let problem = NetworkRenderAdmission.problem(content: content, profile: profile) {
+                return profiles.destinationLabel(row) + ": " + problem
+            }
+        }
+        return nil
+    }
+    /// Passive UI query: never prepares a closed workspace or changes output.
+    func currentMatchesAcceptedProgram(workspace: UUID) -> Bool {
+        guard let state = programs[workspace], state.started, let session = state.session else { return true }
+        if state.snapshot.localMedia == nil && session.currentSlide == nil { return true }
+        return state.snapshot.documentRevision == session.documentRevision
+            && state.snapshot.localMedia?.id == session.currentSlide?.id
+    }
+    private func retainedProgramNotice(_ message: String, workspace: UUID) -> String {
+        guard let state = programs[workspace], state.started, isRunning(workspace: workspace),
+              hasAcceptedForeground(workspace: workspace) else { return message }
+        let slide = state.snapshot.localMedia
+        let name = (slide?.videoURL ?? slide?.pdfURL ?? slide?.imageURL)?.lastPathComponent
+            ?? state.snapshot.current.label ?? slide?.title ?? "the accepted program"
+        return message + " Live output retains “" + name + "”."
+    }
+    private func hasAcceptedForeground(workspace: UUID) -> Bool {
+        guard let snapshot = programs[workspace]?.snapshot else { return false }
+        return snapshot.localMedia != nil || !snapshot.current.isEmpty
     }
     private func networkOutputNames(_ rows: [OutputDestinationConfiguration]) -> String {
         let hasNDI = rows.contains { $0.networkTechnology == .ndi }
@@ -628,7 +686,7 @@ final class OutputCoordinator: ObservableObject {
             setIssue(problem, workspace: state.id, reason: .capture); return
         }
         if let problem = presentationProblem(for: session.currentSlide, rows: rows) {
-            setIssue(problem, workspace: state.id); return
+            setIssue(problem, workspace: state.id, reason: .contentAdmission); return
         }
         accept(session, into: state, visible: state.snapshot.visible, activate: false); changed(workspace: state.id)
     }
@@ -636,7 +694,8 @@ final class OutputCoordinator: ObservableObject {
     func hide(for session: PresentationSession? = nil) {
         if let session, !profiles.document.workspaces.contains(where: { $0.id == session.outputSourceID }) { return }
         let state = (session.map { program($0.outputSourceID) }) ?? commandProgram
-        cancelRequests(state); state.ownership.revoke(); state.snapshot.visible = false
+        cancelRequests(state); state.ownership.revoke()
+        if state.snapshot.visible { state.snapshot.visible = false; state.snapshot.revision &+= 1 }
         changed(workspace: state.id)
     }
     func clear(for session: PresentationSession? = nil) {
@@ -644,6 +703,8 @@ final class OutputCoordinator: ObservableObject {
         let state = (session.map { program($0.outputSourceID) }) ?? commandProgram
         cancelRequests(state); state.ownership.revoke()
         state.snapshot.current = .empty; state.snapshot.next = nil; state.snapshot.localMedia = nil; state.snapshot.acceptedPDF = nil; state.snapshot.kind = .empty
+        state.snapshot.revision &+= 1
+        if case .contentAdmission? = issueReasons[state.id] { setIssue(nil, workspace: state.id) }
         changed(workspace: state.id)
     }
     /// Ordinary stop is workspace scoped. Stop All Outputs is deliberately separate.
@@ -678,10 +739,33 @@ final class OutputCoordinator: ObservableObject {
         guard windows[id]?.generation == generation else { return }; closeOutput(id)
     }
     private func closeDestination(_ id: UUID) {
+        automaticConfidenceWindows.remove(id)
         windows.removeValue(forKey: id)?.close(); targets[id] = nil; displays.unlock(owner: id); readiness[id] = .closed
         if windows.isEmpty { sleepPrevention.stop() }
     }
-    func openConfidence(_ id: UUID) { standbySuppressed.remove(id); scheduleConfidenceStandby() }
+    func openConfidence(_ id: UUID) {
+        guard let row = destination(id), row.isMonitorDestination,
+              profiles.profile(row.profileID)?.kind == .confidence else { return }
+        openNativeOutput(id)
+    }
+    /// An explicit native-window action does not accept Current, start program
+    /// media or require a controls window to have become key.
+    func openNativeOutput(_ id: UUID) {
+        guard profiles.recoveryNotice == nil, let row = destination(id), row.enabled,
+              row.isMonitorDestination, row.workspaceID != nil else { return }
+        displays.refresh()
+        guard availableDestinations([row]).contains(where: { $0.id == id }) else {
+            setIssue("Choose an available monitor for this output in Manage Outputs.", workspace: row.workspaceID)
+            return
+        }
+        guard openDestination(row, activate: false) else {
+            setIssue("This native output could not be opened on its assigned monitor. Choose Open Native Output to try again.",
+                     workspace: row.workspaceID, reason: .outputAction(id))
+            return
+        }
+        automaticConfidenceWindows.remove(id)
+        setIssue(nil, workspace: row.workspaceID); changed(workspace: row.workspaceID)
+    }
     func openBackgroundOutputs(for session: PresentationSession? = nil) -> Bool {
         if let session, !profiles.document.workspaces.contains(where: { $0.id == session.outputSourceID }) { return false }
         guard let session = session ?? commandSession else { return false }
@@ -711,6 +795,7 @@ final class OutputCoordinator: ObservableObject {
     }
     private func openDestination(_ row: OutputDestinationConfiguration, activate: Bool) -> Bool {
         guard row.workspaceID != nil, profiles.profile(row.profileID) != nil else { return false }
+        if activate { automaticConfidenceWindows.remove(row.id) }
         if windows[row.id] != nil { return true }
         guard let target = row.monitor, let monitor = displays.resolve(target) else { readiness[row.id] = .displayMissing; return false }
         guard !displays.isReserved(target) else { readiness[row.id] = .unavailable; return false }
@@ -719,13 +804,16 @@ final class OutputCoordinator: ObservableObject {
         windows[row.id] = driver; targets[row.id] = target; displays.lock(target, owner: row.id)
         readiness[row.id] = .ready; standbySuppressed.remove(row.id); sleepPrevention.start(); return true
     }
-    private func scheduleConfidenceStandby() {
-        guard workspaceReady, !standbyScheduled else { return }; standbyScheduled = true
+    private func scheduleConfidenceStandby(explicitDestinationIDs: Set<UUID> = []) {
+        explicitStandbyRequests.formUnion(explicitDestinationIDs)
+        guard workspaceReady || !explicitStandbyRequests.isEmpty, !standbyScheduled else { return }; standbyScheduled = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }; self.standbyScheduled = false
+            let explicit = self.explicitStandbyRequests; self.explicitStandbyRequests.removeAll()
             guard self.profiles.recoveryNotice == nil else { return }
-            for row in self.availableDestinations(self.profiles.document.destinations) where row.monitor != nil && row.workspaceID != nil && self.profiles.profile(row.profileID)?.kind == .confidence && self.windows[row.id] == nil && !self.standbySuppressed.contains(row.id) {
-                if !self.openDestination(row, activate: false) { self.standbySuppressed.insert(row.id) }
+            for row in self.availableDestinations(self.profiles.document.destinations) where (self.workspaceReady || explicit.contains(row.id)) && row.monitor != nil && row.workspaceID != nil && self.profiles.profile(row.profileID)?.kind == .confidence && self.windows[row.id] == nil && !self.standbySuppressed.contains(row.id) {
+                if self.openDestination(row, activate: false) { self.automaticConfidenceWindows.insert(row.id) }
+                else { self.standbySuppressed.insert(row.id) }
             }
             self.changed()
         }
@@ -779,19 +867,25 @@ final class OutputCoordinator: ObservableObject {
             }
         }
         standbySuppressed.formIntersection(Set(standbyConfigurations.map(\.id)))
+        var explicitStandby: Set<UUID> = []
         for row in standbyConfigurations where row.enabled {
             let old = previous.first { $0.id == row.id }
             if old?.enabled != true || old?.monitor != row.monitor || old?.workspaceID != row.workspaceID
                 || (!previousConfidence.contains(row.id) && confidenceDestinationIDs.contains(row.id)) {
                 standbySuppressed.remove(row.id)
+                if row.isMonitorDestination, confidenceDestinationIDs.contains(row.id) { explicitStandby.insert(row.id) }
             }
         }
         for id in Array(windows.keys) {
+            if automaticConfidenceWindows.contains(id), previousConfidence.contains(id), !confidenceDestinationIDs.contains(id),
+               let owner = destination(id)?.workspaceID, programs[owner]?.started != true, programs[owner]?.backgroundOpen != true {
+                closeDestination(id); continue
+            }
             if let row = destination(id), row.enabled, row.workspaceID != nil, row.monitor == targets[id], !profiles.conflictingDestinationIDs.contains(id) { continue }
             closeDestination(id)
         }
         // Resolve saved missing workspace IDs as unassigned, never as the focused tab.
-        refreshIssues(); changed(); scheduleConfidenceStandby()
+        refreshIssues(); changed(); scheduleConfidenceStandby(explicitDestinationIDs: explicitStandby)
     }
     private func displaysChanged() {
         let selectionChanged = legacyMonitorTarget != displays.target; legacyMonitorTarget = displays.target
@@ -882,10 +976,12 @@ final class OutputCoordinator: ObservableObject {
         for state in Array(programs.values) where workspace == nil || state.id == workspace {
             let running = isRunning(workspace: state.id)
             if !running {
-                if state.started { cancelRequests(state); state.snapshot.visible = false }
+                if state.started {
+                    cancelRequests(state)
+                    if state.snapshot.visible { state.snapshot.visible = false; state.snapshot.revision &+= 1 }
+                }
                 state.started = false; state.backgroundOpen = false; state.ownership.revoke()
             }
-            state.snapshot.revision &+= 1
             refreshMedia(state, publish: true)
             state.session?.applyOutputState(running: state.started && running, visible: state.snapshot.visible)
         }
@@ -904,8 +1000,15 @@ final class OutputCoordinator: ObservableObject {
             let rows = destinations(workspace: id).filter(\.enabled)
             switch reason {
             case .presentation:
+                // Configuration failures can resolve without accepting Current.
                 message = presentationProblem(for: programs[id]?.session?.currentSlide, rows: rows)
                     ?? (availableDestinations(rows).isEmpty ? "Choose an available output assigned to this workspace in Manage Outputs before presenting." : nil)
+            case .contentAdmission:
+                // Changing configuration or preparing a new Current does not
+                // establish that the rejected replacement reached live output.
+                message = issues[id]
+            case .outputAction(let destinationID):
+                message = destination(destinationID) == nil ? nil : issues[id]
             case .background:
                 message = availableDestinations(rows).contains { $0.monitor != nil } ? nil : "Background visuals need an available native output."
             case .assignment(let destinationID, let target):
@@ -924,9 +1027,15 @@ final class OutputCoordinator: ObservableObject {
     }
     private func setIssue(_ message: String?, workspace: UUID?, reason: IssueReason = .presentation) {
         guard let workspace else { issue = message; return }
-        issues[workspace] = message; issueReasons[workspace] = message == nil ? nil : reason
+        let nextReason = message == nil ? nil : reason
+        if issues[workspace] != message || issueReasons[workspace] != nextReason { objectWillChange.send() }
+        issues[workspace] = message
+        issueReasons[workspace] = nextReason
         publishIssues()
     }
+    /// Settings can inspect the saved owner's issue without changing controls
+    /// focus or preparing a closed workspace's presentation session.
+    func outputIssue(workspace: UUID) -> String? { workspaceIssue(workspace) }
     private func workspaceIssue(_ id: UUID) -> String? {
         let rows = destinations(workspace: id).filter(\.enabled)
         let failures = rows.compactMap { row -> String? in
@@ -937,7 +1046,14 @@ final class OutputCoordinator: ObservableObject {
             guard !dismissedNetworkPerformance.contains(row.id), let notice = network.performanceNotice(row.id) else { return nil }
             return networkMessage(notice, id: row.id)
         }
-        let messages = [issues[id]].compactMap { $0 } + failures + warnings
+        let actionIssue = issues[id].map { message in
+            if case .contentAdmission? = issueReasons[id] { return retainedProgramNotice(message, workspace: id) }
+            return message
+        }
+        let retainedIssue = actionIssue == nil && programs[id]?.snapshot.visible == true
+            && hasAcceptedForeground(workspace: id) && !currentMatchesAcceptedProgram(workspace: id)
+            ? retainedProgramNotice("Current has not been accepted by live output.", workspace: id) : nil
+        let messages = [actionIssue, retainedIssue].compactMap { $0 } + failures + warnings
         return messages.isEmpty ? nil : messages.joined(separator: "\n")
     }
     private func publishIssues() {

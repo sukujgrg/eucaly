@@ -252,19 +252,19 @@ struct LibrarySearchOverlayView: View {
 
     var statusText: String {
         if shouldShowEmptyState {
-            return "Search songs or run a library action"
+            return "Search library files or run an action. Lyrics over 10 KB match filenames only."
         }
         if isIndexing {
             return "Indexing text files..."
         }
         if searchPhase == .pending {
-            return "Searching songs…"
+            return "Searching library files…"
         }
         if shouldShowMinimumHint {
-            return "Type at least \(minimumCharacterCount) characters to search songs"
+            return "Type at least \(minimumCharacterCount) characters to search library files"
         }
         if shouldShowNoResults {
-            return "No matching songs or actions found"
+            return "No matching files or actions found"
         }
         let totalCount = actions.count + results.count
         return "\(totalCount) item\(totalCount == 1 ? "" : "s")"
@@ -294,10 +294,10 @@ struct LibrarySearchFieldView: NSViewRepresentable {
 
     static func makeSearchField(coordinator: Coordinator, commandRouter: LibrarySearchCommandRouter) -> LibrarySearchField {
         let searchField = LibrarySearchField()
-        searchField.placeholderString = "Search songs or commands"
+        searchField.placeholderString = "Search library files or commands"
         searchField.font = .systemFont(ofSize: NSFont.systemFontSize)
         searchField.controlSize = .large
-        searchField.setAccessibilityLabel("Search songs or commands")
+        searchField.setAccessibilityLabel("Search library files or commands")
         searchField.sendsSearchStringImmediately = true
         searchField.sendsWholeSearchString = false
         searchField.delegate = coordinator

@@ -180,9 +180,9 @@ The parser recognizes:
 - `CCLI License #...`
 - copyright lines beginning with `©`
 - SongSelect rights lines containing terms-of-use, CCLI, or `ccli.com`
-- the author line immediately before the CCLI song number
+- explicitly labelled authors and copyright credits
 
-Keep this metadata at the end of the file. For CCLI/SongSelect trailers, the author line immediately before `CCLI Song #...` is mandatory in practice: the parser removes the nearest non-empty non-heading line before the CCLI song number as the author line. If no real author line is present, the last lyric line before the trailer can be stripped from the final slide. If the source does not provide an author, insert an explicit placeholder such as `Author unknown` rather than letting a lyric line sit directly above `CCLI Song #...`.
+Keep this metadata at the end of the file. Use explicit labels such as `Words:` or `Music:` for authors when known. The parser does not guess an unlabelled author from the lyric before a CCLI trailer; missing authors need no placeholder, and the last lyric is retained.
 
 If CCLI-looking text appears in the middle of a song, the parser may treat it as lyric content unless it forms a trailer-like metadata block.
 

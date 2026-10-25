@@ -99,9 +99,9 @@ final class OutputDefaultTests: XCTestCase {
         let oldColumns = try item("Columns", in: controls.appearanceButton.menu)
         let oldVisual = try item("Visual Enabled", in: controls.backgroundButton.menu)
         let oldMonitor = try item("None", in: item("Monitor: None", in: controls.outputButton.menu).submenu)
-        let defaultMenu = try item("Default: " + first.name, in: controls.outputButton.menu)
+        let defaultMenu = try item("Edit Output Appearance: " + first.name, in: controls.outputButton.menu)
         XCTAssertNotNil(defaultMenu.submenu)
-        XCTAssertEqual(try item(first.name + " · " + store.workspaceName(first.workspaceID), in: defaultMenu.submenu).state, .on)
+        XCTAssertEqual(try item(outputs.managementDestinationLabel(first) + " · " + store.workspaceName(first.workspaceID), in: defaultMenu.submenu).state, .on)
         XCTAssertNil(try? item("Default Output", in: controls.outputButton.menu))
         XCTAssertNil(try? item("Identify Monitor", in: controls.outputButton.menu), "Monitor identification belongs in Manage Outputs")
         let selection = controls.outputButton.menu, appearance = controls.appearanceButton.menu, background = controls.backgroundButton.menu
@@ -131,15 +131,15 @@ final class OutputDefaultTests: XCTestCase {
         XCTAssertFalse(controls.appearanceButton.isEnabled)
         XCTAssertFalse(controls.backgroundButton.isEnabled)
         XCTAssertTrue(controls.outputButton.isEnabled)
-        XCTAssertNotNil(try? item("Default output is disabled.", in: controls.outputButton.menu))
+        XCTAssertNotNil(try? item("Appearance editing target is disabled.", in: controls.outputButton.menu))
         XCTAssertFalse(controls.outputButton.menu?.items.contains { $0.title.hasPrefix("Monitor:") } ?? false)
-        XCTAssertTrue(try item("Default: " + first.name, in: controls.outputButton.menu).isEnabled)
+        XCTAssertTrue(try item("Edit Output Appearance: " + first.name, in: controls.outputButton.menu).isEnabled)
         for button in [controls.appearanceButton, controls.backgroundButton] {
             let tooltip = try XCTUnwrap(button.toolTip)
             XCTAssertTrue(tooltip.contains(first.name))
-            XCTAssertTrue(tooltip.contains("Default output is disabled."))
+            XCTAssertTrue(tooltip.contains("Appearance editing target is disabled."))
             XCTAssertTrue(tooltip.contains("Enable it in Manage Outputs"))
-            XCTAssertTrue(try XCTUnwrap(button.accessibilityHelp()).contains("choose another default"))
+            XCTAssertTrue(try XCTUnwrap(button.accessibilityHelp()).contains("choose another target"))
         }
         XCTAssertNotNil(try? item("Manage Outputs…", in: controls.outputButton.menu))
         XCTAssertEqual(store.defaultDestination?.id, first.id)
@@ -152,9 +152,9 @@ final class OutputDefaultTests: XCTestCase {
         invoke(removedAction)
         XCTAssertNil(store.defaultDestination)
         XCTAssertFalse(controls.appearanceButton.isEnabled)
-        XCTAssertTrue(try XCTUnwrap(controls.appearanceButton.toolTip).contains("Choose a default output from the Output menu"))
-        XCTAssertNotNil(try item("Default: None", in: controls.outputButton.menu).submenu)
-        XCTAssertNotNil(try? item("Choose a default output to use quick controls.", in: controls.outputButton.menu))
+        XCTAssertTrue(try XCTUnwrap(controls.appearanceButton.toolTip).contains("Choose an appearance editing target from the Output menu"))
+        XCTAssertNotNil(try item("Edit Output Appearance: None", in: controls.outputButton.menu).submenu)
+        XCTAssertNotNil(try? item("Choose an appearance editing target to use quick controls.", in: controls.outputButton.menu))
         XCTAssertNotNil(try? item("Manage Outputs…", in: controls.outputButton.menu))
     }
 
@@ -234,7 +234,7 @@ final class OutputDefaultTests: XCTestCase {
         XCTAssertNotEqual(firstBefore, firstAfter, "The edited destination must render its new font")
         XCTAssertEqual(try pixels(secondView), secondBefore, "A shared profile must not leak quick edits into another output")
         let firstCustomID = try XCTUnwrap(store.defaultDestination?.profileID)
-        invoke(try item(second.name + " · " + store.workspaceName(second.workspaceID), in: item("Default: " + first.name, in: controls.outputButton.menu).submenu))
+        invoke(try item(outputs.managementDestinationLabel(second) + " · " + store.workspaceName(second.workspaceID), in: item("Edit Output Appearance: " + first.name, in: controls.outputButton.menu).submenu))
         controls.render()
         invoke(try item("120 pt", in: controls.appearanceButton.menu)); controls.render()
         for _ in 0..<20 { await Task.yield() }
@@ -372,7 +372,7 @@ final class OutputDefaultTests: XCTestCase {
             descendants(NSPopUpButton.self, in: chrome).first { $0.accessibilityLabel()?.hasPrefix(labelPrefix) == true }
         }
         try await waitForUIState("native toolbar controls to mount") {
-            ["Output, default:", "Network workspace routing", "Appearance for default output:", "Background for default output:", "Thumbnails"].allSatisfy { button($0) != nil }
+            ["Output appearance editing target:", "Network workspace routing", "Appearance for output:", "Background for output:", "Thumbnails"].allSatisfy { button($0) != nil }
         }
         let longName = String(repeating: "Long output name ", count: 9)
         let longWorkspaceName = String(repeating: "Long workspace name ", count: 7).trimmingCharacters(in: .whitespaces)
@@ -382,7 +382,7 @@ final class OutputDefaultTests: XCTestCase {
         store.edit { $0.destinations.append(network) }
         store.edit { $0.destinations[0].name = longName }
         try await waitForUIState("the renamed default to reach the toolbar") {
-            button("Output, default:")?.toolTip?.contains(longName) == true && button("NDI workspace routing")?.toolTip?.contains(longWorkspaceName) == true
+            button("Output appearance editing target:")?.toolTip?.contains(longName) == true && button("NDI workspace routing")?.toolTip?.contains(longWorkspaceName) == true
         }
         func hasUpdateReminder() -> Bool {
             window.toolbar?.items.contains { $0.label == "Update" } == true
@@ -401,8 +401,8 @@ final class OutputDefaultTests: XCTestCase {
                 driver.state.availableVersion = "99.0"
                 try await waitForUIState("the Update reminder and toolbar controls to appear while search is focused") {
                     window.layoutIfNeeded(); chrome.layoutSubtreeIfNeeded()
-                    return hasUpdateReminder() && ["Output, default:", "NDI workspace routing", "Appearance for default output:",
-                                           "Background for default output:", "Thumbnails"].allSatisfy { label in
+                    return hasUpdateReminder() && ["Output appearance editing target:", "NDI workspace routing", "Appearance for output:",
+                                           "Background for output:", "Thumbnails"].allSatisfy { label in
                         guard let control = button(label) else { return false }
                         return chrome.bounds.insetBy(dx: -1, dy: -1).contains(chrome.convert(control.bounds, from: control))
                     }
@@ -410,10 +410,10 @@ final class OutputDefaultTests: XCTestCase {
                 window.layoutIfNeeded(); chrome.layoutSubtreeIfNeeded()
                 // SwiftUI can remount toolbar items when the item set changes.
                 // Inspect the controls actually mounted in the window.
-                let outputButton = try XCTUnwrap(button("Output, default:"))
+                let outputButton = try XCTUnwrap(button("Output appearance editing target:"))
                 let networkButton = try XCTUnwrap(button("NDI workspace routing"))
-                let appearanceButton = try XCTUnwrap(button("Appearance for default output:"))
-                let backgroundButton = try XCTUnwrap(button("Background for default output:"))
+                let appearanceButton = try XCTUnwrap(button("Appearance for output:"))
+                let backgroundButton = try XCTUnwrap(button("Background for output:"))
                 let thumbnailButton = try XCTUnwrap(button("Thumbnails"))
                 XCTAssertTrue(window.firstResponder === editor)
                 XCTAssertTrue(search.currentEditor() === editor)
@@ -422,7 +422,7 @@ final class OutputDefaultTests: XCTestCase {
                 XCTAssertEqual(outputButton.title, "Output")
                 XCTAssertTrue(try XCTUnwrap(outputButton.toolTip).contains(longName))
                 XCTAssertTrue(try XCTUnwrap(outputButton.accessibilityLabel()).contains(longName))
-                XCTAssertNotNil(try? item("Default: " + longName, in: outputButton.menu))
+                XCTAssertNotNil(try? item("Edit Output Appearance: " + longName, in: outputButton.menu))
                 XCTAssertTrue(networkButton.title.hasPrefix("NDI: ")); XCTAssertTrue(networkButton.title.hasSuffix("…"))
                 XCTAssertLessThan(networkButton.frame.width, 220)
                 XCTAssertTrue(try XCTUnwrap(networkButton.accessibilityLabel()).contains(longWorkspaceName))
@@ -439,25 +439,25 @@ final class OutputDefaultTests: XCTestCase {
         let defaultID = try XCTUnwrap(store.defaultDestination?.id)
         XCTAssertNil(store.setEnabled(false, for: defaultID))
         try await waitForUIState("disabled-default controls to refresh") {
-            button("Appearance for default output:")?.isEnabled == false && button("Background for default output:")?.isEnabled == false
+            button("Appearance for output:")?.isEnabled == false && button("Background for output:")?.isEnabled == false
         }
-        XCTAssertFalse(try XCTUnwrap(button("Appearance for default output:")).isEnabled)
-        XCTAssertFalse(try XCTUnwrap(button("Background for default output:")).isEnabled)
-        XCTAssertTrue(try XCTUnwrap(button("Output, default:")).isEnabled)
+        XCTAssertFalse(try XCTUnwrap(button("Appearance for output:")).isEnabled)
+        XCTAssertFalse(try XCTUnwrap(button("Background for output:")).isEnabled)
+        XCTAssertTrue(try XCTUnwrap(button("Output appearance editing target:")).isEnabled)
         XCTAssertTrue(try XCTUnwrap(button("Thumbnails")).isEnabled)
         store.setDefaultDestination(nil)
         try await waitForUIState("the None default to reach the toolbar") {
-            button("Output, default:")?.accessibilityLabel() == "Output, default: None"
+            button("Output appearance editing target:")?.accessibilityLabel() == "Output appearance editing target: None"
         }
-        XCTAssertNotNil(try? item("Choose a default output to use quick controls.", in: button("Output, default:")?.menu))
+        XCTAssertNotNil(try? item("Choose an appearance editing target to use quick controls.", in: button("Output appearance editing target:")?.menu))
         XCTAssertTrue(try XCTUnwrap(button("Thumbnails")).isEnabled)
         store.setDefaultDestination(defaultID)
         XCTAssertNil(store.setEnabled(true, for: defaultID))
         try await waitForUIState("enabled-default controls to refresh") {
-            button("Appearance for default output:")?.isEnabled == true && button("Background for default output:")?.isEnabled == true
+            button("Appearance for output:")?.isEnabled == true && button("Background for output:")?.isEnabled == true
         }
-        XCTAssertTrue(try XCTUnwrap(button("Appearance for default output:")).isEnabled)
-        XCTAssertTrue(try XCTUnwrap(button("Background for default output:")).isEnabled)
+        XCTAssertTrue(try XCTUnwrap(button("Appearance for output:")).isEnabled)
+        XCTAssertTrue(try XCTUnwrap(button("Background for output:")).isEnabled)
         XCTAssertEqual(thumbnailDefaults.double(forKey: "thumbnailScale"), 1.2345, accuracy: 0.000001)
         XCTAssertEqual(thumbnailDefaults.double(forKey: "thumbnailFontScale"), 1.4, accuracy: 0.000001)
     }

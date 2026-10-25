@@ -256,17 +256,8 @@ nonisolated final class LibraryFileActionService: @unchecked Sendable {
         let revision: Revision
     }
 
-    nonisolated fileprivate struct Identity: Sendable, Equatable {
-        let device: Int64
-        let inode: UInt64
-        let generation: UInt64
-
-        init(_ attributes: stat) {
-            device = Int64(attributes.st_dev)
-            inode = UInt64(attributes.st_ino)
-            generation = UInt64(attributes.st_gen)
-        }
-    }
+    fileprivate typealias Identity = LibraryFileIdentity
+    fileprivate typealias OpenFile = LibraryFileHandle
 
     nonisolated fileprivate struct Revision: Sendable, Equatable {
         let identity: Identity
@@ -284,30 +275,6 @@ nonisolated final class LibraryFileActionService: @unchecked Sendable {
             changedSeconds = Int64(attributes.st_ctimespec.tv_sec)
             changedNanoseconds = Int64(attributes.st_ctimespec.tv_nsec)
         }
-    }
-
-    nonisolated fileprivate final class OpenFile: @unchecked Sendable {
-        let descriptor: Int32
-
-        init(path: String, flags: Int32) throws {
-            descriptor = Darwin.open(path, flags)
-            guard descriptor >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
-        }
-
-        init(parent: OpenFile, name: String, flags: Int32) throws {
-            descriptor = Darwin.openat(parent.descriptor, name, flags)
-            guard descriptor >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
-        }
-
-        func attributes() throws -> stat {
-            var attributes = stat()
-            guard fstat(descriptor, &attributes) == 0 else {
-                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-            }
-            return attributes
-        }
-
-        deinit { _ = Darwin.close(descriptor) }
     }
 
     nonisolated fileprivate final class ScopedAccess: @unchecked Sendable {

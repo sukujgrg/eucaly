@@ -169,6 +169,7 @@ final class OutputWorkspaceCommands {
     weak var workspaceWindows: OutputWorkspaceWindows?
     var isActive: Bool { window != nil && window === keyWindow() }
     var editingFileURL: URL? { closeConfirmation?.editingFileURL }
+    var canSaveLyrics: Bool { closeConfirmation?.canSaveLyrics ?? false }
     var referencedFileURLs: Set<URL> { workspaceWindows?.referencedFileURLs ?? [] }
     func fileRemovalProblem(matchingFile: (URL) -> Bool) -> String? {
         guard let workspaceWindows else { return "These workspace controls are no longer available." }
@@ -193,6 +194,7 @@ final class OutputWorkspaceCommands {
 @MainActor
 protocol OutputWorkspaceCloseConfirming: AnyObject {
     var editingFileURL: URL? { get }
+    var canSaveLyrics: Bool { get }
     func fileWasRemoved(_ candidate: LibraryFileActionService.Candidate)
     func confirmClose() -> Bool
     func controlsWillClose()
@@ -200,6 +202,7 @@ protocol OutputWorkspaceCloseConfirming: AnyObject {
 
 extension OutputWorkspaceCloseConfirming {
     var editingFileURL: URL? { nil }
+    var canSaveLyrics: Bool { false }
     func fileWasRemoved(_ candidate: LibraryFileActionService.Candidate) {}
 }
 
@@ -210,12 +213,14 @@ struct OutputWorkspaceCloseConfirmation: NSViewRepresentable {
     let shouldClose: () -> Bool
     var willClose: () -> Void = {}
     var editorFileURL: () -> URL? = { nil }
+    var canSaveLyrics: () -> Bool = { false }
     var didRemoveFile: (LibraryFileActionService.Candidate) -> Void = { _ in }
     func makeNSView(context: Context) -> ConfirmationView {
         let view = ConfirmationView(frame: .zero)
         view.shouldClose = shouldClose
         view.willClose = willClose
         view.editorFileURL = editorFileURL
+        view.saveEligibility = canSaveLyrics
         view.didRemoveFile = didRemoveFile
         commands.closeConfirmation = view
         return view
@@ -224,6 +229,7 @@ struct OutputWorkspaceCloseConfirmation: NSViewRepresentable {
         view.shouldClose = shouldClose
         view.willClose = willClose
         view.editorFileURL = editorFileURL
+        view.saveEligibility = canSaveLyrics
         view.didRemoveFile = didRemoveFile
         commands.closeConfirmation = view
     }
@@ -232,8 +238,10 @@ struct OutputWorkspaceCloseConfirmation: NSViewRepresentable {
         var shouldClose: () -> Bool = { true }
         var willClose: () -> Void = {}
         var editorFileURL: () -> URL? = { nil }
+        var saveEligibility: () -> Bool = { false }
         var didRemoveFile: (LibraryFileActionService.Candidate) -> Void = { _ in }
         var editingFileURL: URL? { editorFileURL() }
+        var canSaveLyrics: Bool { saveEligibility() }
         func fileWasRemoved(_ candidate: LibraryFileActionService.Candidate) { didRemoveFile(candidate) }
         func confirmClose() -> Bool { shouldClose() }
         func controlsWillClose() { willClose() }

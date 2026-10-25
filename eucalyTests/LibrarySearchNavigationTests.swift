@@ -112,6 +112,50 @@ final class LibrarySearchNavigationTests: XCTestCase {
     }
 
     @MainActor
+    func testResultCellsKeepFileIdentityAndMatchingExcerptVisibleAtNativeRowHeights() async throws {
+        let lyrics = URL(fileURLWithPath: "/tmp/Library/Lyrics/song.txt")
+        let movie = URL(fileURLWithPath: "/tmp/Library/Videos/movie.mov")
+        let fixture = SearchNavigationFixture(actions: [], results: [
+            .init(url: lyrics, snippet: "Matching passage at the end of the lyrics\nFollowing lyric"),
+            .init(url: movie, snippet: "")
+        ])
+        defer { fixture.close() }
+        await drainFocusRequest()
+        func descendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + descendants($0) } }
+        for width in [CGFloat(620), CGFloat(360)] {
+            fixture.scrollView.setFrameSize(.init(width: width, height: 300))
+            fixture.scrollView.layoutSubtreeIfNeeded()
+            fixture.table.layoutSubtreeIfNeeded()
+            for row in [1, 2] {
+                let cell = try XCTUnwrap(fixture.table.view(atColumn: 0, row: row, makeIfNecessary: true))
+                cell.layoutSubtreeIfNeeded()
+                let labels = descendants(cell).compactMap { $0 as? NSTextField }
+                let title = try XCTUnwrap(labels.first { $0.identifier?.rawValue == "LibrarySearch.ItemTitle" })
+                let location = try XCTUnwrap(labels.first { $0.identifier?.rawValue == "LibrarySearch.ItemLocation" })
+                XCTAssertFalse(location.isHidden)
+                XCTAssertEqual(location.stringValue, row == 1 ? "Lyrics/song.txt" : "Videos/movie.mov")
+                let visible = labels.filter { !$0.isHidden }
+                let frames = visible.map { $0.convert($0.bounds, to: cell) }
+                for frame in frames {
+                    XCTAssertGreaterThanOrEqual(frame.minY, -0.5)
+                    XCTAssertLessThanOrEqual(frame.maxY, cell.bounds.maxY + 0.5,
+                                             "Every visible label must fit the row at width \(width)")
+                    XCTAssertGreaterThan(frame.height, 0)
+                }
+                XCTAssertFalse(title.convert(title.bounds, to: cell).intersects(location.convert(location.bounds, to: cell)))
+                if row == 1 {
+                    let excerpt = try XCTUnwrap(labels.first { $0.identifier?.rawValue == "LibrarySearch.ItemSnippet" })
+                    XCTAssertTrue(excerpt.stringValue.hasPrefix("Matching passage"))
+                    XCTAssertFalse(excerpt.isHidden)
+                    XCTAssertGreaterThanOrEqual(excerpt.frame.height, 2 * (excerpt.font?.ascender ?? 0),
+                                                "The excerpt owns two lines independently of the file location")
+                    XCTAssertFalse(excerpt.convert(excerpt.bounds, to: cell).intersects(location.convert(location.bounds, to: cell)))
+                }
+            }
+        }
+    }
+
+    @MainActor
     func testSearchInitiallySelectedFirstResultIsFullyBelowSongsHeading() async throws {
         let results = (0..<30).map { index in
             LibraryTextSearchIndex.SearchResult(
@@ -520,12 +564,12 @@ final class LibrarySearchNavigationTests: XCTestCase {
             searchPhase: .pending, displayName: { $0.lastPathComponent }, onRunAction: { _ in },
             onClose: {}, onOpenResult: { _ in XCTFail("Commands cannot preview a file") },
             onAddResultToPlaylist: { _ in }, onCommitQuery: { XCTFail("An available command runs immediately") })
-        XCTAssertEqual(overlay.statusText, "Searching songs…")
+        XCTAssertEqual(overlay.statusText, "Searching library files…")
         let empty = LibrarySearchOverlayView(query: .constant("unmatched"), selectedEntry: .constant(nil),
             commandRouter: LibrarySearchCommandRouter(), actions: [], results: [], minimumCharacterCount: 3, isIndexing: false, searchPhase: .completed,
             displayName: { $0.lastPathComponent }, onRunAction: { _ in }, onClose: {}, onOpenResult: { _ in },
             onAddResultToPlaylist: { _ in }, onCommitQuery: {})
-        XCTAssertEqual(empty.statusText, "No matching songs or actions found")
+        XCTAssertEqual(empty.statusText, "No matching files or actions found")
     }
 
     @MainActor

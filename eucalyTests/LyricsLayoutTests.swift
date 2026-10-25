@@ -446,6 +446,47 @@ final class LyricsLayoutRenderingTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testWorkspaceThumbnailsIgnoreGlobalAppearanceAndHideDisabledComponents() throws {
+        let slide = try XCTUnwrap(LyricsParser.parseDocument("Verse\nJoy\nMeaning\nTogether\nTransliteration\nSing").slides.first)
+        let suiteName = "WorkspaceThumbnailAppearance.\(UUID().uuidString)"
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { preferences.removePersistentDomain(forName: suiteName) }
+        preferences.set("stacked", forKey: "presentationLyricsLayout")
+        preferences.set("left", forKey: "presentationTextAlignment")
+        preferences.set("top", forKey: "presentationVerticalPosition")
+        preferences.set(2, forKey: "presentationPaddingScale")
+        preferences.set(1, forKey: "thumbnailFontScale")
+        let size = CGSize(width: 320, height: 180)
+        var first = OutputProfile.builtIns[0]
+        first.layout = "stacked"; first.position = "middle"
+        var second = first
+        second.layout = "columns"; second.alignment = "right"; second.position = "bottom"
+        second.padding = 0; second.roles = [.primary]
+        func thumbnail(_ source: Slide, _ profile: OutputProfile) throws -> NSBitmapImageRep {
+            try render(LyricsThumbnailView(slide: source, size: size)
+                .environment(\.audienceOutputProfile, profile).defaultAppStorage(preferences),
+                size: size, name: "Workspace \(profile.layout) \(profile.position)")
+        }
+        let a = try thumbnail(slide, first)
+        let b = try thumbnail(slide, second)
+        let primaryOnly = Slide(index: slide.index,
+            lines: slide.lines.filter { OutputContentAdapter.role(for: $0) == .primary },
+            label: slide.label, videoURL: nil, pdfURL: nil, pdfPageIndex: nil, imageURL: nil)
+        let expected = try thumbnail(primaryOnly, second)
+        let boundsA = try XCTUnwrap(whiteBounds(in: a, xRange: 0..<a.pixelsWide))
+        let boundsB = try XCTUnwrap(whiteBounds(in: b, xRange: 0..<b.pixelsWide))
+        XCTAssertEqual(boundsB, whiteBounds(in: expected, xRange: 0..<expected.pixelsWide))
+        XCTAssertGreaterThan(boundsB.minX, size.width * 0.8)
+        XCTAssertGreaterThan(boundsB.maxY, size.height * 0.9)
+        XCTAssertLessThan(boundsA.maxY, boundsB.maxY)
+        preferences.set(0.5, forKey: "thumbnailFontScale")
+        let smaller = try thumbnail(slide, second)
+        let smallerBounds = try XCTUnwrap(whiteBounds(in: smaller, xRange: 0..<smaller.pixelsWide))
+        XCTAssertLessThan(smallerBounds.width, boundsB.width)
+        XCTAssertEqual(second.typography.size, first.typography.size, "Thumbnail scaling must not change projection typography.")
+    }
+
     private func render<V: View>(_ view: V, size: CGSize, name: String) throws -> NSBitmapImageRep {
         let renderer = ImageRenderer(content: view.frame(width: size.width, height: size.height))
         renderer.scale = 1

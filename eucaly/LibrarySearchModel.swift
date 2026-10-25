@@ -25,7 +25,7 @@ final class LibrarySearchModel: ObservableObject {
 
     // Only derived indexing is shared. Queries, scope and entry selection belong
     // to the workspace, including command rows that do not require the index.
-    private static let sharedIndex = LibraryTextSearchIndex()
+    static let sharedIndex = LibraryTextSearchIndex()
     let index: LibraryTextSearchIndex
 
     @Published private(set) var query = ""

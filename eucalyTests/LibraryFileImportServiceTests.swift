@@ -86,6 +86,62 @@ final class LibraryFileImportServiceTests: XCTestCase {
         XCTAssertEqual(files.map(\.lastPathComponent), ["First.txt"])
     }
 
+    func testEveryCategoryRejectsRedirectedFoldersWithoutWritingOutsideTheLibrary() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.base) }
+        let outside = fixture.base.appendingPathComponent("Outside")
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        for (name, category) in [("song.txt", "Lyrics"), ("slides.pdf", "PDFs"), ("photo.png", "Images"), ("movie.mov", "Videos"), ("music.mp3", "Audio")] {
+            let source = fixture.source.appendingPathComponent(name)
+            try Data("Source".utf8).write(to: source)
+            try FileManager.default.createSymbolicLink(at: fixture.root.appendingPathComponent(category), withDestinationURL: outside)
+            let result = await LibraryFileImportService().importFiles([source], into: fixture.root, cancellation: LibraryImportCancellation())
+            XCTAssertTrue(result.importedURLs.isEmpty)
+            XCTAssertEqual(result.failures.count, 1)
+            XCTAssertTrue(result.failures.first?.message.contains("redirected or replaced") == true)
+            XCTAssertTrue(try FileManager.default.contentsOfDirectory(at: outside, includingPropertiesForKeys: nil).isEmpty)
+        }
+    }
+
+    func testReplacingCategoryDuringCopyRejectsPublicationAndCleansPinnedStaging() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.base) }
+        let source = fixture.source.appendingPathComponent("song.txt")
+        try "Source lyrics".write(to: source, atomically: true, encoding: .utf8)
+        let oldFolder = fixture.root.appendingPathComponent("OldLyrics")
+        let outside = fixture.base.appendingPathComponent("Outside")
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        let service = LibraryFileImportService(copyItem: { source, staging in
+            try FileManager.default.copyItem(at: source, to: staging)
+            let category = fixture.root.appendingPathComponent("Lyrics")
+            try FileManager.default.moveItem(at: category, to: oldFolder)
+            try FileManager.default.createSymbolicLink(at: category, withDestinationURL: outside)
+        })
+        let result = await service.importFiles([source], into: fixture.root, cancellation: LibraryImportCancellation())
+        XCTAssertTrue(result.importedURLs.isEmpty)
+        XCTAssertEqual(result.failures.count, 1)
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(at: outside, includingPropertiesForKeys: nil).isEmpty)
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(at: oldFolder, includingPropertiesForKeys: nil).isEmpty)
+        XCTAssertEqual(try String(contentsOf: source, encoding: .utf8), "Source lyrics")
+    }
+
+    func testUnreadableCategoryPreservesPermissionFailureInsteadOfClaimingRedirection() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.base) }
+        let source = fixture.source.appendingPathComponent("song.txt")
+        let category = fixture.root.appendingPathComponent("Lyrics")
+        try "Source lyrics".write(to: source, atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(at: category, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: category.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: category.path) }
+        let result = await LibraryFileImportService().importFiles([source], into: fixture.root, cancellation: LibraryImportCancellation())
+        XCTAssertTrue(result.importedURLs.isEmpty)
+        let failure = try XCTUnwrap(result.failures.first)
+        XCTAssertEqual(failure.message, POSIXError(.EACCES).localizedDescription)
+        XCTAssertFalse(failure.message.contains("redirected"))
+        XCTAssertEqual(try String(contentsOf: source, encoding: .utf8), "Source lyrics")
+    }
+
     private func makeFixture() throws -> (base: URL, root: URL, source: URL) {
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("eucaly-import-copy-\(UUID())")
         let root = base.appendingPathComponent("Library"), source = base.appendingPathComponent("Source")

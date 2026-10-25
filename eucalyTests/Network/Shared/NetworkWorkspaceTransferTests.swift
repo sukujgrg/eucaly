@@ -6,6 +6,87 @@ import AVFoundation
 
 @MainActor
 final class NetworkWorkspaceTransferTests: XCTestCase {
+    func testRejectedRenderAdmissionPreservesLiveProgramsOwnersAndSendersForBothProtocols() async throws {
+        for technology in NetworkOutputTechnology.allCases {
+            let log = SenderFactory(), router = NetworkOutputRouter(senderFactory: { log.make($0) })
+            let store = OutputProfileStore()
+            let homeID = OutputWorkspaceRecord.primaryID, otherID = try XCTUnwrap(store.addWorkspace(name: "Other"))
+            var row = OutputDestinationConfiguration(name: "Moving", profileID: OutputProfile.audienceID, monitor: nil)
+            row.destination = technology == .ndi ? .ndi(.init(sourceName: "Moving")) : .omt(.init(sourceName: "Moving"))
+            var peer = OutputDestinationConfiguration(name: "Independent", profileID: OutputProfile.audienceID,
+                                                       monitor: nil, workspaceID: otherID)
+            peer.ndi = .init(sourceName: "Independent")
+            store.edit { $0.destinations = [row, peer]; $0.backgroundAudioDestinationID = row.id }
+            let outputs = OutputCoordinator(profiles: store, displays: ProjectionDisplayManager(displays: { [] }),
+                                            retainsPreparedSessions: true, network: router)
+            defer { outputs.stopAllOutputs() }
+            let home = outputs.session(workspace: homeID), other = outputs.session(workspace: otherID)
+            home.setSlides(LyricsParser.parseDocument("Verse\nAccepted home").slides); home.showSlides()
+            other.setSlides(LyricsParser.parseDocument("Verse\nAccepted other").slides); other.showSlides()
+            try await until { log.senders.count == 2 && log.senders.allSatisfy { !$0.submissions.isEmpty } }
+            let sender = try XCTUnwrap(log.senders.first { $0.name == "Moving" })
+            let independent = try XCTUnwrap(log.senders.first { $0.name == "Independent" })
+            let generation = sender.generation, independentGeneration = independent.generation
+            let homeAccepted = outputs.snapshot(for: row.id), otherAccepted = outputs.snapshot(for: peer.id)
+            let saved = store.document
+            let candidates = [
+                Slide(index: 0, lines: [.init(kind: .verse, languageTag: "", text: String(repeating: "A", count: 32_769))], label: "Oversized", videoURL: nil, pdfURL: nil, pdfPageIndex: nil, imageURL: nil),
+                Slide(index: 0, lines: [.init(kind: .verse, languageTag: "", text: String(repeating: "\"", count: 32_768))], label: "Escaped", videoURL: nil, pdfURL: nil, pdfPageIndex: nil, imageURL: nil),
+                Slide(index: 0, lines: [.init(kind: .verse, languageTag: "", text: "Text")], label: String(repeating: "A", count: 513), videoURL: nil, pdfURL: nil, pdfPageIndex: nil, imageURL: nil),
+                Slide(index: 0, lines: (0..<33).map { _ in .init(kind: .verse, languageTag: "", text: "Text") }, label: "Too many", videoURL: nil, pdfURL: nil, pdfPageIndex: nil, imageURL: nil)
+            ]
+            for candidate in candidates {
+                home.setSlides([candidate])
+                let action = home.outputActionClock.current
+                XCTAssertFalse(outputs.presentLocal(home, activation: .current))
+                XCTAssertEqual(home.outputActionClock.current, action, "Admission rejection must precede command cancellation.")
+                XCTAssertFalse(outputs.currentMatchesAcceptedProgram(workspace: homeID))
+                XCTAssertTrue(home.projectionDisplayIssue?.contains("Live output retains “Verse”") == true)
+                other.setSlides([candidate])
+                XCTAssertFalse(outputs.moveOutput(row.id, to: other))
+                await Task.yield()
+                XCTAssertEqual(store.document, saved)
+                XCTAssertEqual(outputs.snapshot(for: row.id).current, homeAccepted.current)
+                XCTAssertEqual(outputs.snapshot(for: row.id).revision, homeAccepted.revision)
+                XCTAssertEqual(outputs.snapshot(for: peer.id).current, otherAccepted.current)
+                XCTAssertEqual(outputs.snapshot(for: peer.id).revision, otherAccepted.revision)
+                XCTAssertEqual(sender.generation, generation); XCTAssertEqual(sender.starts, 1); XCTAssertEqual(sender.stops, 0)
+                XCTAssertEqual(independent.generation, independentGeneration); XCTAssertEqual(independent.starts, 1); XCTAssertEqual(independent.stops, 0)
+                XCTAssertEqual(log.senders.count, 2)
+                XCTAssertTrue(router.state(row.id).active); XCTAssertTrue(router.state(peer.id).active)
+            }
+            home.setSlides(LyricsParser.parseDocument("Verse\nSupported replacement").slides)
+            XCTAssertTrue(outputs.presentLocal(home, activation: .current))
+            XCTAssertTrue(outputs.currentMatchesAcceptedProgram(workspace: homeID))
+            XCTAssertNil(home.projectionDisplayIssue)
+            outputs.stopAllOutputs(); await router.shutdown()
+        }
+    }
+
+    func testInitialShowAndStartRejectBeforeConstructingEitherProtocolSender() async throws {
+        for technology in NetworkOutputTechnology.allCases {
+            let log = SenderFactory(), router = NetworkOutputRouter(senderFactory: { log.make($0) })
+            let store = OutputProfileStore()
+            var row = OutputDestinationConfiguration(name: "Initial", profileID: OutputProfile.audienceID, monitor: nil)
+            row.destination = technology == .ndi ? .ndi(.init()) : .omt(.init())
+            store.edit { $0.destinations = [row] }
+            let outputs = OutputCoordinator(profiles: store, displays: ProjectionDisplayManager(displays: { [] }),
+                                            retainsPreparedSessions: true, network: router)
+            defer { outputs.stopAllOutputs() }
+            let session = outputs.session(workspace: OutputWorkspaceRecord.primaryID)
+            session.setSlides(LyricsParser.parseDocument("Verse\n" + String(repeating: "A", count: 32_769)).slides)
+            XCTAssertFalse(outputs.presentLocal(session))
+            outputs.startNetworkOutput(row.id)
+            XCTAssertTrue(log.senders.isEmpty)
+            XCTAssertFalse(outputs.isOpen(row.id))
+            XCTAssertNil(outputs.snapshot(for: row.id).localMedia)
+            session.setSlides(LyricsParser.parseDocument("Verse\nWithin capacity").slides)
+            XCTAssertTrue(outputs.presentLocal(session))
+            XCTAssertEqual(log.senders.count, 1, "Valid content must be able to start after a rejected action.")
+            outputs.stopAllOutputs(); await router.shutdown()
+        }
+    }
+
     func testRapidWorkspaceAndTransparencyChangesKeepTheLatestCanvasAndOtherSource() async throws {
         let log = SenderFactory(), router = NetworkOutputRouter(senderFactory: { log.make($0) })
         let store = OutputProfileStore(), homeID = OutputWorkspaceRecord.primaryID

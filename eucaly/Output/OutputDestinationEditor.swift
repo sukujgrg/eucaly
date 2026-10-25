@@ -3,6 +3,9 @@ import AppKit
 @MainActor
 final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
     let ownerLabel = outputSettingsLabel(secondary: true)
+    let appearanceNotice = outputSettingsLabel(secondary: true)
+    let moveNotice = outputSettingsLabel(secondary: true)
+    let standbyNotice = outputSettingsLabel(secondary: true)
     let moveWorkspaceButton = NSButton(title: "Move to This Workspace", target: nil, action: nil)
     let coordinator: OutputCoordinator
     let destinationID: UUID
@@ -44,7 +47,7 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
         profilePicker.target = self; profilePicker.action = #selector(profileChanged(_:)); profilePicker.setAccessibilityLabel("Appearance profile")
         form.add(outputSettingsRow("Name", nameField)); form.add(enabledButton)
         moveWorkspaceButton.target = self; moveWorkspaceButton.action = #selector(moveWorkspace(_:))
-        form.add(ownerLabel); form.add(outputSettingsActionRow([moveWorkspaceButton]))
+        form.add(ownerLabel); form.add(outputSettingsActionRow([moveWorkspaceButton])); form.add(moveNotice)
         validationLabel.textColor = .systemOrange; validationLabel.isHidden = true; form.add(validationLabel)
         customizeButton.target = self; customizeButton.action = #selector(editProfile(_:))
         clearBackgroundButton.target = self; clearBackgroundButton.action = #selector(clearBackground(_:))
@@ -52,6 +55,8 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
             customizeButton,
             clearBackgroundButton
         ]))
+        form.add(appearanceNotice)
+        form.add(standbyNotice)
         if destination?.isNetworkDestination == true {
             let editor = NetworkOutputSettingsEditor(coordinator: coordinator, destinationID: destinationID)
             networkEditor = editor; addChild(editor)
@@ -76,13 +81,29 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
     }
     @objc private func moveWorkspace(_ sender: Any?) {
         guard let session = coordinator.preferredLocalSession else { return }
-        if !coordinator.moveOutput(destinationID, to: session) { validationLabel.stringValue = session.projectionDisplayIssue ?? "Unable to move output." }
+        validationLabel.stringValue = coordinator.moveOutput(destinationID, to: session)
+            ? "" : session.projectionDisplayIssue ?? "Unable to move output."
         render()
     }
     func render() {
         guard isViewLoaded, let destination, let profile = store.profile(destination.profileID) else { return }
-        ownerLabel.stringValue = "Workspace: " + store.workspaceName(destination.workspaceID)
-        moveWorkspaceButton.title = "Move to This Workspace (" + store.workspaceName(coordinator.focusedWorkspaceID) + ")"
+        let target = destination.networkSettings.map { (destination.networkTechnology?.title ?? "Network") + " source: " + $0.sourceName }
+            ?? destination.monitor.map { "Monitor: " + coordinator.displays.label(for: $0) } ?? "Monitor: None"
+        let state = destination.isNetworkDestination ? coordinator.network.state(destinationID).title(for: destination.networkTechnology ?? .ndi)
+            : coordinator.isOpen(destinationID) ? "Window open" : "Window closed"
+        let visibility = coordinator.isOpen(destinationID) && coordinator.snapshot(for: destinationID).visible ? "Slides visible" : "Slides hidden"
+        ownerLabel.stringValue = "Workspace: " + coordinator.managementWorkspaceName(destination.workspaceID) + "\nOutput: " + destination.name
+            + " · " + target + "\nAppearance: " + profile.name + " · " + (destination.enabled ? "Enabled" : "Disabled") + " · " + state + " · " + visibility
+        let targetWorkspace = coordinator.managementWorkspaceName(coordinator.focusedWorkspaceID)
+        moveNotice.stringValue = coordinator.isOpen(destinationID)
+            ? "Moves this live output to " + targetWorkspace + "’s Current immediately." + (coordinator.focusedWorkspaceID.flatMap { coordinator.preparedSession(workspace: $0) }?.isEmpty == false ? "" : " The target Current is empty.")
+            : "Changes assignment to " + targetWorkspace + "; this output remains stopped."
+        appearanceNotice.stringValue = profile.isReusable
+            ? "Uses reusable profile “" + profile.name + "”. Customizing any property creates an independent appearance for this output; future changes to the reusable profile no longer apply."
+            : "Independent appearance: future changes to reusable profiles no longer apply. Editing affects this output only."
+        standbyNotice.stringValue = "Confidence opens a local standby clock automatically on its assigned monitor, including when Current is empty or hidden. Changing an idle standby to another appearance closes that standby window."
+        standbyNotice.isHidden = !destination.isMonitorDestination || profile.kind != .confidence
+        moveWorkspaceButton.title = "Move to This Workspace (" + coordinator.managementWorkspaceName(coordinator.focusedWorkspaceID) + ")"
         moveWorkspaceButton.isEnabled = coordinator.focusedWorkspaceID != nil && destination.workspaceID != coordinator.focusedWorkspaceID
         validationLabel.isHidden = validationLabel.stringValue.isEmpty
         if nameField.currentEditor() == nil { nameField.stringValue = destination.name }
@@ -98,6 +119,8 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
         if !profile.isReusable {
             choices.insert(.init(id: profile.id, title: "Custom Appearance (" + profile.name + ")"), at: 0)
         }
+        let unused = store.unusedAppearances(for: destinationID)
+        choices += unused.map { .init(id: $0.id, title: "Restore Saved Appearance (" + $0.name + ")") }
         if profiles != choices {
             profiles = choices
             let menu = NSMenu(); menu.autoenablesItems = false
@@ -135,15 +158,18 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
         nameMonitorButton.isEnabled = destination.monitor.map(displays.canRename) ?? false
         let conflict = destination.monitor.flatMap { store.monitorAssignmentProblem(for: $0, excluding: destinationID) }
         let problem = destination.monitor.flatMap { displays.problem(for: $0) }
-        statusLabel.stringValue = conflict ?? problem ?? (destination.monitor == nil ? "Choose a monitor, or keep None to leave this output unassigned."
+        let nativeStatus = conflict ?? problem ?? (destination.monitor == nil ? "Choose a monitor, or keep None to leave this output unassigned."
             : !destination.enabled ? "Enable this output to use its assigned monitor."
             : coordinator.isOpen(destinationID) ? "Output open. Appearance follows the selected profile."
             : "Show Slides to open this output.")
-        statusLabel.textColor = conflict != nil || problem != nil ? .systemOrange : .secondaryLabelColor
-        confidenceButton.isHidden = profile.kind != .confidence
-        confidenceActions?.isHidden = profile.kind != .confidence
-        confidenceButton.title = coordinator.isOpen(destinationID) ? "Close Confidence" : "Open Confidence"
-        confidenceButton.isEnabled = destination.enabled && conflict == nil && destination.monitor.flatMap { displays.resolve($0) } != nil
+        let ownerIssue = destination.workspaceID.flatMap { coordinator.outputIssue(workspace: $0) }
+        let workspaceStatus = ownerIssue.map { "Workspace " + coordinator.managementWorkspaceName(destination.workspaceID) + ": " + $0 }
+        statusLabel.stringValue = [nativeStatus, workspaceStatus].compactMap { $0 }.joined(separator: "\n")
+        statusLabel.textColor = conflict != nil || problem != nil || ownerIssue != nil ? .systemOrange : .secondaryLabelColor
+        confidenceButton.isHidden = false
+        confidenceActions?.isHidden = false
+        confidenceButton.title = coordinator.isOpen(destinationID) ? "Close Native Output" : "Open Native Output"
+        confidenceButton.isEnabled = coordinator.isOpen(destinationID) || (destination.enabled && conflict == nil && destination.monitor.flatMap { displays.resolve($0) } != nil)
     }
     func controlTextDidEndEditing(_ notification: Notification) {
         guard notification.object as? NSTextField === nameField, let destination else { return }
@@ -166,7 +192,10 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
     @objc private func profileChanged(_ sender: Any?) {
         guard let id = profilePicker.selectedItem?.representedObject as? UUID,
               store.profile(id) != nil else { return }
-        store.selectProfile(id, for: destinationID)
+        if store.unusedAppearances(for: destinationID).contains(where: { $0.id == id }) {
+            validationLabel.stringValue = store.applyUnusedAppearance(id, to: destinationID) ?? ""
+        } else { store.selectProfile(id, for: destinationID) }
+        render()
     }
     @objc private func monitorChanged(_ sender: Any?) {
         let target = monitorPicker.selectedItem?.representedObject as? ProjectionMonitorTarget
@@ -200,7 +229,7 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
     }
     @objc private func toggleConfidence(_ sender: Any?) {
         if coordinator.isOpen(destinationID) { coordinator.closeOutput(destinationID) }
-        else { coordinator.openConfidence(destinationID) }
+        else { coordinator.openNativeOutput(destinationID) }
         render()
     }
 }

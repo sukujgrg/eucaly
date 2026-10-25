@@ -4,6 +4,27 @@ import XCTest
 
 @MainActor
 final class AppMenuTests: XCTestCase {
+    func testSaveLyricsUsesActiveEditorsCurrentEligibility() throws {
+        let hub = LocalOutputHarness()
+        let focus = MenuFocus()
+        let app = AppDelegate()
+        app.outputProfiles = hub.outputs.profiles; app.outputs = hub.outputs
+        app.workspaceWindows = makeWorkspaceWindows(outputs: hub.outputs, keyWindow: { focus.window })
+        let controls = try XCTUnwrap(app.workspaceWindows.open(hub.session.outputSourceID))
+        defer { controls.window?.close(); hub.outputs.stopAllOutputs() }
+        focus.window = controls.window
+        let bridge = OutputWorkspaceCloseConfirmation.ConfirmationView(frame: .zero)
+        controls.commands.closeConfirmation = bridge
+        let menus = AppMenuController(app: app)
+        let save = try XCTUnwrap(menus.mainMenu.item(withTitle: "File")?.submenu?.item(withTitle: "Save Lyrics"))
+        for (description, eligible) in [("empty workspace", false), ("media Preview", false), ("clean lyrics", false), ("dirty lyrics", true), ("invalid empty draft", false)] {
+            bridge.saveEligibility = { eligible }
+            XCTAssertEqual(menus.validateMenuItem(save), eligible, description)
+        }
+        focus.window = nil
+        XCTAssertFalse(menus.validateMenuItem(save))
+    }
+
     func testStandbyOwnerWithoutControlsCanStopFromProjectionKeyboardAndMenu() async throws {
         let monitors = (1...2).map {
             ProjectionMonitor(id: UInt32($0), identity: UUID().uuidString, name: "Monitor \($0)",

@@ -19,9 +19,13 @@ actor LibraryTextSearchIndex {
 
     nonisolated struct IndexingFailure: LocalizedError, Sendable, Equatable {
         let databaseCode: Int32
+        var unreadableFileCount: Int = 0
 
         var errorDescription: String? {
-            "Search could not be refreshed. Your files have not changed. Use Retry to rebuild the search index."
+            if unreadableFileCount > 0 {
+                return "Search is incomplete because \(unreadableFileCount) lyrics file(s) could not be read. Your files have not changed. Use Retry after restoring access."
+            }
+            return "Search could not be refreshed. Your files have not changed. Use Retry to refresh or rebuild a damaged search index."
         }
     }
 
@@ -52,10 +56,13 @@ actor LibraryTextSearchIndex {
     private var db: OpaquePointer? { connection?.handle }
     private var onConnectionClosed: (@Sendable (Int32) -> Void)?
     private var cachedSearchScope: Set<String>?
+    private var lastDatabaseCode: Int32 = SQLITE_OK
     private let databaseURL: URL
 #if DEBUG
     private var failNextCommit = false
     private var beforeNextCommit: (@Sendable () -> Void)?
+    private var beforeNextQuarantine: (@Sendable (URL) -> Void)?
+    private var afterNextQuarantine: (@Sendable () -> Void)?
 #endif
 
     init() {
@@ -86,7 +93,7 @@ actor LibraryTextSearchIndex {
     ) -> MetadataSyncResult {
         guard !Task.isCancelled else { return .cancelled }
         guard openDatabaseIfNeeded(), let db else {
-            return failedSync(from: discoveredFiles)
+            return Task.isCancelled ? .cancelled : failedSync(from: discoveredFiles)
         }
 
         let rootPath = root.standardizedFileURL.path
@@ -105,6 +112,7 @@ actor LibraryTextSearchIndex {
         }
 
         var metadata: [FileMetadata] = []
+        var unreadableFileCount = 0
         for file in discoveredFiles {
             if Task.isCancelled {
                 return .cancelled
@@ -112,35 +120,46 @@ actor LibraryTextSearchIndex {
 
             let path = file.url.standardizedFileURL.path
             let cached = existing[path]
+            // A pending content read deliberately does not accept the source's
+            // fingerprint. The next refresh retries even when size/mtime match.
             let isUnchanged = cached?.size == file.size && cached?.modificationTime == file.modificationTime
-            let indexedContent: String?
-            if !isUnchanged, file.kind.isEditableLyrics {
-                indexedContent = self.indexedContent(for: file.url, kind: file.kind)
-            } else {
-                indexedContent = nil
-            }
+                && cached?.contentReadPending != true
+            var content: String? = nil
+            var shouldReplaceContent = !isUnchanged
+            var contentReadPending = false
             let title: String
             let titleFormatVersion: Int32
             if isUnchanged, let cached {
                 if cached.titleFormatVersion == Self.titleFormatVersion {
                     title = cached.title
                     titleFormatVersion = cached.titleFormatVersion
-                } else if let refreshedTitle = LibraryFileScannerService.readableDisplayTitle(for: file.url, kind: file.kind) {
-                    title = refreshedTitle
+                } else if let refreshed = LibraryFileScannerService.readableDisplayTitle(for: file.url, kind: file.kind) {
+                    title = refreshed
                     titleFormatVersion = Self.titleFormatVersion
                 } else {
-                    // Keep the exact known label and pending version when a
-                    // one-time title refresh cannot read an unchanged source.
                     title = cached.title
                     titleFormatVersion = cached.titleFormatVersion
+                    unreadableFileCount += 1
                 }
             } else {
-                title = LibraryFileScannerService.displayTitle(
-                    for: file.url,
-                    kind: file.kind,
-                    contents: indexedContent.flatMap { $0.isEmpty ? nil : $0 }
-                )
-                titleFormatVersion = Self.titleFormatVersion
+                content = indexedContent(for: file.url, kind: file.kind)
+                let readableTitle = content.flatMap {
+                    LibraryFileScannerService.readableDisplayTitle(for: file.url, kind: file.kind,
+                        contents: file.kind == .txt && file.size <= Self.maxIndexedFileSizeBytes ? $0 : nil)
+                }
+                if let readableTitle {
+                    title = readableTitle
+                    titleFormatVersion = Self.titleFormatVersion
+                } else {
+                    title = cached?.title ?? file.url.lastPathComponent
+                    titleFormatVersion = cached?.titleFormatVersion ?? 0
+                    contentReadPending = true
+                    unreadableFileCount += 1
+                    // Keep usable prior FTS data; new unreadable files still get
+                    // filename search without pretending their content was empty.
+                    shouldReplaceContent = cached == nil
+                    content = ""
+                }
             }
 
             guard upsertMetadata(
@@ -148,17 +167,18 @@ actor LibraryTextSearchIndex {
                 file: file,
                 title: title,
                 titleFormatVersion: titleFormatVersion,
+                contentReadPending: contentReadPending,
                 scanToken: scanToken,
                 db: db
             ) else {
                 return failedSync(from: discoveredFiles)
             }
 
-            if !isUnchanged {
+            if shouldReplaceContent {
                 guard replaceSearchIndexEntry(
                     url: file.url,
                     kind: file.kind,
-                    content: indexedContent,
+                    content: content,
                     db: db
                 ) else {
                     return failedSync(from: discoveredFiles)
@@ -192,9 +212,11 @@ actor LibraryTextSearchIndex {
         }
         didFinishTransaction = true
 
-        return .indexed(metadata.sorted {
-            $0.relativeSortKey < $1.relativeSortKey
-        })
+        let sorted = metadata.sorted { $0.relativeSortKey < $1.relativeSortKey }
+        if unreadableFileCount > 0 {
+            return .failed(sorted, IndexingFailure(databaseCode: SQLITE_IOERR, unreadableFileCount: unreadableFileCount))
+        }
+        return .indexed(sorted)
     }
 
     func cachedLibraryMetadata(root: URL) -> [FileMetadata] {
@@ -265,7 +287,7 @@ actor LibraryTextSearchIndex {
         JOIN temp.library_search_scope AS search_scope ON search_scope.path = file_index.path
         """
         let sql = """
-        SELECT file_index.path, file_index.content
+        SELECT file_index.path, highlight(file_index, 1, char(1), char(2))
         FROM file_index
         \(scopeJoin)
         WHERE file_index MATCH ?1
@@ -339,30 +361,21 @@ actor LibraryTextSearchIndex {
     }
 
     private static func previewText(from content: String) -> String {
-        let slidePreviewLines = LyricsParser.parseDocument(content)
-            .slides
-            .prefix(2)
-            .flatMap { slide in
-                slide.lines.flatMap { slideLine in
-                    slideLine.text
-                        .components(separatedBy: .newlines)
-                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                        .filter { !$0.isEmpty }
-                }
-            }
-            .prefix(4)
-
-        if !slidePreviewLines.isEmpty {
-            return slidePreviewLines.joined(separator: "\n")
+        // FTS marks the actual matching tokens. Reuse the parser for lyric
+        // components, then center the excerpt on the match rather than the song
+        // opening. Filename-only results retain a short opening excerpt.
+        var lines = LyricsParser.parseDocument(content).slides.flatMap { slide in
+            slide.lines.flatMap { $0.text.components(separatedBy: .newlines) }
+        }.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        if lines.isEmpty {
+            lines = content.components(separatedBy: .newlines)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty && !LyricsSectionCatalog.isHeading($0) }
         }
-
-        return content
-            .components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .filter { !LyricsSectionCatalog.isHeading($0) }
-            .prefix(4)
-            .joined(separator: "\n")
+        let match = lines.firstIndex { $0.contains("\u{1}") } ?? 0
+        return lines.dropFirst(match).prefix(4).joined(separator: "\n")
+            .replacingOccurrences(of: "\u{1}", with: "")
+            .replacingOccurrences(of: "\u{2}", with: "")
     }
 
     private func matchQuery(for query: String) -> String {
@@ -382,21 +395,63 @@ actor LibraryTextSearchIndex {
 
     @discardableResult
     private func openDatabaseIfNeeded() -> Bool {
-        if db != nil { return true }
+        let damaged = Self.isCorruption(lastDatabaseCode)
+        if !damaged, db != nil { return true }
+        if !damaged, openDatabase() { return true }
+        guard !Task.isCancelled, Self.isCorruption(lastDatabaseCode) else { return false }
+        // This database is derived data. Preserve the corrupt bytes, and rebuild
+        // once per request; permission/busy/full failures never enter this path.
+        connection = nil
+        cachedSearchScope = nil
+        let quarantine = databaseURL.appendingPathExtension("corrupt-\(UUID().uuidString)")
+#if DEBUG
+        let beforeQuarantine = beforeNextQuarantine
+        beforeNextQuarantine = nil
+        beforeQuarantine?(quarantine)
+#endif
+        do {
+            // Move the primary file last. A cancelled/failed sidecar move leaves
+            // the corrupt primary in place, so no fresh database can consume a
+            // leftover journal on the next request or after relaunch.
+            for suffix in ["-wal", "-shm", "-journal", ""] {
+                let sidecar = URL(fileURLWithPath: databaseURL.path + suffix)
+                if FileManager.default.fileExists(atPath: sidecar.path) {
+                    try FileManager.default.moveItem(at: sidecar,
+                        to: URL(fileURLWithPath: quarantine.path + suffix))
+                }
+            }
+        } catch { lastDatabaseCode = SQLITE_CANTOPEN; return false }
+        // Quarantine completed. Corruption describes the retired file, not the
+        // next open; cancellation here must leave an ordinary rebuild pending.
+        lastDatabaseCode = SQLITE_OK
+#if DEBUG
+        let afterQuarantine = afterNextQuarantine
+        afterNextQuarantine = nil
+        afterQuarantine?()
+#endif
+        guard !Task.isCancelled else { return false }
+        return openDatabase()
+    }
+
+    private static func isCorruption(_ code: Int32) -> Bool {
+        code & 0xff == SQLITE_CORRUPT || code & 0xff == SQLITE_NOTADB
+    }
+
+    private func openDatabase() -> Bool {
 
         do {
             try FileManager.default.createDirectory(
                 at: databaseURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         } catch {
+            lastDatabaseCode = SQLITE_CANTOPEN
             return false
         }
 
         var pointer: OpaquePointer?
         let flags = SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
         guard sqlite3_open_v2(databaseURL.path, &pointer, flags, nil) == SQLITE_OK, let pointer else {
-            if pointer != nil {
-                sqlite3_close(pointer)
-            }
+            lastDatabaseCode = pointer.map { sqlite3_errcode($0) } ?? SQLITE_CANTOPEN
+            if pointer != nil { sqlite3_close(pointer) }
             return false
         }
 
@@ -411,6 +466,7 @@ actor LibraryTextSearchIndex {
         );
         """
         guard execute(createTableSQL, db: pointer) else {
+            lastDatabaseCode = sqlite3_errcode(pointer)
             connection = nil
             return false
         }
@@ -422,6 +478,7 @@ actor LibraryTextSearchIndex {
             filename TEXT NOT NULL,
             title TEXT NOT NULL,
             title_format_version INTEGER NOT NULL DEFAULT 0,
+            content_read_pending INTEGER NOT NULL DEFAULT 0,
             kind TEXT NOT NULL,
             size INTEGER NOT NULL,
             modification_time REAL NOT NULL,
@@ -430,19 +487,23 @@ actor LibraryTextSearchIndex {
             scan_token TEXT NOT NULL
         );
         """
-        guard execute(createMetadataSQL, db: pointer), ensureTitleFormatVersionColumn(db: pointer), execute(
+        guard execute(createMetadataSQL, db: pointer),
+              ensureMetadataColumn("title_format_version", definition: "INTEGER NOT NULL DEFAULT 0", db: pointer),
+              ensureMetadataColumn("content_read_pending", definition: "INTEGER NOT NULL DEFAULT 0", db: pointer), execute(
             "CREATE INDEX IF NOT EXISTS library_file_metadata_root_path_index ON library_file_metadata(root_path);",
             db: pointer
         ) else {
+            lastDatabaseCode = sqlite3_errcode(pointer)
             connection = nil
             return false
         }
+        lastDatabaseCode = SQLITE_OK
         return true
     }
 
     /// Title labels are derived data. Old rows are refreshed once during sync,
     /// independently of their unchanged source fingerprint and FTS content.
-    private func ensureTitleFormatVersionColumn(db: OpaquePointer) -> Bool {
+    private func ensureMetadataColumn(_ column: String, definition: String, db: OpaquePointer) -> Bool {
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, "PRAGMA table_info(library_file_metadata);", -1, &statement, nil) == SQLITE_OK else {
             return false
@@ -450,13 +511,13 @@ actor LibraryTextSearchIndex {
         while true {
             switch sqlite3_step(statement) {
             case SQLITE_ROW:
-                if let name = sqlite3_column_text(statement, 1), String(cString: name) == "title_format_version" {
+                if let name = sqlite3_column_text(statement, 1), String(cString: name) == column {
                     sqlite3_finalize(statement)
                     return true
                 }
             case SQLITE_DONE:
                 sqlite3_finalize(statement)
-                return execute("ALTER TABLE library_file_metadata ADD COLUMN title_format_version INTEGER NOT NULL DEFAULT 0;", db: db)
+                return execute("ALTER TABLE library_file_metadata ADD COLUMN \(column) \(definition);", db: db)
             default:
                 sqlite3_finalize(statement)
                 return false
@@ -469,11 +530,12 @@ actor LibraryTextSearchIndex {
         let size: Int64
         let modificationTime: Double
         let titleFormatVersion: Int32
+        let contentReadPending: Bool
     }
 
     private func existingMetadata(rootPath: String, db: OpaquePointer) -> [String: CachedMetadata] {
         let sql = """
-        SELECT path, title, size, modification_time, title_format_version
+        SELECT path, title, size, modification_time, title_format_version, content_read_pending
         FROM library_file_metadata
         WHERE root_path = ?1;
         """
@@ -503,7 +565,8 @@ actor LibraryTextSearchIndex {
                 title: String(cString: cTitle),
                 size: sqlite3_column_int64(statement, 2),
                 modificationTime: sqlite3_column_double(statement, 3),
-                titleFormatVersion: sqlite3_column_int(statement, 4)
+                titleFormatVersion: sqlite3_column_int(statement, 4),
+                contentReadPending: sqlite3_column_int(statement, 5) != 0
             )
         }
         return metadata
@@ -514,6 +577,7 @@ actor LibraryTextSearchIndex {
         file: LibraryDiscoveredFileModel,
         title: String,
         titleFormatVersion: Int32,
+        contentReadPending: Bool,
         scanToken: String,
         db: OpaquePointer
     ) -> Bool {
@@ -530,9 +594,10 @@ actor LibraryTextSearchIndex {
             is_preview,
             is_background_audio,
             scan_token,
-            title_format_version
+            title_format_version,
+            content_read_pending
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
         ON CONFLICT(path) DO UPDATE SET
             root_path = excluded.root_path,
             relative_sort_key = excluded.relative_sort_key,
@@ -544,7 +609,8 @@ actor LibraryTextSearchIndex {
             is_preview = excluded.is_preview,
             is_background_audio = excluded.is_background_audio,
             scan_token = excluded.scan_token,
-            title_format_version = excluded.title_format_version;
+            title_format_version = excluded.title_format_version,
+            content_read_pending = excluded.content_read_pending;
         """
 
         var statement: OpaquePointer?
@@ -571,6 +637,7 @@ actor LibraryTextSearchIndex {
         sqlite3_bind_int(statement, 9, file.kind.isPreviewLibraryItem ? 1 : 0)
         sqlite3_bind_int(statement, 10, file.kind.isBackgroundAudioSource ? 1 : 0)
         sqlite3_bind_int(statement, 12, titleFormatVersion)
+        sqlite3_bind_int(statement, 13, contentReadPending ? 1 : 0)
         return sqlite3_step(statement) == SQLITE_DONE
     }
 
@@ -650,7 +717,7 @@ actor LibraryTextSearchIndex {
 
         guard
             bindText(url.lastPathComponent, at: 1, statement: statement),
-            bindText(content ?? indexedContent(for: url, kind: kind), at: 2, statement: statement),
+            bindText(content ?? "", at: 2, statement: statement),
             bindText(url.standardizedFileURL.path, at: 3, statement: statement)
         else {
             return false
@@ -674,17 +741,11 @@ actor LibraryTextSearchIndex {
         return sqlite3_step(statement) == SQLITE_DONE
     }
 
-    private func indexedContent(for url: URL, kind: LibraryFileKind) -> String {
+    private func indexedContent(for url: URL, kind: LibraryFileKind) -> String? {
         guard kind == .txt else { return "" }
-        guard
-            let values = try? url.resourceValues(forKeys: [.fileSizeKey]),
-            let fileSize = values.fileSize,
-            Int64(fileSize) <= Self.maxIndexedFileSizeBytes
-        else {
-            return ""
-        }
-
-        return (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        guard let values = try? url.resourceValues(forKeys: [.fileSizeKey]), let size = values.fileSize else { return nil }
+        guard Int64(size) <= Self.maxIndexedFileSizeBytes else { return "" }
+        return try? String(contentsOf: url, encoding: .utf8)
     }
 
     private func fallbackMetadata(from discoveredFiles: [LibraryDiscoveredFileModel]) -> [FileMetadata] {
@@ -702,7 +763,8 @@ actor LibraryTextSearchIndex {
     }
 
     private func failedSync(from discoveredFiles: [LibraryDiscoveredFileModel]) -> MetadataSyncResult {
-        let code = db.map { sqlite3_errcode($0) } ?? SQLITE_CANTOPEN
+        let code = db.map { sqlite3_errcode($0) } ?? lastDatabaseCode
+        lastDatabaseCode = code
         return .failed(fallbackMetadata(from: discoveredFiles), IndexingFailure(databaseCode: code))
     }
 
@@ -731,6 +793,12 @@ actor LibraryTextSearchIndex {
 
     func beforeNextTransactionCommit(_ action: @escaping @Sendable () -> Void) {
         beforeNextCommit = action
+    }
+
+    func observeNextDatabaseQuarantine(before: (@Sendable (URL) -> Void)? = nil,
+                                       after: (@Sendable () -> Void)? = nil) {
+        beforeNextQuarantine = before
+        afterNextQuarantine = after
     }
 #endif
 

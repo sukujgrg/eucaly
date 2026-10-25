@@ -77,7 +77,10 @@ struct LyricsSlideMetrics {
         self.profile = profile
         self.layout = layout
         self.rendering = rendering
-        blocks = layout.blocks(for: lines)
+        let visibleLines = profile.map { profile in
+            lines.filter { profile.roles.contains(OutputContentAdapter.role(for: $0)) }
+        } ?? lines
+        blocks = layout.blocks(for: visibleLines)
         totalWeight = blocks.reduce(0) { total, block in total + (profile.map { $0.typography(for: block.outputRole).size / $0.typography.size } ?? block.relativeFontSize) }
         let padding = CGFloat(min(2, max(0, paddingScale)))
         let horizontalInset = (rendering == .projection ? max(40, size.width * 0.1) : 6) * padding

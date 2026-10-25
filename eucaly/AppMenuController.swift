@@ -145,7 +145,10 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
             menuItem.state = listening.isListening ? .on : .off
             menuItem.toolTip = listening.help
             return listening.canChange
-        case .newLyrics, .searchLibrary, .refresh, .save: return app.workspaceWindows.activeWorkspaceID != nil
+        case .newLyrics, .searchLibrary, .refresh: return app.workspaceWindows.activeWorkspaceID != nil
+        case .save:
+            guard let id = app.workspaceWindows.activeWorkspaceID else { return false }
+            return app.workspaceWindows.controllers[id]?.commands.canSaveLyrics == true
         case .slides: return app.outputs.commandSession?.isEmpty == false
         case .stop: return app.outputs.commandWorkspaceID != nil
         case .audio: return app.outputs.commandSession?.backgroundAudioURL != nil

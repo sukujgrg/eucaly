@@ -270,7 +270,7 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
             case .action:
                 return 48
             case .result(_, _, let snippet):
-                return snippet.isEmpty ? 36 : 72
+                return snippet.isEmpty ? 48 : 84
             }
         }
 
@@ -303,7 +303,8 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
                 cell.configure(
                     title: title,
                     subtitle: snippet,
-                    systemImage: "doc.text",
+                    location: url.deletingLastPathComponent().lastPathComponent + "/" + url.lastPathComponent,
+                    systemImage: Self.fileSymbol(for: url),
                     showsPlaylistButton: true,
                     onActivate: { [weak self] in
                         self?.activate(.result(url)) ?? false
@@ -313,6 +314,17 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
                     }
                 )
                 return cell
+            }
+        }
+
+        private static func fileSymbol(for url: URL) -> String {
+            switch LibraryFileKind(url: url) {
+            case .txt: "doc.text"
+            case .pdf: "doc.richtext"
+            case .image: "photo"
+            case .video: "film"
+            case .audio: "music.note"
+            case .unsupported: "doc"
             }
         }
 
@@ -553,7 +565,7 @@ struct LibrarySearchResultsListView: NSViewRepresentable {
                 })
             }
             if !results.isEmpty {
-                rows.append(Row(id: .section("songs"), content: .section("Songs", results.count)))
+                rows.append(Row(id: .section("files"), content: .section("Library Files", results.count)))
                 rows.append(contentsOf: results.map { result in
                     let url = result.url.standardizedFileURL
                     return Row(
@@ -798,7 +810,9 @@ private final class LibrarySearchEmbeddedButton: NSButton {}
 private final class LibrarySearchItemCellView: NSTableCellView {
     private let symbolView = NSImageView()
     private let titleField = NSTextField(labelWithString: "")
+    private let locationField = NSTextField(labelWithString: "")
     private let subtitleField = NSTextField(wrappingLabelWithString: "")
+    private let textStack = NSStackView()
     private let playlistButton = LibrarySearchEmbeddedButton()
     private var onAddToPlaylist: (() -> Bool)?
     private var onActivate: (() -> Bool)?
@@ -825,14 +839,32 @@ private final class LibrarySearchItemCellView: NSTableCellView {
         titleField.lineBreakMode = .byTruncatingMiddle
         titleField.maximumNumberOfLines = 1
         textField = titleField
-        addSubview(titleField)
+        titleField.identifier = NSUserInterfaceItemIdentifier("LibrarySearch.ItemTitle")
+
+        locationField.translatesAutoresizingMaskIntoConstraints = false
+        locationField.font = .systemFont(ofSize: 11)
+        locationField.textColor = .secondaryLabelColor
+        locationField.lineBreakMode = .byTruncatingMiddle
+        locationField.maximumNumberOfLines = 1
+        locationField.identifier = NSUserInterfaceItemIdentifier("LibrarySearch.ItemLocation")
 
         subtitleField.translatesAutoresizingMaskIntoConstraints = false
         subtitleField.font = .systemFont(ofSize: 11)
         subtitleField.textColor = .secondaryLabelColor
         subtitleField.lineBreakMode = .byTruncatingTail
         subtitleField.maximumNumberOfLines = 2
-        addSubview(subtitleField)
+        subtitleField.identifier = NSUserInterfaceItemIdentifier("LibrarySearch.ItemSnippet")
+        textStack.translatesAutoresizingMaskIntoConstraints = false
+        textStack.orientation = .vertical
+        textStack.alignment = .leading
+        textStack.spacing = 2
+        textStack.detachesHiddenViews = true
+        for field in [titleField, locationField, subtitleField] {
+            field.setContentCompressionResistancePriority(.required, for: .vertical)
+            textStack.addArrangedSubview(field)
+            field.widthAnchor.constraint(equalTo: textStack.widthAnchor).isActive = true
+        }
+        addSubview(textStack)
 
         playlistButton.translatesAutoresizingMaskIntoConstraints = false
         playlistButton.image = NSImage(
@@ -862,14 +894,10 @@ private final class LibrarySearchItemCellView: NSTableCellView {
             symbolView.widthAnchor.constraint(equalToConstant: 18),
             symbolView.heightAnchor.constraint(equalToConstant: 18),
 
-            titleField.leadingAnchor.constraint(equalTo: symbolView.trailingAnchor, constant: 9),
-            titleField.topAnchor.constraint(equalTo: topAnchor, constant: 7),
-            titleField.trailingAnchor.constraint(lessThanOrEqualTo: playlistButton.leadingAnchor, constant: -8),
-
-            subtitleField.leadingAnchor.constraint(equalTo: titleField.leadingAnchor),
-            subtitleField.topAnchor.constraint(equalTo: titleField.bottomAnchor, constant: 2),
-            subtitleField.trailingAnchor.constraint(lessThanOrEqualTo: playlistButton.leadingAnchor, constant: -8),
-            subtitleField.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -6),
+            textStack.leadingAnchor.constraint(equalTo: symbolView.trailingAnchor, constant: 9),
+            textStack.topAnchor.constraint(equalTo: topAnchor, constant: 7),
+            textStack.trailingAnchor.constraint(equalTo: playlistButton.leadingAnchor, constant: -8),
+            textStack.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -6),
 
             playlistButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             playlistButton.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -886,6 +914,7 @@ private final class LibrarySearchItemCellView: NSTableCellView {
     func configure(
         title: String,
         subtitle: String,
+        location: String? = nil,
         systemImage: String,
         showsPlaylistButton: Bool,
         onActivate: (() -> Bool)?,
@@ -893,6 +922,9 @@ private final class LibrarySearchItemCellView: NSTableCellView {
     ) {
         titleField.stringValue = title
         titleField.toolTip = title
+        locationField.stringValue = location ?? ""
+        locationField.toolTip = location
+        locationField.isHidden = location == nil
         subtitleField.stringValue = subtitle
         subtitleField.isHidden = subtitle.isEmpty
         symbolView.image = NSImage(systemSymbolName: systemImage, accessibilityDescription: nil)
@@ -902,7 +934,8 @@ private final class LibrarySearchItemCellView: NSTableCellView {
         playlistButton.setAccessibilityLabel("Add \(title) to Playlist")
 
         setAccessibilityLabel(title)
-        setAccessibilityHelp(subtitle.isEmpty ? nil : subtitle)
+        let detail = [location, subtitle.isEmpty ? nil : subtitle].compactMap { $0 }.joined(separator: "\n")
+        setAccessibilityHelp(detail.isEmpty ? nil : detail)
         var accessibilityActions = [NSAccessibilityCustomAction(name: showsPlaylistButton ? "Preview" : title,
             target: self, selector: #selector(performAccessibleActivation))]
         if showsPlaylistButton {
@@ -931,11 +964,13 @@ private final class LibrarySearchItemCellView: NSTableCellView {
         if backgroundStyle == .emphasized {
             let selectedColor = NSColor.alternateSelectedControlTextColor
             titleField.textColor = selectedColor
+            locationField.textColor = selectedColor.withAlphaComponent(0.78)
             subtitleField.textColor = selectedColor.withAlphaComponent(0.78)
             symbolView.contentTintColor = selectedColor.withAlphaComponent(0.84)
             playlistButton.contentTintColor = selectedColor
         } else {
             titleField.textColor = .labelColor
+            locationField.textColor = .secondaryLabelColor
             subtitleField.textColor = .secondaryLabelColor
             symbolView.contentTintColor = showsPlaylistButton
                 ? .secondaryLabelColor

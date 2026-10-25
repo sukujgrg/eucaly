@@ -6,6 +6,45 @@ import XCTest
 
 @MainActor
 final class WorkspaceBackgroundUITests: XCTestCase {
+    func testBookmarkCreationFailureReportsInlineWithoutReplacingBackground() async throws {
+        let fixture = try Fixture(); defer { fixture.close() }
+        let panel = BackgroundOpenPanel(); panel.selectedURL = fixture.visualURL
+        var completeQuick: ((NSApplication.ModalResponse) -> Void)?
+        let controls = OutputQuickControlsController(outputs: fixture.outputs, workspaceID: fixture.home.outputSourceID,
+            manageOutputs: {}, makeBackgroundPanel: { panel }, createBackgroundBookmark: { _ in nil },
+            beginBackgroundSheet: { _, _, completion in completeQuick = completion })
+        _ = fixture.hostButton(controls.backgroundButton)
+        let original = fixture.store.document
+        let failed = expectation(description: "Quick picker reports failed bookmark")
+        let observation = fixture.home.$projectionDisplayIssue.compactMap { $0 }
+            .filter { $0.contains("Choose Visual again") }.first().sink { _ in failed.fulfill() }
+        try invoke(menuItem("Choose Visual…", in: controls.backgroundButton.menu))
+        try XCTUnwrap(completeQuick)(.OK)
+        await fulfillment(of: [failed], timeout: 3)
+        withExtendedLifetime(observation) {}
+        XCTAssertEqual(fixture.store.document, original)
+        XCTAssertNil(fixture.peer.projectionDisplayIssue)
+
+        var completeProfile: ((NSApplication.ModalResponse) -> Void)?
+        let editor = OutputProfileEditor(store: fixture.store, profileID: fixture.sharedProfileID,
+            createBackgroundBookmark: { _ in nil }, makeBackgroundPanel: { panel },
+            beginBackgroundSheet: { _, _, completion in completeProfile = completion })
+        _ = fixture.host(editor)
+        let profileFailed = expectation(description: "Profile picker reports failed bookmark")
+        let labelObservation = editor.validationLabel.publisher(for: \.stringValue)
+            .filter { $0.contains("Choose Visual again") }.first().sink { _ in profileFailed.fulfill() }
+        func buttons(in view: NSView) -> [NSButton] {
+            view.subviews.compactMap { $0 as? NSButton } + view.subviews.flatMap { buttons(in: $0) }
+        }
+        try XCTUnwrap(buttons(in: editor.view).first { $0.title == "Choose Visual…" }).performClick(nil)
+        try XCTUnwrap(completeProfile)(.OK)
+        await fulfillment(of: [profileFailed], timeout: 3)
+        withExtendedLifetime(labelObservation) {}
+        XCTAssertEqual(fixture.store.document, original)
+        XCTAssertFalse(editor.validationLabel.isHidden)
+        XCTAssertFalse(fixture.outputs.isRunning)
+    }
+
     func testPlayMenuRequiresThisWorkspacesSelectedTrackWhileCurrentMayBeEmpty() throws {
         let fixture = try Fixture()
         defer { fixture.close() }

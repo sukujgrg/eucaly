@@ -42,7 +42,8 @@ public struct ContentView: View {
     @State private var librarySearchCommandRouter = LibrarySearchCommandRouter()
     @State private var libraryScrollRequest: LibraryScrollRequest?
     @State private var isLibrarySearchPresented: Bool = false
-    @State private var libraryLoadTask: Task<Void, Never>? = nil
+    private let libraryInventory = LibraryInventoryStore.shared
+    @State private var appliedInventoryRevision: UInt64?
     @State private var isLibraryLoading: Bool = false
     @State private var libraryLoadFailure: LibraryLoadFailure?
     @State private var libraryRevision: Int = 0
@@ -170,6 +171,7 @@ public struct ContentView: View {
                 OutputWorkspaceCloseConfirmation(commands: workspaceCommands, shouldClose: confirmMainWindowClose,
                                                  willClose: handleControlsWillClose,
                                                  editorFileURL: { lyricsEditor.isEditing ? lyricsEditor.sourceURL : nil },
+                                                 canSaveLyrics: { hasActiveEditorPane && canSaveEditorContent },
                                                  didRemoveFile: handleRemovedLibraryFile)
                     .frame(width: 0, height: 0)
             )
@@ -269,7 +271,6 @@ public struct ContentView: View {
         cancelFileImport()
         cancelPreviewLoad()
         librarySearch.cancelDebounce()
-        libraryLoadTask?.cancel()
         isLibraryLoading = false
         librarySearch.setIndexing(false)
         releaseSecurityScopedAccess()
@@ -286,6 +287,7 @@ public struct ContentView: View {
 
     private var rootSplitWithNotificationObservers: some View {
         rootSplitWithStateObservers
+            .onReceive(libraryInventory.changes, perform: applyLibraryInventory)
             .onReceive(screenCaptureManager.$windows, perform: handleCaptureWindowsUpdate)
             .onReceive(screenCaptureManager.windowPickerSelections, perform: handleWindowPickerSelection)
             .onReceive(NotificationCenter.default.publisher(for: .toggleSlidesVisibility), perform: handleToggleSlidesVisibilityNotification)
@@ -920,7 +922,8 @@ public struct ContentView: View {
                   libraryRootURL?.standardizedFileURL == root.standardizedFileURL else { return }
             if !result.importedURLs.isEmpty {
                 folderURL = root
-                loadMarkdownFiles(from: root, refreshSearchResults: true)
+                // The import service already publishes this completed mutation.
+                if let snapshot = libraryInventory.snapshot(root: root) { applyLibraryInventory(snapshot) }
                 loadPlaylists()
                 // Copying can finish after the operator has selected or edited
                 // something else. Keep the files and refresh, but preserve that
@@ -989,64 +992,23 @@ public struct ContentView: View {
         return false
     }
 
-    private func loadMarkdownFiles(
-        from folder: URL,
-        refreshSearchResults: Bool = false
-    ) {
-        let previousSearchScopeFiles = librarySearch.scopeFilesSnapshot
-        let index = librarySearch.index
+    private func loadMarkdownFiles(from folder: URL) {
+        libraryInventory.refresh(root: folder)
+    }
 
-        libraryLoadTask?.cancel()
-        isLibraryLoading = true
-        libraryLoadFailure = nil
-        librarySearch.setIndexing(true)
-        libraryLoadTask = Task.detached(priority: .userInitiated) {
-            let cachedMetadata = await index.cachedLibraryMetadata(root: folder)
-            if !cachedMetadata.isEmpty {
-                await MainActor.run {
-                    guard !Task.isCancelled else { return }
-                    applyLibraryMetadata(cachedMetadata, for: folder)
-                }
-            }
-            guard !Task.isCancelled else { return }
-
-            let syncResult: LibraryTextSearchIndex.MetadataSyncResult
-            do {
-                syncResult = try await index.refreshLibraryMetadata(root: folder)
-            } catch is CancellationError {
-                return
-            } catch {
-                let failure = error as? LibraryLoadFailure
-                    ?? LibraryLoadFailure(url: folder, error: error)
-                await MainActor.run {
-                    guard !Task.isCancelled else { return }
-                    if !LibraryLoadFailure.shouldRetainExistingLists(
-                        displayedRoot: displayedLibraryRootURL,
-                        failedRoot: folder
-                    ) {
-                        applyLibraryMetadata([], for: folder)
-                    }
-                    libraryLoadFailure = failure
-                    isLibraryLoading = false
-                    librarySearch.setIndexing(false)
-                }
-                return
-            }
-            guard !Task.isCancelled else { return }
-
-            let metadata = syncResult.metadata
-
-            await MainActor.run {
-                guard !Task.isCancelled else { return }
-                let searchScopeFiles = applyLibraryMetadata(metadata, for: folder)
-                isLibraryLoading = false
-                librarySearch.setIndexing(false)
-                libraryLoadFailure = syncResult.failure.map { LibraryLoadFailure(url: folder, error: $0) }
-
-                if refreshSearchResults || !haveSameStandardizedURLs(previousSearchScopeFiles, searchScopeFiles) {
-                    librarySearch.refreshSearch(currentSelectedURL: currentSelectedURL)
-                }
-            }
+    private func applyLibraryInventory(_ snapshot: LibraryInventoryStore.Snapshot) {
+        guard libraryRootURL?.standardizedFileURL == snapshot.root else { return }
+        let rootChanged = displayedLibraryRootURL != snapshot.root
+        if rootChanged { appliedInventoryRevision = nil }
+        _ = applyLibraryMetadata(snapshot.metadata, for: snapshot.root)
+        isLibraryLoading = snapshot.isLoading
+        libraryLoadFailure = snapshot.failure
+        librarySearch.setIndexing(snapshot.isLoading)
+        if !snapshot.isLoading, appliedInventoryRevision != snapshot.revision {
+            appliedInventoryRevision = snapshot.revision
+            // Content/title edits can retain identical URLs. Refresh each private
+            // query against the newly committed index without resetting it.
+            librarySearch.refreshSearch(currentSelectedURL: currentSelectedURL)
         }
     }
 
@@ -1084,9 +1046,6 @@ public struct ContentView: View {
         return previewFiles
     }
 
-    private func haveSameStandardizedURLs(_ lhs: [URL], _ rhs: [URL]) -> Bool {
-        lhs.map(\.standardizedFileURL) == rhs.map(\.standardizedFileURL)
-    }
 
     private func loadSelectedFile(url: URL) {
         guard permitFileUse(url) else { return }
@@ -1284,10 +1243,8 @@ public struct ContentView: View {
         playlistStore.load(fromRoot: root)
         reconcilePlaylistSelection()
         folderURL = root
-        loadMarkdownFiles(
-            from: root,
-            refreshSearchResults: true
-        )
+        libraryInventory.ensureLoaded(root: root)
+        if let snapshot = libraryInventory.snapshot(root: root) { applyLibraryInventory(snapshot) }
     }
 
     private func ensurePlaylistDirectory(in root: URL) {
@@ -1499,8 +1456,7 @@ public struct ContentView: View {
             ensurePlaylistDirectory(in: root)
             folderURL = root
             loadMarkdownFiles(
-                from: root,
-                refreshSearchResults: true
+                from: root
             )
             loadPlaylists()
             return
@@ -1686,14 +1642,11 @@ public struct ContentView: View {
 
             try FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
             try lyricsEditor.draft.write(to: fileURL, atomically: true, encoding: .utf8)
+            if let rootURL { libraryInventory.refresh(root: rootURL) }
             lyricsEditor.markSaved(to: fileURL)
             if let root = libraryRootURL {
                 libraryRootPath = root.path
                 folderURL = root
-                loadMarkdownFiles(
-                    from: root,
-                    refreshSearchResults: true
-                )
             }
             loadPlaylists()
             setSidebarSelectionWithoutLoading(.library(fileURL))
@@ -1756,14 +1709,11 @@ public struct ContentView: View {
         }
         do {
             guard try LyricsFileSave.save(draft, replacing: baseline, at: url, isStillCurrent: isStillCurrent,
-                                         confirmOverwrite: { confirmLyricsOverwrite(url) }), isStillCurrent() else { return false }
+                                         confirmOverwrite: { confirmLyricsOverwrite(url) }) else { return false }
+            if let root = libraryRootURL { libraryInventory.refresh(root: root) }
+            guard isStillCurrent() else { return false }
             lyricsEditor.markSaved(to: url)
-            if let folderURL {
-                loadMarkdownFiles(
-                    from: folderURL,
-                    refreshSearchResults: true
-                )
-            } else {
+            if libraryRootURL == nil {
                 rebuildDisplayNames(for: [url] + playlistResolvedURLs)
             }
             newFileWarning = nil
@@ -1925,7 +1875,9 @@ public struct ContentView: View {
 
         lyricsEditor.beginEditing(text: contents, sourceURL: url)
         isEditorPreviewAreaCollapsed = false
-        newFileWarning = nil
+        newFileWarning = lyricsEditor.isDirty
+            ? "Characters and line endings were normalized in the draft. Review these pending changes before saving; the saved file has not changed."
+            : nil
     }
 
     private func beginCurrentLyricsEditing() {
@@ -1950,7 +1902,9 @@ public struct ContentView: View {
         setSidebarSelectionWithoutLoading(.library(url))
         lyricsEditor.beginEditing(text: contents, sourceURL: url)
         isEditorPreviewAreaCollapsed = false
-        newFileWarning = nil
+        newFileWarning = lyricsEditor.isDirty
+            ? "Characters and line endings were normalized in the draft. Review these pending changes before saving; the saved file has not changed."
+            : nil
         setPreviewSlides(doc.slides)
     }
 

@@ -18,9 +18,17 @@ final class OutputMediaRuntime {
     }
     private(set) var programFill = false
     private var programURL: URL?
+    private var programDocumentRevision: UInt64?
     private var programGeneration = UUID()
     private var programVisible = false
-    private var loopObserver: NSObjectProtocol?
+    private var endObserver: NSObjectProtocol?
+    private var failureObserver: NSObjectProtocol?
+    private var playbackObservations: [NSKeyValueObservation] = []
+    // EOF/failure are runtime facts, independent of the operator's pause intent.
+    // They survive unrelated appearance/audio refreshes until an explicit seek
+    // or a new program replaces them.
+    private var terminalProgramState: VideoPlaybackState?
+    private var pendingProgramSeek: UUID?
     private var timeObserver: Any?
     private var durationTask: Task<Void, Never>?
     private var seekRevision = -1
@@ -78,11 +86,14 @@ final class OutputMediaRuntime {
                        localAudioEnabled: Bool = true, documentRevision: UInt64? = nil,
                        canAcquireFile: (URL) -> Bool = { _ in true }) {
         let url = running ? slide?.videoURL : nil
-        if let url, (programURL != url || self.session !== session), !canAcquireFile(url) { return }
+        let retryFailedLoad = terminalProgramState?.failure != nil && documentRevision != nil
+            && documentRevision != programDocumentRevision
+        let replacesProgram = programURL != url || self.session !== session || retryFailedLoad
+        if let url, replacesProgram, !canAcquireFile(url) { return }
         programFill = session?.videoFill ?? false
         programVisible = visible && running
         programAudioGain.set(session?.videoMuted == true ? 0 : 1)
-        if programURL != url || self.session !== session {
+        if replacesProgram {
             stopProgram()
             self.session = session; programURL = url
             if let url {
@@ -98,10 +109,49 @@ final class OutputMediaRuntime {
                         self.session?.updateVideoPlaybackProgress(currentTime: player.currentTime().seconds, duration: player.currentItem?.duration.seconds ?? 0)
                     }
                 }
-                loopObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: player.currentItem, queue: .main) { [weak self] _ in
-                    Task { @MainActor [weak self] in
-                        guard let self, self.programGeneration == generation, self.session?.videoLoop == true, self.programVisible, self.session?.videoPaused != true else { return }
-                        self.program?.seek(to: .zero); self.program?.play()
+                playbackObservations = [
+                    player.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self] _, _ in
+                        Task { @MainActor [weak self] in
+                            guard let self, self.programGeneration == generation else { return }
+                            self.refreshProgramPlaybackState()
+                        }
+                    },
+                    player.observe(\.status, options: [.new]) { [weak self] _, _ in
+                        Task { @MainActor [weak self] in
+                            guard let self, self.programGeneration == generation else { return }
+                            self.refreshProgramPlaybackState()
+                        }
+                    }
+                ]
+                if let item = player.currentItem {
+                    playbackObservations.append(item.observe(\.status, options: [.initial, .new]) { [weak self] _, _ in
+                        Task { @MainActor [weak self] in
+                            guard let self, self.programGeneration == generation else { return }
+                            self.refreshProgramPlaybackState()
+                        }
+                    })
+                }
+                endObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: player.currentItem, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        guard let self, self.programGeneration == generation, self.pendingProgramSeek == nil else { return }
+                        self.terminalProgramState = .ended
+                        if let player = self.program {
+                            self.session?.updateVideoPlaybackProgress(currentTime: player.currentTime().seconds,
+                                duration: player.currentItem?.duration.seconds ?? 0)
+                        }
+                        if self.session?.videoLoop == true, self.programVisible, self.session?.videoPaused != true {
+                            self.seekProgram(to: 0)
+                        }
+                        self.refreshProgramPlaybackState()
+                    }
+                }
+                failureObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemFailedToPlayToEndTime, object: player.currentItem, queue: .main) { [weak self] note in
+                    let message = (note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error)?.localizedDescription
+                        ?? "The video could not finish playing. Load it to Current again to retry."
+                    MainActor.assumeIsolated {
+                        guard let self, self.programGeneration == generation else { return }
+                        self.terminalProgramState = .failed(message)
+                        self.refreshProgramPlaybackState()
                     }
                 }
                 durationTask = Task { [weak self] in
@@ -111,26 +161,85 @@ final class OutputMediaRuntime {
                 }
             }
         }
+        programDocumentRevision = documentRevision
         guard let program else { return }
         program.volume = localAudioEnabled ? 1 : 0
         program.isMuted = session?.videoMuted ?? false
-        if visible && session?.videoPaused != true { program.play() } else { program.pause() }
         // Current can hold a replacement document before output accepts it.
         // Its progress reset must not seek the previously accepted live video,
         // including when a later appearance/audio edit refreshes that program.
         if let session, documentRevision == nil || documentRevision == session.documentRevision,
            session.videoSeekRevision != seekRevision {
             seekRevision = session.videoSeekRevision
-            program.seek(to: CMTime(seconds: session.videoSeekTarget, preferredTimescale: 600))
+            seekProgram(to: session.videoSeekTarget)
+        } else if terminalProgramState == .ended, session?.videoLoop == true, programVisible, session?.videoPaused != true {
+            seekProgram(to: 0)
         }
+        applyProgramPlaybackIntent()
+        refreshProgramPlaybackState()
+    }
+
+    private func seekProgram(to seconds: Double) {
+        guard let program else { return }
+        let generation = programGeneration, ticket = UUID()
+        pendingProgramSeek = ticket
+        terminalProgramState = nil
+        program.seek(to: CMTime(seconds: seconds, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] completed in
+            Task { @MainActor [weak self] in
+                guard let self, self.programGeneration == generation, self.pendingProgramSeek == ticket else { return }
+                self.pendingProgramSeek = nil
+                if completed, let duration = self.program?.currentItem?.duration.seconds, duration.isFinite,
+                   duration > 0, seconds >= duration {
+                    self.terminalProgramState = .ended
+                }
+                self.applyProgramPlaybackIntent()
+                self.refreshProgramPlaybackState()
+            }
+        }
+    }
+
+    private func applyProgramPlaybackIntent() {
+        guard let program else { return }
+        if programVisible, session?.videoPaused != true, terminalProgramState == nil, pendingProgramSeek == nil {
+            program.play()
+        } else { program.pause() }
+    }
+
+    private func refreshProgramPlaybackState() {
+        guard let program else {
+            session?.playbackProgress.updateVideoPlaybackState(.stopped)
+            return
+        }
+        if program.status == .failed || program.currentItem?.status == .failed {
+            terminalProgramState = .failed(program.currentItem?.error?.localizedDescription ?? program.error?.localizedDescription
+                ?? "The video could not be played. Load it to Current again to retry.")
+        }
+        let state: VideoPlaybackState
+        if let terminalProgramState { state = terminalProgramState }
+        else if pendingProgramSeek != nil || program.currentItem?.status == .unknown { state = .waiting }
+        else {
+            switch program.timeControlStatus {
+            case .playing: state = .playing
+            case .waitingToPlayAtSpecifiedRate: state = .waiting
+            case .paused: state = .paused
+            @unknown default: state = .waiting
+            }
+        }
+        session?.playbackProgress.updateVideoPlaybackState(state)
     }
     private func stopProgram() {
         if let program { networkVideoFrames.stop(player: program) }
         programGeneration = UUID(); durationTask?.cancel(); durationTask = nil
+        for observation in playbackObservations { observation.invalidate() }
+        playbackObservations.removeAll()
+        pendingProgramSeek = nil; terminalProgramState = nil
         program?.pause()
         if let timeObserver { program?.removeTimeObserver(timeObserver) }
-        if let loopObserver { NotificationCenter.default.removeObserver(loopObserver) }
-        timeObserver = nil; loopObserver = nil; programPlayer = nil; programURL = nil; seekRevision = -1
+        if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
+        if let failureObserver { NotificationCenter.default.removeObserver(failureObserver) }
+        timeObserver = nil; endObserver = nil; failureObserver = nil; programPlayer = nil; programURL = nil; programDocumentRevision = nil; seekRevision = -1
+        session?.playbackProgress.updateVideoPlaybackState(.stopped)
+        session = nil
     }
     static func isVideo(_ url: URL) -> Bool { ["mp4", "mov", "m4v", "avi", "mkv"].contains(url.pathExtension.lowercased()) }
     func backgroundURL(for profile: OutputProfile) -> URL? {
@@ -235,7 +344,8 @@ final class OutputMediaRuntime {
     deinit {
         programPlayer?.pause(); durationTask?.cancel()
         if let timeObserver { programPlayer?.removeTimeObserver(timeObserver) }
-        if let loopObserver { NotificationCenter.default.removeObserver(loopObserver) }
+        if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
+        if let failureObserver { NotificationCenter.default.removeObserver(failureObserver) }
         for task in bookmarkTasks.values { task.cancel() }
         for url in scopedURLs.values { url.stopAccessingSecurityScopedResource() }
     }

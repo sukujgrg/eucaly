@@ -93,9 +93,9 @@ final class ManageWorkspacesController: NSViewController, NSTableViewDataSource,
             let assigned = outputs.destinations(workspace: record.id)
             let activity = outputs.isRunning(workspace: record.id) ? outputs.tabStatus(workspace: record.id)
                 : outputs.isPlaybackRunning(workspace: record.id) ? "Playback running" : assigned.isEmpty ? "No outputs" : "Stopped"
-            return Row(id: record.id, name: record.name,
+            return Row(id: record.id, name: outputs.managementWorkspaceName(record.id),
                        badge: workspaces.tabBadges.badge(for: record.id), outputs: assigned.isEmpty ? "None" : assigned.map {
-                outputs.profiles.destinationLabel($0) + ($0.enabled ? "" : " · Disabled")
+                outputs.managementDestinationLabel($0) + ($0.enabled ? "" : " · Disabled")
             }.joined(separator: ", "),
                        status: activity + (workspaces.controllers[record.id] == nil ? " · Tab closed" : " · Open"))
         }
@@ -107,7 +107,7 @@ final class ManageWorkspacesController: NSViewController, NSTableViewDataSource,
         let limit = OutputWorkspaceRecord.creationLimit
         capacityLabel.stringValue = records.count > limit
             ? "\(records.count) saved workspaces. New workspaces are limited to \(limit); existing workspaces remain available. Remove unused workspaces to create another."
-            : "\(records.count) of \(limit) workspaces."
+            : records.count == limit ? "\(records.count) of \(limit) workspaces. Delete an unused workspace to create another." : "\(records.count) of \(limit) workspaces."
         capacityLabel.toolTip = capacityLabel.stringValue
         let problem = selectedID.flatMap(outputs.workspaceDeletionProblem)
         deletionLabel.stringValue = problem ?? "This workspace has no assigned outputs or running playback and can be deleted."

@@ -11,8 +11,9 @@ The app uses a hybrid filesystem/SQLite model:
 - files remain the source of truth and can be edited directly
 - SQLite stores derived metadata and full-text rows for fast startup/search
 - refresh reconciles SQLite with the current filesystem state
-- workspaces share one index actor and connection, while query, scope and selected
-  result stay private to each workspace
+- workspaces share one index actor/connection and one app-owned, root-scoped inventory snapshot; query and selected result stay private to each workspace
+- successful imports and lyrics saves publish a fresh inventory revision to every open controls window, including detached windows; reopening uses the latest snapshot without rescanning on tab activation
+- import completion publishes even after its requesting controls close; cancellation stops later files while retaining and publishing an already completed copy
 
 ## User Behavior
 - `Cmd+F` or Edit > Find > Search Library opens the active workspace's library
@@ -51,7 +52,7 @@ This is intentional to avoid overly broad results from token-only matching.
 - Lyrics labels and Save filename suggestions use one shared naming rule. The shared parser's authored title, including `#title:`, is kept without showing the marker. Without an authored title, both use the first six words of the first primary lyric line. Section and companion headings are excluded; filenames additionally sanitize characters that are unsuitable in a filename.
 - Title extraction uses at most the first 8KB for both disk reads and supplied contents. Authored titles retain their full text within that source budget.
 - Library metadata is cached in SQLite so startup can show the last synced library list before the filesystem scan finishes.
-- Unchanged files reuse cached titles/search rows based on path, file size, and modification time. A per-row title format version refreshes older title labels once without reindexing unchanged full-text content; startup cache reads do not read source files. Temporarily unreadable legacy sources keep their saved title and pending title version until a later successful refresh.
+- Unchanged files reuse cached titles/search rows based on path, file size, and modification time. A per-row title format version refreshes older title labels once without reindexing unchanged full-text content; startup cache reads do not read source files. Temporarily unreadable sources keep usable saved titles/content and a pending read flag until a later refresh succeeds, even when size and modification time are unchanged. Incomplete indexing is reported explicitly.
 - Index table stores:
   - `filename`
   - `content`
@@ -85,7 +86,7 @@ workspace inventory cannot commit after a later save's refresh. Cancellation
 rolls back an uncommitted transaction. A failed index update returns filesystem
 metadata for browsing and an explicit failure for the existing Library Retry
 notice; it is not reported as successful full-text indexing. Retry reconciles
-from the current files. An unrelated connection holding the database may cause
+from the current files. A corruption-specific open/schema failure quarantines the derived database and its journal sidecars, then attempts one rebuild; permission, busy and disk-space errors do not trigger this path. An unrelated connection holding the database may cause
 that reported failure, but the app's workspace refreshes no longer compete for
 separate writer connections.
 
@@ -101,6 +102,7 @@ Quoted text is FTS phrase search. The trailing `*` on a quoted phrase lets the f
 Search uses:
 - `WHERE file_index MATCH ?`
 - ranked by `bm25(file_index, 0.05, 1.0)`
+- results show the file kind and containing folder/filename; lyrics excerpts include the actual matching passage using FTS match marks and the shared parser
 - limited result count (`LIMIT`)
 
 `bm25` is FTS relevance scoring.

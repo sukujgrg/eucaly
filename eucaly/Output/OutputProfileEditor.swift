@@ -28,11 +28,19 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
     private var renderedProfile: OutputProfile?
     private var disclosures: [OutputSettingsDisclosure] = []
     private var backgroundColourRow: NSView?
+    private let createBackgroundBookmark: @Sendable (URL) -> String?
+    private let makeBackgroundPanel: @MainActor () -> NSOpenPanel
+    private let beginBackgroundSheet: @MainActor (NSOpenPanel, NSWindow, @escaping (NSApplication.ModalResponse) -> Void) -> Void
     private let makeFileAcquisitionGuard: (URL) -> (URL) -> OutputCoordinator.FileAcquisitionAdmission
 
     init(store: OutputProfileStore, profileID: UUID,
+         createBackgroundBookmark: @escaping @Sendable (URL) -> String? = { SecurityScopedBookmarks.createBookmark(for: $0) },
+         makeBackgroundPanel: @escaping @MainActor () -> NSOpenPanel = { NSOpenPanel() },
+         beginBackgroundSheet: @escaping @MainActor (NSOpenPanel, NSWindow, @escaping (NSApplication.ModalResponse) -> Void) -> Void = { $0.beginSheetModal(for: $1, completionHandler: $2) },
          makeFileAcquisitionGuard: @escaping (URL) -> (URL) -> OutputCoordinator.FileAcquisitionAdmission = { _ in { _ in .allowed } }) {
         self.store = store; self.profileID = profileID
+        self.createBackgroundBookmark = createBackgroundBookmark
+        self.makeBackgroundPanel = makeBackgroundPanel; self.beginBackgroundSheet = beginBackgroundSheet
         self.makeFileAcquisitionGuard = makeFileAcquisitionGuard
         super.init(nibName: nil, bundle: nil)
     }
@@ -128,9 +136,9 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
         if profile.isReusable {
             scopeNotice.stringValue = "Changes apply immediately to every output using this reusable profile."
         } else if consumers.isEmpty {
-            scopeNotice.stringValue = "This saved output appearance is unused. Remove it with −, or use + to save a reusable copy."
+            scopeNotice.stringValue = "This saved output appearance is unused. Restore it from its output’s Appearance picker, remove it with −, or use + to save a reusable copy."
         } else {
-            scopeNotice.stringValue = "Changes apply immediately to the outputs listed above. Use + to save a reusable copy without changing their appearance."
+            scopeNotice.stringValue = "Independent appearance: future reusable-profile changes no longer apply. Changes apply immediately to the outputs listed above. Use + to save a reusable copy."
         }
         usageNotice.stringValue = hasNetwork ? networkName + " outputs use the owning workspace’s lyrics, images, PDFs and video, with independent backgrounds." : ""
         usageNotice.isHidden = usageNotice.stringValue.isEmpty
@@ -367,15 +375,23 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
         let selectedProfileID = profileID
         let store = store
         let makeFileAcquisitionGuard = makeFileAcquisitionGuard
-        let panel = NSOpenPanel()
+        let createBackgroundBookmark = createBackgroundBookmark
+        let panel = makeBackgroundPanel()
         panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [.image, .movie]
-        panel.beginSheetModal(for: window) { [weak self] result in
+        beginBackgroundSheet(panel, window) { [weak self] result in
             guard result == .OK, let url = panel.url else { return }
             let fileAcquisitionGuard = makeFileAcquisitionGuard(url)
             Task { @MainActor [weak self] in
-                let bookmark = await Task.detached { SecurityScopedBookmarks.createBookmark(for: url) }.value
-                guard let bookmark, var profile = store.profile(selectedProfileID) else { return }
+                let bookmark = await Task.detached { createBackgroundBookmark(url) }.value
+                guard var profile = store.profile(selectedProfileID) else { return }
+                guard let bookmark else {
+                    if let self, self.profileID == selectedProfileID {
+                        self.validationLabel.stringValue = "The selected background could not be saved. Choose Visual again to retry; the existing background is unchanged."
+                        self.validationLabel.isHidden = false
+                    }
+                    return
+                }
                 guard case .allowed = fileAcquisitionGuard(url) else {
                     if let self, self.profileID == selectedProfileID {
                         self.validationLabel.stringValue = "The selected file changed while it was being prepared. Choose it again."
@@ -385,6 +401,10 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
                 }
                 profile.background.bookmark = bookmark
                 store.update(profile)
+                if let self, self.profileID == selectedProfileID {
+                    self.validationLabel.stringValue = ""
+                    self.validationLabel.isHidden = true
+                }
             }
         }
     }

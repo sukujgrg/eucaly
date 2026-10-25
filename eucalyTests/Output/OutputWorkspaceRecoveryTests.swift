@@ -173,7 +173,7 @@ final class OutputWorkspaceRecoveryTests: XCTestCase {
         let suite = "WorkspaceRecoveryBound.\(UUID())"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let original = Data(repeating: 120, count: 1_048_577)
+        let original = Data(repeating: 120, count: OutputProfileDocument.maximumEncodedBytes + 1)
         defaults.set(original, forKey: OutputProfileStore.key)
         let recovered = OutputProfileStore(defaults: defaults)
 

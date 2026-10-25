@@ -380,7 +380,8 @@ nonisolated private final class OutputProfilePersistence: @unchecked Sendable {
     }
     func save(_ document: OutputProfileDocument, documentKey: String, revisionKey: String, defaultsRevision: Int) {
         Self.queue.async { [self] in
-            guard let data = try? JSONEncoder().encode(document) else { return }
+            guard document.isValid, let data = try? JSONEncoder().encode(document),
+                  data.count <= OutputProfileDocument.maximumEncodedBytes else { return }
             defaults.set(data, forKey: documentKey)
             defaults.set(defaultsRevision, forKey: revisionKey)
             guard defaults.data(forKey: documentKey) == data,

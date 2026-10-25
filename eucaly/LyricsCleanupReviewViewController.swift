@@ -54,7 +54,7 @@ final class LyricsCleanupReviewViewController: NSViewController, NSTextViewDeleg
         choices.spacing = 5
         let optionStates = [options.cleanCharacters, options.suggestSections, options.naturalLyricCasing,
                             options.repairLineBreaks, options.removeAnnotations, options.identifyCopyright]
-        for (index, title) in ["Clean up characters and pasted text", "Suggest verse and chorus sections", "Use natural lyric casing", "Repair PDF line breaks", "Remove chord annotations and non-lyric instructions", "Recognize licence and copyright credits"].enumerated() {
+        for (index, title) in ["Clean up characters and pasted text", "Suggest verse and chorus sections", "Use natural lyric casing", "Repair PDF line breaks", "Remove chord annotations and non-lyric instructions", "Explain detected licence and copyright credits"].enumerated() {
             let button = NSButton(checkboxWithTitle: title, target: self, action: #selector(optionChanged(_:)))
             button.tag = index
             button.state = optionStates[index] ? .on : .off

@@ -78,6 +78,22 @@ schema remain stable, including `EUCALY_NDI_AUDIO_TRACE_DIRECTORY`.
 its fixtures with the current encoder. It checks canonical round trips for
 saved destinations, authenticated bootstraps and representative IPC packets.
 
+`NetworkRenderAdmission` constructs the same text/media request used by the
+frame broker. Show, Current activation and live transfer check text/component/
+label limits and the encoded media packet before accepting content or changing
+ownership. Capacity includes JSON escaping, full-width lifetime counters,
+background decoder geometry and the complete supported appearance envelope.
+Reserving that bounded appearance envelope keeps already-admitted text usable
+when fonts or roles are edited live. The 32,768-byte raw-text limit remains;
+heavily escaped text may reach packet capacity earlier. The 65,536-byte wire
+limit is unchanged. Transfer checks only the running destinations affected by
+the new program; assigning a stopped destination does not start or render it.
+
+Accepted snapshot revisions advance on content/visibility mutations. Transport
+status, appearance publication and a destination joining an accepted program
+do not manufacture a new accepted revision. Per-sender frame revisions remain
+independent, monotonic values owned by `NetworkContentRoute`.
+
 `make test` runs `scripts/test-network-architecture.py` before app regressions.
 The structural check rejects bridge APIs outside the matching adapter,
 cross-protocol adapter dependencies, protocol-owned shared declarations and

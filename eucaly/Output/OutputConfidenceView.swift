@@ -134,13 +134,12 @@ struct OutputConfidenceReadabilityProbe: View {
 }
 
 struct OutputConfidencePlaybackStatus: View {
-    @ObservedObject var session: PresentationSession
     @ObservedObject var progress: PlaybackProgressStore
     let typography: OutputTypography
     let size: CGSize
     var body: some View {
         let geometry = OutputConfidenceGeometry(size: size, hasNext: false)
-        Text("\(session.videoPaused ? "Paused" : "Playing") · \(Int(progress.videoCurrentTime)) / \(Int(progress.videoDuration)) seconds")
+        Text("\(progress.videoPlaybackState.title) · \(Int(progress.videoCurrentTime)) / \(Int(progress.videoDuration)) seconds")
             .font(typography.font(at: min(geometry.fontSize, typography.size))).foregroundStyle(typography.colour.color)
             .lineLimit(1).minimumScaleFactor(0.5)
             .padding(8).background(.black.opacity(0.85))
