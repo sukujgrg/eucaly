@@ -7,6 +7,7 @@ import Combine
 public struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let workspaceCommands: OutputWorkspaceCommands
+    private let workspaceMenu: OutputWorkspaceMenuController
     @State private var hasInitializedControls = false
     @State private var importPanel = LibraryImportPanelController()
     @State private var fileTrashController = LibraryFileTrashController()
@@ -58,9 +59,10 @@ public struct ContentView: View {
     private let windowCaptureFrameRateOptions = [24, 30, 60]
     private let libraryFileScanner = LibraryFileScannerService()
 
-    init(session: PresentationSession, commands: OutputWorkspaceCommands) {
+    init(session: PresentationSession, commands: OutputWorkspaceCommands, workspaceMenu: OutputWorkspaceMenuController) {
         self.projectionDisplays = session.outputCoordinator.displays
         workspaceCommands = commands
+        self.workspaceMenu = workspaceMenu
         _session = StateObject(wrappedValue: session)
         _flow = StateObject(wrappedValue: session.outputCoordinator.program(session.outputSourceID).flow)
         _outputProfiles = ObservedObject(wrappedValue: session.outputCoordinator.profiles)
@@ -183,16 +185,18 @@ public struct ContentView: View {
 
     private var rootSplitBase: some View {
         NavigationSplitView {
-            sidebarPane
-                .navigationSplitViewColumnWidth(min: 260, ideal: 320, max: 520)
+            VStack(spacing: 0) {
+                OutputWorkspaceNavigationHeader(controls: workspaceMenu)
+                sidebarPane
+            }
+            .navigationSplitViewColumnWidth(min: 260, ideal: 320, max: 520)
         } detail: {
             detailPane
         }
         .navigationSplitViewStyle(.balanced)
-        .toolbar {
-            projectionToolbar
-        }
-        .applyToolbarBackgroundIfAvailable()
+        .modifier(PresentationToolbar(session: session, updates: appUpdateViewModel,
+            toggleSlides: toggleSlidesFromUI, searchLibrary: presentLibrarySearch,
+            manageOutputs: showOutputSettings))
     }
 
     private var rootSplitWithLibrarySearchOverlay: some View {
@@ -366,32 +370,6 @@ public struct ContentView: View {
     @ViewBuilder
     private var detailPane: some View {
         detailView
-    }
-
-    @ToolbarContentBuilder
-    private var projectionToolbar: some ToolbarContent {
-        ToolbarItem(placement: .principal) {
-            HStack(spacing: 10) {
-                OutputSlidesToggleButton(session: session, onToggle: toggleSlidesFromUI)
-
-                Button {
-                    presentLibrarySearch()
-                } label: {
-                    Label("Search Library", systemImage: "magnifyingglass")
-                }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.bordered)
-                .help("Search Library (⌘F)")
-            }
-        }
-
-        ToolbarItemGroup(placement: .primaryAction) {
-            AppUpdateToolbarButton(viewModel: appUpdateViewModel)
-            OutputQuickControls(outputs: session.outputCoordinator, workspaceID: session.outputSourceID, manageOutputs: showOutputSettings)
-        }
-        ToolbarItem(placement: .primaryAction) {
-            ThumbnailSettingsMenu()
-        }
     }
 
     private func showOutputSettings() {
@@ -1917,10 +1895,4 @@ public struct ContentView: View {
         return url
     }
 
-}
-
-extension View {
-    func applyToolbarBackgroundIfAvailable() -> some View {
-        self.toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
-    }
 }

@@ -56,14 +56,20 @@ window-discovery view or replacement-window polling.
 New Workspace Tab in the File and Workspace menus (`Cmd+T`) creates an empty
 workspace with no outputs. The command is disabled at the four-workspace saved
 limit, including closed controls; deleting an unused workspace enables it again.
-The toolbar's Workspace menu offers the same command; no separate plus button is
+The sidebar's Workspaces menu offers the same command; no separate plus button is
 shown in the title bar or native tab bar. Workspace menus also open saved workspaces
 and detach tabs. Detach moves the same native window and retains the editor, Preview and Current.
 Tab titles include output count and Live/Hidden/Standby/Stopped or failure status.
-Each workspace has a coloured shape in its native tab title, workspace toolbar,
-and beside its name in the toolbar menu's workspace list. A native checkmark marks
-the workspace whose controls own that menu, independently of the launch default.
-The toolbar and menu-bar Workspace menus share one AppKit implementation: the
+Each workspace has a coloured shape in its native tab title, pinned Workspaces
+action above the sidebar's scrolling content, and beside its name in the workspace
+menu. A native checkmark marks the workspace whose controls own that menu.
+Native window and tab titles retain the current name and status. The
+shared `PresentationToolbar` keeps Show/Search central, exposes Output and Network
+as individual native items, and separates Appearance/Background/Thumbnails from
+routing. One retained controller owns their native menus; native toolbar spacing
+replaces the former opaque horizontal group. The app update reminder
+has its own trailing icon item, outside the operational groups.
+The sidebar and menu-bar Workspace menus share one AppKit implementation: the
 same names, coloured shapes, ordering, availability and actions. The current
 choice remains enabled and checked; choosing it again is a no-op. Manage Workspaces
 is the final row after a separator. Move Tab to New Window is available only for
@@ -92,7 +98,7 @@ Load to Current remains explicit. Clear Draft clears the draft and Preview, and
 native Undo restores only the text. Preview Draft remains available after Undo
 even when the restored draft matches the saved file and Save is disabled.
 
-**Manage Workspaces…** in the Workspace menu and workspace toolbar opens the
+**Manage Workspaces…** in the Workspace menu and sidebar Workspaces action opens the
 **Workspaces** toolbar tab in the app's shared native AppKit Settings window.
 The existing AppKit list provides Open, Rename and Delete. It shows
 each workspace's matching coloured shape and lists each saved UUID's output

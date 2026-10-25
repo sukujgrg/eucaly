@@ -140,8 +140,8 @@ correctness. Keep shared process here and domain-specific checks in the roles.
 - `eucaly/eucalyApp.swift`
   - Native AppKit application entry, menus and app-owned workspace `NSWindowController`s, identified by durable workspace UUIDs
   - `OutputWorkspaceWindows` owns named tabs, detaching, reopening and native state restoration; `NSHostingController` hosts the existing SwiftUI content and toolbar
-  - AppKit Workspaces tab in the shared Settings window provides coloured workspace identities, Open, Rename and guarded Delete; the Workspace menu and workspace toolbar open that tab
-  - Toolbar and menu-bar Workspace menus share native construction and validation. Management actions are separated final rows, including Output/NDI/Appearance/Background quick menus. Workspace renaming shares one native sheet and name validator with Settings; detach is available only for a group with multiple tabs.
+  - AppKit Workspaces tab in the shared Settings window provides coloured workspace identities, Open, Rename and guarded Delete; the Workspace menu and pinned sidebar Workspaces action open that tab
+  - Sidebar and menu-bar Workspace menus share native construction and validation. Management actions are separated final rows, including Output/NDI/Appearance/Background quick menus. Workspace renaming shares one native sheet and name validator with Settings; detach is available only for a group with multiple tabs.
   - Native Settings window (`SettingsWindowController`, `GeneralSettingsController`)
   - App command menu and shortcuts
 

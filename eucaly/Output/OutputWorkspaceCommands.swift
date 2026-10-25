@@ -2,8 +2,8 @@ import AppKit
 import Combine
 import SwiftUI
 
-/// The toolbar and menu bar share ordering, labels, availability and actions.
-/// The menu bar follows the active controls window; a toolbar keeps its owner.
+/// Sidebar navigation and the menu bar share ordering, availability and actions.
+/// The menu bar follows the active controls window; a header keeps its owner.
 @MainActor
 final class OutputWorkspaceMenuController: NSObject, ObservableObject, NSMenuDelegate, NSMenuItemValidation {
     let menu = NSMenu(title: "Workspace")
@@ -32,7 +32,7 @@ final class OutputWorkspaceMenuController: NSObject, ObservableObject, NSMenuDel
         super.init()
         menu.delegate = self
         menu.autoenablesItems = workspaceID == nil
-        button.bezelStyle = .rounded; button.imagePosition = .imageOnly
+        button.bezelStyle = .accessoryBarAction; button.imagePosition = .imageLeading
         button.setContentHuggingPriority(.required, for: .horizontal)
         button.setContentCompressionResistancePriority(.required, for: .horizontal)
         rebuild()
@@ -60,10 +60,11 @@ final class OutputWorkspaceMenuController: NSObject, ObservableObject, NSMenuDel
     func updateButtonLabel() {
         guard let workspaceID else { return }
         let name = profiles.workspaceName(workspaceID)
-        menu.items.first?.title = name
+        menu.items.first?.title = "Workspaces"
         menu.items.first?.image = badges.badge(for: workspaceID).menuImage
-        button.toolTip = name + " — Workspace tabs and windows"
-        button.setAccessibilityLabel("Workspace: " + name)
+        button.toolTip = "Current workspace: " + name + " — Workspace tabs and windows"
+        button.setToolbarAccessibility(label: "Workspaces", value: name,
+            help: "Open, rename and manage workspace tabs and windows.")
     }
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         guard let action = action(for: item), let workspaces else { return false }
@@ -103,6 +104,22 @@ final class OutputWorkspaceMenuController: NSObject, ObservableObject, NSMenuDel
             if let id = item.representedObject as? UUID, id != currentID { workspaces.open(id, beside: currentID) }
         case .manage: workspaces.manageWorkspaces()
         }
+    }
+}
+
+struct OutputWorkspaceNavigationHeader: View {
+    let controls: OutputWorkspaceMenuController
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                OutputWorkspaceMenuButton(controls: controls)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            Divider()
+        }
+        .background(VisualEffectView(material: .sidebar, blendingMode: .withinWindow))
     }
 }
 

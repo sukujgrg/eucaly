@@ -13,9 +13,13 @@ the update before extraction and installation.
   up-to-date results.
 - **Settings → General → Updates → Automatically Check for Updates** controls Sparkle's
   persisted preference. It defaults to enabled on Sparkle's daily schedule.
-- Scheduled checks add an **Update** toolbar reminder without opening a dialog
-  or stealing focus, even during projection or launch. Clicking it brings the
-  update UI into focus. The reminder clears when the update session finishes.
+- Scheduled checks add a compact **Update** icon at the trailing end of the
+  toolbar without opening a dialog or stealing focus, even during projection or
+  launch. Its help and accessibility label include the available version. Clicking
+  it brings the update UI into focus. The reminder clears when the update session
+  finishes. If Sparkle temporarily disallows the action, the same icon remains
+  disabled and explains that update controls are temporarily unavailable; this
+  capability does not identify a download or installation phase.
 - Automatic installation is disabled. Download and restart require user action.
   Restart uses normal unsaved-edit confirmation and waits for capture cleanup.
 - `AppDelegate` owns one `AppUpdateViewModel` shared by every window, Settings,
@@ -61,6 +65,12 @@ report an update-information retrieval error.
 plus offline release and feed regressions. These exercise shared reminders,
 manual-check enablement, preference changes, archive metadata, retained feed
 history, first-feed migration, and safe release retries.
+
+The native toolbar regression uses an isolated workspace, fake outputs and an
+injected updater in the real window/split-view host. It checks minimum/default
+widths, light/dark appearance, long names, available/unavailable reminder states,
+native accessibility labels and actions, retained menus and search editing focus.
+It does not exercise Sparkle installation or manual VoiceOver operation.
 
 Before distribution, check a signed and notarized pair in a disposable app
 installation: download, install, relaunch, canceled quit with unsaved lyrics,

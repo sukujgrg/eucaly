@@ -36,39 +36,20 @@ struct OutputAudioListeningState: Equatable {
     }
 }
 
-/// Native intrinsic sizes keep the toolbar independent of destination-name length.
-/// The controls and their menus survive unrelated output/status view updates.
-struct OutputQuickControls: View {
-    @StateObject private var controls: OutputQuickControlsController
-    let manageOutputs: () -> Void
-    init(outputs: OutputCoordinator, workspaceID: UUID? = nil, manageOutputs: @escaping () -> Void) {
-        self.manageOutputs = manageOutputs
-        _controls = StateObject(wrappedValue: OutputQuickControlsController(outputs: outputs, workspaceID: workspaceID, manageOutputs: manageOutputs))
-    }
-    var body: some View {
-        HStack(spacing: 8) {
-            OutputQuickButton(button: controls.outputButton, controls: controls, manageOutputs: manageOutputs)
-            OutputQuickButton(button: controls.networkButton, controls: controls, manageOutputs: manageOutputs)
-            OutputQuickButton(button: controls.backgroundButton, controls: controls, manageOutputs: manageOutputs)
-            OutputQuickButton(button: controls.appearanceButton, controls: controls, manageOutputs: manageOutputs)
-        }.fixedSize()
-    }
-}
-
-private struct OutputQuickButton: NSViewRepresentable {
+/// The toolbar retains each native control and menu independently of updates.
+struct OutputQuickButton: NSViewRepresentable {
     let button: NSPopUpButton
     let controls: OutputQuickControlsController
-    let manageOutputs: () -> Void
     @ObservedObject private var outputs: OutputCoordinator
     @ObservedObject private var store: OutputProfileStore
     @ObservedObject private var displays: ProjectionDisplayManager
-    init(button: NSPopUpButton, controls: OutputQuickControlsController, manageOutputs: @escaping () -> Void) {
-        self.button = button; self.controls = controls; self.manageOutputs = manageOutputs
+    init(button: NSPopUpButton, controls: OutputQuickControlsController) {
+        self.button = button; self.controls = controls
         outputs = controls.outputs; store = controls.store; displays = controls.outputs.displays
     }
     func makeNSView(context: Context) -> NSPopUpButton { button }
     func updateNSView(_ view: NSPopUpButton, context: Context) {
-        controls.manageOutputs = manageOutputs; controls.render()
+        controls.render()
     }
 }
 
@@ -81,7 +62,7 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
     let outputs: OutputCoordinator
     let workspaceID: UUID?
     var store: OutputProfileStore { outputs.profiles }
-    var manageOutputs: () -> Void
+    let manageOutputs: () -> Void
     private let createBackgroundBookmark: @Sendable (URL) -> String?
     private let makeBackgroundPanel: @MainActor () -> NSOpenPanel
     private let beginBackgroundSheet: @MainActor (NSOpenPanel, NSWindow, @escaping (NSApplication.ModalResponse) -> Void) -> Void
@@ -139,7 +120,7 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         self.makeBackgroundPanel = makeBackgroundPanel; self.beginBackgroundSheet = beginBackgroundSheet
         super.init()
         for button in [outputButton, networkButton, backgroundButton, appearanceButton] {
-            button.bezelStyle = .rounded
+            button.bezelStyle = .toolbar
             button.imagePosition = button === outputButton || button === networkButton ? .imageLeft : .imageOnly
             button.setContentHuggingPriority(.required, for: .horizontal)
             button.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -159,8 +140,8 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         let name = destination?.name ?? "None"
         let scope = destination.map { outputs.managementDestinationLabel($0) + " · " + outputs.managementWorkspaceName($0.workspaceID) } ?? "None"
         outputButton.toolTip = "Edit output appearance: \(scope). \(reason ?? "Quick edits affect only this output.")"
-        outputButton.setAccessibilityLabel("Output appearance editing target: \(scope)")
-        outputButton.setAccessibilityHelp(reason ?? "Choose the appearance editing target or edit its monitor assignment.")
+        outputButton.setToolbarAccessibility(label: "Output appearance editing target: \(scope)",
+            help: reason ?? "Choose the appearance editing target or edit its monitor assignment.")
         let selection = SelectionState(rows: store.document.destinations.map { DefaultEntry(id: $0.id, name: outputs.managementDestinationLabel($0) + " · " + outputs.managementWorkspaceName($0.workspaceID)) }, defaultID: store.document.defaultDestinationID,
             target: target, kind: profile?.kind, network: destination?.networkSettings, technology: destination?.networkTechnology, monitors: displays.displays,
             labels: displays.displays.map { displays.label(for: $0.target) },
@@ -240,10 +221,8 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         appearanceButton.isEnabled = canEdit; backgroundButton.isEnabled = canEdit
         appearanceButton.toolTip = "Appearance for \(name)\n\(appearanceHelp)"
         backgroundButton.toolTip = "Background for \(name)\n\(backgroundHelp)"
-        appearanceButton.setAccessibilityLabel("Appearance for output: \(scope)")
-        backgroundButton.setAccessibilityLabel("Background for output: \(scope)")
-        appearanceButton.setAccessibilityHelp(appearanceHelp)
-        backgroundButton.setAccessibilityHelp(backgroundHelp)
+        appearanceButton.setToolbarAccessibility(label: "Appearance for output: \(scope)", help: appearanceHelp)
+        backgroundButton.setToolbarAccessibility(label: "Background for output: \(scope)", help: backgroundHelp)
         if appearance != appearanceState {
             appearanceState = appearance
             appearanceButton.menu = appearanceMenu(profile, target: target)
@@ -287,8 +266,7 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
             ? "Add an NDI or OMT output in Manage Outputs to route it between workspaces."
             : "Choose a workspace’s Current for " + technologyName + " output. A live move keeps the source name and receiver connection; a stopped output stays stopped.")
         networkButton.toolTip = [summary, help].filter { !$0.isEmpty }.joined(separator: "\n")
-        networkButton.setAccessibilityLabel(technologyName + " workspace routing" + (summary.isEmpty ? "" : ": " + summary))
-        networkButton.setAccessibilityHelp(help)
+        networkButton.setToolbarAccessibility(label: technologyName + " workspace routing" + (summary.isEmpty ? "" : ": " + summary), help: help)
         if state.sources.isEmpty { menu.addItem(info("No network outputs configured.")) }
         for (index, source) in state.sources.enumerated() {
             let choices = state.sources.count == 1 ? menu : NSMenu()
