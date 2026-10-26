@@ -6,6 +6,55 @@ import XCTest
 
 @MainActor
 final class WorkspaceChromeTests: XCTestCase {
+    func testCollapsedSidebarReleasesTheWholeDetailArea() async throws {
+        let f = try Fixture(); defer { f.close() }
+        let window = try XCTUnwrap(f.windows.open(f.a)?.window)
+        f.focus.window = window
+        let split = try await mountedSplit(in: window)
+        let toolbar = try XCTUnwrap(window.toolbar)
+        let editor = try XCTUnwrap(descendants(LyricsTextView.self, in: split.detailController.view).first)
+        let editorSurface = try XCTUnwrap(editor.enclosingScrollView)
+        for width in [CGFloat(1060), CGFloat(1440)] {
+            window.setContentSize(.init(width: width, height: 800))
+            await mainQueueBoundary()
+            window.layoutIfNeeded(); window.contentView?.layoutSubtreeIfNeeded()
+            try await toggleSidebar(toolbar)
+            XCTAssertTrue(split.sidebarItem.isCollapsed)
+            window.layoutIfNeeded(); window.contentView?.layoutSubtreeIfNeeded()
+            let content = split.detailController.view
+            let detailFrame = split.splitView.convert(content.bounds, from: content)
+            XCTAssertEqual(detailFrame.minX, split.splitView.bounds.minX, accuracy: 1,
+                           "Hiding the sidebar must release its width to real detail content")
+            XCTAssertEqual(detailFrame.width, split.splitView.bounds.width, accuracy: 1,
+                           "A background replica cannot occupy a hidden sidebar's former column")
+            XCTAssertEqual(content.safeAreaInsets.left, 0, accuracy: 1)
+            XCTAssertEqual(content.safeAreaInsets.right, 0, accuracy: 1)
+            let editorFrame = split.splitView.convert(editorSurface.bounds, from: editorSurface)
+            XCTAssertEqual(editorFrame.minX, split.splitView.bounds.minX, accuracy: 1)
+            XCTAssertEqual(editorFrame.width, split.splitView.bounds.width, accuracy: 1,
+                           "The rendered editor must fill the reclaimed area as well as its host")
+            XCTAssertLessThanOrEqual(editorSurface.convert(editorSurface.bounds, to: nil).maxY,
+                                     window.contentLayoutRect.maxY + 1,
+                                     "Interactive detail content must stay below the native titlebar")
+            try await toggleSidebar(toolbar)
+            XCTAssertFalse(split.sidebarItem.isCollapsed)
+        }
+        XCTAssertTrue(window.makeFirstResponder(editor))
+        let entered = expectation(forNotification: NSWindow.didEnterFullScreenNotification, object: window)
+        window.toggleFullScreen(nil)
+        await fulfillment(of: [entered], timeout: 5)
+        try await pressSidebarControl(in: window)
+        window.layoutIfNeeded(); window.contentView?.layoutSubtreeIfNeeded()
+        let fullscreenFrame = split.splitView.convert(editorSurface.bounds, from: editorSurface)
+        XCTAssertTrue(split.sidebarItem.isCollapsed)
+        XCTAssertEqual(fullscreenFrame.minX, split.splitView.bounds.minX, accuracy: 1)
+        XCTAssertEqual(fullscreenFrame.width, split.splitView.bounds.width, accuracy: 1)
+        XCTAssertLessThanOrEqual(editorSurface.convert(editorSurface.bounds, to: nil).maxY,
+                                 window.contentLayoutRect.maxY + 1)
+        try await pressSidebarControl(in: window)
+        XCTAssertFalse(split.sidebarItem.isCollapsed)
+    }
+
     func testSidebarScrollSurfaceFillsSectionAndAccessoryStaysPinnedAtNaturalWidth() async throws {
         let f = try Fixture(); defer { f.close() }
         let window = try XCTUnwrap(f.windows.open(f.a)?.window)
@@ -173,7 +222,7 @@ final class WorkspaceChromeTests: XCTestCase {
         try XCTUnwrap((window.toolbar?.delegate as? PresentationToolbarController)?.splitController as? WorkspaceSplitViewController)
     }
     private func toggleSidebar(_ toolbar: NSToolbar) async throws {
-        let item = try XCTUnwrap(toolbar.items.first { $0.itemIdentifier == .toggleSidebar })
+        let item = try XCTUnwrap(toolbar.items.first { $0.itemIdentifier == PresentationToolbarController.sidebarID })
         let action = try XCTUnwrap(item.action)
         await withCheckedContinuation { continuation in
             NSAnimationContext.runAnimationGroup { _ in
@@ -181,6 +230,32 @@ final class WorkspaceChromeTests: XCTestCase {
             } completionHandler: {
                 continuation.resume()
             }
+        }
+    }
+    private func pressSidebarControl(in window: NSWindow) async throws {
+        let split = try splitController(in: window)
+        let wasCollapsed = split.sidebarItem.isCollapsed
+        var visited: Set<ObjectIdentifier> = []
+        func elements(_ object: Any) -> [any NSAccessibilityProtocol] {
+            guard let element = object as? any NSAccessibilityProtocol,
+                  visited.insert(ObjectIdentifier(element)).inserted else { return [] }
+            return [element] + (element.accessibilityChildren() ?? []).flatMap(elements)
+        }
+        let button = try XCTUnwrap(elements(window).first {
+            $0.isAccessibilityElement() && $0.accessibilityRole() == .button
+                && ["Sidebar", "Hide Sidebar", "Show Sidebar"].contains($0.accessibilityLabel() ?? "")
+        })
+        XCTAssertTrue(button.isAccessibilityEnabled())
+        XCTAssertGreaterThan(button.accessibilityFrame().width, 20)
+        await withCheckedContinuation { continuation in
+            NSAnimationContext.runAnimationGroup { _ in
+                _ = button.accessibilityPerformPress()
+            } completionHandler: { continuation.resume() }
+        }
+        try await until("the exposed native sidebar action changes the split") {
+            split.sidebarItem.isCollapsed != wasCollapsed
+                && (wasCollapsed || abs(split.splitView.convert(split.detailController.view.bounds,
+                    from: split.detailController.view).width - split.splitView.bounds.width) < 1)
         }
     }
     private func trackingItem(in toolbar: NSToolbar) throws -> NSTrackingSeparatorToolbarItem {

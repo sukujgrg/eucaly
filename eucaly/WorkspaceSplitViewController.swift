@@ -28,9 +28,11 @@ final class WorkspaceSplitViewController: NSSplitViewController {
         sidebarItem.preferredThicknessFraction = NSSplitViewItem.unspecifiedDimension
         sidebarItem.holdingPriority = .defaultHigh
         sidebarItem.addTopAlignedAccessoryViewController(workspacesAccessory)
-        detailItem = NSSplitViewItem(viewController: WorkspaceDetailViewController(host: detailController))
+        // Operator controls occupy an adjacent content pane. Extending and
+        // mirroring this hierarchy beneath the sidebar duplicates interactive
+        // controls and can leave a reserved column after sidebar collapse.
+        detailItem = NSSplitViewItem(viewController: detailController)
         detailItem.minimumThickness = 520
-        detailItem.automaticallyAdjustsSafeAreaInsets = true
         super.init(nibName: nil, bundle: nil)
         addSplitViewItem(sidebarItem)
         addSplitViewItem(detailItem)
@@ -64,23 +66,5 @@ final class WorkspaceSplitViewController: NSSplitViewController {
         // Retire the nested renderer's callbacks/state at the same boundary.
         detailController.rootView = AnyView(EmptyView())
         detailController.view.layoutSubtreeIfNeeded()
-    }
-}
-
-/// AppKit extends the detail background under the native toolbar and sidebar;
-/// the retained SwiftUI renderer remains inside the resulting safe area.
-@MainActor
-private final class WorkspaceDetailViewController: NSViewController {
-    let host: NSHostingController<AnyView>
-    init(host: NSHostingController<AnyView>) {
-        self.host = host
-        super.init(nibName: nil, bundle: nil)
-    }
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    override func loadView() {
-        let background = NSBackgroundExtensionView()
-        view = background
-        addChild(host)
-        background.contentView = host.view
     }
 }

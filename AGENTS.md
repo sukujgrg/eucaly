@@ -171,13 +171,17 @@ correctness. Keep shared process here and domain-specific checks in the roles.
 - The sidebar root is its full-section `NSScrollView`. Workspaces is a native
   top-aligned `NSSplitViewItemAccessoryViewController`, pinned at intrinsic width.
   `PresentationToolbarController` owns a distinct native toolbar per controls
-  lifetime and a tracking separator tied to that exact split. Closing detaches
+  lifetime, explicitly targeted sidebar item and tracking separator tied to that
+  exact split. Reserved toolbar identifiers are AppKit-owned; don't use them
+  for delegate-configured workspace targets. Closing detaches
   the window toolbar; parking retains it with the controls. Final disposal
   retires hosted roots and sidebar callback context explicitly, so fullscreen
   surface retention cannot extend the lifetime of workspace UI resources.
-- The detail root uses `NSBackgroundExtensionView` for native toolbar/sidebar
-  underlap, with content inside its native safe area. Do not add a competing
-  root material or separator suppression.
+- The retained detail host is an adjacent native split item, using ordinary
+  titlebar safe-area avoidance. Operator panels must not be mirrored beneath
+  the sidebar with `NSBackgroundExtensionView` or an overlay/inset layout mode.
+  Native toolbar controls own glass; do not add a competing root material or
+  separator suppression.
 - `eucaly/SidebarViewController.swift` owns AppKit sidebar layout, section
   disclosure, controls, menus, sliders and UI subscriptions.
 - `eucaly/SidebarOutlineView.swift` owns the shared native outline behavior,

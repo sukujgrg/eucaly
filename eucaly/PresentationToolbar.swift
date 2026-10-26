@@ -4,6 +4,7 @@ import Combine
 /// One native toolbar belongs to each retained workspace's split coordinator.
 @MainActor
 final class PresentationToolbarController: NSObject, NSToolbarDelegate, NSToolbarItemValidation {
+    static let sidebarID = NSToolbarItem.Identifier("workspace.sidebar")
     static let slidesID = NSToolbarItem.Identifier("projection.visibility")
     static let searchID = NSToolbarItem.Identifier("library.search")
     static let updateID = NSToolbarItem.Identifier("app.update")
@@ -75,10 +76,10 @@ final class PresentationToolbarController: NSObject, NSToolbarDelegate, NSToolba
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        var result: [NSToolbarItem.Identifier] = [.toggleSidebar, Self.sidebarSeparatorID,
-            Self.slidesID, Self.searchID, .flexibleSpace,
+        var result: [NSToolbarItem.Identifier] = [Self.sidebarID, Self.sidebarSeparatorID,
             .init("output.destination"), .init("output.network"), .space,
-            .init("output.appearance"), .init("output.background"), .init("workspace.thumbnails")]
+            .init("output.appearance"), .init("output.background"), .init("workspace.thumbnails"),
+            .flexibleSpace, Self.searchID, .space, Self.slidesID]
         if updates.state.availableVersion != nil { result += [.space, Self.updateID] }
         return result
     }
@@ -95,13 +96,15 @@ final class PresentationToolbarController: NSObject, NSToolbarDelegate, NSToolba
             items[identifier] = item
             return item
         }
-        // Let NSToolbar create its standard action buttons. Their labels are
-        // accessibility text, independent of the icon-only display mode.
-        if identifier == .toggleSidebar || identifier == Self.slidesID || identifier == Self.searchID || identifier == Self.updateID {
+        // App-owned identifiers are required for explicit command targets.
+        // AppKit owns reserved identifiers such as .toggleSidebar and bypasses
+        // this factory, routing those actions through the first responder.
+        // Normal NSToolbarItem buttons still receive native glass and layout.
+        if identifier == Self.sidebarID || identifier == Self.slidesID || identifier == Self.searchID || identifier == Self.updateID {
             let item = NSToolbarItem(itemIdentifier: identifier)
             item.target = self
             switch identifier {
-            case .toggleSidebar:
+            case Self.sidebarID:
                 item.label = "Hide Sidebar"; item.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: nil)
                 item.action = #selector(toggleSidebar(_:))
             case Self.slidesID:
@@ -116,6 +119,9 @@ final class PresentationToolbarController: NSObject, NSToolbarDelegate, NSToolba
                 item.action = #selector(searchLibrary(_:)); item.toolTip = "Search Library (⌘F)"
             }
             item.paletteLabel = item.label
+            if identifier == Self.sidebarID || identifier == Self.searchID || identifier == Self.slidesID {
+                item.visibilityPriority = .high
+            }
             items[identifier] = item
             return item
         }
@@ -172,7 +178,7 @@ final class PresentationToolbarController: NSObject, NSToolbarDelegate, NSToolba
     private func renderSidebar() {
         let collapsed = splitController?.splitViewItems.first?.isCollapsed ?? false
         let label = collapsed ? "Show Sidebar" : "Hide Sidebar"
-        items[.toggleSidebar]?.label = label; items[.toggleSidebar]?.toolTip = label
+        items[Self.sidebarID]?.label = label; items[Self.sidebarID]?.toolTip = label
     }
 
     private func renderUpdate() {
@@ -188,7 +194,7 @@ final class PresentationToolbarController: NSObject, NSToolbarDelegate, NSToolba
         switch item.itemIdentifier {
         case Self.slidesID: return !session.isEmpty
         case Self.updateID: return updates.state.availableVersion != nil && updates.state.canCheckForUpdates
-        case .toggleSidebar: return splitController != nil
+        case Self.sidebarID: return splitController != nil
         default: return true
         }
     }

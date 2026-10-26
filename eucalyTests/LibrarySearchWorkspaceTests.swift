@@ -194,7 +194,7 @@ final class LibrarySearchWorkspaceTests: XCTestCase {
         }
         try await until { palette.searchField.currentEditor() != nil && window.toolbar != nil }
         let editor = try XCTUnwrap(palette.searchField.currentEditor())
-        let sidebarToggle = try XCTUnwrap(window.toolbar?.items.first { $0.itemIdentifier == .toggleSidebar })
+        let sidebarToggle = try XCTUnwrap(window.toolbar?.items.first { $0.itemIdentifier == PresentationToolbarController.sidebarID })
         for _ in 0..<2 {
             XCTAssertTrue(NSApp.sendAction(try XCTUnwrap(sidebarToggle.action), to: sidebarToggle.target, from: sidebarToggle))
             await mainQueueBoundary()

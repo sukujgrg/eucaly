@@ -518,6 +518,18 @@ final class OutputDefaultTests: XCTestCase {
             let reminderIndex = try XCTUnwrap(window.toolbar?.items.firstIndex { $0 === reminder })
             XCTAssertGreaterThan(reminderIndex, try XCTUnwrap(toolbarIndices.last))
             XCTAssertTrue(reminder.isVisible, "The available update must fit in the supported minimum toolbar width")
+            for (identifier, label) in [(PresentationToolbarController.searchID, "Search Library"),
+                                        (PresentationToolbarController.slidesID, "Show Slides")] {
+                let criticalItem = try XCTUnwrap(window.toolbar?.items.first { $0.itemIdentifier == identifier })
+                XCTAssertTrue(criticalItem.isVisible, "Critical workspace controls must stay outside overflow")
+                let action = try XCTUnwrap(accessibilityElements().first {
+                    $0.accessibilityRole() == .button && $0.accessibilityLabel() == label
+                })
+                let frame = action.accessibilityFrame()
+                XCTAssertGreaterThan(frame.width, 20)
+                XCTAssertGreaterThan(frame.height, 20)
+                XCTAssertTrue(window.frame.contains(frame), "The critical action must be exposed inside the window")
+            }
             XCTAssertEqual(reminder.style, .plain)
             XCTAssertTrue(try XCTUnwrap(availableAction.accessibilityLabel()).contains("99.0"))
             let nativeMenuElements = accessibilityElements().filter { $0.accessibilityRole() == .menuButton }
@@ -552,8 +564,14 @@ final class OutputDefaultTests: XCTestCase {
             let unavailableAction = try XCTUnwrap(updateAction())
             try saveSnapshot("eucaly-toolbar-\(Int(size.width))-\(appearance.rawValue)-busy")
             XCTAssertEqual(unavailableAction.accessibilityFrame(), availableFrame)
-            XCTAssertEqual(retainedControls.map { chrome.convert($0.bounds, from: $0) }, availableFrames,
-                           "Updater capability must not resize or shift the native control groups")
+            let unavailableFrames = retainedControls.map { chrome.convert($0.bounds, from: $0) }
+            XCTAssertEqual(unavailableFrames[0], availableFrames[0], "Workspaces remains pinned")
+            // AppKit positions the common toolbar cluster relative to native
+            // trailing glass. Verify its geometry and spacing, not an absolute
+            // origin that the system may adjust as capabilities change.
+            XCTAssertEqual(unavailableFrames.dropFirst().map { $0.offsetBy(dx: -unavailableFrames[1].minX, dy: 0) },
+                           availableFrames.dropFirst().map { $0.offsetBy(dx: -availableFrames[1].minX, dy: 0) },
+                           "Updater capability must preserve native control sizes and relative spacing")
             XCTAssertTrue((unavailableAction.accessibilityHelp() ?? "").contains("temporarily unavailable"))
             XCTAssertTrue(window.firstResponder === editor)
             XCTAssertEqual(editor.string, "active search draft")

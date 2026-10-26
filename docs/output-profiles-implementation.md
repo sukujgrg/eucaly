@@ -51,9 +51,12 @@ retained SwiftUI detail host. Its bridge occupies the full-size native content
 area; AppKit alone applies titlebar and sidebar safe areas. The sidebar root is
 its full-section `NSScrollView`, and Workspaces is a top-aligned native split-item
 accessory. Output/import/editing notices occupy the detail host, preserving the
-sidebar's surface and accessory position. The detail's `NSBackgroundExtensionView`
-extends content under the toolbar and sidebar while keeping controls in the safe
-area; the former root visual-effect background is removed.
+sidebar's surface and accessory position. The detail host occupies an adjacent
+split item with normal titlebar safe-area avoidance. It does not opt into sidebar
+overlay or replicate operator panels with `NSBackgroundExtensionView`: a reflected
+copy of Preview, Current or editor controls is not useful background content.
+Collapsing the sidebar gives its entire width to the real retained detail host.
+The former root visual-effect background remains removed.
 
 Window titles, delegates, close approval and application-termination registration
 remain native. Search remains a native sibling above the hosted workspace.
@@ -121,9 +124,13 @@ Badges remain saved by workspace UUID using the existing preference key, retaini
 colours through rename, reordering and reopening. The legacy palette and saved
 workspace identities are preserved.
 
-The native `PresentationToolbarController` keeps Show/Search central, exposes Output and
-Network as individual native items, and separates Appearance/Background/Thumbnails
-from routing. Native spacing replaces the former opaque horizontal group. The
+The native `PresentationToolbarController` keeps navigation/title leading, common
+Output/Network and Appearance/Background/Thumbnails controls in functional groups,
+and Search plus the single prominent Show/Hide action trailing. Critical actions
+have native high visibility priority. The sidebar toggle uses an app-owned item
+identifier and explicit split-controller target; AppKit configures reserved
+identifiers itself, so `.toggleSidebar` cannot carry that delegate-owned target.
+Native spacing replaces the former opaque horizontal group. The
 update reminder has a trailing icon item outside the operational groups.
 Search Library (`Cmd+F`) and Refresh Library target the active controls only.
 Find in Lyrics retains the native responder chain. See `SEARCH.md` for details.
@@ -581,6 +588,16 @@ search above the native split. A real ContentView fixture confirms Current stays
 accepted and verifies search-model/inventory/SQLite release after fullscreen close.
 This release regression failed before explicit root and callback retirement.
 Retained-action tests verify disposed sidebar controls cannot dispatch commands.
+The follow-up collapse regression checks actual editor and host bounds at minimum
+and wide widths, after resize and in fullscreen. It reproduced a retained
+260-point mirrored strip before removing the detail overlay/extension hierarchy.
+Checks of accessory visibility alone did not establish reclaimed content width.
+Toolbar checks preserve control sizes and relative spacing, while allowing AppKit
+to position whole native clusters; Search and Show must remain visible with long
+names and an update reminder present.
+Fullscreen control coverage presses the exposed native accessibility button and
+checks its resulting split/editor geometry. Dispatching a selector directly to
+an assumed target did not establish the system-created button's behavior.
 
 Native observation on 27 October 2026 verified windowed and fullscreen placement,
 the visible detail-only output notice, fullscreen Workspaces menu, retained search
@@ -591,13 +608,44 @@ The windowed capture was inactive and does not qualify active-window contrast or
 manual VoiceOver behavior. Screenshots and diagnostic evidence are under
 `build/audit/native-accessory-*2026-10-27*`.
 
-Final validation on 27 October 2026 passed `make test`: 1,153 XCTest cases,
+The adjacent-pane follow-up also has native captures under
+`build/audit/sidebar-native-final-*2026-10-27*`. Actual sidebar button presses
+worked in both fullscreen states and while Search owned query focus; Preview and
+Current reclaimed the hidden column. The earlier reserved system item did not
+reach its intended target in the fullscreen observation. The inspected run is
+visual/input evidence only: its injected search fixture remained retained at
+forced close under external accessibility inspection, as also observed before
+this follow-up. Uninspected automated lifecycle regressions check release
+separately; cleanup timing under external inspection remains unqualified.
+
+Earlier accessory validation on 27 October 2026 passed `make test`: 1,153 XCTest cases,
 nine opt-in qualification skips, one Swift Testing case, seven feed tests,
 103 release-workflow tests and the architecture check across 39 network sources. The agent reference
 validator also passed. The native lifecycle/sidebar subset passed 54 tests,
 including fullscreen-close resource release and live workspace isolation.
 `make build` archived and exported the signed arm64 app to `~/Applications`;
 deep, strict signature verification passed.
+
+The first adjacent-pane full run reported 1,154 cases, nine skips and one
+unlocated thrown error in an unchanged search-focus test. Its xcresult reports
+`Gestures.GesturePhaseQueue<()>.InvalidTransition` in the native Gestures error
+domain (`idle` to `failed(deinit)`), without a failed search assertion. The root
+cause remains unestablished.
+The same error appears in earlier workspace test logs predating this change.
+All 30 search-navigation tests then passed unchanged in isolation. No test
+suppression, timing delay or application workaround was added for this
+intermittent native error.
+
+The unchanged full repeat passed `make test`: 1,154 XCTest cases, nine opt-in
+qualification skips, zero failures, one Swift Testing case, seven feed tests,
+103 release-workflow tests and the architecture check across 39 network sources.
+The final agent reference validator also passed. The fresh macOS UX review
+approved the shown/hidden fullscreen captures, and independent code review found
+no actionable production regression in this scoped change.
+`make build` archived and exported the signed arm64 app to
+`/Users/suku/Applications/eucaly.app`; deep, strict signature verification passed.
+The archive still reports the pre-existing unused `handlers` binding warning in
+the unchanged search-palette renderer.
 
 Run `make test`. Added regressions cover tab/focus privacy, two simultaneous Currents,
 shared versus independent players, exclusive assignment/conflicts, workspace-scoped
