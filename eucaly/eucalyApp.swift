@@ -10,6 +10,10 @@ import Combine
 
 nonisolated enum AppLaunchContext {
     static let isRunningTests = NSClassFromString("XCTestCase") != nil
+    static let testHostFocusRequestArgument = "--eucaly-xctest-foreground"
+    static func rejectsUninjectedTestHostFocusRequest(arguments: [String], isRunningTests: Bool) -> Bool {
+        arguments.contains(testHostFocusRequestArgument) && !isRunningTests
+    }
 }
 
 @MainActor
@@ -123,6 +127,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @MainActor
 enum EucalyApp {
     static func main() {
+        #if DEBUG
+        // A test may foreground its exact existing installation. If launch
+        // services cannot reuse that injected process, never restore user data
+        // in a new, uninjected application instance.
+        guard !AppLaunchContext.rejectsUninjectedTestHostFocusRequest(
+            arguments: CommandLine.arguments, isRunningTests: AppLaunchContext.isRunningTests) else { return }
+        #endif
         if !AppLaunchContext.isRunningTests {
             SandboxPreferencesMigration.migrateIfNeeded()
             WorkspaceWindowPreferences.removeLegacyFrames(from: .standard)

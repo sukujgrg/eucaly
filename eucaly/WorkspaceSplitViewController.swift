@@ -59,6 +59,7 @@ final class WorkspaceSplitViewController: NSSplitViewController {
     }
 
     func detach() {
+        toolbarController?.retire()
         toolbarController = nil
         sidebarController.detach()
         workspacesAccessory.detach()

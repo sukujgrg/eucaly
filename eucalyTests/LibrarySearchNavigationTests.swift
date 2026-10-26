@@ -625,12 +625,6 @@ final class LibrarySearchNavigationTests: XCTestCase {
         let url = URL(fileURLWithPath: "/tmp/search-navigation/song.txt")
         let fixture = SearchNavigationFixture(actions: [], results: [.init(url: url, snippet: "Song")], keyable: true)
         defer { fixture.close() }
-        let previousApplication = NSWorkspace.shared.frontmostApplication
-        defer {
-            if previousApplication?.processIdentifier != ProcessInfo.processInfo.processIdentifier {
-                previousApplication?.activate(options: [.activateIgnoringOtherApps])
-            }
-        }
         try await activateNativeSearchTestWindow(fixture.window)
         fixture.query = "grace"
         fixture.field.stringValue = fixture.query
@@ -886,60 +880,3 @@ private final class SearchClickedRowTableView: NSTableView {
     var testClickedRow = -1
     override var clickedRow: Int { testClickedRow }
 }
-
-extension XCTestCase {
-    @MainActor
-    func activateNativeSearchTestWindow(_ window: NSWindow) async throws {
-        let readiness = NativeSearchTestWindowReadiness(
-            active: expectation(description: "Native search test application became active"),
-            keyed: expectation(description: "Native search test window became key")
-        )
-        let center = NotificationCenter.default
-        let activeObserver = center.addObserver(forName: NSApplication.didBecomeActiveNotification, object: NSApp, queue: nil) { [weak window] _ in
-            MainActor.assumeIsolated {
-                readiness.becameActive()
-                window?.makeKeyAndOrderFront(nil)
-            }
-        }
-        let keyObserver = center.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: nil) { _ in
-            MainActor.assumeIsolated { readiness.becameKey() }
-        }
-        defer {
-            center.removeObserver(activeObserver)
-            center.removeObserver(keyObserver)
-        }
-        if NSApp.isActive { readiness.becameActive() }
-        else { NSApp.activate(ignoringOtherApps: true) }
-        window.makeKeyAndOrderFront(nil)
-        if window.isKeyWindow { readiness.becameKey() }
-        await fulfillment(of: [readiness.active, readiness.keyed], timeout: 5)
-        guard NSApp.isActive, window.isKeyWindow else { throw NativeSearchTestFocusError.unavailable }
-    }
-}
-
-@MainActor
-private final class NativeSearchTestWindowReadiness {
-    let active: XCTestExpectation
-    let keyed: XCTestExpectation
-    private var observedActive = false
-    private var observedKey = false
-
-    init(active: XCTestExpectation, keyed: XCTestExpectation) {
-        self.active = active
-        self.keyed = keyed
-    }
-
-    func becameActive() {
-        guard !observedActive else { return }
-        observedActive = true
-        active.fulfill()
-    }
-
-    func becameKey() {
-        guard !observedKey else { return }
-        observedKey = true
-        keyed.fulfill()
-    }
-}
-
-private enum NativeSearchTestFocusError: Error { case unavailable }

@@ -6,6 +6,117 @@ import XCTest
 
 @MainActor
 final class WorkspaceChromeTests: XCTestCase {
+    func testSidebarToggleFollowsSidebarTrailingEdgeWindowedAndFullscreen() async throws {
+        let f = try Fixture(); defer { f.close() }
+        let window = try XCTUnwrap(f.windows.open(f.a)?.window)
+        f.focus.window = window
+        window.setContentSize(.init(width: 1400, height: 800))
+        let split = try await mountedSplit(in: window)
+        try await activateNativeSearchTestWindow(window)
+
+        func assertTrailingAlignment() async throws {
+            var gaps: [CGFloat] = []
+            for width in [CGFloat(300), CGFloat(460)] {
+                let viewer = try XCTUnwrap(try sidebarButton(in: window) as? NSView)
+                let toolbarWindow = try XCTUnwrap(viewer.window)
+                toolbarWindow.layoutIfNeeded()
+                viewer.superview?.layoutSubtreeIfNeeded()
+                let oldScreenX = toolbarWindow.convertToScreen(viewer.convert(viewer.bounds, to: nil)).minX
+                if width > split.sidebarItem.minimumThickness {
+                    split.sidebarItem.maximumThickness = width
+                    split.sidebarItem.minimumThickness = width
+                } else {
+                    split.sidebarItem.minimumThickness = width
+                    split.sidebarItem.maximumThickness = width
+                }
+                split.splitView.setPosition(width, ofDividerAt: 0)
+                window.layoutIfNeeded(); window.contentView?.layoutSubtreeIfNeeded()
+                // AppKit's fullscreen toolbar has a separate native window.
+                // Its ancestors can move without changing viewer.frame. Wait
+                // for observable horizontal reflow after this one resize, not
+                // for the desired trailing gap tested independently below.
+                viewer.window?.layoutIfNeeded()
+                viewer.superview?.layoutSubtreeIfNeeded()
+                try await until("the native toolbar consumes the sidebar resize") {
+                    guard let owner = viewer.window else { return false }
+                    return abs(owner.convertToScreen(viewer.convert(viewer.bounds, to: nil)).minX - oldScreenX) > 0.5
+                }
+                let sidebar = split.sidebarController.view
+                let sidebarFrame = window.convertToScreen(sidebar.convert(sidebar.bounds, to: nil))
+                XCTAssertEqual(sidebarFrame.width, width, accuracy: 1, "The fixture must actually exercise different sidebar widths")
+                let button = try sidebarButton(in: window)
+                let buttonFrame = button.accessibilityFrame()
+                XCTAssertGreaterThan(buttonFrame.width, 20)
+                XCTAssertGreaterThan(buttonFrame.midX, sidebarFrame.midX,
+                                     "The sidebar-scoped toggle belongs at the sidebar's trailing edge")
+                XCTAssertLessThanOrEqual(buttonFrame.maxX, sidebarFrame.maxX + 1)
+                gaps.append(sidebarFrame.maxX - buttonFrame.maxX)
+            }
+            XCTAssertEqual(gaps[0], gaps[1], accuracy: 1,
+                           "Native section spacing must track the divider instead of leaving the toggle beside traffic lights")
+        }
+        try await assertTrailingAlignment()
+        let entered = expectation(forNotification: NSWindow.didEnterFullScreenNotification, object: window)
+        window.toggleFullScreen(nil)
+        await fulfillment(of: [entered], timeout: 5)
+        guard window.styleMask.contains(.fullScreen) else { throw ChromeFailure.timeout }
+        try await assertTrailingAlignment()
+        split.sidebarItem.minimumThickness = 260
+        split.sidebarItem.maximumThickness = 520
+        try await pressSidebarControl(in: window)
+        XCTAssertTrue(split.sidebarItem.isCollapsed)
+        try await pressSidebarControl(in: window)
+        XCTAssertFalse(split.sidebarItem.isCollapsed)
+        let exited = expectation(forNotification: NSWindow.didExitFullScreenNotification, object: window)
+        window.toggleFullScreen(nil)
+        await fulfillment(of: [exited], timeout: 5)
+    }
+
+    func testFinalCloseRetiresConfirmationCallbacksExactlyOnce() {
+        let confirmation = OutputWorkspaceCloseConfirmation.ConfirmationView()
+        var decisions = 0, cleanups = 0
+        confirmation.shouldClose = { decisions += 1; return false }
+        confirmation.willClose = { cleanups += 1 }
+        confirmation.editorFileURL = { URL(fileURLWithPath: "/private/fixture.txt") }
+        confirmation.saveEligibility = { true }
+        XCTAssertFalse(confirmation.confirmClose())
+        XCTAssertTrue(confirmation.canSaveLyrics)
+        confirmation.controlsWillClose()
+        confirmation.controlsWillClose()
+        XCTAssertEqual(cleanups, 1)
+        XCTAssertTrue(confirmation.confirmClose())
+        XCTAssertEqual(decisions, 1)
+        XCTAssertFalse(confirmation.canSaveLyrics)
+        XCTAssertNil(confirmation.editingFileURL)
+    }
+
+    func testClosedToolbarActionsCannotDispatchOrReviveCapturedWorkspaceCommands() async throws {
+        let f = try Fixture(); defer { f.close() }
+        let window = try XCTUnwrap(f.windows.open(f.a)?.window)
+        f.focus.window = window
+        let split = try await mountedSplit(in: window)
+        let toolbar = try XCTUnwrap(split.toolbarController)
+        let state = try XCTUnwrap(f.states.values[f.a])
+        let search = try XCTUnwrap(toolbar.toolbar.items.first { $0.itemIdentifier == PresentationToolbarController.searchID })
+        let action = try XCTUnwrap(search.action)
+        XCTAssertTrue(NSApp.sendAction(action, to: toolbar, from: search))
+        XCTAssertEqual(state.searches, 1)
+        let thumbnails = toolbar.thumbnailControls
+        let choices = try XCTUnwrap(thumbnails.button.menu?.items.first { $0.submenu != nil }?.submenu)
+        let choice = try XCTUnwrap(choices.items.first { $0.action != nil && $0.state != .on })
+        let percentageAction = try XCTUnwrap(choice.action)
+        let savedScale = f.defaults.object(forKey: "thumbnailScale") as? Double
+        window.close()
+        XCTAssertFalse(toolbar.validateToolbarItem(search))
+        XCTAssertFalse(thumbnails.button.isEnabled)
+        XCTAssertTrue(NSApp.sendAction(action, to: toolbar, from: search))
+        toolbar.updateActions(toggleSlides: {}, searchLibrary: { state.searches += 100 }, manageOutputs: {})
+        XCTAssertTrue(NSApp.sendAction(action, to: toolbar, from: search))
+        XCTAssertTrue(NSApp.sendAction(percentageAction, to: thumbnails, from: choice))
+        XCTAssertEqual(state.searches, 1)
+        XCTAssertEqual(f.defaults.object(forKey: "thumbnailScale") as? Double, savedScale)
+    }
+
     func testCollapsedSidebarReleasesTheWholeDetailArea() async throws {
         let f = try Fixture(); defer { f.close() }
         let window = try XCTUnwrap(f.windows.open(f.a)?.window)
@@ -186,6 +297,10 @@ final class WorkspaceChromeTests: XCTestCase {
         XCTAssertEqual(state.renderedOwner, stateOwner)
         XCTAssertEqual(state.ownerInitializations, 1)
         XCTAssertEqual(editor.string, draft)
+        let search = try XCTUnwrap(firstToolbar.items.first { $0.itemIdentifier == PresentationToolbarController.searchID })
+        XCTAssertTrue(toolbar.validateToolbarItem(search))
+        XCTAssertTrue(NSApp.sendAction(try XCTUnwrap(search.action), to: search.target, from: search))
+        XCTAssertEqual(state.searches, 1, "Parking and reopening must retain live toolbar command ownership")
         XCTAssertTrue(editor.undoManager === undo)
         undo.undo()
         try await until("the original document undo history remains usable") { state.renderedDraft == "" }
@@ -235,16 +350,7 @@ final class WorkspaceChromeTests: XCTestCase {
     private func pressSidebarControl(in window: NSWindow) async throws {
         let split = try splitController(in: window)
         let wasCollapsed = split.sidebarItem.isCollapsed
-        var visited: Set<ObjectIdentifier> = []
-        func elements(_ object: Any) -> [any NSAccessibilityProtocol] {
-            guard let element = object as? any NSAccessibilityProtocol,
-                  visited.insert(ObjectIdentifier(element)).inserted else { return [] }
-            return [element] + (element.accessibilityChildren() ?? []).flatMap(elements)
-        }
-        let button = try XCTUnwrap(elements(window).first {
-            $0.isAccessibilityElement() && $0.accessibilityRole() == .button
-                && ["Sidebar", "Hide Sidebar", "Show Sidebar"].contains($0.accessibilityLabel() ?? "")
-        })
+        let button = try sidebarButton(in: window)
         XCTAssertTrue(button.isAccessibilityEnabled())
         XCTAssertGreaterThan(button.accessibilityFrame().width, 20)
         await withCheckedContinuation { continuation in
@@ -257,6 +363,18 @@ final class WorkspaceChromeTests: XCTestCase {
                 && (wasCollapsed || abs(split.splitView.convert(split.detailController.view.bounds,
                     from: split.detailController.view).width - split.splitView.bounds.width) < 1)
         }
+    }
+    private func sidebarButton(in window: NSWindow) throws -> any NSAccessibilityProtocol {
+        var visited: Set<ObjectIdentifier> = []
+        func elements(_ object: Any) -> [any NSAccessibilityProtocol] {
+            guard let element = object as? any NSAccessibilityProtocol,
+                  visited.insert(ObjectIdentifier(element)).inserted else { return [] }
+            return [element] + (element.accessibilityChildren() ?? []).flatMap(elements)
+        }
+        return try XCTUnwrap(elements(window).first {
+            $0.isAccessibilityElement() && $0.accessibilityRole() == .button
+                && ["Sidebar", "Hide Sidebar", "Show Sidebar"].contains($0.accessibilityLabel() ?? "")
+        })
     }
     private func trackingItem(in toolbar: NSToolbar) throws -> NSTrackingSeparatorToolbarItem {
         try XCTUnwrap(toolbar.items.compactMap { $0 as? NSTrackingSeparatorToolbarItem }.first)
@@ -330,6 +448,7 @@ final class WorkspaceChromeTests: XCTestCase {
     @MainActor private final class Focus { weak var window: NSWindow? }
     @MainActor private final class States { var values: [UUID: DetailProbe] = [:] }
     @MainActor private final class DetailProbe: ObservableObject {
+        var searches = 0
         @Published var revision = 0
         var profile = OutputProfile(id: UUID(), name: "Inherited fixture profile", kind: .audience, padding: 1.25)
         var geometry = CGSize(width: 1600, height: 900)
@@ -365,7 +484,7 @@ final class WorkspaceChromeTests: XCTestCase {
             }
             sidebar.isLibraryLoading = state.revision.isMultiple(of: 2)
             return WorkspaceSplitView(sidebarConfiguration: sidebar, workspaceMenu: menu, defaults: defaults,
-                session: session, updates: updates, toggleSlides: {}, searchLibrary: {}, manageOutputs: {},
+                session: session, updates: updates, toggleSlides: {}, searchLibrary: { state.searches += 1 }, manageOutputs: {},
                 detail: StatefulDetail(probe: state, revision: state.revision))
                 .environment(\.audienceOutputProfile, state.profile)
                 .environment(\.lyricsProjectionSize, state.geometry)

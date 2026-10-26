@@ -11,12 +11,6 @@ final class LyricsTextViewTests: XCTestCase {
         // those events normally; the other fixtures inject explicitly grouped edits.
         fixture.undo.groupsByEvent = true
         defer { fixture.close() }
-        let previousApplication = NSWorkspace.shared.frontmostApplication
-        defer {
-            if previousApplication?.processIdentifier != ProcessInfo.processInfo.processIdentifier {
-                previousApplication?.activate(options: [.activateIgnoringOtherApps])
-            }
-        }
         let previousMenu = NSApp.mainMenu
         let board = NSPasteboard(name: .find)
         let savedFindItems = (board.pasteboardItems ?? []).map { source in

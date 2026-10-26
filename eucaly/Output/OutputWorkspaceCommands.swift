@@ -290,6 +290,7 @@ struct OutputWorkspaceCloseConfirmation: NSViewRepresentable {
         return view
     }
     func updateNSView(_ view: ConfirmationView, context: Context) {
+        guard !view.isRetired else { return }
         view.shouldClose = shouldClose
         view.willClose = willClose
         view.editorFileURL = editorFileURL
@@ -298,7 +299,12 @@ struct OutputWorkspaceCloseConfirmation: NSViewRepresentable {
         commands.closeConfirmation = view
     }
 
+    static func dismantleNSView(_ view: ConfirmationView, coordinator: ()) {
+        view.retire()
+    }
+
     final class ConfirmationView: NSView, OutputWorkspaceCloseConfirming {
+        private(set) var isRetired = false
         var shouldClose: () -> Bool = { true }
         var willClose: () -> Void = {}
         var editorFileURL: () -> URL? = { nil }
@@ -308,7 +314,17 @@ struct OutputWorkspaceCloseConfirmation: NSViewRepresentable {
         var canSaveLyrics: Bool { saveEligibility() }
         func fileWasRemoved(_ candidate: LibraryFileActionService.Candidate) { didRemoveFile(candidate) }
         func confirmClose() -> Bool { shouldClose() }
-        func controlsWillClose() { willClose() }
+        func controlsWillClose() {
+            guard !isRetired else { return }
+            let cleanup = willClose
+            retire()
+            cleanup()
+        }
+        func retire() {
+            isRetired = true
+            shouldClose = { true }; willClose = {}
+            editorFileURL = { nil }; saveEligibility = { false }; didRemoveFile = { _ in }
+        }
     }
 }
 

@@ -616,7 +616,8 @@ reach its intended target in the fullscreen observation. The inspected run is
 visual/input evidence only: its injected search fixture remained retained at
 forced close under external accessibility inspection, as also observed before
 this follow-up. Uninspected automated lifecycle regressions check release
-separately; cleanup timing under external inspection remains unqualified.
+separately; cleanup timing under external inspection was unqualified at that
+stage. The subsequent callback-retirement investigation below closes that gap.
 
 Earlier accessory validation on 27 October 2026 passed `make test`: 1,153 XCTest cases,
 nine opt-in qualification skips, one Swift Testing case, seven feed tests,
@@ -646,6 +647,102 @@ no actionable production regression in this scoped change.
 `/Users/suku/Applications/eucaly.app`; deep, strict signature verification passed.
 The archive still reports the pre-existing unused `handlers` binding warning in
 the unchanged search-palette renderer.
+
+The subsequent cleanup investigation reproduced two concrete strong paths by
+retaining the native close-confirmation view and the fullscreen toolbar/Quick
+Controls owners separately. Both probes failed before repair: the search model,
+inventory and index survived, and SQLite did not close. Their stored callbacks
+captured `ContentView`, so removing the hosting root alone was insufficient.
+Final controls disposal now severs those callbacks once, ends toolbar observation
+and retires retained menu commands. Parking does not retire them. A third probe
+retains the complete inspected native/accessibility view graph across fullscreen
+close and checks resource release while that graph remains alive. These checks
+also preserve the accepted Current and running output. Late background-panel
+responses cannot start a new edit after retirement; a choice accepted before
+close continues under the app-owned store/output operation.
+
+Error-attribution diagnostics also established that the installed XCTest can
+report the wrong escaping Swift error. An intentionally failing temporary test
+threw `actualEscapingError`, then handled `handledDuringUnwind` in a defer;
+XCTest reported the handled error. A controlled native focus-loss test captured
+`NativeSearchTestFocusError.unavailable` before fixture cleanup, while XCTest
+reported the same `Gestures.GesturePhaseQueue<()>.InvalidTransition` seen earlier.
+The probes and result bundles are preserved under
+`build/audit/gestures-error-identity-diagnostic-*` and
+`build/audit/native-focus-interleaving-evidence-*`; deliberately failing probes
+were removed from the app test target. This reproduces the historical reported
+symptom; it does not recover the primary error from the pruned original bundle.
+
+The focus investigation then captured WindowServer rejecting the hosted test
+process because its activation count was zero. Xcode had launched it with
+`LSLaunchDoNotBringFrontmost=true`; changing readiness predicates and retaining
+foreground ownership alone did not give that process foreground admission.
+The native test harness now makes one public LaunchServices foreground-open
+transaction for its exact, already-running installation. It disables application
+substitution and new-instance requests, checks that the installation has only
+the current PID, and verifies the completion returns that same PID and URL.
+A DEBUG-only entry guard exits before preference migration or application
+construction if that marked request unexpectedly launches an uninjected copy.
+The operator's installed app is never an eligible substitute.
+
+Native editor fixtures await real active/key state before synthetic input.
+Notification consumption checks simultaneous current state rather than latching
+unrelated historical events. Per-fixture external activation is removed; the
+previous app is restored after the bundle's native fixture cleanup. A failed
+admission or focus check is recorded before throwing, preserving the primary
+failure even with the installed XCTest's misleading cleanup-error attribution.
+No retry, activation timer, hidden window or suppressed assertion is used.
+The exact failing editor-to-search sequence passed after this admission repair,
+with same-process checks intact. Denial and successful admission records are
+under `build/audit/native-focus-windowserver-denial-*`,
+`native-focus-launch-contract-*` and `native-focus-admitted-process-*`.
+
+The sidebar toggle is deliberately trailing-aligned within the sidebar's own
+tracking-separated toolbar section. Native flexible space precedes it inside
+that section; the main toolbar retains its independent flexible space. The
+regression reproduced the former traffic-light-adjacent placement and now
+measures a stable native trailing gap at 300- and 460-point sidebar widths,
+separately in windowed and fullscreen modes. Collapse still releases the whole
+detail width and the exposed native button restores the sidebar.
+
+Follow-up external native observation passed with the inspector still attached,
+Search open and inspected native views retained while controls closed. Both the
+fullscreen retained-graph fixture and the windowed fixture (also exercised into
+fullscreen) released model/inventory/index and closed SQLite within the original
+five-second teardown deadline. Current stayed accepted and output remained live
+through the observed sidebar/search workflow. Elapsed observation-test time
+includes a deliberate open-window gate and a stalled external-tool call; that
+time is not the resource-close latency. The temporary gate was removed before
+final regression validation.
+
+The macOS UX review approved the active windowed, wide, collapsed and fullscreen
+captures under `build/audit/sidebar-toggle-trailing-*2026-10-27.png`.
+Independent code review found no outstanding actionable issue in the final
+retirement, background-selection ownership, foreground-admission or native
+toolbar-section changes. The scoped integrated run passed all 80 tests.
+
+The first full follow-up run reported 1,165 cases and nine skips, with two
+alignment assertions failing in the new fullscreen geometry fixture. The
+diagnostic established that the toolbar viewer belongs to a separate native
+window in fullscreen and was still at its previous width when the content
+window's layout was sampled. AX and the native converted frame agreed; this
+was not an accessibility-cache discrepancy. Local viewer-frame notifications
+were also insufficient because native ancestors can move that viewer.
+The fixture now observes actual horizontal screen-space reflow after one resize
+request, independently of the unchanged trailing-gap assertions, and exits
+fullscreen before ordinary geometry-fixture disposal. The production layout
+was unchanged. Three subsequent controlled runs passed. Explicit fullscreen
+close/resource tests continue to exercise closing directly from fullscreen.
+
+Final reviewed validation passed `make test`: 1,165 XCTest cases, nine existing
+opt-in qualification skips and zero failures, plus one Swift Testing case,
+seven feed regressions, 103 release-workflow tests and the architecture check
+across 39 network sources. The native test-host process checks, retained-resource
+regressions and completed-reflow alignment checks all passed in that full run.
+`make build` also passed, exporting the signed arm64 app to `~/Applications`;
+deep, strict signature verification passed for the app and bundled components.
+The existing unused-binding warning in the unchanged search-palette renderer
+remains recorded above.
 
 Run `make test`. Added regressions cover tab/focus privacy, two simultaneous Currents,
 shared versus independent players, exclusive assignment/conflicts, workspace-scoped

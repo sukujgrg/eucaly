@@ -32,7 +32,7 @@ final class PresentationToolbarController: NSObject, NSToolbarDelegate, NSToolba
         let actions = Actions(toggleSlides: toggleSlides, searchLibrary: searchLibrary, manageOutputs: manageOutputs)
         self.actions = actions
         quickControls = OutputQuickControlsController(outputs: session.outputCoordinator,
-            workspaceID: session.outputSourceID, manageOutputs: { actions.manageOutputs() })
+            workspaceID: session.outputSourceID, manageOutputs: { actions.handlers?.manageOutputs() })
         thumbnailControls = ThumbnailSettingsMenuController(defaults: thumbnailDefaults)
         super.init()
         toolbar.delegate = self
@@ -54,6 +54,7 @@ final class PresentationToolbarController: NSObject, NSToolbarDelegate, NSToolba
     }
 
     func attachSidebar(split: NSSplitViewController) {
+        guard actions.handlers != nil else { return }
         precondition(splitController == nil || splitController === split)
         splitController = split
         collapseObservation = split.splitViewItems.first?.observe(\.isCollapsed, options: [.new]) { [weak self] _, _ in
@@ -65,18 +66,33 @@ final class PresentationToolbarController: NSObject, NSToolbarDelegate, NSToolba
 
     func updateActions(toggleSlides: @escaping () -> Void, searchLibrary: @escaping () -> Void,
                        manageOutputs: @escaping () -> Void) {
-        actions.toggleSlides = toggleSlides; actions.searchLibrary = searchLibrary; actions.manageOutputs = manageOutputs
+        guard actions.handlers != nil else { return }
+        actions.handlers = .init(toggleSlides: toggleSlides, searchLibrary: searchLibrary, manageOutputs: manageOutputs)
+    }
+
+    /// Native toolbar viewers can outlive their window under accessibility or
+    /// fullscreen retention. Final disposal ends command ownership immediately.
+    func retire() {
+        actions.handlers = nil
+        observations.removeAll()
+        collapseObservation = nil
+        splitController = nil
+        installedWindow = nil
+        toolbar.delegate = nil
+        quickControls.retire()
+        thumbnailControls.retire()
+        for item in items.values { item.target = nil; item.action = nil; item.isEnabled = false }
     }
 
     func install(in window: NSWindow?) {
-        guard let window, splitController?.viewIfLoaded?.window === window else { return }
+        guard actions.handlers != nil, let window, splitController?.viewIfLoaded?.window === window else { return }
         installedWindow = window
         if window.toolbar !== toolbar { window.toolbar = toolbar }
         render()
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        var result: [NSToolbarItem.Identifier] = [Self.sidebarID, Self.sidebarSeparatorID,
+        var result: [NSToolbarItem.Identifier] = [.flexibleSpace, Self.sidebarID, Self.sidebarSeparatorID,
             .init("output.destination"), .init("output.network"), .space,
             .init("output.appearance"), .init("output.background"), .init("workspace.thumbnails"),
             .flexibleSpace, Self.searchID, .space, Self.slidesID]
@@ -142,6 +158,7 @@ final class PresentationToolbarController: NSObject, NSToolbarDelegate, NSToolba
     }
 
     private func render() {
+        guard actions.handlers != nil else { return }
         let showing = !session.isEmpty && session.isPresenting && session.areSlidesVisible
         let label = showing ? "Hide Slides" : "Show Slides"
         let slides = items[Self.slidesID]
@@ -191,6 +208,7 @@ final class PresentationToolbarController: NSObject, NSToolbarDelegate, NSToolba
     }
 
     func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
+        guard actions.handlers != nil else { return false }
         switch item.itemIdentifier {
         case Self.slidesID: return !session.isEmpty
         case Self.updateID: return updates.state.availableVersion != nil && updates.state.canCheckForUpdates
@@ -200,18 +218,21 @@ final class PresentationToolbarController: NSObject, NSToolbarDelegate, NSToolba
     }
 
     @objc func toggleSidebar(_ sender: Any?) { splitController?.toggleSidebar(sender) }
-    @objc private func toggleSlides(_ sender: Any?) { if !session.isEmpty { actions.toggleSlides() } }
-    @objc private func searchLibrary(_ sender: Any?) { actions.searchLibrary() }
+    @objc private func toggleSlides(_ sender: Any?) { if !session.isEmpty { actions.handlers?.toggleSlides() } }
+    @objc private func searchLibrary(_ sender: Any?) { actions.handlers?.searchLibrary() }
     @objc private func showUpdate(_ sender: Any?) {
-        if updates.state.availableVersion != nil { updates.checkForUpdates() }
+        if actions.handlers != nil, updates.state.availableVersion != nil { updates.checkForUpdates() }
     }
 
     private final class Actions {
-        var toggleSlides: () -> Void
-        var searchLibrary: () -> Void
-        var manageOutputs: () -> Void
+        struct Handlers {
+            let toggleSlides: () -> Void
+            let searchLibrary: () -> Void
+            let manageOutputs: () -> Void
+        }
+        var handlers: Handlers?
         init(toggleSlides: @escaping () -> Void, searchLibrary: @escaping () -> Void, manageOutputs: @escaping () -> Void) {
-            self.toggleSlides = toggleSlides; self.searchLibrary = searchLibrary; self.manageOutputs = manageOutputs
+            handlers = Handlers(toggleSlides: toggleSlides, searchLibrary: searchLibrary, manageOutputs: manageOutputs)
         }
     }
 }

@@ -92,6 +92,7 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
     // Runtime state changes update descriptions on retained native items. Menu
     // identity belongs to the saved routing topology, preserving open menus.
     private var networkMoveActions: [(item: NSMenuItem, destinationID: UUID, workspaceID: UUID)] = []
+    private var isRetired = false
 
     init(outputs: OutputCoordinator, workspaceID: UUID? = nil, manageOutputs: @escaping () -> Void,
          makeBackgroundPanel: @escaping @MainActor () -> NSOpenPanel = { NSOpenPanel() },
@@ -113,6 +114,7 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
     }
 
     func render() {
+        guard !isRetired else { return }
         renderNetworkRouting()
         let destination = store.defaultDestination
         let profile = destination.flatMap { store.profile($0.profileID) }
@@ -367,7 +369,8 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         return menu
     }
     private func chooseBackground(_ target: OutputProfileStore.QuickEditTarget) {
-        guard let destination = store.enabledDefault(for: target), store.profile(destination.profileID) != nil,
+        guard !isRetired,
+              let destination = store.enabledDefault(for: target), store.profile(destination.profileID) != nil,
               let window = backgroundButton.window, window.attachedSheet == nil else { return }
         let store = store
         let outputs = outputs
@@ -382,11 +385,14 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         panel.allowedContentTypes = [.image, .movie]
         // Creating an AppKit panel may run a nested event loop. The controls,
         // requesting workspace and default output must still be the same.
-        guard backgroundButton.window === window, window.attachedSheet == nil,
+        guard !isRetired, backgroundButton.window === window, window.attachedSheet == nil,
               store.document.workspaces.contains(where: { $0.id == requestingWorkspaceID }),
               store.enabledDefault(for: target) != nil else { return }
-        beginBackgroundSheet(panel, window) { result in
-            guard result == .OK, let url = panel.url else { return }
+        beginBackgroundSheet(panel, window) { [weak self] result in
+            guard self?.isRetired == false, result == .OK, let url = panel.url else { return }
+            // Accepting the native selection transfers preparation to the app's
+            // store/output owners. Closing controls after this admission must
+            // not discard an explicitly accepted background choice.
             let fileAcquisitionGuard = outputs.makeFileAcquisitionGuard(for: url)
             Task { @MainActor in
                 let bookmark = await Task.detached { createBackgroundBookmark(url) }.value
@@ -442,7 +448,14 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         item.target = self; item.representedObject = Command(action); item.isEnabled = enabled; item.state = selected ? .on : .off
         return item
     }
-    @objc private func performCommand(_ sender: NSMenuItem) { (sender.representedObject as? Command)?.action() }
+    func retire() {
+        isRetired = true
+        for button in [outputButton, networkButton, appearanceButton, backgroundButton] { button.isEnabled = false }
+    }
+    @objc private func performCommand(_ sender: NSMenuItem) {
+        guard !isRetired else { return }
+        (sender.representedObject as? Command)?.action()
+    }
     private final class Command {
         let action: () -> Void
         init(_ action: @escaping () -> Void) { self.action = action }

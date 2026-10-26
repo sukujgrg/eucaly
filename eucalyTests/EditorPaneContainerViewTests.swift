@@ -8,7 +8,7 @@ final class EditorPaneContainerViewTests: XCTestCase {
     func testFooterAndCloseRouteExplicitActionsWithoutEditingTheDraft() async throws {
         let fixture = EditorPaneFixture(draft: "Original lyrics", width: 680)
         defer { fixture.close() }
-        await fixture.settle()
+        try await fixture.settle()
 
         let buttons = try fixture.activateButtons()
         for action: EditorPaneAction in [.cleanUp, .previewDraft, .save, .close] {
@@ -22,12 +22,12 @@ final class EditorPaneContainerViewTests: XCTestCase {
     func testEmptyAndWhitespaceDraftsDisableTextTransformsAndRespectPreviewState() async throws {
         let fixture = EditorPaneFixture(draft: "Original lyrics", width: 360)
         defer { fixture.close() }
-        await fixture.settle()
+        try await fixture.settle()
         let buttons = try fixture.activateButtons()
         XCTAssertEqual(buttons.count, 4)
         fixture.resetActions()
         fixture.update(draft: "", canSave: false, canPreview: false)
-        await fixture.settle()
+        try await fixture.settle()
         for button in buttons where button.action != .close { fixture.click(button.frame) }
         XCTAssertTrue(fixture.actions.isEmpty, "Empty drafts cannot start cleanup, Preview or Save")
 
@@ -41,7 +41,7 @@ final class EditorPaneContainerViewTests: XCTestCase {
         XCTAssertTrue(menu.items[(formatIndex + 1)..<clearIndex].contains(where: \.isSeparatorItem))
 
         fixture.update(draft: " \n\t", canSave: false, canPreview: false)
-        await fixture.settle()
+        try await fixture.settle()
         for button in buttons where button.action != .close { fixture.click(button.frame) }
         XCTAssertTrue(fixture.actions.isEmpty, "Whitespace-only drafts cannot start cleanup, Preview or Save")
         let whitespaceMenu = try fixture.textToolsMenu()
@@ -52,7 +52,7 @@ final class EditorPaneContainerViewTests: XCTestCase {
         XCTAssertEqual(fixture.actions, [.clear])
 
         fixture.update(draft: "Verse\nOriginal lyrics", canSave: true, canPreview: true)
-        await fixture.settle()
+        try await fixture.settle()
         let contentMenu = try fixture.textToolsMenu()
         let contentFormat = try XCTUnwrap(contentMenu.items.firstIndex { $0.title == "Normalize Formatting" })
         XCTAssertTrue(contentMenu.items[contentFormat].isEnabled)
@@ -60,7 +60,7 @@ final class EditorPaneContainerViewTests: XCTestCase {
         XCTAssertEqual(fixture.actions, [.clear, .format])
 
         fixture.update(draft: fixture.draft, canSave: true, canPreview: false)
-        await fixture.settle()
+        try await fixture.settle()
         fixture.resetActions()
         fixture.click(try XCTUnwrap(buttons.first { $0.action == .previewDraft }).frame)
         XCTAssertTrue(fixture.actions.isEmpty, "A synchronized Preview does not need a second update")
@@ -71,7 +71,7 @@ final class EditorPaneContainerViewTests: XCTestCase {
     func testProminentSavePreservesNativeReturnAndUndo() async throws {
         let fixture = EditorPaneFixture(draft: "Original lyrics", width: 360)
         defer { fixture.close() }
-        await fixture.settle()
+        try await fixture.settle()
         let textView = try XCTUnwrap(fixture.descendants.compactMap { $0 as? LyricsTextView }.first)
         XCTAssertTrue(fixture.window.makeFirstResponder(textView))
         textView.setSelectedRange(NSRange(location: textView.string.utf16.count, length: 0))
@@ -100,7 +100,7 @@ final class EditorPaneContainerViewTests: XCTestCase {
         defer { fixture.close() }
         for width: CGFloat in [680, 360, 280, 240] {
             fixture.resize(width: width)
-            await fixture.settle()
+            try await fixture.settle()
             let paneFrame = fixture.window.convertToScreen(fixture.host.convert(fixture.host.bounds, to: nil))
             let buttons = try fixture.activateButtons()
             for action: EditorPaneAction in [.cleanUp, .previewDraft, .save, .close] {
@@ -128,14 +128,12 @@ private final class EditorPaneFixture {
     let window: NSWindow
     let host: NSHostingView<EditorPaneContainerView>
     let state: EditorPaneFixtureState
-    private let previousApplication: NSRunningApplication?
     private weak var previousKeyWindow: NSWindow?
 
     var draft: String { state.draft }
     var actions: [EditorPaneAction] { state.actions }
 
     init(draft: String, width: CGFloat, canSave: Bool = true, canPreview: Bool = true) {
-        previousApplication = NSWorkspace.shared.frontmostApplication
         previousKeyWindow = NSApp.keyWindow
         state = EditorPaneFixtureState(draft: draft, canSave: canSave, canPreview: canPreview)
         host = NSHostingView(rootView: Self.view(state))
@@ -145,7 +143,6 @@ private final class EditorPaneFixture {
         window.isReleasedWhenClosed = false
         window.contentView = host
         host.frame = NSRect(x: 0, y: 0, width: width, height: 560)
-        NSRunningApplication.current.activate(options: [])
         window.makeKeyAndOrderFront(nil)
     }
 
@@ -174,7 +171,8 @@ private final class EditorPaneFixture {
         host.frame.size = NSSize(width: width, height: 560)
     }
 
-    func settle() async {
+    func settle() async throws {
+        try await activateNativeSearchTestWindow(window)
         await withCheckedContinuation { continuation in
             DispatchQueue.main.async { continuation.resume() }
         }
@@ -257,9 +255,6 @@ private final class EditorPaneFixture {
     func close() {
         window.close()
         if let previousKeyWindow, previousKeyWindow.isVisible { previousKeyWindow.makeKeyAndOrderFront(nil) }
-        if previousApplication?.processIdentifier != ProcessInfo.processInfo.processIdentifier {
-            previousApplication?.activate(options: [])
-        }
     }
 }
 

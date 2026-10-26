@@ -6,6 +6,7 @@ final class ThumbnailSettingsMenuController: NSObject {
     private let defaults: UserDefaults
     private var renderedSize: Double?
     private var renderedFontSize: Double?
+    private var isRetired = false
 
     init(defaults: UserDefaults) {
         self.defaults = defaults
@@ -17,12 +18,14 @@ final class ThumbnailSettingsMenuController: NSObject {
         refresh()
     }
     func refresh() {
+        guard !isRetired else { return }
         func scale(_ key: String) -> Double {
             defaults.object(forKey: key) == nil ? 1 : defaults.double(forKey: key)
         }
         render(size: scale("thumbnailScale"), fontSize: scale("thumbnailFontScale"))
     }
     func render(size: Double, fontSize: Double) {
+        guard !isRetired else { return }
         let size = size.isFinite ? size : 1
         let fontSize = fontSize.isFinite ? fontSize : 1
         guard size != renderedSize || fontSize != renderedFontSize else { return }
@@ -56,8 +59,12 @@ final class ThumbnailSettingsMenuController: NSObject {
         item.submenu = choices; menu.addItem(item)
     }
     private func percentage(_ value: Double) -> String { value.formatted(.percent.precision(.fractionLength(0...1))) }
+    func retire() {
+        isRetired = true
+        button.isEnabled = false
+    }
     @objc private func selectPercentage(_ sender: NSMenuItem) {
-        guard let choice = sender.representedObject as? Choice else { return }
+        guard !isRetired, let choice = sender.representedObject as? Choice else { return }
         defaults.set(choice.value, forKey: choice.key); refresh()
     }
     private final class Choice {

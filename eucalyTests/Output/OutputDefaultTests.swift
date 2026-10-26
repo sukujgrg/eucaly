@@ -1,10 +1,101 @@
 import AppKit
+import Combine
 import SwiftUI
 import XCTest
 @testable import eucaly
 
 @MainActor
 final class OutputDefaultTests: XCTestCase {
+    func testRetiredQuickControlsRejectNestedPanelCreationAndLateSheetResult() async throws {
+        for retireDuringCreation in [true, false] {
+            let fixture = try QuickBackgroundRetirementFixture()
+            defer { fixture.close() }
+            let panel = QuickBackgroundRetirementPanel()
+            panel.selectedURL = fixture.visualURL
+            let unexpectedBookmark = expectation(description: "Retired controls must not admit background preparation")
+            unexpectedBookmark.isInverted = true
+            var completion: ((NSApplication.ModalResponse) -> Void)?
+            var controls: OutputQuickControlsController?
+            defer { controls = nil }
+            var managementRequests = 0
+            controls = OutputQuickControlsController(outputs: fixture.hub.outputs,
+                manageOutputs: { managementRequests += 1 },
+                makeBackgroundPanel: {
+                    if retireDuringCreation { controls?.retire() }
+                    return panel
+                }, createBackgroundBookmark: { _ in
+                    unexpectedBookmark.fulfill()
+                    return "unadmitted background"
+                }, beginBackgroundSheet: { _, _, completed in completion = completed })
+            let retained = try XCTUnwrap(controls)
+            fixture.host(retained.backgroundButton)
+            let choose = try item("Choose Visual…", in: retained.backgroundButton.menu)
+            let change = try item("Visual Enabled", in: retained.backgroundButton.menu)
+            let manage = try item("Manage Outputs…", in: retained.backgroundButton.menu)
+            let original = fixture.hub.outputs.profiles.document
+            let current = fixture.hub.outputs.snapshot(for: fixture.hub.nativeRow).current
+            invoke(choose)
+            if retireDuringCreation {
+                XCTAssertNil(completion, "A nested native event must not present a retired controls' panel")
+            } else {
+                let complete = try XCTUnwrap(completion)
+                retained.retire()
+                complete(.OK)
+            }
+            // Retained native menu actions must be inert even if invoked
+            // directly instead of through their disabled popup button.
+            invoke(change)
+            invoke(manage)
+            retained.render()
+            XCTAssertFalse(retained.backgroundButton.isEnabled)
+            await fulfillment(of: [unexpectedBookmark], timeout: 0.15)
+            XCTAssertEqual(managementRequests, 0)
+            XCTAssertEqual(fixture.hub.outputs.profiles.document, original)
+            XCTAssertEqual(fixture.hub.outputs.snapshot(for: fixture.hub.nativeRow).current, current)
+            XCTAssertTrue(fixture.hub.session.isPresenting)
+        }
+    }
+
+    func testAcceptedQuickBackgroundChoiceFinishesAfterControlsRetire() async throws {
+        let fixture = try QuickBackgroundRetirementFixture()
+        defer { fixture.close() }
+        let panel = QuickBackgroundRetirementPanel()
+        panel.selectedURL = fixture.visualURL
+        let started = expectation(description: "Accepted background bookmark preparation starts")
+        let committed = expectation(description: "Accepted background choice commits after controls retire")
+        let gate = QuickBackgroundBookmarkGate(started: started)
+        defer { gate.open() }
+        var completion: ((NSApplication.ModalResponse) -> Void)?
+        let controls = OutputQuickControlsController(outputs: fixture.hub.outputs, manageOutputs: {},
+            makeBackgroundPanel: { panel }, createBackgroundBookmark: { gate.createBookmark($0) },
+            beginBackgroundSheet: { _, _, completed in completion = completed })
+        fixture.host(controls.backgroundButton)
+        let store = fixture.hub.outputs.profiles
+        let original = store.document
+        let current = fixture.hub.outputs.snapshot(for: fixture.hub.nativeRow).current
+        var observedCommit = false
+        let observation = store.objectWillChange.sink {
+            Task { @MainActor in
+                if !observedCommit, store.defaultDestination.flatMap({ store.profile($0.profileID) })?.background.bookmark != nil {
+                    observedCommit = true
+                    committed.fulfill()
+                }
+            }
+        }
+        defer { observation.cancel() }
+        invoke(try item("Choose Visual…", in: controls.backgroundButton.menu))
+        try XCTUnwrap(completion)(.OK)
+        await fulfillment(of: [started], timeout: 3)
+        controls.retire()
+        XCTAssertEqual(store.document, original, "The controlled bookmark worker is still suspended")
+        gate.open()
+        await fulfillment(of: [committed], timeout: 3)
+        XCTAssertNotNil(store.defaultDestination.flatMap { store.profile($0.profileID) }?.background.bookmark)
+        XCTAssertEqual(fixture.hub.outputs.snapshot(for: fixture.hub.nativeRow).current, current)
+        XCTAssertTrue(fixture.hub.session.isPresenting)
+        XCTAssertFalse(controls.backgroundButton.isEnabled)
+    }
+
     func testDefaultMigrationPersistenceAndRemoval() throws {
         let suite = "DefaultOutputs.\(UUID())", defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -751,5 +842,65 @@ private struct OutputToolbarFixture: View {
             }
             .padding())
         .frame(minWidth: 1060, minHeight: 600)
+    }
+}
+
+@MainActor
+private final class QuickBackgroundRetirementFixture {
+    let hub = LocalOutputHarness()
+    let window: NSWindow
+    let visualURL: URL
+
+    init() throws {
+        visualURL = FileManager.default.temporaryDirectory.appendingPathComponent("quick-background-retirement-\(UUID()).png")
+        let image = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 1, pixelsHigh: 1,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 4, bitsPerPixel: 32))
+        image.setColor(.white, atX: 0, y: 0)
+        try XCTUnwrap(image.representation(using: .png, properties: [:])).write(to: visualURL)
+        window = NSWindow(contentRect: .init(x: -10000, y: -10000, width: 400, height: 200),
+            styleMask: .titled, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        hub.load("Verse\nCurrent remains live while controls retire")
+        hub.session.showSlides()
+    }
+
+    func host(_ button: NSButton) {
+        button.frame = .init(x: 10, y: 10, width: 160, height: 28)
+        window.contentView?.addSubview(button)
+    }
+
+    func close() {
+        window.close()
+        hub.outputs.stopAllOutputs()
+        try? FileManager.default.removeItem(at: visualURL)
+    }
+}
+
+@MainActor
+private final class QuickBackgroundRetirementPanel: NSOpenPanel {
+    var selectedURL: URL?
+    override var url: URL? { selectedURL }
+}
+
+private final class QuickBackgroundBookmarkGate: @unchecked Sendable {
+    let started: XCTestExpectation
+    private let condition = NSCondition()
+    private var isOpen = false
+    init(started: XCTestExpectation) { self.started = started }
+
+    func createBookmark(_ url: URL) -> String? {
+        started.fulfill()
+        condition.lock()
+        while !isOpen { condition.wait() }
+        condition.unlock()
+        return SecurityScopedBookmarks.createBookmark(for: url)
+    }
+
+    func open() {
+        condition.lock()
+        isOpen = true
+        condition.broadcast()
+        condition.unlock()
     }
 }

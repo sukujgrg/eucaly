@@ -14,14 +14,56 @@ final class LibrarySearchWorkspaceTests: XCTestCase {
         try await exerciseSearchFixture(fullscreen: true)
     }
 
-    private func exerciseSearchFixture(fullscreen: Bool) async throws {
+    func testClosingControlsReleasesSearchFixtureWithRetainedNativeConfirmation() async throws {
+        var retained: AnyObject?
+        try await exerciseSearchFixture(fullscreen: false, beforeClose: { window in
+            func find(_ view: NSView) -> OutputWorkspaceCloseConfirmation.ConfirmationView? {
+                if let confirmation = view as? OutputWorkspaceCloseConfirmation.ConfirmationView { return confirmation }
+                return view.subviews.lazy.compactMap(find).first
+            }
+            retained = try XCTUnwrap(find(try XCTUnwrap(window.contentView)))
+        })
+        withExtendedLifetime(retained) {}
+    }
+
+    func testClosingFullscreenControlsReleasesSearchFixtureWithRetainedToolbarActions() async throws {
+        var retained: [AnyObject] = []
+        try await exerciseSearchFixture(fullscreen: true, beforeClose: { window in
+            let toolbar = try XCTUnwrap(window.toolbar?.delegate as? PresentationToolbarController)
+            retained = [toolbar, toolbar.quickControls]
+        })
+        withExtendedLifetime(retained) {}
+    }
+
+    func testClosingFullscreenControlsReleasesSearchFixtureWithInspectedAccessibilityViews() async throws {
+        var retained: [AnyObject] = []
+        try await exerciseSearchFixture(fullscreen: true, beforeClose: { window in
+            var visited: Set<ObjectIdentifier> = []
+            func inspect(_ object: AnyObject) {
+                guard visited.insert(ObjectIdentifier(object)).inserted else { return }
+                retained.append(object)
+                if let view = object as? NSView { for child in view.subviews { inspect(child) } }
+                if let element = object as? any NSAccessibilityProtocol {
+                    for child in element.accessibilityChildren() ?? [] { inspect(child as AnyObject) }
+                }
+            }
+            inspect(window)
+            if let content = window.contentView { inspect(content) }
+            XCTAssertGreaterThan(retained.count, 20, "The probe must retain actual native and accessibility surfaces")
+        })
+        withExtendedLifetime(retained) {}
+    }
+
+    private func exerciseSearchFixture(fullscreen: Bool,
+        beforeClose: (NSWindow) throws -> Void = { _ in }) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("SearchContentView-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let closed = expectation(description: "Search fixture releases its SQLite connection before removing the library")
         let lifetime = FixtureLifetime()
         var failure: Error?
         do {
-            try await exerciseSearchCommandInRealContentView(root: root, fullscreen: fullscreen, lifetime: lifetime, onConnectionClosed: { result in
+            try await exerciseSearchCommandInRealContentView(root: root, fullscreen: fullscreen, lifetime: lifetime,
+                beforeClose: beforeClose, onConnectionClosed: { result in
                 XCTAssertEqual(result, SQLITE_OK)
                 if result == SQLITE_OK {
                     do { try FileManager.default.removeItem(at: root) }
@@ -43,7 +85,8 @@ final class LibrarySearchWorkspaceTests: XCTestCase {
     /// The close callback owns directory removal, including if a failed test
     /// leaves framework references alive beyond the assertion deadline.
     private func exerciseSearchCommandInRealContentView(
-        root: URL, fullscreen: Bool, lifetime: FixtureLifetime, onConnectionClosed: @escaping @Sendable (Int32) -> Void
+        root: URL, fullscreen: Bool, lifetime: FixtureLifetime, beforeClose: (NSWindow) throws -> Void,
+        onConnectionClosed: @escaping @Sendable (Int32) -> Void
     ) async throws {
         let song = root.appendingPathComponent("220192.txt")
         try "Verse\nAmazing grace will always carry me safely home".write(to: song, atomically: true, encoding: .utf8)
@@ -143,11 +186,14 @@ final class LibrarySearchWorkspaceTests: XCTestCase {
         // Capture the task before cancellation clears the model's task handle.
         await inventory.waitForRefresh(root: root)
         for window in windows.windows.values {
+            try beforeClose(window)
             window.close()
             XCTAssertNil(window.toolbar)
             XCTAssertNil(window.contentViewController)
         }
         XCTAssertTrue(windows.controllers.isEmpty)
+        XCTAssertEqual(hub.outputs.snapshot(for: hub.nativeRow).current, current)
+        XCTAssertTrue(hub.session.isPresenting, "Closing retained controls must preserve live output")
         focus.window = nil
         let pendingSearch = model.pendingSearchTaskForTests
         model.cancelDebounce()

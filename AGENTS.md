@@ -177,6 +177,10 @@ correctness. Keep shared process here and domain-specific checks in the roles.
   the window toolbar; parking retains it with the controls. Final disposal
   retires hosted roots and sidebar callback context explicitly, so fullscreen
   surface retention cannot extend the lifetime of workspace UI resources.
+  Final disposal also retires close-confirmation and toolbar callback owners,
+  including retained Quick Controls and thumbnail menu actions. Native/AX views
+  may outlive logical controls without retaining their workspace UI captures;
+  parking keeps those captures and commands intact.
 - The retained detail host is an adjacent native split item, using ordinary
   titlebar safe-area avoidance. Operator panels must not be mirrored beneath
   the sidebar with `NSBackgroundExtensionView` or an overlay/inset layout mode.
