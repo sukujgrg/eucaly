@@ -27,6 +27,9 @@ The app uses a hybrid filesystem/SQLite model:
   lifetime. It retires native editing before removal, without a SwiftUI fade or
   disabling the normal focus ring. Workspace switches dismiss it before saving
   the workspace's underlying editor focus; the query model stays workspace-owned.
+- The native workspace content controller owns stacking. The retained SwiftUI
+  hosting controller and search palette are siblings; never insert native search
+  views inside the hosting view's managed hierarchy.
 - Add files using the row's **+**. Tab reaches the selected file's button, Space
   adds it, and Shift+Tab returns to the query. The native context menu and accessible
   Add to Playlist action remain available. The footer contains Close and Preview.

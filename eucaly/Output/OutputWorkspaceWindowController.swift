@@ -314,7 +314,7 @@ final class OutputWorkspaceWindowController: NSWindowController, NSWindowDelegat
         let host = NSHostingController(rootView: rootView.frame(minWidth: minimumContentSize.width, minHeight: minimumContentSize.height))
         host.sceneBridgingOptions = [.toolbars]
         host.sizingOptions = [.minSize]
-        return host
+        return OutputWorkspaceContentController(hostedContent: host)
     }
 
     init(controls: OutputWorkspaceControls, autosavesFrame: Bool,

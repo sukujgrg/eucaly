@@ -390,6 +390,8 @@ Future multi-window support must retain the same media-flow and explicit-selecti
   - `LibrarySearchPalettePresenter` owns an AppKit palette in the existing workspace
     window. Native field/results controllers own keyboard and accessibility work;
     no SwiftUI search overlay or presentation animation owns their lifetime.
+    `OutputWorkspaceContentController` owns the native root: the retained SwiftUI
+    host and search palette are siblings, outside SwiftUI's managed view hierarchy.
     Dismiss it before workspace focus capture or controls teardown. Playlist feedback
     stays inside search; adding never opens Preview or changes Current.
 

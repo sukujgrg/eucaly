@@ -5,6 +5,103 @@ import XCTest
 
 @MainActor
 final class LibrarySearchWorkspaceTests: XCTestCase {
+    func testSearchCommandInRealContentViewOpensVisiblePaletteAndKeepsCurrent() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("SearchContentView-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let song = root.appendingPathComponent("grace.txt")
+        try "Verse\nAmazing grace".write(to: song, atomically: true, encoding: .utf8)
+        let suite = "SearchContentView." + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defaults.set(root.path, forKey: "libraryRootPath")
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let index = LibraryTextSearchIndex(databaseURL: root.appendingPathComponent("index.sqlite"))
+        let model = LibrarySearchModel(index: index)
+        let inventory = LibraryInventoryStore(index: index)
+        let playlist = PlaylistStore()
+        let hub = LocalOutputHarness()
+        hub.load("Verse\nCurrent remains live")
+        hub.session.showSlides()
+        let current = hub.outputs.snapshot(for: hub.nativeRow).current
+        let updates = AppUpdateViewModel(driver: WorkspaceUpdateDriver())
+        var activeWindow: NSWindow?
+        let windows = OutputWorkspaceWindows(outputs: hub.outputs, updates: updates,
+            autosavesWindowFrames: false, keyWindow: { activeWindow },
+            contentFactory: { session, commands in
+                let menu = OutputWorkspaceMenuController(workspaces: commands.workspaceWindows!, workspaceID: session.outputSourceID)
+                return OutputWorkspaceWindowController.hostingController(rootView:
+                    ContentView(session: session, commands: commands, workspaceMenu: menu,
+                        librarySearch: model, playlistStore: playlist, libraryInventory: inventory,
+                        controlPreferences: defaults)
+                    .environmentObject(updates).defaultAppStorage(defaults))
+            })
+        defer { for window in windows.windows.values { window.close() }; hub.outputs.stopAllOutputs() }
+        let host = try XCTUnwrap(windows.open(hub.session.outputSourceID))
+        let window = try XCTUnwrap(host.window)
+        activeWindow = window
+        try await until { model.scopeFilesSnapshot.contains(song) }
+        model.setQuery("grace", currentSelectedURL: nil)
+        try await until { model.queryPhase == .completed }
+        NotificationCenter.default.post(name: .showLibrarySearch, object: nil)
+        let palette = try XCTUnwrap(host.commands.librarySearchPresenter.activeController)
+        await mainQueueBoundary()
+        window.layoutIfNeeded()
+        window.contentView?.layoutSubtreeIfNeeded()
+        assertHittable(palette.searchField, in: window)
+        assertHittable(palette.closeButton, in: window)
+        XCTAssertFalse(try XCTUnwrap(window.toolbar).items.isEmpty)
+        NotificationCenter.default.post(name: .showLibrarySearch, object: nil)
+        XCTAssertTrue(host.commands.librarySearchPresenter.activeController === palette)
+        XCTAssertEqual(model.query, "grace")
+        palette.closeButton.performClick(nil)
+        XCTAssertFalse(host.commands.librarySearchPresenter.isPresented)
+        NotificationCenter.default.post(name: .showLibrarySearch, object: nil)
+        let reopened = try XCTUnwrap(host.commands.librarySearchPresenter.activeController)
+        XCTAssertFalse(reopened === palette)
+        window.layoutIfNeeded()
+        window.contentView?.layoutSubtreeIfNeeded()
+        assertHittable(reopened.searchField, in: window)
+        XCTAssertEqual(model.query, "grace")
+        XCTAssertEqual(hub.outputs.snapshot(for: hub.nativeRow).current, current)
+        XCTAssertTrue(hub.session.isPresenting)
+    }
+
+    func testPaletteControlsStayVisibleAndHittableAboveNavigationSplitView() async throws {
+        let hub = LocalOutputHarness()
+        let windows = OutputWorkspaceWindows(outputs: hub.outputs,
+            updates: AppUpdateViewModel(driver: WorkspaceUpdateDriver()), autosavesWindowFrames: false,
+            contentFactory: { _, _ in
+                OutputWorkspaceWindowController.hostingController(rootView:
+                    NavigationSplitView {
+                        Text("Library")
+                    } detail: {
+                        Text("Private workspace content")
+                    }
+                    .toolbar { ToolbarItem { Button("Workspace action") {} } })
+            })
+        defer { for window in windows.windows.values { window.close() } }
+        let host = try XCTUnwrap(windows.open(hub.session.outputSourceID))
+        let window = try XCTUnwrap(host.window)
+        window.makeKeyAndOrderFront(nil)
+        await mainQueueBoundary()
+        let model = LibrarySearchModel()
+        XCTAssertTrue(host.commands.librarySearchPresenter.present(in: window, model: model,
+            currentSelectedURL: { nil }, displayName: { $0.lastPathComponent },
+            onRunAction: { _ in }, onOpenResult: { _ in }, onAddResultToPlaylist: { _ in .added }))
+        let palette = try XCTUnwrap(host.commands.librarySearchPresenter.activeController)
+        let content = try XCTUnwrap(window.contentView)
+        for size in [NSSize(width: 1280, height: 800), .init(width: 1060, height: 600),
+                     .init(width: 1440, height: 900)] {
+            window.setContentSize(size)
+            await mainQueueBoundary()
+            window.layoutIfNeeded()
+            content.layoutSubtreeIfNeeded()
+            window.display()
+            assertHittable(palette.searchField, in: window)
+            assertHittable(palette.closeButton, in: window)
+        }
+    }
+
     func testNativePaletteIsAccessibleAboveHostedWorkspaceContent() async throws {
         let hub = LocalOutputHarness()
         let windows = OutputWorkspaceWindows(outputs: hub.outputs,
@@ -105,6 +202,19 @@ final class LibrarySearchWorkspaceTests: XCTestCase {
         XCTAssertEqual(hub.session.slides.map(\.id), slides)
         XCTAssertEqual(hub.outputs.snapshot(for: hub.nativeRow).current, accepted)
         XCTAssertTrue(hub.outputs.isOpen(hub.nativeRow))
+    }
+
+    private func assertHittable(_ control: NSView, in window: NSWindow,
+                               file: StaticString = #filePath, line: UInt = #line) {
+        guard let content = window.contentView, let parent = content.superview else {
+            XCTFail("The workspace must have its native content", file: file, line: line)
+            return
+        }
+        let point = parent.convert(NSPoint(x: control.bounds.midX, y: control.bounds.midY), from: control)
+        let hit = content.hitTest(point)
+        XCTAssertTrue(hit === control || hit?.isDescendant(of: control) == true,
+                      "Search controls must be visible above the native split view, not merely present in the AX tree",
+                      file: file, line: line)
     }
 
     private func mainQueueBoundary() async {

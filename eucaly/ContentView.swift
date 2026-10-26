@@ -8,6 +8,7 @@ public struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let workspaceCommands: OutputWorkspaceCommands
     private let workspaceMenu: OutputWorkspaceMenuController
+    private let controlPreferences: UserDefaults
     @State private var hasInitializedControls = false
     @State private var importPanel = LibraryImportPanelController()
     @State private var fileTrashController = LibraryFileTrashController()
@@ -28,7 +29,7 @@ public struct ContentView: View {
     @State private var previewLibraryFiles: [URL] = []
     @State private var backgroundAudioLibraryFiles: [URL] = []
     @State private var selectedPlaylistEntryIDs: Set<UUID> = []
-    @StateObject private var playlistStore = PlaylistStore.shared
+    @StateObject private var playlistStore: PlaylistStore
     @AppStorage("libraryRootPath") private var libraryRootPath: String = ""
     @AppStorage("libraryRootBookmark") private var libraryRootBookmark: String = ""
     @AppStorage("thumbnailScale") private var thumbnailScale: Double = 1.0
@@ -39,9 +40,9 @@ public struct ContentView: View {
     @State private var newFileWarning: String? = nil
     @State private var sidebarSelection: SidebarSelection? = nil
     @State private var selectedAudioURL: URL? = nil
-    @State private var librarySearch = LibrarySearchModel()
+    @State private var librarySearch: LibrarySearchModel
     @State private var libraryScrollRequest: LibraryScrollRequest?
-    private let libraryInventory = LibraryInventoryStore.shared
+    private let libraryInventory: LibraryInventoryStore
     @State private var appliedInventoryRevision: UInt64?
     @State private var isLibraryLoading: Bool = false
     @State private var libraryLoadFailure: LibraryLoadFailure?
@@ -57,10 +58,16 @@ public struct ContentView: View {
     private let windowCaptureFrameRateOptions = [24, 30, 60]
     private let libraryFileScanner = LibraryFileScannerService()
 
-    init(session: PresentationSession, commands: OutputWorkspaceCommands, workspaceMenu: OutputWorkspaceMenuController) {
+    init(session: PresentationSession, commands: OutputWorkspaceCommands, workspaceMenu: OutputWorkspaceMenuController,
+         librarySearch: LibrarySearchModel? = nil, playlistStore: PlaylistStore? = nil,
+         libraryInventory: LibraryInventoryStore? = nil, controlPreferences: UserDefaults = .standard) {
         self.projectionDisplays = session.outputCoordinator.displays
         workspaceCommands = commands
         self.workspaceMenu = workspaceMenu
+        self.controlPreferences = controlPreferences
+        self.libraryInventory = libraryInventory ?? .shared
+        _librarySearch = State(initialValue: librarySearch ?? LibrarySearchModel())
+        _playlistStore = StateObject(wrappedValue: playlistStore ?? .shared)
         _session = StateObject(wrappedValue: session)
         _flow = StateObject(wrappedValue: session.outputCoordinator.program(session.outputSourceID).flow)
         _outputProfiles = ObservedObject(wrappedValue: session.outputCoordinator.profiles)
@@ -193,6 +200,7 @@ public struct ContentView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .modifier(PresentationToolbar(session: session, updates: appUpdateViewModel,
+            thumbnailDefaults: controlPreferences,
             toggleSlides: toggleSlidesFromUI, searchLibrary: presentLibrarySearch,
             manageOutputs: showOutputSettings))
     }
@@ -339,7 +347,7 @@ public struct ContentView: View {
             setBackgroundAudioLoop: { session.setBackgroundAudioLoop($0) },
             setBackgroundAudioVolumeDraft: { backgroundAudioVolumeDraft = $0 },
             setWindowCaptureFrameRate: { windowCaptureFrameRate = $0 }
-        ))
+        ), defaults: controlPreferences)
 
     }
 

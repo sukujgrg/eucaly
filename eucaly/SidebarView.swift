@@ -4,9 +4,10 @@ import SwiftUI
 /// sidebar controls, layout, focus and disclosure state.
 struct SidebarView: NSViewControllerRepresentable {
     let configuration: SidebarConfiguration
+    var defaults: UserDefaults = .standard
 
     func makeNSViewController(context: Context) -> SidebarViewController {
-        SidebarViewController(configuration: configuration)
+        SidebarViewController(configuration: configuration, defaults: defaults)
     }
 
     func updateNSViewController(_ controller: SidebarViewController, context: Context) {
