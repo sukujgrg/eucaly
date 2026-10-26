@@ -32,28 +32,24 @@ final class WorkspaceManagementTests: XCTestCase {
         XCTAssertEqual(session.backgroundAudioPlaybackState, .stopped)
     }
 
-    func testLaunchLeavesRestoredNativeTabsGeometryAndSelectionAlone() throws {
+    func testLaunchLeavesRestoredIndependentWindowsAndGeometryAlone() throws {
         let f = Fixture(); defer { f.close() }
         let other = try XCTUnwrap(f.store.addWorkspace(name: "Online"))
         let third = try XCTUnwrap(f.store.addWorkspace(name: "Lobby"))
         let restored = try XCTUnwrap(f.windows.restoreWindow(identifier: OutputWorkspaceWindows.identifier(for: other)))
-        let tab = try XCTUnwrap(f.windows.restoreWindow(identifier: OutputWorkspaceWindows.identifier(for: third)))
-        restored.addTabbedWindow(tab, ordered: .above)
-        let group = try XCTUnwrap(restored.tabGroup)
-        group.selectedWindow = tab
+        let peer = try XCTUnwrap(f.windows.restoreWindow(identifier: OutputWorkspaceWindows.identifier(for: third)))
         restored.setContentSize(.init(width: 1140, height: 680))
-        let frame = restored.frame, tabFrame = tab.frame
-        let visible = restored.isVisible, tabVisible = tab.isVisible
+        let frame = restored.frame, peerFrame = peer.frame
+        let visible = restored.isVisible, peerVisible = peer.isVisible
         f.defaults.set(f.session.outputSourceID.uuidString, forKey: "lastControlsWorkspaceID")
         let saved = f.store.document
         f.windows.openInitialWorkspace()
-        XCTAssertEqual(Set(f.windows.controllers.keys), [other, third])
-        XCTAssertTrue(f.windows.controllers[other]?.window === restored)
-        XCTAssertTrue(restored.tabGroup === group)
-        XCTAssertTrue(tab.tabGroup === group)
-        XCTAssertTrue(group.selectedWindow === tab)
-        XCTAssertEqual(restored.frame, frame); XCTAssertEqual(tab.frame, tabFrame)
-        XCTAssertEqual(restored.isVisible, visible); XCTAssertEqual(tab.isVisible, tabVisible)
+        XCTAssertEqual(Set(f.windows.windows.keys), [other, third])
+        XCTAssertTrue(f.windows.windows[other] === restored)
+        XCTAssertNil(restored.tabGroup); XCTAssertNil(peer.tabGroup)
+        XCTAssertEqual(restored.tabbingMode, .disallowed); XCTAssertEqual(peer.tabbingMode, .disallowed)
+        XCTAssertEqual(restored.frame, frame); XCTAssertEqual(peer.frame, peerFrame)
+        XCTAssertEqual(restored.isVisible, visible); XCTAssertEqual(peer.isVisible, peerVisible)
         XCTAssertEqual(f.store.document, saved)
         XCTAssertTrue(f.ndi.starts.isEmpty)
     }
@@ -227,12 +223,12 @@ final class WorkspaceManagementTests: XCTestCase {
         let saved = f.store.document
         XCTAssertNotNil(f.windows.deleteWorkspace(id))
         XCTAssertEqual(f.store.document, saved)
-        XCTAssertTrue(f.windows.controllers[id] === controller)
+        XCTAssertTrue(f.windows.controllers[id]?.window === controller.window)
         decision.allowed = true
         let late = OutputDestinationConfiguration(name: "Assigned during approval", profileID: OutputProfile.audienceID, monitor: nil, enabled: false, workspaceID: id)
         decision.duringApproval = { f.store.edit { $0.destinations.append(late) } }
         XCTAssertNotNil(f.windows.deleteWorkspace(id))
-        XCTAssertTrue(f.windows.controllers[id] === controller)
+        XCTAssertTrue(f.windows.controllers[id]?.window === controller.window)
         XCTAssertEqual(decision.closes, 0)
         decision.duringApproval = nil
         f.store.edit { $0.destinations.removeAll { $0.id == late.id } }

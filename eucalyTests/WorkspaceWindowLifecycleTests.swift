@@ -160,7 +160,7 @@ final class WorkspaceWindowLifecycleTests: XCTestCase {
         XCTAssertEqual(decision.checks, 1)
         XCTAssertEqual(decision.closes, 0)
         XCTAssertTrue(window.delegate === controller)
-        XCTAssertTrue(windows.controllers[hub.session.outputSourceID] === controller)
+        XCTAssertTrue(windows.controllers[hub.session.outputSourceID]?.window === window)
         XCTAssertFalse(ApplicationTerminationCoordinator.shared.confirmApplicationTermination())
         XCTAssertEqual(decision.checks, 2)
         decision.allowsClose = true
@@ -194,7 +194,7 @@ final class WorkspaceWindowLifecycleTests: XCTestCase {
         XCTAssertEqual(decision.checks, 1)
         XCTAssertEqual(decision.closes, 0)
         XCTAssertTrue(window.delegate === controller)
-        XCTAssertTrue(windows.controllers[hub.session.outputSourceID] === controller)
+        XCTAssertTrue(windows.controllers[hub.session.outputSourceID]?.window === window)
         decision.allowsClose = true
         window.performClose(nil)
         XCTAssertEqual(decision.checks, 2)
@@ -238,10 +238,10 @@ final class WorkspaceWindowLifecycleTests: XCTestCase {
         XCTAssertFalse(home.responds(to: #selector(NSResponder.newWindowForTab(_:))),
                        "Workspace creation uses the menu without a separate tab-bar plus button")
         let controls = OutputWorkspaceMenuController(workspaces: windows, workspaceID: hub.session.outputSourceID)
-        let create = try XCTUnwrap(controls.menu.item(withTitle: "New Workspace Tab"))
+        let create = try XCTUnwrap(controls.menu.item(withTitle: "New Workspace"))
         XCTAssertTrue(create.isEnabled)
         for _ in 1..<OutputWorkspaceRecord.creationLimit {
-            controls.menu.performActionForItem(at: controls.menu.index(of: create))
+            XCTAssertNotNil(windows.newWorkspace())
         }
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(hub.outputs.profiles.document.workspaces.count, OutputWorkspaceRecord.creationLimit)
@@ -250,18 +250,19 @@ final class WorkspaceWindowLifecycleTests: XCTestCase {
         XCTAssertEqual(hub.outputs.profiles.document.workspaces.count, OutputWorkspaceRecord.creationLimit,
                        "A retained menu action must still enforce the saved workspace limit")
         controls.menuNeedsUpdate(controls.menu)
-        XCTAssertFalse(try XCTUnwrap(controls.menu.item(withTitle: "New Workspace Tab")).isEnabled)
-        XCTAssertEqual(toolbar.items.count, 1, "Workspace creation must preserve the hosted toolbar")
+        XCTAssertFalse(try XCTUnwrap(controls.menu.item(withTitle: "New Workspace")).isEnabled)
+        XCTAssertFalse(try XCTUnwrap(windows.windows.values.first?.toolbar).items.isEmpty, "Workspace creation preserves the hosted toolbar")
         let otherID = try XCTUnwrap(hub.outputs.profiles.document.workspaces.last?.id)
-        let other = try XCTUnwrap(windows.open(otherID, beside: hub.session.outputSourceID)?.window)
+        XCTAssertNotNil(windows.open(hub.session.outputSourceID))
+        let other = try XCTUnwrap(windows.openInNewWindow(otherID)?.window)
         XCTAssertFalse(other.responds(to: #selector(NSResponder.newWindowForTab(_:))))
         other.close()
         try await Task.sleep(for: .milliseconds(100))
-        XCTAssertFalse(controls.validateMenuItem(create), "Closing a tab does not free a saved workspace slot")
+        XCTAssertFalse(controls.validateMenuItem(create), "Closing controls does not free a saved workspace slot")
         XCTAssertNil(windows.deleteWorkspace(otherID))
         try await Task.sleep(for: .milliseconds(100))
         controls.menuNeedsUpdate(controls.menu)
-        XCTAssertTrue(try XCTUnwrap(controls.menu.item(withTitle: "New Workspace Tab")).isEnabled)
+        XCTAssertTrue(try XCTUnwrap(controls.menu.item(withTitle: "New Workspace")).isEnabled)
         XCTAssertTrue(windows.canCreateWorkspace)
     }
 
@@ -298,6 +299,51 @@ final class WorkspaceWindowLifecycleTests: XCTestCase {
         focus.window = settings
         XCTAssertEqual(hub.outputs.preferredLocalSession?.outputSourceID, second)
         XCTAssertEqual(hub.outputs.commandSession(for: settings)?.outputSourceID, second)
+    }
+
+    func testApprovedQuitRestoresVisibleWorkspaceAndSavedReopenIdentity() throws {
+        let suite = "WorkspaceQuit." + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let hub = LocalOutputHarness()
+        let second = try XCTUnwrap(hub.outputs.profiles.addWorkspace())
+        let windows = makeWorkspaceWindows(outputs: hub.outputs, defaults: defaults)
+        defer { for window in windows.windows.values { window.close() } }
+        let host = try XCTUnwrap(windows.open(hub.session.outputSourceID))
+        let window = try XCTUnwrap(host.window)
+        let firstDecision = RecordingCloseDecision(), secondDecision = RecordingCloseDecision()
+        windows.controllers[hub.session.outputSourceID]?.commands.closeConfirmation = firstDecision
+        XCTAssertTrue(windows.open(second, from: hub.session.outputSourceID) === host)
+        windows.controllers[second]?.commands.closeConfirmation = secondDecision
+        XCTAssertTrue(ApplicationTerminationCoordinator.shared.confirmApplicationTermination())
+        XCTAssertEqual(firstDecision.checks, 1); XCTAssertEqual(secondDecision.checks, 1)
+        XCTAssertEqual(host.session.outputSourceID, second)
+        XCTAssertEqual(window.identifier, OutputWorkspaceWindows.identifier(for: second))
+        XCTAssertEqual(defaults.string(forKey: "lastControlsWorkspaceID"), second.uuidString)
+        XCTAssertEqual(Set(windows.windows.keys), [second])
+        XCTAssertTrue(hub.outputs.commandSession(for: window) === host.session)
+    }
+
+    func testApprovedParkedDraftQuitLeavesPreviouslyClosedWindowsClosed() throws {
+        let suite = "WorkspaceParkedQuit." + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let hub = LocalOutputHarness()
+        let second = try XCTUnwrap(hub.outputs.profiles.addWorkspace())
+        let windows = makeWorkspaceWindows(outputs: hub.outputs, defaults: defaults)
+        let first = try XCTUnwrap(windows.open(hub.session.outputSourceID))
+        let retained = try XCTUnwrap(windows.controllers[hub.session.outputSourceID])
+        let decision = RecordingCloseDecision()
+        retained.commands.closeConfirmation = decision
+        windows.open(second, from: hub.session.outputSourceID)
+        first.window?.close()
+        XCTAssertTrue(windows.windows.isEmpty)
+        XCTAssertTrue(ApplicationTerminationCoordinator.shared.confirmApplicationTermination())
+        XCTAssertEqual(decision.checks, 1)
+        XCTAssertEqual(decision.closes, 0)
+        XCTAssertTrue(windows.windows.isEmpty)
+        XCTAssertTrue(windows.controllers[hub.session.outputSourceID] === retained)
+        XCTAssertEqual(defaults.string(forKey: "lastControlsWorkspaceID"), second.uuidString)
     }
 
     private func setFittingFrame(_ window: NSWindow, contentSize: NSSize, topLeftOffset: NSPoint) throws {

@@ -62,7 +62,7 @@ final class ManageWorkspacesController: NSViewController, NSTableViewDataSource,
         }
         let actions = outputSettingsActionRow([openButton, renameButton, deleteButton])
         messageLabel.textColor = .systemOrange; messageLabel.isHidden = true
-        let help = outputSettingsLabel("Windows and tabs reopen where you left them. Closing a tab keeps its workspace and any live output or background audio running. Delete is separate and keeps library files.", secondary: true)
+        let help = outputSettingsLabel("Switch workspaces in the current window, or use Workspaces → Open in New Window for separate controls. Switching and closing controls keep live output and background audio running. Delete is separate and keeps library files.", secondary: true)
         for label in [capacityLabel, deletionLabel, messageLabel, help] {
             label.maximumNumberOfLines = 2; label.lineBreakMode = .byTruncatingTail
         }
@@ -97,7 +97,7 @@ final class ManageWorkspacesController: NSViewController, NSTableViewDataSource,
                        badge: workspaces.tabBadges.badge(for: record.id), outputs: assigned.isEmpty ? "None" : assigned.map {
                 outputs.managementDestinationLabel($0) + ($0.enabled ? "" : " · Disabled")
             }.joined(separator: ", "),
-                       status: activity + (workspaces.controllers[record.id] == nil ? " · Tab closed" : " · Open"))
+                       status: activity + (workspaces.windows[record.id] != nil ? " · Open" : workspaces.controllers[record.id] != nil ? " · Controls retained" : " · Controls closed"))
         }
         if !fresh.contains(where: { $0.id == selectedID }) { selectedID = fresh.first?.id }
         reloading = true
@@ -112,7 +112,7 @@ final class ManageWorkspacesController: NSViewController, NSTableViewDataSource,
         let problem = selectedID.flatMap(outputs.workspaceDeletionProblem)
         deletionLabel.stringValue = problem ?? "This workspace has no assigned outputs or running playback and can be deleted."
         deletionLabel.toolTip = deletionLabel.stringValue
-        openButton.isEnabled = selectedID != nil
+        openButton.isEnabled = selectedID.map { workspaces.canOpen($0) } ?? false
         renameButton.isEnabled = selectedID != nil && outputs.profiles.recoveryNotice == nil
         deleteButton.isEnabled = selectedID != nil && problem == nil
         deleteButton.toolTip = problem ?? "Delete this unused workspace."
@@ -173,7 +173,7 @@ final class ManageWorkspacesController: NSViewController, NSTableViewDataSource,
     }
     @objc private func openSelected(_ sender: Any?) {
         guard let id = selectedID else { return }
-        workspaces.open(id, beside: workspaces.activeWorkspaceID ?? outputs.focusedWorkspaceID)
+        workspaces.open(id)
     }
     @objc private func deleteSelected(_ sender: Any?) {
         guard let id = selectedID else { return }

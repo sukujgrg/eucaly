@@ -248,7 +248,7 @@ final class LyricsEditorDraftActionsTests: XCTestCase {
         let fileURL: URL
         var coordinator: PlainTextEditor.Coordinator!
         var view: LyricsTextView!
-        var undo: UndoManager { window.undoManager! }
+        var undo: UndoManager { view.undoManager! }
 
         init(_ source: String, newDraft: Bool = false) throws {
             let fixtureDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)

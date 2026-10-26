@@ -5,35 +5,28 @@ final class ApplicationTerminationCoordinator {
     static let shared = ApplicationTerminationCoordinator()
 
     private final class Registration {
-        weak var window: NSWindow?
+        weak var owner: AnyObject?
         var shouldClose: () -> Bool
 
-        init(window: NSWindow, shouldClose: @escaping () -> Bool) {
-            self.window = window
+        init(owner: AnyObject, shouldClose: @escaping () -> Bool) {
+            self.owner = owner
             self.shouldClose = shouldClose
         }
     }
 
-    private var registrations: [UUID: Registration] = [:]
+    private var registrations: [ObjectIdentifier: Registration] = [:]
 
     private init() {}
 
-    func register(id: UUID, window: NSWindow, shouldClose: @escaping () -> Bool) {
-        registrations[id] = Registration(window: window, shouldClose: shouldClose)
-    }
-
-    func unregister(id: UUID) {
-        registrations.removeValue(forKey: id)
+    func register(owner: AnyObject, shouldClose: @escaping () -> Bool) {
+        registrations[ObjectIdentifier(owner)] = Registration(owner: owner, shouldClose: shouldClose)
     }
 
     func confirmApplicationTermination() -> Bool {
-        registrations = registrations.filter { $0.value.window != nil }
-        let ordered = registrations.values.sorted { lhs, rhs in
-            (lhs.window?.isKeyWindow == true) && (rhs.window?.isKeyWindow != true)
-        }
-
-        for registration in ordered {
-            registration.window?.makeKeyAndOrderFront(nil)
+        registrations = registrations.filter { $0.value.owner != nil }
+        // Owners reveal each retained editor before asking, including controls
+        // parked without a window after a workspace switch.
+        for registration in Array(registrations.values) {
             guard registration.shouldClose() else { return false }
         }
         return true

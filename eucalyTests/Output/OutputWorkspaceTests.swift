@@ -17,28 +17,26 @@ final class OutputWorkspaceTests: XCTestCase {
         XCTAssertFalse(a.isActive); XCTAssertTrue(b.isActive)
         focus.window = nil; XCTAssertFalse(a.isActive); XCTAssertFalse(b.isActive)
     }
-    func testNativeTabFocusAndDetachmentRetainWindowAndProgramOwnership() throws {
+    func testWorkspaceSwitchAndExplicitWindowRetainProgramOwnership() throws {
         let hub = LocalOutputHarness(); defer { hub.outputs.stopAllOutputs() }
         hub.load("Verse\nHouse"); hub.session.showSlides()
         let registry = makeWorkspaceWindows(outputs: hub.outputs)
         defer { for window in registry.windows.values { window.close() } }
-        let first = try XCTUnwrap(registry.open(hub.session.outputSourceID)?.window)
-        XCTAssertNotNil(registry.newWorkspace(beside: hub.session.outputSourceID))
-        let otherID = try XCTUnwrap(hub.outputs.profiles.document.workspaces.last?.id)
-        let other = hub.outputs.session(workspace: otherID)
-        let second = try XCTUnwrap(registry.windows[otherID])
-        let content = second.contentView
-        XCTAssertTrue(first.tabGroup === second.tabGroup)
-        XCTAssertEqual(first.tabGroup?.windows.count, 2)
-        XCTAssertTrue(hub.outputs.destinations(workspace: otherID).isEmpty)
-        let original = hub.outputs.snapshot(for: hub.nativeRow).current
-        hub.outputs.focusWorkspace(other)
-        registry.detach(other.outputSourceID)
-        XCTAssertTrue(second.contentView === content)
-        XCTAssertTrue(registry.windows[other.outputSourceID] === second)
-        XCTAssertEqual(hub.outputs.destination(hub.nativeRow)?.workspaceID, hub.session.outputSourceID)
-        XCTAssertEqual(hub.outputs.snapshot(for: hub.nativeRow).current, original)
-        XCTAssertTrue(hub.session.isPresenting); XCTAssertFalse(other.isPresenting)
+        let id = hub.session.outputSourceID
+        let first = try XCTUnwrap(registry.open(id)?.window)
+        let current = hub.outputs.snapshot(for: hub.nativeRow).current
+        let otherID = try XCTUnwrap(registry.newWorkspace(from: id))
+        XCTAssertTrue(registry.windows[otherID] === first)
+        XCTAssertNil(registry.controllers[id]?.window)
+        XCTAssertNil(first.tabGroup)
+        XCTAssertEqual(first.tabbingMode, .disallowed)
+        let second = try XCTUnwrap(registry.openInNewWindow(id)?.window)
+        XCTAssertFalse(second === first)
+        XCTAssertTrue(registry.windows[otherID] === first)
+        XCTAssertTrue(try XCTUnwrap(registry.open(id, from: otherID)?.window) === second)
+        XCTAssertEqual(hub.outputs.destination(hub.nativeRow)?.workspaceID, id)
+        XCTAssertEqual(hub.outputs.snapshot(for: hub.nativeRow).current, current)
+        XCTAssertTrue(hub.session.isPresenting)
     }
 
     func testOpenReusesControllerAndCloseReopensSameProgramWithoutStoppingOutput() throws {
@@ -98,16 +96,11 @@ final class OutputWorkspaceTests: XCTestCase {
         hub.load("Verse\nLive"); hub.session.showSlides()
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(window.title, "Morning Service — 1 output · Live")
-        XCTAssertEqual(window.tab.title, window.title)
-        XCTAssertEqual(window.tab.attributedTitle?.string, "●  " + window.title)
-        XCTAssertEqual(window.tab.attributedTitle?.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor, .systemTeal)
-        XCTAssertNil(window.tab.attributedTitle?.attribute(.foregroundColor, at: 3, effectiveRange: nil),
-                     "The workspace symbol must not override native title styling")
-        XCTAssertEqual(window.tab.toolTip, window.title)
+        XCTAssertEqual(window.tabbingMode, .disallowed)
+        XCTAssertNil(window.tabGroup)
         hub.session.hideSlides()
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(window.title, "Morning Service — 1 output · Hidden")
-        XCTAssertEqual(window.tab.attributedTitle?.string, "●  " + window.title)
     }
 
     func testNewWorkspaceLimitAndUnknownOpenDoNotCreateOrRetargetWindows() throws {
@@ -148,17 +141,17 @@ final class OutputWorkspaceTests: XCTestCase {
         _ = try XCTUnwrap(windows.restoreWindow(identifier: OutputWorkspaceWindows.identifier(for: primary)))
         let secondWindow = try XCTUnwrap(windows.restoreWindow(identifier: OutputWorkspaceWindows.identifier(for: second)))
         focus.window = secondWindow
-        try XCTUnwrap(windows.controllers[second]).windowDidBecomeKey(
+        try XCTUnwrap(windows.controllers[second]?.host).windowDidBecomeKey(
             Notification(name: NSWindow.didBecomeKeyNotification, object: secondWindow))
         XCTAssertEqual(hub.outputs.focusedWorkspaceID, second)
-        let old = try XCTUnwrap(windows.controllers[primary])
+        let old = try XCTUnwrap(windows.controllers[primary]?.host)
         old.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: old.window))
         XCTAssertEqual(hub.outputs.focusedWorkspaceID, second,
             "A callback from a window that is no longer key cannot replace the controls owner")
         for window in windows.windows.values { window.close() }
         focus.window = nil
         windows.reopen()
-        XCTAssertEqual(Set(windows.controllers.keys), [second], "Stale focus must not overwrite the saved Dock reopen identity")
+        XCTAssertEqual(Set(windows.windows.keys), [second], "Stale focus must not overwrite the saved Dock reopen identity")
     }
 
     func testDockReopenRemembersSavedWorkspaceWithoutCreatingAnotherRecord() async throws {
@@ -171,7 +164,7 @@ final class OutputWorkspaceTests: XCTestCase {
         defer { for window in windows.windows.values { window.close() } }
         let primary = hub.session.outputSourceID
         _ = windows.open(primary)
-        let second = try XCTUnwrap(windows.newWorkspace(beside: primary))
+        let second = try XCTUnwrap(windows.newWorkspace(from: primary))
         let secondWindow = try XCTUnwrap(windows.windows[second])
         focus.window = secondWindow
         NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: secondWindow)
@@ -179,7 +172,7 @@ final class OutputWorkspaceTests: XCTestCase {
         for window in windows.windows.values { window.close() }
         focus.window = nil
         windows.reopen()
-        XCTAssertEqual(Set(windows.controllers.keys), [second])
+        XCTAssertEqual(Set(windows.windows.keys), [second])
         XCTAssertEqual(hub.outputs.profiles.document.workspaces.count, 2)
         XCTAssertFalse(hub.outputs.isRunning)
 

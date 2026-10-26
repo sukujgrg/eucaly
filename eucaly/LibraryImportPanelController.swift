@@ -40,6 +40,7 @@ final class LibraryImportPanelController {
         let id = UUID()
         weak var window: NSWindow?
         let source: Source
+        let isCurrent: () -> Bool
         let completion: ([URL]) -> Void
     }
 
@@ -77,9 +78,11 @@ final class LibraryImportPanelController {
         isPreparing = false
     }
 
-    func present(source: Source, for window: NSWindow, completion: @escaping ([URL]) -> Void) {
-        guard activeRequest == nil, pendingRequest == nil, window.isVisible, window.attachedSheet == nil else { return }
-        pendingRequest = Request(window: window, source: source, completion: completion)
+    func present(source: Source, for window: NSWindow, isCurrent: @escaping () -> Bool = { true },
+                 completion: @escaping ([URL]) -> Void) {
+        guard activeRequest == nil, pendingRequest == nil, window.isVisible, window.attachedSheet == nil,
+              isCurrent() else { return }
+        pendingRequest = Request(window: window, source: source, isCurrent: isCurrent, completion: completion)
         preparePanelIfNeeded()
         presentPendingRequest()
     }
@@ -94,7 +97,7 @@ final class LibraryImportPanelController {
     private func presentPendingRequest() {
         guard let panel, let request = pendingRequest else { return }
         pendingRequest = nil
-        guard let window = request.window, window.isVisible, window.attachedSheet == nil else { return }
+        guard let window = request.window, window.isVisible, window.attachedSheet == nil, request.isCurrent() else { return }
         let requestID = request.id
         activeRequest = request
         fileSelectionDelegate.source = request.source
@@ -106,6 +109,13 @@ final class LibraryImportPanelController {
             ? "Choose audio or video files to use as background audio." : ""
         panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
         guard activeRequest?.id == requestID else { return }
+        // A window can now present another workspace without closing. Native
+        // panel creation/configuration may run a nested AppKit loop, so check
+        // the request's live controls owner again at the presentation boundary.
+        guard request.isCurrent(), window.isVisible, window.attachedSheet == nil else {
+            activeRequest = nil
+            return
+        }
         // AppKit's reply may outlive the import. Keep its workspace callback in
         // the active request so cancel/completion releases it immediately.
         beginSheet(panel, window) { [weak self, weak panel] response in
@@ -115,7 +125,7 @@ final class LibraryImportPanelController {
             // AppKit can invoke completion before the sheet is offscreen. An
             // import error or unsaved-editor confirmation may need its own alert.
             panel.orderOut(nil)
-            guard response == .OK, request.window?.isVisible == true else { return }
+            guard response == .OK, request.window?.isVisible == true, request.isCurrent() else { return }
             request.completion(urls)
         }
     }

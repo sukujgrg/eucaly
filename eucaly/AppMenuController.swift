@@ -11,7 +11,7 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
     let outputMenu = NSMenu(title: "Output")
 
     private enum Command: String {
-        case settings, updates, notices, support, newWorkspace, detach
+        case settings, updates, notices, support, newWorkspace
         case newLyrics, searchLibrary, refresh, save, stop, stopAll, slides, background, audio
         case clearBackground, clearAudio, clearAll
         case monitorAudioLocally, manageOutputs
@@ -39,7 +39,7 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
 
         let file = submenu("File")
         add("New Lyrics", to: file, command: .newLyrics, key: "n")
-        add("New Workspace Tab", to: file, command: .newWorkspace, key: "t")
+        add("New Workspace", to: file, command: .newWorkspace, key: "t")
         add("Refresh Library", to: file, command: .refresh, key: "r")
         file.addItem(.separator())
         add("Save Lyrics", to: file, command: .save, key: "s")
@@ -97,11 +97,9 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         add("Minimize", to: window, action: #selector(NSWindow.performMiniaturize(_:)), key: "m")
         add("Zoom", to: window, action: #selector(NSWindow.performZoom(_:)))
         window.addItem(.separator())
-        add("Show All Tabs", to: window, action: #selector(NSWindow.toggleTabOverview(_:)))
-        add("Show Tab Bar", to: window, action: #selector(NSWindow.toggleTabBar(_:)))
-        add("Select Next Tab", to: window, action: #selector(NSWindow.selectNextTab(_:)), key: "\t", modifiers: [.control])
-        add("Select Previous Tab", to: window, action: #selector(NSWindow.selectPreviousTab(_:)), key: "\t", modifiers: [.control, .shift])
-        add("Move Tab to New Window", to: window, command: .detach)
+        let newWindow = NSMenuItem(title: "Open in New Window", action: nil, keyEquivalent: "")
+        newWindow.submenu = workspaceCommands.makeOpenInNewWindowMenu()
+        window.addItem(newWindow)
         window.addItem(.separator())
         add("Bring All to Front", to: window, action: #selector(NSApplication.arrangeInFront(_:)))
 
@@ -135,8 +133,7 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         guard let command = command(for: menuItem) else { return workspaceCommands.validateMenuItem(menuItem) }
         switch command {
         case .updates: return app.updates.state.canCheckForUpdates
-        case .newWorkspace: return app.workspaceWindows.canCreateWorkspace
-        case .detach: return app.workspaceWindows.canDetach(app.workspaceWindows.activeWorkspaceID)
+        case .newWorkspace: return workspaceCommands.canCreateWorkspace
         case .monitorAudioLocally:
             guard let listening = OutputAudioListeningState(outputs: app.outputs, workspaceID: app.outputs.commandWorkspaceID) else {
                 menuItem.state = .off
@@ -169,8 +166,6 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         case .support: NSWorkspace.shared.open(URL(string: "https://sukujgrg.github.io/eucaly/")!)
         case .newWorkspace: app.workspaceWindows.newWorkspace()
         case .manageOutputs: app.showSettings(pane: .outputs)
-        case .detach:
-            if let id = app.workspaceWindows.activeWorkspaceID { app.workspaceWindows.detach(id) }
         case .monitorAudioLocally:
             if let listening = OutputAudioListeningState(outputs: app.outputs, workspaceID: app.outputs.commandWorkspaceID), listening.canChange {
                 app.outputs.setMonitorAudioLocally(!listening.workspace.monitorAudioLocally, workspace: listening.workspace.id)

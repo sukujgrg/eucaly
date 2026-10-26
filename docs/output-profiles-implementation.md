@@ -26,10 +26,11 @@ The former 1 MiB read-only bound rejected settings the editor could save. The
 shared budget admits that bounded model and still refuses oversized input before
 JSON parsing. Original recovery and migration backups remain immutable.
 
-AppDelegate owns `OutputWorkspaceWindows`, with one AppKit `NSWindowController` per
-open workspace UUID. The native application entry and menus create, reopen and close
-these windows. `NSWindowRestoration` recreates only saved workspace identities and
-leaves geometry, minimization, selected tabs and tab groups to AppKit. Launch waits
+AppDelegate owns `OutputWorkspaceWindows`, with retained controls per workspace UUID
+and independent AppKit window controllers for visible workspaces. The native entry
+and menus create, switch, reopen and close these windows. `NSWindowRestoration`
+recreates saved visible workspace identities and leaves geometry and minimization
+to AppKit. Launch waits
 for native restoration and opens the saved last-used workspace only when no controls
 window was restored. A removed or invalid saved identity falls back to an existing
 workspace. Dock reopen selects existing controls or the saved last-used workspace
@@ -53,42 +54,60 @@ provides its current unsaved-change decision without replacing the window delega
 There is no SwiftUI window scene, `openWindow` action, hidden bootstrap window,
 window-discovery view or replacement-window polling.
 
-New Workspace Tab in the File and Workspace menus (`Cmd+T`) creates an empty
-workspace with no outputs. The command is disabled at the four-workspace saved
-limit, including closed controls; deleting an unused workspace enables it again.
-The sidebar's Workspaces menu offers the same command; no separate plus button is
-shown in the title bar or native tab bar. Workspace menus also open saved workspaces
-and detach tabs. Detach moves the same native window and retains the editor, Preview and Current.
-Tab titles include output count and Live/Hidden/Standby/Stopped or failure status.
-Each workspace has a coloured shape in its native tab title, pinned Workspaces
-action above the sidebar's scrolling content, and beside its name in the workspace
-menu. A native checkmark marks the workspace whose controls own that menu.
-Native window and tab titles retain the current name and status. The
-shared `PresentationToolbar` keeps Show/Search central, exposes Output and Network
-as individual native items, and separates Appearance/Background/Thumbnails from
-routing. One retained controller owns their native menus; native toolbar spacing
-replaces the former opaque horizontal group. The app update reminder
-has its own trailing icon item, outside the operational groups.
-The sidebar and menu-bar Workspace menus share one AppKit implementation: the
-same names, coloured shapes, ordering, availability and actions. The current
-choice remains enabled and checked; choosing it again is a no-op. Manage Workspaces
-is the final row after a separator. Move Tab to New Window is available only for
-a group with multiple tabs. Window tabs retain AppKit's active styling.
-Badges are saved as UI preferences by workspace UUID, retaining their identity
-through rename, reordering, detachment, closing and relaunch. Remaining workspaces
-keep their badges after deletion; new workspaces reuse available badges. Legacy
-saved workspaces above four remain available and share the four-badge palette.
-Closing controls releases their private view consumers; reopening uses the same
-app-owned session and Preview flow while live output continues. Native Settings
-remain one app-owned window. Search Library (`Cmd+F`) and Refresh Library target
-only the active controls window. Find in Lyrics is a separate native Edit > Find
-command; text matching and editing retain the macOS responder chain. See
-`SEARCH.md` for keyboard and focus behavior.
-Preview source identity belongs to its retained flow, and Current's lyrics file URL
-belongs to its session, so reopening retains Preview and Edit Current support. Closing cancels private pending Preview loads before releasing controls.
-The native close callback owns controls cleanup; hiding a tab does not release its
-library access or cancel its private preparation. Initial view setup runs once per
-controls window.
+New Workspace in the File and Workspace menus (`Cmd+T`) creates an empty
+workspace with no outputs and selects it in the current controls window. The
+four-workspace creation guard includes parked and closed controls; deleting an
+unused workspace enables creation again.
+
+The pinned full-width Workspaces selector uses the sidebar's existing 12-point
+margins and native control sizing. Its menu lists saved names and coloured badges,
+with runtime status as a native subtitle. The checkmark identifies the workspace
+being controlled independently of which workspaces are live. Native window titles
+retain the selected workspace name and output status when the sidebar is hidden.
+Secondary actions provide New Workspace, Open in New Window, Rename and Manage.
+The sidebar and menu bar share construction, UUID validation and action paths.
+
+`OutputWorkspaceControls` retains each workspace's session, commands, complete
+hosting controller and its native toolbar. Normal switching parks the previous controls and mounts the
+selected controls in the same `NSWindow`, retaining drafts, selection, Preview,
+Current and focus. Parked commands have no window and cannot consume active-window
+notifications. The hosting bridge receives its own retained toolbar when controls
+return, preserving the native item layout. Each lyrics editor owns its undo history
+independently of the physical window; ordinary field undo is workspace-owned too.
+
+`OutputWorkspaceWindowController` owns native window lifecycle and the currently
+mounted controls. All controls windows disallow native tabbing. Open in New Window
+explicitly presents parked or closed controls separately; selecting an already
+visible workspace focuses its existing window without duplicating its editor.
+Switching waits for a window-modal sheet to finish. It never starts, stops or
+transfers program output. The native key callback and explicit in-place switching
+update command focus and preserve the existing Confidence readiness policy.
+
+AppKit restoration uses the selected workspace UUID, saved frame, minimization
+and native window state. Existing workspace identifiers remain valid and restore
+as independent windows. With any restored controls window, launch opens no extra
+workspace. With none, launch and Dock reopen use the saved last-used identity.
+Normal switching retains the physical window's geometry; separate windows and
+close/reopen retain UUID-based frame autosaves.
+
+Closing controls approves and releases the visible workspace's editor and private
+view work. Parked controls remain retained, and every program/Current remains
+app-owned. Quit reveals and confirms all retained drafts, including controls
+without a visible window. Successful approval restores previous window selections
+and the saved reopen identity before native restoration is captured; canceled
+approval leaves the relevant editor visible. File-removal protection and deletion
+inspect parked editors too. Deleted workspace callbacks cannot recreate controls.
+
+Badges remain saved by workspace UUID using the existing preference key, retaining
+colours through rename, reordering and reopening. The legacy palette and saved
+workspace identities are preserved.
+
+The shared `PresentationToolbar` keeps Show/Search central, exposes Output and
+Network as individual native items, and separates Appearance/Background/Thumbnails
+from routing. Native spacing replaces the former opaque horizontal group. The
+update reminder has a trailing icon item outside the operational groups.
+Search Library (`Cmd+F`) and Refresh Library target the active controls only.
+Find in Lyrics retains the native responder chain. See `SEARCH.md` for details.
 
 Lyrics editing keeps draft changes separate from Preview acceptance. Clean Up Lyrics
 and Text Tools → Normalize Formatting make native undoable draft edits only.
@@ -103,7 +122,7 @@ even when the restored draft matches the saved file and Save is disabled.
 The existing AppKit list provides Open, Rename and Delete. It shows
 each workspace's matching coloured shape and lists each saved UUID's output
 assignments (including disabled destinations), current activity and whether controls
-are open. Opening or browsing the manager never constructs unopened sessions or
+are visible, retained or closed. Opening or browsing the manager never constructs unopened sessions or
 starts output. Rename retains Current, assignments and NDI source identity.
 While its Settings tab is visible, the manager observes session publications and actual program/audio player
 rate and time-control changes. Player replacement rebinds these observations. Late
@@ -151,7 +170,7 @@ revalidates the guards after approval, before closing controls or removing the
 record. Successful deletion cancels queued navigation, releases that program's
 media and paused local music owner, and keeps other programs and saved music routing
 unchanged. Late deleted-session actions and native restoration cannot revive the
-removed workspace. Closing a tab still retains its Current, accepted program, live
+removed workspace. Closing controls still retains its Current, accepted program, live
 NDI source and background audio; Open brings back its controls without a new program.
 
 Each destination has one optional saved `workspaceID`. Several destinations can
@@ -228,7 +247,7 @@ completes, respecting current pause/visibility intent. Retired item callbacks ca
 change a replacement program. A failed item requires an explicit new Current load
 to retry, including when the source URL is unchanged. Muted background-video resources
 are pooled inside each workspace. Runtime bookmark resolution, program access and
-the selected music player's access outlive inactive tabs. ScreenCaptureManager
+the selected music player's access outlive parked controls. ScreenCaptureManager
 continues to own one system-picker-approved stream with reference-counted consumers.
 One pending picker presentation owns its request and observer until a terminal
 result is processed. The system API cannot identify overlapping new-stream
@@ -553,8 +572,8 @@ seven feed regressions and 101 release-workflow regressions. This includes the n
 workspace, migration, sender-transfer, shared-media and music-routing assertions,
 helper pixel checks, native window lifecycle tests and all seven real NDI SDK
 integration tests using the installed optional runtime. No tests were skipped.
-The native workspace regressions cover controller reuse and release, tab-bar creation
-and detaching, validated restoration identities, Dock reopening, native menu shortcuts,
+Those historical native workspace regressions covered controller reuse and release, tab-bar creation
+and detaching (superseded by the workspace-switching contract above), validated restoration identities, Dock reopening, native menu shortcuts,
 close/termination approval, toolbar sizing, retained Preview/Current source metadata
 and recording controls focus before Settings becomes key. Restoration construction is
 tested without ordering windows; an OS quit/relaunch restoration roundtrip has not
@@ -638,9 +657,36 @@ fallback, retirement of the old launch field and targeted SwiftUI frame cleanup.
 `make build` also archived/exported the arm64 app successfully, and the exported
 app passed strict deep code-signature verification. Native autosave is exercised
 against AppKit; an OS-managed quit/relaunch round trip
-of restored tab groups remains a manual verification item.
+of restored windows remains a manual verification item. Native tab grouping has since
+been removed; existing UUIDs restore as independent controls windows.
 
 Physical receivers, real monitor hot-plug, alpha mixing over cameras, A/V drift,
 minimum supported OS/hardware, permission UI, accessibility and two-hour sustained
 operation remain unverified. SDK/localhost acceptance is not proof of physical
 receiver display/audio delivery. See the [qualification plan](ndi-output-plan.md).
+
+## Workspace navigation validation — 26 October 2026
+
+- `make test` passed: 1,130 XCTest cases reported, nine skipped, zero failures,
+  one Swift Testing case, seven feed and 103 release regressions, and the network
+  architecture validator. The final import/badge cleanup passed 28 affected cases.
+- New regressions cover retained SwiftUI state and native draft/caret state,
+  rapid-switch focus ordering, independent native/NDI/OMT program/player identity,
+  explicit-window reuse, modal-sheet ownership, parked draft/file protection,
+  deletion, import-owner fencing and approved/canceled Quit restoration identity.
+- Native toolbar fixtures cover 1060/1280/1400-point windows, light/dark appearance,
+  long names, update states, sidebar collapse and A→B→A remounting. UX and independent
+  code review have no outstanding findings. The Workspaces button fills the sidebar
+  within its normal margins; every quick tool remains available after returning.
+- Lyrics regressions exercise independent real undo histories through a native
+  window-targeted Undo key equivalent and Redo menu action. They do not establish
+  OS-level active-app keyboard delivery. Manual VoiceOver, OS-managed quit/relaunch
+  restoration and legacy tab-restoration behavior remain unobserved.
+- `make build` archived/exported the signed arm64 app successfully. Strict deep
+  code-signature verification passed with normal host trust access.
+
+Logs are under `build/audit/workspace-navigation-*.log`; the native preview is
+`build/audit/workspace-navigation-native-dark.png`. Tests use isolated stores,
+fixtures and fake destinations, alongside the existing default SDK integration
+suites. Physical receiver/display/speaker and sustained qualification remain
+separate from these checks.

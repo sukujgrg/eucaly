@@ -383,7 +383,7 @@ final class LyricsTextViewTests: XCTestCase {
         var coordinator: PlainTextEditor.Coordinator!
         let window: NSWindow
         var view: LyricsTextView!
-        var undo: UndoManager { window.undoManager! }
+        var undo: UndoManager { view.undoManager! }
 
         init(text: String = "") throws {
             draft = text

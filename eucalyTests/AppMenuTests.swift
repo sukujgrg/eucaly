@@ -146,7 +146,7 @@ final class AppMenuTests: XCTestCase {
         for _ in 1..<4 { XCTAssertNotNil(app.outputProfiles.addWorkspace()) }
         let menus = AppMenuController(app: app)
         let file = try XCTUnwrap(menus.mainMenu.item(withTitle: "File")?.submenu)
-        XCTAssertFalse(menus.validateMenuItem(try XCTUnwrap(file.item(withTitle: "New Workspace Tab"))))
+        XCTAssertFalse(menus.validateMenuItem(try XCTUnwrap(file.item(withTitle: "New Workspace"))))
         let manage = try XCTUnwrap(menus.workspaceMenu.item(withTitle: "Manage Workspaces…"))
         XCTAssertTrue(menus.validateMenuItem(manage)); XCTAssertTrue(manage.keyEquivalent.isEmpty)
         let saved = app.outputProfiles.document
@@ -187,7 +187,7 @@ final class AppMenuTests: XCTestCase {
         let grouped = Dictionary(grouping: shortcuts) { $0.keyEquivalent + ":" + String($0.keyEquivalentModifierMask.rawValue) }
         XCTAssertTrue(grouped.values.allSatisfy { $0.count == 1 }, "Every command shortcut must have one owner")
         let file = try XCTUnwrap(menus.mainMenu.item(withTitle: "File")?.submenu)
-        XCTAssertEqual(file.item(withTitle: "New Workspace Tab")?.keyEquivalent, "t")
+        XCTAssertEqual(file.item(withTitle: "New Workspace")?.keyEquivalent, "t")
         XCTAssertEqual(file.item(withTitle: "New Lyrics")?.keyEquivalent, "n")
         XCTAssertEqual(file.item(withTitle: "Close Window")?.action, #selector(NSWindow.performClose(_:)))
         XCTAssertNil(file.item(withTitle: "Quick Open…"))
@@ -259,7 +259,7 @@ final class AppMenuTests: XCTestCase {
         XCTAssertEqual(requests.count, responders.count)
     }
 
-    func testWorkspaceMenuOpensSavedUUIDsAndNativeNewTabWithoutDuplicatingRecords() throws {
+    func testWorkspaceMenuOpensSavedUUIDsAndCreatesWorkspacesWithoutDuplicatingRecords() throws {
         let hub = LocalOutputHarness()
         let app = AppDelegate()
         app.outputProfiles = hub.outputs.profiles
@@ -281,7 +281,7 @@ final class AppMenuTests: XCTestCase {
         XCTAssertTrue(app.workspaceWindows.controllers[secondID] === opened)
         XCTAssertEqual(app.outputProfiles.document.workspaces.count, 2)
         let file = try XCTUnwrap(menus.mainMenu.item(withTitle: "File")?.submenu)
-        file.performActionForItem(at: file.indexOfItem(withTitle: "New Workspace Tab"))
+        file.performActionForItem(at: file.indexOfItem(withTitle: "New Workspace"))
         XCTAssertEqual(app.outputProfiles.document.workspaces.count, 3)
         let newID = try XCTUnwrap(app.outputProfiles.document.workspaces.last?.id)
         XCTAssertNotNil(app.workspaceWindows.controllers[newID])
@@ -297,6 +297,8 @@ final class AppMenuTests: XCTestCase {
         app.workspaceWindows = makeWorkspaceWindows(outputs: hub.outputs, keyWindow: { focus.window })
         defer { for window in app.workspaceWindows.windows.values { window.close() } }
         let home = try XCTUnwrap(app.workspaceWindows.open(hub.session.outputSourceID))
+        let homeControls = try XCTUnwrap(app.workspaceWindows.controllers[hub.session.outputSourceID])
+        let window = try XCTUnwrap(home.window)
         focus.window = home.window
         let menus = AppMenuController(app: app)
         let toolbar = OutputWorkspaceMenuController(workspaces: app.workspaceWindows, workspaceID: hub.session.outputSourceID)
@@ -310,6 +312,8 @@ final class AppMenuTests: XCTestCase {
         let toolbarChoices = toolbar.menu.items.filter { $0.representedObject is UUID }
         let barChoices = menus.workspaceMenu.items.filter { $0.representedObject is UUID }
         XCTAssertEqual(toolbarChoices.map(\.title), barChoices.map(\.title))
+        XCTAssertEqual(toolbarChoices.map(\.subtitle), barChoices.map(\.subtitle))
+        XCTAssertEqual(toolbarChoices.map(\.subtitle), ["Stopped", "No outputs"])
         XCTAssertEqual(toolbarChoices.count, 2)
         for (choice, barChoice) in zip(toolbarChoices, barChoices) {
             XCTAssertTrue(menus.validateMenuItem(barChoice))
@@ -326,7 +330,7 @@ final class AppMenuTests: XCTestCase {
         XCTAssertTrue(NSApp.sendAction(try XCTUnwrap(current.action), to: current.target, from: current))
         let barCurrent = try XCTUnwrap(barChoices.first)
         menus.workspaceMenu.performActionForItem(at: menus.workspaceMenu.index(of: barCurrent))
-        XCTAssertTrue(app.workspaceWindows.controllers[hub.session.outputSourceID] === home)
+        XCTAssertTrue(app.workspaceWindows.controllers[hub.session.outputSourceID] === homeControls)
         XCTAssertEqual(app.workspaceWindows.controllers.count, 1)
         XCTAssertEqual(app.outputProfiles.document, saved)
         XCTAssertEqual(hub.session.outputActionClock.current, action)
@@ -335,6 +339,10 @@ final class AppMenuTests: XCTestCase {
         XCTAssertTrue(NSApp.sendAction(try XCTUnwrap(peer.action), to: peer.target, from: peer))
         XCTAssertNotNil(app.workspaceWindows.controllers[peerID])
         XCTAssertEqual(app.workspaceWindows.controllers.count, 2)
+        XCTAssertEqual(app.workspaceWindows.windows.count, 1)
+        XCTAssertTrue(app.workspaceWindows.windows[peerID] === window)
+        XCTAssertNil(homeControls.window)
+        XCTAssertFalse(toolbar.validateMenuItem(peer), "A retained sidebar menu cannot act after its controls are parked")
         XCTAssertEqual(app.outputProfiles.document, saved)
     }
 
@@ -362,7 +370,7 @@ final class AppMenuTests: XCTestCase {
         XCTAssertTrue(menus.validateMenuItem(saved))
     }
 
-    func testWorkspaceActionsValidateNativeTabsAndRenameBeforeChangingSavedState() async throws {
+    func testWorkspaceActionsValidateSwitchingAndExplicitWindowsBeforeChangingSavedState() async throws {
         let hub = LocalOutputHarness(), focus = MenuFocus()
         let app = AppDelegate()
         app.outputProfiles = hub.outputs.profiles; app.outputs = hub.outputs
@@ -370,16 +378,23 @@ final class AppMenuTests: XCTestCase {
         defer { for window in app.workspaceWindows.windows.values { window.close() } }
         hub.load("Verse\nKeep Current")
         let id = hub.session.outputSourceID
+        let otherID = try XCTUnwrap(app.outputProfiles.addWorkspace(name: "Online"))
         let home = try XCTUnwrap(app.workspaceWindows.open(id))
+        let homeControls = try XCTUnwrap(app.workspaceWindows.controllers[id])
         let window = try XCTUnwrap(home.window)
         focus.window = window
         let menus = AppMenuController(app: app)
         let toolbar = OutputWorkspaceMenuController(workspaces: app.workspaceWindows, workspaceID: id)
-        let detach = try XCTUnwrap(toolbar.menu.item(withTitle: "Move Tab to New Window"))
-        XCTAssertFalse(toolbar.validateMenuItem(detach))
         let windowMenu = try XCTUnwrap(menus.mainMenu.item(withTitle: "Window")?.submenu)
-        XCTAssertFalse(menus.validateMenuItem(try XCTUnwrap(windowMenu.item(withTitle: "Move Tab to New Window"))))
+        for title in ["Show All Tabs", "Show Tab Bar", "Select Next Tab", "Select Previous Tab", "Move Tab to New Window"] {
+            XCTAssertNil(windowMenu.item(withTitle: title))
+        }
+        XCTAssertEqual(window.tabbingMode, .disallowed)
+        let newWindow = try XCTUnwrap(windowMenu.item(withTitle: "Open in New Window")?.submenu)
+        XCTAssertEqual(newWindow.items.compactMap { $0.representedObject as? UUID }, [id, otherID])
+        let switchChoice = try XCTUnwrap(menus.workspaceMenu.items.first { $0.representedObject as? UUID == otherID })
         let rename = try XCTUnwrap(menus.workspaceMenu.item(withTitle: "Rename Workspace…"))
+        let retainedRename = try XCTUnwrap(toolbar.menu.item(withTitle: "Rename Workspace…"))
         XCTAssertTrue(menus.validateMenuItem(rename))
         let current = hub.session.slides.map(\.id)
         let assignments = app.outputProfiles.document.destinations
@@ -387,6 +402,12 @@ final class AppMenuTests: XCTestCase {
         let field = try XCTUnwrap(home.renamer.field)
         let sheet = try XCTUnwrap(window.attachedSheet)
         XCTAssertFalse(menus.validateMenuItem(rename))
+        XCTAssertFalse(menus.validateMenuItem(switchChoice), "A workspace switch must not replace controls below a modal sheet")
+        let file = try XCTUnwrap(menus.mainMenu.item(withTitle: "File")?.submenu)
+        XCTAssertFalse(menus.validateMenuItem(try XCTUnwrap(file.item(withTitle: "New Workspace"))))
+        menus.workspaceMenu.performActionForItem(at: menus.workspaceMenu.index(of: switchChoice))
+        XCTAssertTrue(app.workspaceWindows.windows[id] === window)
+        XCTAssertNil(app.workspaceWindows.controllers[otherID])
         for value in ["", " \n ", "House\nOnline", String(repeating: "é", count: 81)] {
             field.stringValue = value; field.currentEditor()?.string = value
             home.renamer.controlTextDidChange(.init(name: NSControl.textDidChangeNotification, object: field))
@@ -404,33 +425,47 @@ final class AppMenuTests: XCTestCase {
         XCTAssertEqual(hub.session.slides.map(\.id), current)
         XCTAssertEqual(app.outputProfiles.document.destinations, assignments)
         XCTAssertFalse(hub.outputs.isRunning)
-        let otherID = try XCTUnwrap(app.outputProfiles.addWorkspace(name: "Online"))
-        XCTAssertNotNil(app.workspaceWindows.open(otherID, beside: id))
-        XCTAssertTrue(toolbar.validateMenuItem(detach))
         let saved = app.outputProfiles.document
-        XCTAssertTrue(NSApp.sendAction(try XCTUnwrap(detach.action), to: detach.target, from: detach))
-        for _ in 0..<30 {
-            if !app.workspaceWindows.canDetach(id) { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        XCTAssertFalse(toolbar.validateMenuItem(detach), "A retained action must revalidate the new tab group")
-        XCTAssertTrue(NSApp.sendAction(try XCTUnwrap(detach.action), to: detach.target, from: detach))
+        menus.workspaceMenu.performActionForItem(at: menus.workspaceMenu.index(of: switchChoice))
+        XCTAssertTrue(app.workspaceWindows.windows[otherID] === window)
+        XCTAssertNil(homeControls.window)
+        XCTAssertFalse(toolbar.validateMenuItem(retainedRename), "Parked controls cannot rename another workspace through an old menu")
+        XCTAssertTrue(NSApp.sendAction(try XCTUnwrap(retainedRename.action), to: retainedRename.target, from: retainedRename))
         XCTAssertEqual(app.outputProfiles.document, saved)
         XCTAssertEqual(app.workspaceWindows.controllers.count, 2)
-        XCTAssertTrue(app.workspaceWindows.controllers[id] === home)
-        XCTAssertTrue(home.window === window); XCTAssertTrue(window.isVisible)
+        XCTAssertEqual(app.workspaceWindows.windows.count, 1)
+        XCTAssertTrue(app.workspaceWindows.controllers[id] === homeControls)
+        newWindow.delegate?.menuNeedsUpdate?(newWindow)
+        let separateHome = try XCTUnwrap(newWindow.items.first { $0.representedObject as? UUID == id })
+        XCTAssertTrue(menus.validateMenuItem(separateHome))
+        newWindow.performActionForItem(at: newWindow.index(of: separateHome))
+        let homeWindow = try XCTUnwrap(homeControls.window)
+        focus.window = homeWindow
+        XCTAssertFalse(homeWindow === window)
+        XCTAssertTrue(app.workspaceWindows.windows[otherID] === window)
+        XCTAssertEqual(app.workspaceWindows.windows.count, 2)
+        XCTAssertTrue(app.workspaceWindows.controllers[id] === homeControls)
+        newWindow.performActionForItem(at: newWindow.index(of: separateHome))
+        XCTAssertEqual(app.workspaceWindows.windows.count, 2, "An already-visible workspace must reuse its controls window")
+        XCTAssertTrue(homeControls.window === homeWindow)
+        XCTAssertEqual(app.outputProfiles.document, saved)
         XCTAssertEqual(hub.session.slides.map(\.id), current)
+        let staleOther = try XCTUnwrap(newWindow.items.first { $0.representedObject as? UUID == otherID })
+        XCTAssertNil(app.workspaceWindows.deleteWorkspace(otherID))
+        XCTAssertFalse(menus.validateMenuItem(staleOther))
+        newWindow.performActionForItem(at: newWindow.index(of: staleOther))
+        XCTAssertNil(app.workspaceWindows.controllers[otherID])
         toolbar.menuNeedsUpdate(toolbar.menu)
         let toolbarRename = try XCTUnwrap(toolbar.menu.item(withTitle: "Rename Workspace…"))
         toolbar.menu.performActionForItem(at: toolbar.menu.index(of: toolbarRename))
-        let unconfirmed = try XCTUnwrap(home.renamer.field)
+        let unconfirmed = try XCTUnwrap(homeControls.renamer.field)
         unconfirmed.stringValue = "Unconfirmed"; unconfirmed.currentEditor()?.string = "Unconfirmed"
-        window.close()
+        homeWindow.close()
         for _ in 0..<30 {
-            if home.renamer.field == nil { break }
+            if homeControls.renamer.field == nil { break }
             try await Task.sleep(for: .milliseconds(10))
         }
-        XCTAssertNil(home.renamer.field)
+        XCTAssertNil(homeControls.renamer.field)
         XCTAssertEqual(app.outputProfiles.workspaceName(id), "House")
     }
 

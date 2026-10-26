@@ -3,7 +3,7 @@ import Combine
 import SwiftUI
 
 /// Sidebar navigation and the menu bar share ordering, availability and actions.
-/// The menu bar follows the active controls window; a header keeps its owner.
+/// The menu bar follows the last controls context; a header keeps its owner.
 @MainActor
 final class OutputWorkspaceMenuController: NSObject, ObservableObject, NSMenuDelegate, NSMenuItemValidation {
     let menu = NSMenu(title: "Workspace")
@@ -13,18 +13,22 @@ final class OutputWorkspaceMenuController: NSObject, ObservableObject, NSMenuDel
     private weak var workspaces: OutputWorkspaceWindows?
     private let workspaceID: UUID?
     private enum Action: String {
-        case new, rename, detach, open, manage
+        case new, rename, open, openInNewWindow, manage
         var title: String {
             switch self {
-            case .new: "New Workspace Tab"
+            case .new: "New Workspace"
             case .rename: "Rename Workspace…"
-            case .detach: "Move Tab to New Window"
-            case .open: ""
+            case .open, .openInNewWindow: ""
             case .manage: "Manage Workspaces…"
             }
         }
     }
-    private var currentID: UUID? { workspaceID ?? workspaces?.activeWorkspaceID }
+    private var currentID: UUID? { workspaceID ?? workspaces?.navigationWorkspaceID }
+    var canCreateWorkspace: Bool {
+        guard let workspaces else { return false }
+        if let workspaceID, workspaces.controllers[workspaceID]?.window == nil { return false }
+        return workspaces.canCreateWorkspace && currentID.flatMap { workspaces.controllers[$0]?.window?.attachedSheet } == nil
+    }
 
     init(workspaces: OutputWorkspaceWindows, workspaceID: UUID? = nil) {
         self.workspaces = workspaces; self.workspaceID = workspaceID
@@ -33,52 +37,85 @@ final class OutputWorkspaceMenuController: NSObject, ObservableObject, NSMenuDel
         menu.delegate = self
         menu.autoenablesItems = workspaceID == nil
         button.bezelStyle = .accessoryBarAction; button.imagePosition = .imageLeading
-        button.setContentHuggingPriority(.required, for: .horizontal)
+        button.alignment = .left
+        button.setContentHuggingPriority(.defaultLow, for: .horizontal)
         button.setContentCompressionResistancePriority(.required, for: .horizontal)
         rebuild()
         if workspaceID != nil { button.menu = menu }
     }
     func menuNeedsUpdate(_ menu: NSMenu) {
         badges.synchronize(profiles.document.workspaces)
-        rebuild()
+        if menu === self.menu { rebuild() }
+        else { rebuildNewWindowMenu(menu) }
     }
     private func rebuild() {
         menu.removeAllItems()
         if workspaceID != nil { menu.addItem(NSMenuItem(title: "", action: nil, keyEquivalent: "")) }
-        for action in [Action.new, .rename, .detach] { add(action) }
-        menu.addItem(.separator())
         for record in profiles.document.workspaces {
-            let item = add(.open, title: record.name)
-            item.representedObject = record.id
-            item.image = badges.badge(for: record.id).menuImage
-            item.isEnabled = validateMenuItem(item)
+            addWorkspace(record, action: .open, to: menu)
         }
+        menu.addItem(.separator())
+        add(.new)
+        let newWindow = NSMenuItem(title: "Open in New Window", action: nil, keyEquivalent: "")
+        newWindow.submenu = makeOpenInNewWindowMenu()
+        menu.addItem(newWindow)
+        add(.rename)
         menu.addItem(.separator())
         add(.manage)
         updateButtonLabel()
+    }
+    func makeOpenInNewWindowMenu() -> NSMenu {
+        let result = NSMenu(title: "Open in New Window")
+        result.delegate = self
+        result.autoenablesItems = workspaceID == nil
+        rebuildNewWindowMenu(result)
+        return result
+    }
+    private func rebuildNewWindowMenu(_ menu: NSMenu) {
+        menu.removeAllItems()
+        for record in profiles.document.workspaces {
+            addWorkspace(record, action: .openInNewWindow, to: menu)
+        }
+    }
+    private func addWorkspace(_ record: OutputWorkspaceRecord, action: Action, to menu: NSMenu) {
+        let item = add(action, title: record.name, to: menu)
+        item.representedObject = record.id
+        item.image = badges.badge(for: record.id).menuImage
+        let status = workspaces?.status(workspace: record.id) ?? "Stopped"
+        let visibleElsewhere = workspaces?.windows[record.id] != nil && record.id != currentID
+        if action == .openInNewWindow, record.id == currentID, workspaces?.windows[record.id] != nil {
+            item.subtitle = "Already open in this window · " + status
+        } else { item.subtitle = visibleElsewhere ? "Show existing window · " + status : status }
+        item.toolTip = record.name + " — " + (item.subtitle ?? status)
+        item.isEnabled = validateMenuItem(item)
     }
     func updateButtonLabel() {
         guard let workspaceID else { return }
         let name = profiles.workspaceName(workspaceID)
         menu.items.first?.title = "Workspaces"
         menu.items.first?.image = badges.badge(for: workspaceID).menuImage
-        button.toolTip = "Current workspace: " + name + " — Workspace tabs and windows"
+        button.toolTip = "Current workspace: " + name + " — Switch or open a workspace in a new window"
         button.setToolbarAccessibility(label: "Workspaces", value: name,
-            help: "Open, rename and manage workspace tabs and windows.")
+            help: "Switch workspaces, open a workspace in a new window, rename or manage workspaces.")
     }
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         guard let action = action(for: item), let workspaces else { return false }
+        // A retained sidebar menu must never act on behalf of controls that
+        // have since been parked, closed or replaced in their native window.
+        if let workspaceID, action != .manage, workspaces.controllers[workspaceID]?.window == nil { return false }
         let current = currentID.flatMap { id in profiles.document.workspaces.first { $0.id == id } }
         switch action {
-        case .new: return workspaces.canCreateWorkspace
+        case .new: return canCreateWorkspace
         case .rename:
             guard profiles.recoveryNotice == nil, let current, let window = workspaces.controllers[current.id]?.window else { return false }
             return window.attachedSheet == nil
-        case .detach: return workspaces.canDetach(current?.id)
         case .open:
             guard let id = item.representedObject as? UUID else { return false }
             item.state = id == currentID ? .on : .off
-            return profiles.document.workspaces.contains { $0.id == id }
+            return workspaces.canOpen(id, from: workspaceID)
+        case .openInNewWindow:
+            guard let id = item.representedObject as? UUID else { return false }
+            return workspaces.canOpenInNewWindow(id)
         case .manage: return true
         }
     }
@@ -87,21 +124,22 @@ final class OutputWorkspaceMenuController: NSObject, ObservableObject, NSMenuDel
         return Action(rawValue: String(value.dropFirst("workspace.".count)))
     }
     @discardableResult
-    private func add(_ action: Action, title: String? = nil) -> NSMenuItem {
+    private func add(_ action: Action, title: String? = nil, to targetMenu: NSMenu? = nil) -> NSMenuItem {
         let item = NSMenuItem(title: title ?? action.title, action: #selector(performAction(_:)), keyEquivalent: "")
         item.identifier = .init("workspace." + action.rawValue); item.target = self
         item.isEnabled = validateMenuItem(item)
-        menu.addItem(item)
+        (targetMenu ?? menu).addItem(item)
         return item
     }
     @objc private func performAction(_ item: NSMenuItem) {
         guard validateMenuItem(item), let action = action(for: item), let workspaces else { return }
         switch action {
-        case .new: workspaces.newWorkspace(beside: currentID)
+        case .new: workspaces.newWorkspace(from: workspaceID)
         case .rename: if let id = currentID { workspaces.rename(id) }
-        case .detach: if let id = currentID { workspaces.detach(id) }
         case .open:
-            if let id = item.representedObject as? UUID, id != currentID { workspaces.open(id, beside: currentID) }
+            if let id = item.representedObject as? UUID, id != currentID { workspaces.open(id, from: workspaceID) }
+        case .openInNewWindow:
+            if let id = item.representedObject as? UUID { workspaces.openInNewWindow(id) }
         case .manage: workspaces.manageWorkspaces()
         }
     }
@@ -111,10 +149,8 @@ struct OutputWorkspaceNavigationHeader: View {
     let controls: OutputWorkspaceMenuController
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                OutputWorkspaceMenuButton(controls: controls)
-                Spacer(minLength: 0)
-            }
+            OutputWorkspaceMenuButton(controls: controls)
+            .frame(maxWidth: .infinity)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             Divider()
@@ -132,6 +168,10 @@ struct OutputWorkspaceMenuButton: NSViewRepresentable {
     }
     func makeNSView(context: Context) -> NSPopUpButton { controls.button }
     func updateNSView(_ view: NSPopUpButton, context: Context) { controls.updateButtonLabel() }
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSPopUpButton, context: Context) -> CGSize? {
+        guard let width = proposal.width, width.isFinite else { return nil }
+        return .init(width: width, height: nsView.fittingSize.height)
+    }
 }
 
 /// One native rename interaction and validation rule for controls and Settings.

@@ -5,14 +5,6 @@ import Combine
 enum OutputWorkspaceTabBadge: String, CaseIterable {
     case teal, orange, purple, pink
 
-    var symbol: String {
-        switch self {
-        case .teal: "●"
-        case .orange: "■"
-        case .purple: "◆"
-        case .pink: "▲"
-        }
-    }
     var systemImage: String {
         switch self {
         case .teal: "circle.fill"
@@ -38,16 +30,9 @@ enum OutputWorkspaceTabBadge: String, CaseIterable {
         image?.isTemplate = false
         return image
     }
-    func title(_ title: String) -> NSAttributedString {
-        let text = NSMutableAttributedString(string: symbol + "  ", attributes: [.foregroundColor: colour])
-        // AppKit supplies the normal title font and colour, including selection
-        // and inactive-window styling. Only the identifying symbol is tinted.
-        text.append(NSAttributedString(string: title))
-        return text
-    }
 }
 
-/// UI preferences keyed by durable UUID, independently of tab order or names.
+/// UI preferences keyed by durable UUID, independently of order or names.
 /// Existing badges survive deletion; a new workspace uses the available badge.
 @MainActor
 final class OutputWorkspaceTabBadges: ObservableObject {

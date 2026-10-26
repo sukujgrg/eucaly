@@ -365,17 +365,20 @@ final class OutputDefaultTests: XCTestCase {
         let driver = ToolbarUpdateDriver()
         let updates = AppUpdateViewModel(driver: driver)
         let session = PresentationSession(projectionDisplays: displays, outputCoordinator: outputs)
-        let workspaces = makeWorkspaceWindows(outputs: outputs)
-        let workspaceMenu = OutputWorkspaceMenuController(workspaces: workspaces, workspaceID: session.outputSourceID)
         let search = LibrarySearchField()
         search.placeholderString = "Search"
         search.widthAnchor.constraint(equalToConstant: 220).isActive = true
-        let fixture = OutputToolbarFixture(session: session, updates: updates,
-            workspaceMenu: workspaceMenu, search: search, thumbnailDefaults: thumbnailDefaults)
-        let controller = OutputWorkspaceWindowController(session: session, commands: OutputWorkspaceCommands(),
-            content: OutputWorkspaceWindowController.hostingController(
-                rootView: fixture.environment(\.accessibilityEnabled, true)), badge: .teal,
-            autosavesFrame: false, didBecomeKey: {}, didClose: { _ in })
+        weak var workspaceReference: OutputWorkspaceWindows?
+        let workspaces = OutputWorkspaceWindows(outputs: outputs, updates: updates, autosavesWindowFrames: false,
+            contentFactory: { owner, _ in
+                let menu = OutputWorkspaceMenuController(workspaces: workspaceReference!, workspaceID: owner.outputSourceID)
+                let field = owner.outputSourceID == session.outputSourceID ? search : NSSearchField()
+                let fixture = OutputToolbarFixture(session: owner, updates: updates,
+                    workspaceMenu: menu, search: field, thumbnailDefaults: thumbnailDefaults)
+                return OutputWorkspaceWindowController.hostingController(rootView: fixture.environment(\.accessibilityEnabled, true))
+            })
+        workspaceReference = workspaces
+        let controller = try XCTUnwrap(workspaces.open(session.outputSourceID))
         let window = try XCTUnwrap(controller.window)
         window.appearance = NSAppearance(named: appearance)
         // Use the production toolbar bridge, native title and window geometry.
@@ -495,7 +498,7 @@ final class OutputDefaultTests: XCTestCase {
             XCTAssertEqual(workspaceButton.imagePosition, .imageLeading)
             XCTAssertEqual(workspaceButton.title, "Workspaces")
             XCTAssertEqual(workspaceButton.accessibilityValue() as? String, longWorkspaceName)
-            XCTAssertLessThan(workspaceButton.frame.width, 180, "The navigation action must not grow with the current name")
+            XCTAssertGreaterThan(workspaceButton.frame.width, 220, "Workspace navigation fills the sidebar within its native margins")
             XCTAssertEqual(outputButton.title, "Output")
             XCTAssertTrue(try XCTUnwrap(outputButton.toolTip).contains(longName))
             XCTAssertTrue(try XCTUnwrap(outputButton.accessibilityLabel()).contains(longName))
@@ -624,6 +627,35 @@ final class OutputDefaultTests: XCTestCase {
         try await waitForUIState("the native sidebar and its workspace header to return") {
             !sidebar.isCollapsed && button("Workspaces")?.visibleRect.isEmpty == false
         }
+        window.setContentSize(.init(width: 1060, height: 600))
+        XCTAssertTrue(window.makeFirstResponder(search))
+        let draftEditor = try XCTUnwrap(search.currentEditor())
+        draftEditor.string = "retained workspace search"
+        draftEditor.selectedRange = .init(location: 9, length: 9)
+        let homeControls = try controlPrefixes.map { try XCTUnwrap(button($0)) }
+        let secondID = try XCTUnwrap(store.addWorkspace(name: "Online"))
+        XCTAssertTrue(workspaces.open(secondID, from: session.outputSourceID) === controller)
+        try await waitForUIState("the second workspace's native controls to mount") {
+            button("Workspaces")?.accessibilityValue() as? String == "Online"
+                && window.title.hasPrefix("Online —")
+        }
+        XCTAssertEqual(window.tabbingMode, .disallowed)
+        XCTAssertNil(window.tabGroup)
+        try saveSnapshot("eucaly-workspaces-second-\(appearance.rawValue)")
+        XCTAssertTrue(workspaces.open(session.outputSourceID, from: secondID) === controller)
+        try await waitForUIState("the retained workspace controls and editor focus to return") {
+            button("Workspaces") === homeControls.first && window.firstResponder === draftEditor
+                && controlPrefixes.allSatisfy { button($0) != nil }
+                && draftEditor.selectedRange == NSRange(location: 9, length: 9)
+        }
+        // Native toolbar cells remount through the hosting bridge; verify their
+        // restored operator context rather than temporary native cell identity.
+        for prefix in controlPrefixes { XCTAssertNotNil(button(prefix)) }
+        XCTAssertEqual(button("Workspaces")?.accessibilityValue() as? String, longWorkspaceName)
+        XCTAssertTrue(window.title.hasPrefix(longWorkspaceName + " —"))
+        XCTAssertEqual(draftEditor.string, "retained workspace search")
+        XCTAssertEqual(draftEditor.selectedRange, NSRange(location: 9, length: 9))
+        try saveSnapshot("eucaly-workspaces-return-\(appearance.rawValue)")
         XCTAssertEqual(thumbnailDefaults.double(forKey: "thumbnailScale"), 1.2345, accuracy: 0.000001)
         XCTAssertEqual(thumbnailDefaults.double(forKey: "thumbnailFontScale"), 1.4, accuracy: 0.000001)
     }

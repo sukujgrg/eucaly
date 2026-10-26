@@ -868,8 +868,9 @@ public struct ContentView: View {
             return
         }
         guard let window = workspaceCommands.window else { return }
-        importPanel.present(source: source, for: window) { urls in
-            guard libraryRootURL?.standardizedFileURL == root.standardizedFileURL else { return }
+        importPanel.present(source: source, for: window, isCurrent: { workspaceCommands.window === window }) { urls in
+            guard workspaceCommands.window === window,
+                  libraryRootURL?.standardizedFileURL == root.standardizedFileURL else { return }
             startFileImport(urls, root: root, source: source)
         }
     }
@@ -896,7 +897,7 @@ public struct ContentView: View {
             importRequestID = nil
             importCancellation = nil
             isImporting = false
-            guard !cancellation.isCancelled, workspaceCommands.window != nil,
+            guard !cancellation.isCancelled,
                   libraryRootURL?.standardizedFileURL == root.standardizedFileURL else { return }
             if !result.importedURLs.isEmpty {
                 folderURL = root
@@ -906,7 +907,11 @@ public struct ContentView: View {
                 // Copying can finish after the operator has selected or edited
                 // something else. Keep the files and refresh, but preserve that
                 // newer intent instead of opening a document or starting music.
-                let maySelectImport = importSelectionGeneration == selectionGeneration
+                // Parked controls still own import results and inline feedback.
+                // Follow-up selection can prompt to save or start audio, so it
+                // additionally requires the requesting controls to remain active.
+                let maySelectImport = workspaceCommands.isActive
+                    && importSelectionGeneration == selectionGeneration
                     && previewLoadToken == previewToken && lyricsEditor == editor
                     && sidebarSelection == sidebar && flow.previewSelectionID == previewSelection
                     && selectedAudioURL == selectedAudio && session.backgroundAudioURL == activeAudio
