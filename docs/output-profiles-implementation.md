@@ -46,13 +46,22 @@ geometry regressions use temporary workspace UUIDs and remove their native defau
 The former SwiftUI window scene is gone. Launch removes only its obsolete controls
 and Settings frame keys, retaining native frames, panel geometry and content preferences.
 
-`NSHostingController` hosts the existing SwiftUI controls and uses the public macOS
-14 [toolbar hosting API](https://developer.apple.com/documentation/swiftui/nshostingscenebridgingoptions/toolbars)
-for their toolbar. Window titles, delegates,
-close approval and application-termination registration remain native. The editor
-provides its current unsaved-change decision without replacing the window delegate.
-There is no SwiftUI window scene, `openWindow` action, hidden bootstrap window,
-window-discovery view or replacement-window polling.
+`WorkspaceSplitViewController` owns the native split, sidebar accessory and
+retained SwiftUI detail host. Its bridge occupies the full-size native content
+area; AppKit alone applies titlebar and sidebar safe areas. The sidebar root is
+its full-section `NSScrollView`, and Workspaces is a top-aligned native split-item
+accessory. Output/import/editing notices occupy the detail host, preserving the
+sidebar's surface and accessory position. The detail's `NSBackgroundExtensionView`
+extends content under the toolbar and sidebar while keeping controls in the safe
+area; the former root visual-effect background is removed.
+
+Window titles, delegates, close approval and application-termination registration
+remain native. Search remains a native sibling above the hosted workspace.
+Unhandled Escape reaches `OutputWorkspaceWindow.cancelOperation`, hiding only its
+workspace's slides; search and text completion consume cancellation earlier in
+the responder chain. The editor provides its unsaved-change decision without
+replacing the window delegate. There is no SwiftUI window scene, `openWindow`
+action, hidden bootstrap window, discovery view or replacement-window polling.
 
 New Workspace in the File and Workspace menus (`Cmd+T`) creates an empty
 workspace with no outputs and selects it in the current controls window. The
@@ -60,7 +69,7 @@ four-workspace creation guard includes parked and closed controls; deleting an
 unused workspace enables creation again.
 
 The pinned Workspaces selector uses its native intrinsic width within the sidebar's
-12-point margins. The native split view owns the continuous sidebar surface; header
+native accessory insets. The native split view owns the continuous sidebar surface; accessory
 and list contents add no separate material or ornamental rules. Its menu lists saved names and coloured badges,
 with runtime status as a native subtitle. The checkmark identifies the workspace
 being controlled independently of which workspaces are live. Native window titles
@@ -72,8 +81,17 @@ The sidebar and menu bar share construction, UUID validation and action paths.
 hosting controller and its native toolbar. Normal switching parks the previous controls and mounts the
 selected controls in the same `NSWindow`, retaining drafts, selection, Preview,
 Current and focus. Parked commands have no window and cannot consume active-window
-notifications. The hosting bridge receives its own retained toolbar when controls
-return, preserving the native item layout. Each lyrics editor owns its undo history
+notifications. Each native toolbar has a distinct identifier for its controls
+lifetime, avoiding AppKit's synchronized toolbar-family mutations across workspaces.
+Its explicit tracking separator stays attached to its own split while parked.
+Controls receive their own retained toolbar when they return. Real window close
+detaches its toolbar before releasing content, so closed windows do not retain
+the split through its tracking item. Final controls disposal also retires the
+outer and nested hosting roots and clears the sidebar's optional configuration.
+Fullscreen native surfaces can remain cached after window closure; callbacks and
+private search/editor resources must retire independently of that cache. Run
+close cleanup before replacing roots, while the close-confirmation view exists.
+Parking and preserving-close retain the original graph. Each lyrics editor owns its undo history
 independently of the physical window; ordinary field undo is workspace-owned too.
 
 `OutputWorkspaceWindowController` owns native window lifecycle and the currently
@@ -103,7 +121,7 @@ Badges remain saved by workspace UUID using the existing preference key, retaini
 colours through rename, reordering and reopening. The legacy palette and saved
 workspace identities are preserved.
 
-The shared `PresentationToolbar` keeps Show/Search central, exposes Output and
+The native `PresentationToolbarController` keeps Show/Search central, exposes Output and
 Network as individual native items, and separates Appearance/Background/Thumbnails
 from routing. Native spacing replaces the former opaque horizontal group. The
 update reminder has a trailing icon item outside the operational groups.
@@ -555,6 +573,31 @@ a process-wide serial queue and shutdown persistence barrier, preserving write
 order across restored stores as well as within a single store.
 
 ## Verification and limits
+
+Native workspace chrome regressions cover the full window-height split, pinned
+accessory width and scrolling, native collapse completion, exact toolbar/split
+association, inherited detail environment, retained editor state/caret/undo, and
+search above the native split. A real ContentView fixture confirms Current stays
+accepted and verifies search-model/inventory/SQLite release after fullscreen close.
+This release regression failed before explicit root and callback retirement.
+Retained-action tests verify disposed sidebar controls cannot dispatch commands.
+
+Native observation on 27 October 2026 verified windowed and fullscreen placement,
+the visible detail-only output notice, fullscreen Workspaces menu, retained search
+query, search dismissal, ordinary Escape hiding slides without leaving fullscreen,
+and sidebar collapse/reopen. The macOS UX review approved the native accessory edge
+and glass control groups; independent review found no outstanding actionable issue.
+The windowed capture was inactive and does not qualify active-window contrast or
+manual VoiceOver behavior. Screenshots and diagnostic evidence are under
+`build/audit/native-accessory-*2026-10-27*`.
+
+Final validation on 27 October 2026 passed `make test`: 1,153 XCTest cases,
+nine opt-in qualification skips, one Swift Testing case, seven feed tests,
+103 release-workflow tests and the architecture check across 39 network sources. The agent reference
+validator also passed. The native lifecycle/sidebar subset passed 54 tests,
+including fullscreen-close resource release and live workspace isolation.
+`make build` archived and exported the signed arm64 app to `~/Applications`;
+deep, strict signature verification passed.
 
 Run `make test`. Added regressions cover tab/focus privacy, two simultaneous Currents,
 shared versus independent players, exclusive assignment/conflicts, workspace-scoped

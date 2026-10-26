@@ -36,22 +36,6 @@ struct OutputAudioListeningState: Equatable {
     }
 }
 
-/// The toolbar retains each native control and menu independently of updates.
-struct OutputQuickButton: NSViewRepresentable {
-    let button: NSPopUpButton
-    let controls: OutputQuickControlsController
-    @ObservedObject private var outputs: OutputCoordinator
-    @ObservedObject private var store: OutputProfileStore
-    @ObservedObject private var displays: ProjectionDisplayManager
-    init(button: NSPopUpButton, controls: OutputQuickControlsController) {
-        self.button = button; self.controls = controls
-        outputs = controls.outputs; store = controls.store; displays = controls.outputs.displays
-    }
-    func makeNSView(context: Context) -> NSPopUpButton { button }
-    func updateNSView(_ view: NSPopUpButton, context: Context) {
-        controls.render()
-    }
-}
 
 @MainActor
 final class OutputQuickControlsController: NSObject, ObservableObject {

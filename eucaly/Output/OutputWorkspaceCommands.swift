@@ -145,32 +145,39 @@ final class OutputWorkspaceMenuController: NSObject, ObservableObject, NSMenuDel
     }
 }
 
-struct OutputWorkspaceNavigationHeader: View {
+/// Register the pinned menu with the sidebar's native layout and scroll-edge
+/// geometry instead of taking space away from its scrolling surface.
+@MainActor
+final class WorkspaceSidebarAccessoryController: NSSplitViewItemAccessoryViewController {
     let controls: OutputWorkspaceMenuController
-    var body: some View {
-        HStack(spacing: 0) {
-            OutputWorkspaceMenuButton(controls: controls)
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-    }
-}
+    private var labelSubscription: AnyCancellable?
 
-struct OutputWorkspaceMenuButton: NSViewRepresentable {
-    let controls: OutputWorkspaceMenuController
-    @ObservedObject private var profiles: OutputProfileStore
-    @ObservedObject private var badges: OutputWorkspaceTabBadges
     init(controls: OutputWorkspaceMenuController) {
-        self.controls = controls; profiles = controls.profiles; badges = controls.badges
+        self.controls = controls
+        super.init(nibName: nil, bundle: nil)
+        labelSubscription = Publishers.Merge(controls.profiles.$document.map { _ in () },
+            controls.badges.$assignments.map { _ in () })
+            .receive(on: RunLoop.main)
+            .sink { [weak self] in self?.controls.updateButtonLabel() }
     }
-    func makeNSView(context: Context) -> NSPopUpButton { controls.button }
-    func updateNSView(_ view: NSPopUpButton, context: Context) { controls.updateButtonLabel() }
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSPopUpButton, context: Context) -> CGSize? {
-        let fitting = nsView.fittingSize
-        let availableWidth = proposal.width.flatMap { $0.isFinite ? max(0, $0) : nil } ?? fitting.width
-        return .init(width: min(fitting.width, availableWidth), height: fitting.height)
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func loadView() {
+        view = NSView()
+        let button = controls.button
+        button.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(button)
+        NSLayoutConstraint.activate([
+            button.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            button.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor),
+            button.topAnchor.constraint(equalTo: view.topAnchor, constant: 8),
+            button.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -8)
+        ])
+        controls.updateButtonLabel()
     }
+
+    func detach() { labelSubscription = nil }
 }
 
 /// One native rename interaction and validation rule for controls and Settings.
@@ -302,29 +309,6 @@ struct OutputWorkspaceCloseConfirmation: NSViewRepresentable {
         func fileWasRemoved(_ candidate: LibraryFileActionService.Candidate) { didRemoveFile(candidate) }
         func confirmClose() -> Bool { shouldClose() }
         func controlsWillClose() { willClose() }
-    }
-}
-
-/// Observe live output only in this small toolbar subtree. Prepared Current
-/// does not become a second live selection source or drive the Hide label.
-struct OutputSlidesToggleButton: View {
-    @ObservedObject var session: PresentationSession
-    @ObservedObject private var outputs: OutputCoordinator
-    let onToggle: () -> Void
-    init(session: PresentationSession, onToggle: @escaping () -> Void) {
-        self.session = session; self.outputs = session.outputCoordinator; self.onToggle = onToggle
-    }
-    private var showing: Bool {
-        !session.isEmpty && session.isPresenting && session.areSlidesVisible
-    }
-    var body: some View {
-        Button(action: onToggle) {
-            Label(showing ? "Hide Slides" : "Show Slides", systemImage: showing ? "rectangle.slash" : "rectangle")
-        }
-        .labelStyle(.iconOnly)
-        .buttonStyle(.borderedProminent)
-        .disabled(session.isEmpty)
-        .help(session.isEmpty ? "Load a document into Current to show slides." : showing ? "Hide Slides" : "Show Slides")
     }
 }
 

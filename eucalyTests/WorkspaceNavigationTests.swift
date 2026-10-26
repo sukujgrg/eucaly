@@ -360,21 +360,28 @@ final class WorkspaceNavigationTests: XCTestCase {
                 nativeB = audience.id
                 store.edit { $0.destinations += [source, audience] }
             }
-            let focus = focus, drivers = drivers, editors = editors
+            let focus = focus, drivers = drivers, editors = editors, defaults = defaults
             outputs = OutputCoordinator(profiles: store, displays: ProjectionDisplayManager(displays: { monitors }),
                 retainsPreparedSessions: true, network: transport, keyWindow: { focus.window }, driverFactory: {
                     let driver = FakeOutputDriver(); drivers.values.append(driver); return driver
                 })
-            windows = OutputWorkspaceWindows(outputs: outputs, updates: AppUpdateViewModel(driver: WorkspaceUpdateDriver()),
+            let updates = AppUpdateViewModel(driver: WorkspaceUpdateDriver())
+            windows = OutputWorkspaceWindows(outputs: outputs, updates: updates,
                 defaults: defaults, autosavesWindowFrames: false, keyWindow: { focus.window }, contentFactory: { session, commands in
                     let editor = EditorProbe(id: session.outputSourceID)
                     editors.values[session.outputSourceID] = editor
                     commands.closeConfirmation = editor
                     let content: AnyView = swiftUIEditorState
                         ? AnyView(StatefulEditor(probe: editor)) : AnyView(NativeEditor(field: editor.field))
-                    return OutputWorkspaceWindowController.hostingController(rootView: content
-                        .frame(width: 320, height: 30).padding(20)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading))
+                    let menu = OutputWorkspaceMenuController(workspaces: commands.workspaceWindows!,
+                        workspaceID: session.outputSourceID)
+                    return OutputWorkspaceWindowController.hostingController(rootView:
+                        WorkspaceSplitView(sidebarConfiguration: WorkspaceChromeFixture.sidebar(session: session),
+                            workspaceMenu: menu, defaults: defaults, session: session, updates: updates,
+                            toggleSlides: {}, searchLibrary: {}, manageOutputs: {},
+                            detail: content.frame(width: 320, height: 30).padding(20)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading))
+                        .defaultAppStorage(defaults))
                 })
         }
         func close() {

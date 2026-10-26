@@ -161,10 +161,23 @@ correctness. Keep shared process here and domain-specific checks in the roles.
 - `eucaly/ContentView.swift`
   - App-level orchestrator
   - Receives the app-retained workspace `PresentationSession` and `PresentationFlowController`; SwiftUI tab visibility never owns live playback
-  - Hosts split view, toolbar controls, selection handling, and sidebar callbacks
+  - Supplies the native workspace split, detail renderers, selection handling and sidebar callbacks
 
 ### Native Sidebar
-- `eucaly/SidebarView.swift` is the thin host bridge from the SwiftUI workspace.
+- `eucaly/WorkspaceSplitView.swift` bridges the retained workspace into
+  `WorkspaceSplitViewController`, the native split/toolbar owner. Let this native
+  boundary extend through the titlebar; AppKit applies safe-area avoidance once.
+  Detail notices stay within the detail host rather than cropping the sidebar.
+- The sidebar root is its full-section `NSScrollView`. Workspaces is a native
+  top-aligned `NSSplitViewItemAccessoryViewController`, pinned at intrinsic width.
+  `PresentationToolbarController` owns a distinct native toolbar per controls
+  lifetime and a tracking separator tied to that exact split. Closing detaches
+  the window toolbar; parking retains it with the controls. Final disposal
+  retires hosted roots and sidebar callback context explicitly, so fullscreen
+  surface retention cannot extend the lifetime of workspace UI resources.
+- The detail root uses `NSBackgroundExtensionView` for native toolbar/sidebar
+  underlap, with content inside its native safe area. Do not add a competing
+  root material or separator suppression.
 - `eucaly/SidebarViewController.swift` owns AppKit sidebar layout, section
   disclosure, controls, menus, sliders and UI subscriptions.
 - `eucaly/SidebarOutlineView.swift` owns the shared native outline behavior,

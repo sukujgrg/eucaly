@@ -1,32 +1,71 @@
 import AppKit
 import SwiftUI
+import SQLite3
 import XCTest
 @testable import eucaly
 
 @MainActor
 final class LibrarySearchWorkspaceTests: XCTestCase {
     func testSearchCommandInRealContentViewOpensVisiblePaletteAndKeepsCurrent() async throws {
+        try await exerciseSearchFixture(fullscreen: false)
+    }
+
+    func testClosingFullscreenWorkspaceReleasesSearchFixture() async throws {
+        try await exerciseSearchFixture(fullscreen: true)
+    }
+
+    private func exerciseSearchFixture(fullscreen: Bool) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("SearchContentView-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: root) }
+        let closed = expectation(description: "Search fixture releases its SQLite connection before removing the library")
+        let lifetime = FixtureLifetime()
+        var failure: Error?
+        do {
+            try await exerciseSearchCommandInRealContentView(root: root, fullscreen: fullscreen, lifetime: lifetime, onConnectionClosed: { result in
+                XCTAssertEqual(result, SQLITE_OK)
+                if result == SQLITE_OK {
+                    do { try FileManager.default.removeItem(at: root) }
+                    catch { XCTFail("Could not remove the closed search fixture: \(error)") }
+                }
+                closed.fulfill()
+            })
+        } catch {
+            failure = error
+        }
+        await fulfillment(of: [closed], timeout: 5)
+        XCTAssertNil(lifetime.model)
+        XCTAssertNil(lifetime.inventory)
+        XCTAssertNil(lifetime.index)
+        if let failure { throw failure }
+    }
+
+    /// The helper's return releases the UI, inventory and query owners together.
+    /// The close callback owns directory removal, including if a failed test
+    /// leaves framework references alive beyond the assertion deadline.
+    private func exerciseSearchCommandInRealContentView(
+        root: URL, fullscreen: Bool, lifetime: FixtureLifetime, onConnectionClosed: @escaping @Sendable (Int32) -> Void
+    ) async throws {
         let song = root.appendingPathComponent("220192.txt")
         try "Verse\nAmazing grace will always carry me safely home".write(to: song, atomically: true, encoding: .utf8)
         let suite = "SearchContentView." + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defaults.set(root.path, forKey: "libraryRootPath")
         defer { defaults.removePersistentDomain(forName: suite) }
-        let index = LibraryTextSearchIndex(databaseURL: root.appendingPathComponent("index.sqlite"))
+        let index = LibraryTextSearchIndex(databaseURL: root.appendingPathComponent("index.sqlite"),
+                                           onConnectionClosed: onConnectionClosed)
         let model = LibrarySearchModel(index: index)
+        defer { model.cancelDebounce() }
         let inventory = LibraryInventoryStore(index: index)
+        lifetime.model = model; lifetime.inventory = inventory; lifetime.index = index
         let playlist = PlaylistStore()
         let hub = LocalOutputHarness()
         hub.load("Verse\nCurrent remains live")
         hub.session.showSlides()
         let current = hub.outputs.snapshot(for: hub.nativeRow).current
         let updates = AppUpdateViewModel(driver: WorkspaceUpdateDriver())
-        var activeWindow: NSWindow?
+        let focus = WindowFocus()
         let windows = OutputWorkspaceWindows(outputs: hub.outputs, updates: updates,
-            autosavesWindowFrames: false, keyWindow: { activeWindow },
+            autosavesWindowFrames: false, keyWindow: { focus.window },
             contentFactory: { session, commands in
                 let menu = OutputWorkspaceMenuController(workspaces: commands.workspaceWindows!, workspaceID: session.outputSourceID)
                 return OutputWorkspaceWindowController.hostingController(rootView:
@@ -36,57 +75,101 @@ final class LibrarySearchWorkspaceTests: XCTestCase {
                     .environmentObject(updates).defaultAppStorage(defaults))
             })
         defer { for window in windows.windows.values { window.close() }; hub.outputs.stopAllOutputs() }
-        let host = try XCTUnwrap(windows.open(hub.session.outputSourceID))
-        let window = try XCTUnwrap(host.window)
-        activeWindow = window
-        try await until { model.scopeFilesSnapshot.contains(song) }
-        model.setQuery("grace", currentSelectedURL: nil)
-        try await until { model.queryPhase == .completed }
-        NotificationCenter.default.post(name: .showLibrarySearch, object: nil)
-        let palette = try XCTUnwrap(host.commands.librarySearchPresenter.activeController)
+        var failure: Error?
+        do {
+            let host = try XCTUnwrap(windows.open(hub.session.outputSourceID))
+            let window = try XCTUnwrap(host.window)
+            focus.window = window
+            try await until { model.scopeFilesSnapshot.contains(song) }
+            model.setQuery("grace", currentSelectedURL: nil)
+            try await until { model.queryPhase == .completed }
+            NotificationCenter.default.post(name: .showLibrarySearch, object: nil)
+            let palette = try XCTUnwrap(host.commands.librarySearchPresenter.activeController)
+            await mainQueueBoundary()
+            window.layoutIfNeeded()
+            window.contentView?.layoutSubtreeIfNeeded()
+            assertHittable(palette.searchField, in: window)
+            assertHittable(palette.closeButton, in: window)
+            XCTAssertEqual(try searchResultTitle(in: palette).stringValue, "Amazing grace will always carry me")
+            let selected = model.selectedEntry
+            try "#title: Grace in every season\nVerse\nAmazing grace will always carry me safely home".write(to: song, atomically: true, encoding: .utf8)
+            inventory.refresh(root: root)
+            try await until { model.filteredResults.first?.title == "Grace in every season" }
+            await mainQueueBoundary()
+            window.contentView?.layoutSubtreeIfNeeded()
+            XCTAssertEqual(try searchResultTitle(in: palette).stringValue, "Grace in every season")
+            XCTAssertEqual(model.selectedEntry, selected)
+            XCTAssertFalse(try XCTUnwrap(window.toolbar).items.isEmpty)
+            NotificationCenter.default.post(name: .showLibrarySearch, object: nil)
+            XCTAssertTrue(host.commands.librarySearchPresenter.activeController === palette)
+            XCTAssertEqual(model.query, "grace")
+            palette.closeButton.performClick(nil)
+            XCTAssertFalse(host.commands.librarySearchPresenter.isPresented)
+            NotificationCenter.default.post(name: .showLibrarySearch, object: nil)
+            let reopened = try XCTUnwrap(host.commands.librarySearchPresenter.activeController)
+            XCTAssertFalse(reopened === palette)
+            window.layoutIfNeeded()
+            window.contentView?.layoutSubtreeIfNeeded()
+            assertHittable(reopened.searchField, in: window)
+            XCTAssertEqual(model.query, "grace")
+            XCTAssertEqual(hub.outputs.snapshot(for: hub.nativeRow).current, current)
+            XCTAssertTrue(hub.session.isPresenting)
+            let split = try XCTUnwrap((window.toolbar?.delegate as? PresentationToolbarController)?.splitController as? WorkspaceSplitViewController)
+            let nativeContent = try XCTUnwrap(window.contentView)
+            let pinnedButton = split.workspacesAccessory.controls.button
+            let pinnedFrame = nativeContent.convert(pinnedButton.bounds, from: pinnedButton)
+            let splitFrame = nativeContent.convert(split.view.bounds, from: split.view)
+            XCTAssertEqual(splitFrame.maxY, nativeContent.bounds.maxY, accuracy: 1)
+            let notice = "Fixture output notice must stay within detail"
+            hub.outputs.reportAppearanceEditIssue(notice, workspace: hub.session.outputSourceID)
+            try await until { hub.session.projectionDisplayIssue == notice }
+            await mainQueueBoundary()
+            window.layoutIfNeeded(); nativeContent.layoutSubtreeIfNeeded()
+            XCTAssertEqual(nativeContent.convert(pinnedButton.bounds, from: pinnedButton), pinnedFrame)
+            XCTAssertEqual(nativeContent.convert(split.view.bounds, from: split.view), splitFrame)
+            XCTAssertEqual(hub.outputs.snapshot(for: hub.nativeRow).current, current)
+            reopened.closeButton.performClick(nil)
+            hub.outputs.dismissIssue(workspace: hub.session.outputSourceID)
+            if fullscreen {
+                let entered = expectation(forNotification: NSWindow.didEnterFullScreenNotification, object: window)
+                window.toggleFullScreen(nil)
+                await fulfillment(of: [entered], timeout: 5)
+                XCTAssertTrue(window.styleMask.contains(.fullScreen))
+            }
+        } catch {
+            failure = error
+        }
+        // Let root-scoped refreshes finish before retiring workspace subscribers.
+        // Capture the task before cancellation clears the model's task handle.
+        await inventory.waitForRefresh(root: root)
+        for window in windows.windows.values {
+            window.close()
+            XCTAssertNil(window.toolbar)
+            XCTAssertNil(window.contentViewController)
+        }
+        XCTAssertTrue(windows.controllers.isEmpty)
+        focus.window = nil
+        let pendingSearch = model.pendingSearchTaskForTests
+        model.cancelDebounce()
+        await pendingSearch?.value
         await mainQueueBoundary()
-        window.layoutIfNeeded()
-        window.contentView?.layoutSubtreeIfNeeded()
-        assertHittable(palette.searchField, in: window)
-        assertHittable(palette.closeButton, in: window)
-        XCTAssertEqual(try searchResultTitle(in: palette).stringValue, "Amazing grace will always carry me")
-        let selected = model.selectedEntry
-        try "#title: Grace in every season\nVerse\nAmazing grace will always carry me safely home".write(to: song, atomically: true, encoding: .utf8)
-        inventory.refresh(root: root)
-        try await until { model.filteredResults.first?.title == "Grace in every season" }
-        await mainQueueBoundary()
-        window.contentView?.layoutSubtreeIfNeeded()
-        XCTAssertEqual(try searchResultTitle(in: palette).stringValue, "Grace in every season")
-        XCTAssertEqual(model.selectedEntry, selected)
-        XCTAssertFalse(try XCTUnwrap(window.toolbar).items.isEmpty)
-        NotificationCenter.default.post(name: .showLibrarySearch, object: nil)
-        XCTAssertTrue(host.commands.librarySearchPresenter.activeController === palette)
-        XCTAssertEqual(model.query, "grace")
-        palette.closeButton.performClick(nil)
-        XCTAssertFalse(host.commands.librarySearchPresenter.isPresented)
-        NotificationCenter.default.post(name: .showLibrarySearch, object: nil)
-        let reopened = try XCTUnwrap(host.commands.librarySearchPresenter.activeController)
-        XCTAssertFalse(reopened === palette)
-        window.layoutIfNeeded()
-        window.contentView?.layoutSubtreeIfNeeded()
-        assertHittable(reopened.searchField, in: window)
-        XCTAssertEqual(model.query, "grace")
-        XCTAssertEqual(hub.outputs.snapshot(for: hub.nativeRow).current, current)
-        XCTAssertTrue(hub.session.isPresenting)
+        if let failure { throw failure }
     }
 
-    func testPaletteControlsStayVisibleAndHittableAboveNavigationSplitView() async throws {
+    func testPaletteControlsStayVisibleAndHittableAboveNativeWorkspaceSplit() async throws {
         let hub = LocalOutputHarness()
-        let windows = OutputWorkspaceWindows(outputs: hub.outputs,
-            updates: AppUpdateViewModel(driver: WorkspaceUpdateDriver()), autosavesWindowFrames: false,
-            contentFactory: { _, _ in
-                OutputWorkspaceWindowController.hostingController(rootView:
-                    NavigationSplitView {
-                        Text("Library")
-                    } detail: {
-                        Text("Private workspace content")
-                    }
-                    .toolbar { ToolbarItem { Button("Workspace action") {} } })
+        let suite = "NativeSearchSplit." + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let updates = AppUpdateViewModel(driver: WorkspaceUpdateDriver())
+        let windows = OutputWorkspaceWindows(outputs: hub.outputs, updates: updates, autosavesWindowFrames: false,
+            contentFactory: { session, commands in
+                let menu = OutputWorkspaceMenuController(workspaces: commands.workspaceWindows!, workspaceID: session.outputSourceID)
+                return OutputWorkspaceWindowController.hostingController(rootView:
+                    WorkspaceSplitView(sidebarConfiguration: WorkspaceChromeFixture.sidebar(session: session),
+                        workspaceMenu: menu, defaults: defaults,
+                        session: session, updates: updates, toggleSlides: {}, searchLibrary: {}, manageOutputs: {},
+                        detail: Text("Private workspace content")))
             })
         defer { for window in windows.windows.values { window.close() } }
         let host = try XCTUnwrap(windows.open(hub.session.outputSourceID))
@@ -108,6 +191,17 @@ final class LibrarySearchWorkspaceTests: XCTestCase {
             window.display()
             assertHittable(palette.searchField, in: window)
             assertHittable(palette.closeButton, in: window)
+        }
+        try await until { palette.searchField.currentEditor() != nil && window.toolbar != nil }
+        let editor = try XCTUnwrap(palette.searchField.currentEditor())
+        let sidebarToggle = try XCTUnwrap(window.toolbar?.items.first { $0.itemIdentifier == .toggleSidebar })
+        for _ in 0..<2 {
+            XCTAssertTrue(NSApp.sendAction(try XCTUnwrap(sidebarToggle.action), to: sidebarToggle.target, from: sidebarToggle))
+            await mainQueueBoundary()
+            content.layoutSubtreeIfNeeded()
+            assertHittable(palette.searchField, in: window)
+            XCTAssertTrue(palette.searchField.currentEditor() === editor,
+                          "Native sidebar changes must preserve the palette's active query editor")
         }
     }
 
@@ -152,6 +246,7 @@ final class LibrarySearchWorkspaceTests: XCTestCase {
         XCTAssertTrue(playlist.load(fromRoot: root))
         let model = LibrarySearchModel(index: LibraryTextSearchIndex(databaseURL: root.appendingPathComponent("index.sqlite")),
             debounce: {}, search: { _, files in files.map { .init(url: $0, snippet: "Playlist song") } })
+        defer { model.cancelDebounce() }
         model.setScopeFiles([url])
         model.setQuery("anthem", currentSelectedURL: nil)
         try await until { model.queryPhase == .completed }
@@ -211,6 +306,14 @@ final class LibrarySearchWorkspaceTests: XCTestCase {
         XCTAssertEqual(hub.session.slides.map(\.id), slides)
         XCTAssertEqual(hub.outputs.snapshot(for: hub.nativeRow).current, accepted)
         XCTAssertTrue(hub.outputs.isOpen(hub.nativeRow))
+    }
+
+    @MainActor private final class WindowFocus { weak var window: NSWindow? }
+
+    @MainActor private final class FixtureLifetime {
+        weak var model: LibrarySearchModel?
+        weak var inventory: LibraryInventoryStore?
+        weak var index: LibraryTextSearchIndex?
     }
 
     private func assertHittable(_ control: NSView, in window: NSWindow,

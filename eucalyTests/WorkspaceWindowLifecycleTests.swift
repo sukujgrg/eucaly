@@ -5,6 +5,26 @@ import XCTest
 
 @MainActor
 final class WorkspaceWindowLifecycleTests: XCTestCase {
+    func testNativeWorkspaceCancellationHidesOnlyItsSlidesAndRetainsOutput() throws {
+        let hub = LocalOutputHarness()
+        hub.load("Verse\nCurrent remains live")
+        hub.session.showSlides()
+        let accepted = hub.outputs.snapshot(for: hub.nativeRow).current
+        let windows = makeWorkspaceWindows(outputs: hub.outputs)
+        defer { for window in windows.windows.values { window.close() }; hub.outputs.stopAllOutputs() }
+        let window = try XCTUnwrap(windows.open(hub.session.outputSourceID)?.window as? OutputWorkspaceWindow)
+        let secondID = try XCTUnwrap(hub.outputs.profiles.addWorkspace())
+        let second = hub.outputs.session(workspace: secondID)
+        second.areSlidesVisible = true
+
+        window.cancelOperation(nil)
+
+        XCTAssertFalse(hub.session.areSlidesVisible)
+        XCTAssertTrue(hub.outputs.isOpen(hub.nativeRow))
+        XCTAssertEqual(hub.outputs.snapshot(for: hub.nativeRow).current, accepted)
+        XCTAssertTrue(second.areSlidesVisible, "Escape cannot address another workspace")
+    }
+
     func testNativeFramesRememberEachWorkspaceAfterCloseAndFreshLaunch() async throws {
         let suite = "WorkspaceFrames." + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))

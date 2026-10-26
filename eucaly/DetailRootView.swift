@@ -39,9 +39,5 @@ struct DetailRootView<EditorPane: View, PreviewPane: View, CurrentPane: View>: V
         }
         .padding(20)
         .frame(minWidth: 520)
-        .background(
-            VisualEffectView(material: .underWindowBackground, blendingMode: .behindWindow)
-                .ignoresSafeArea()
-        )
     }
 }

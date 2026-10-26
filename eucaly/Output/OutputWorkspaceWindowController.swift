@@ -208,6 +208,8 @@ final class OutputWorkspaceWindows: ObservableObject {
         let id = controls.session.outputSourceID
         guard controllers[id] === controls else { return }
         controls.commands.controlsWillClose()
+        (controls.content as? OutputWorkspaceContentController)?.retire()
+        controls.toolbar = nil
         controls.fieldUndoManager.removeAllActions()
         controllers[id] = nil
     }
@@ -293,6 +295,20 @@ final class OutputWorkspaceControls {
 @MainActor
 final class OutputWorkspaceWindow: NSWindow {
     weak var workspaceSession: PresentationSession?
+
+    /// Search and text completion consume cancellation earlier in the responder
+    /// chain. At the workspace boundary Escape hides slides, including when
+    /// native controls are focused or the controls window is fullscreen.
+    override func cancelOperation(_ sender: Any?) {
+        guard let session = workspaceSession, session.isPresenting, session.areSlidesVisible else { return }
+        session.hideSlides()
+    }
+
+    /// Menus also route while native search owns the responder chain, outside
+    /// the split's descendants. Resolve the mounted workspace's toolbar owner.
+    @objc func toggleSidebar(_ sender: Any?) {
+        (toolbar?.delegate as? PresentationToolbarController)?.toggleSidebar(sender)
+    }
 }
 
 @MainActor
@@ -311,7 +327,7 @@ final class OutputWorkspaceWindowController: NSWindowController, NSWindowDelegat
     private var closed = false
 
     static func hostingController<Content: View>(rootView: Content) -> NSViewController {
-        let host = NSHostingController(rootView: rootView.frame(minWidth: minimumContentSize.width, minHeight: minimumContentSize.height))
+        let host = NSHostingController(rootView: AnyView(rootView.frame(minWidth: minimumContentSize.width, minHeight: minimumContentSize.height)))
         host.sceneBridgingOptions = [.toolbars]
         host.sizingOptions = [.minSize]
         return OutputWorkspaceContentController(hostedContent: host)
@@ -409,6 +425,7 @@ final class OutputWorkspaceWindowController: NSWindowController, NSWindowDelegat
         if let window {
             if pendingFocusRestoration == nil { controls.rememberFocus(in: window) }
             window.makeFirstResponder(nil)
+            controls.toolbar = window.toolbar
         }
         commands.window = nil; controls.host = nil
         window?.contentViewController = nil
@@ -424,6 +441,7 @@ final class OutputWorkspaceWindowController: NSWindowController, NSWindowDelegat
         titleObservation = nil
         commands.window = nil; controls.host = nil
         (window as? OutputWorkspaceWindow)?.workspaceSession = nil
+        window?.toolbar = nil
         window?.contentViewController = nil
         didClose(self, closesControls)
     }

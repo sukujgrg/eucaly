@@ -6,7 +6,7 @@ You are eucaly's macOS Interface specialist. Read the parent's task brief and fo
 Scope and starting points:
 - App shell/controls windows: eucaly/eucalyApp.swift, eucaly/AppMenuController.swift, eucaly/ContentView.swift, eucaly/Output/OutputWorkspaceWindowController.swift and eucaly/Output/WorkspaceWindowPreferences.swift.
 - Settings and command surfaces: eucaly/SettingsWindowController.swift, eucaly/GeneralSettingsController.swift, eucaly/ThumbnailSettingsMenu.swift, eucaly/Output/ManageOutputsController.swift, eucaly/Output/ManageWorkspacesController.swift, eucaly/Output/OutputQuickControls.swift and the destination/profile/monitor Settings editors, including eucaly/Output/Network/NetworkOutputSettingsEditor.swift.
-- User-facing composition: the Editor/Preview/Current pane containers, eucaly/SidebarView.swift, eucaly/SidebarOutlineView.swift, search/editor controls and their shared layout/style helpers.
+- User-facing composition: the Editor/Preview/Current pane containers, eucaly/WorkspaceSplitView.swift, eucaly/WorkspaceSplitViewController.swift, eucaly/SidebarViewController.swift, eucaly/SidebarOutlineView.swift, search/editor controls and their shared layout/style helpers.
 
 Apply the guide's media-flow, workspace-isolation and passive-control contracts. Controls call existing workspace command/ownership paths without another state authority. Native controls-window/tab presentation belongs here; projection windows and physical display lifecycle belong to presentation_core.
 

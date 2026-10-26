@@ -1,24 +1,4 @@
 import AppKit
-import SwiftUI
-
-/// Operator thumbnail preferences are shared across workspaces, independently of output profiles.
-struct ThumbnailSettingsMenu: NSViewRepresentable {
-    @AppStorage private var thumbnailScale: Double
-    @AppStorage private var thumbnailFontScale: Double
-    private let defaults: UserDefaults
-
-    init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
-        _thumbnailScale = AppStorage(wrappedValue: 1, "thumbnailScale", store: defaults)
-        _thumbnailFontScale = AppStorage(wrappedValue: 1, "thumbnailFontScale", store: defaults)
-    }
-
-    func makeCoordinator() -> ThumbnailSettingsMenuController { .init(defaults: defaults) }
-    func makeNSView(context: Context) -> NSPopUpButton { context.coordinator.button }
-    func updateNSView(_ view: NSPopUpButton, context: Context) {
-        context.coordinator.render(size: thumbnailScale, fontSize: thumbnailFontScale)
-    }
-}
 
 @MainActor
 final class ThumbnailSettingsMenuController: NSObject {

@@ -7,6 +7,9 @@ import XCTest
 final class LyricsTextViewTests: XCTestCase {
     func testNativeLyricsFindRoutesDocumentAndFindBarKeysWithoutSearchingOtherFields() async throws {
         let fixture = try Fixture(text: "grace and peace grace")
+        // This test pumps native AppKit events. Its undo manager must group
+        // those events normally; the other fixtures inject explicitly grouped edits.
+        fixture.undo.groupsByEvent = true
         defer { fixture.close() }
         let previousApplication = NSWorkspace.shared.frontmostApplication
         defer {

@@ -482,8 +482,7 @@ final class OutputDefaultTests: XCTestCase {
                 }
             }
             window.layoutIfNeeded(); chrome.layoutSubtreeIfNeeded()
-            // SwiftUI can remount toolbar items when the item set changes.
-            // Inspect the controls actually mounted in the window.
+            // Inspect the controls actually mounted in the native toolbar.
             let outputButton = try XCTUnwrap(button("Output appearance editing target:"))
             let networkButton = try XCTUnwrap(button("NDI workspace routing"))
             let appearanceButton = try XCTUnwrap(button("Appearance for output:"))
@@ -555,7 +554,7 @@ final class OutputDefaultTests: XCTestCase {
             XCTAssertEqual(unavailableAction.accessibilityFrame(), availableFrame)
             XCTAssertEqual(retainedControls.map { chrome.convert($0.bounds, from: $0) }, availableFrames,
                            "Updater capability must not resize or shift the native control groups")
-            XCTAssertTrue(String(describing: unavailableAction.accessibilityValue()).contains("temporarily unavailable"))
+            XCTAssertTrue((unavailableAction.accessibilityHelp() ?? "").contains("temporarily unavailable"))
             XCTAssertTrue(window.firstResponder === editor)
             XCTAssertEqual(editor.string, "active search draft")
             XCTAssertEqual(editor.selectedRange, NSRange(location: 7, length: 6))
@@ -614,7 +613,7 @@ final class OutputDefaultTests: XCTestCase {
             .compactMap { $0.delegate as? NSSplitViewController }.first)
         let sidebar = try XCTUnwrap(splitController.splitViewItems.first)
         XCTAssertFalse(sidebar.isCollapsed)
-        splitController.toggleSidebar(nil)
+        await toggleSidebarAndWaitForAnimation(splitController)
         try await waitForUIState("the native sidebar to finish closing") {
             guard let header = button("Workspaces") else { return sidebar.isCollapsed }
             return sidebar.isCollapsed && (header.isHiddenOrHasHiddenAncestor || header.visibleRect.isEmpty)
@@ -625,10 +624,15 @@ final class OutputDefaultTests: XCTestCase {
             XCTAssertGreaterThan(control.visibleRect.width, 20)
             XCTAssertTrue(chrome.bounds.insetBy(dx: -1, dy: -1).contains(chrome.convert(control.bounds, from: control)))
         }
-        splitController.toggleSidebar(nil)
+        await toggleSidebarAndWaitForAnimation(splitController)
         try await waitForUIState("the native sidebar and its workspace header to return") {
-            !sidebar.isCollapsed && button("Workspaces")?.visibleRect.isEmpty == false
+            guard let header = button("Workspaces") else { return false }
+            return !sidebar.isCollapsed && header.window === window
+                && !header.isHiddenOrHasHiddenAncestor && !header.visibleRect.isEmpty
         }
+        let restoredHeader = try XCTUnwrap(button("Workspaces"))
+        XCTAssertGreaterThan(restoredHeader.visibleRect.width, 0)
+        XCTAssertGreaterThan(restoredHeader.visibleRect.height, 0)
         window.setContentSize(.init(width: 1060, height: 600))
         XCTAssertTrue(window.makeFirstResponder(search))
         let draftEditor = try XCTUnwrap(search.currentEditor())
@@ -660,6 +664,16 @@ final class OutputDefaultTests: XCTestCase {
         try saveSnapshot("eucaly-workspaces-return-\(appearance.rawValue)")
         XCTAssertEqual(thumbnailDefaults.double(forKey: "thumbnailScale"), 1.2345, accuracy: 0.000001)
         XCTAssertEqual(thumbnailDefaults.double(forKey: "thumbnailFontScale"), 1.4, accuracy: 0.000001)
+    }
+
+    private func toggleSidebarAndWaitForAnimation(_ split: NSSplitViewController) async {
+        await withCheckedContinuation { continuation in
+            NSAnimationContext.runAnimationGroup { _ in
+                split.toggleSidebar(nil)
+            } completionHandler: {
+                continuation.resume()
+            }
+        }
     }
 
     // SwiftUI may commit toolbar changes after several main-queue turns. Wait
@@ -710,22 +724,14 @@ private struct OutputToolbarFixture: View {
     let search: NSSearchField
     let thumbnailDefaults: UserDefaults
     var body: some View {
-        NavigationSplitView {
-            VStack(spacing: 0) {
-                OutputWorkspaceNavigationHeader(controls: workspaceMenu)
-                Color.clear
-            }
-            .navigationSplitViewColumnWidth(min: 260, ideal: 320, max: 520)
-        } detail: {
-            VStack {
+        WorkspaceSplitView(sidebarConfiguration: WorkspaceChromeFixture.sidebar(session: session),
+            workspaceMenu: workspaceMenu, defaults: thumbnailDefaults, session: session, updates: updates,
+            toggleSlides: session.toggleSlidesVisibility, searchLibrary: {}, manageOutputs: {},
+            detail: VStack {
                 OutputToolbarSearch(search: search).frame(width: 220)
                 Spacer()
             }
-            .padding()
-        }
-        .navigationSplitViewStyle(.balanced)
+            .padding())
         .frame(minWidth: 1060, minHeight: 600)
-        .modifier(PresentationToolbar(session: session, updates: updates, thumbnailDefaults: thumbnailDefaults,
-            toggleSlides: session.toggleSlidesVisibility, searchLibrary: {}, manageOutputs: {}))
     }
 }

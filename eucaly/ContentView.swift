@@ -148,30 +148,6 @@ public struct ContentView: View {
             .onChange(of: lyricsEditor.isEditing) { _, isEditing in
                 if !isEditing { lyricsCleanupController.cancel() }
             }
-            .safeAreaInset(edge: .top, spacing: 0) {
-                VStack(spacing: 0) {
-                    OutputIssueBanner(session: session, manageOutputs: showOutputSettings)
-                    if isImporting {
-                        HStack {
-                            ProgressView().controlSize(.small)
-                            Text("Importing files…")
-                            Spacer()
-                        }
-                        .font(.caption)
-                        .padding(10)
-                    }
-                    if let newFileWarning, !hasActiveEditorPane || isEditorPreviewAreaCollapsed {
-                        HStack(alignment: .top) {
-                            Image(systemName: "exclamationmark.triangle")
-                            Text(newFileWarning).frame(maxWidth: .infinity, alignment: .leading)
-                            Button("Dismiss") { self.newFileWarning = nil }
-                        }
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                        .padding(10)
-                    }
-                }
-            }
             .environment(\.lyricsProjectionSize, lyricsProjectionSize)
             .environment(\.audienceOutputProfile, session.outputCoordinator.thumbnailProfile(workspace: session.outputSourceID))
             .background(
@@ -189,20 +165,37 @@ public struct ContentView: View {
     }
 
     private var rootSplitBase: some View {
-        NavigationSplitView {
-            VStack(spacing: 0) {
-                OutputWorkspaceNavigationHeader(controls: workspaceMenu)
-                sidebarPane
-            }
-            .navigationSplitViewColumnWidth(min: 260, ideal: 320, max: 520)
-        } detail: {
-            detailPane
-        }
-        .navigationSplitViewStyle(.balanced)
-        .modifier(PresentationToolbar(session: session, updates: appUpdateViewModel,
-            thumbnailDefaults: controlPreferences,
+        WorkspaceSplitView(sidebarConfiguration: sidebarConfiguration,
+            workspaceMenu: workspaceMenu, defaults: controlPreferences,
+            session: session, updates: appUpdateViewModel,
             toggleSlides: toggleSlidesFromUI, searchLibrary: presentLibrarySearch,
-            manageOutputs: showOutputSettings))
+            manageOutputs: showOutputSettings,
+            detail: detailPane.safeAreaInset(edge: .top, spacing: 0) { workspaceNotices })
+    }
+
+    private var workspaceNotices: some View {
+        VStack(spacing: 0) {
+            OutputIssueBanner(session: session, manageOutputs: showOutputSettings)
+            if isImporting {
+                HStack {
+                    ProgressView().controlSize(.small)
+                    Text("Importing files…")
+                    Spacer()
+                }
+                .font(.caption)
+                .padding(10)
+            }
+            if let newFileWarning, !hasActiveEditorPane || isEditorPreviewAreaCollapsed {
+                HStack(alignment: .top) {
+                    Image(systemName: "exclamationmark.triangle")
+                    Text(newFileWarning).frame(maxWidth: .infinity, alignment: .leading)
+                    Button("Dismiss") { self.newFileWarning = nil }
+                }
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .padding(10)
+            }
+        }
     }
 
     private var rootSplitWithStateObservers: some View {
@@ -212,9 +205,6 @@ public struct ContentView: View {
             hasInitializedControls = true
             handleRootOnAppear()
             syncWindowCaptureFrameRate()
-        }
-        .onExitCommand {
-            handleExitCommand()
         }
         .onChange(of: libraryRootBookmark) { _, _ in
             refreshLibraryRootAccess()
@@ -266,13 +256,6 @@ public struct ContentView: View {
         // projection session (and app termination) owns global capture cleanup.
     }
 
-    private func handleExitCommand() {
-        guard (session.isPresenting && session.areSlidesVisible) else { return }
-        deferSessionChange {
-            flow.hideSlides(in: session)
-        }
-    }
-
     private var rootSplitWithNotificationObservers: some View {
         rootSplitWithStateObservers
             .onReceive(libraryInventory.changes, perform: applyLibraryInventory)
@@ -296,9 +279,8 @@ public struct ContentView: View {
         }
     }
 
-    @ViewBuilder
-    private var sidebarPane: some View {
-        SidebarView(configuration: SidebarConfiguration(
+    private var sidebarConfiguration: SidebarConfiguration {
+        SidebarConfiguration(
             session: session,
             isWindowCaptureSupported: isWindowCaptureSupported,
             libraryFiles: previewLibraryFiles,
@@ -347,8 +329,7 @@ public struct ContentView: View {
             setBackgroundAudioLoop: { session.setBackgroundAudioLoop($0) },
             setBackgroundAudioVolumeDraft: { backgroundAudioVolumeDraft = $0 },
             setWindowCaptureFrameRate: { windowCaptureFrameRate = $0 }
-        ), defaults: controlPreferences)
-
+        )
     }
 
     @ViewBuilder
