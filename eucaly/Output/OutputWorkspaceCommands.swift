@@ -36,10 +36,10 @@ final class OutputWorkspaceMenuController: NSObject, ObservableObject, NSMenuDel
         super.init()
         menu.delegate = self
         menu.autoenablesItems = workspaceID == nil
-        button.bezelStyle = .accessoryBarAction; button.imagePosition = .imageLeading
+        button.imagePosition = .imageLeading
         button.alignment = .left
-        button.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        button.setContentCompressionResistancePriority(.required, for: .horizontal)
+        button.setContentHuggingPriority(.required, for: .horizontal)
+        button.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
         rebuild()
         if workspaceID != nil { button.menu = menu }
     }
@@ -148,14 +148,12 @@ final class OutputWorkspaceMenuController: NSObject, ObservableObject, NSMenuDel
 struct OutputWorkspaceNavigationHeader: View {
     let controls: OutputWorkspaceMenuController
     var body: some View {
-        VStack(spacing: 0) {
+        HStack(spacing: 0) {
             OutputWorkspaceMenuButton(controls: controls)
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            Divider()
+            Spacer(minLength: 0)
         }
-        .background(VisualEffectView(material: .sidebar, blendingMode: .withinWindow))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
     }
 }
 
@@ -169,8 +167,9 @@ struct OutputWorkspaceMenuButton: NSViewRepresentable {
     func makeNSView(context: Context) -> NSPopUpButton { controls.button }
     func updateNSView(_ view: NSPopUpButton, context: Context) { controls.updateButtonLabel() }
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSPopUpButton, context: Context) -> CGSize? {
-        guard let width = proposal.width, width.isFinite else { return nil }
-        return .init(width: width, height: nsView.fittingSize.height)
+        let fitting = nsView.fittingSize
+        let availableWidth = proposal.width.flatMap { $0.isFinite ? max(0, $0) : nil } ?? fitting.width
+        return .init(width: min(fitting.width, availableWidth), height: fitting.height)
     }
 }
 

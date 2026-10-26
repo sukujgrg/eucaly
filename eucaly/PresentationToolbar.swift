@@ -57,6 +57,5 @@ struct PresentationToolbar: ViewModifier {
                 }
             }
         }
-        .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
     }
 }

@@ -467,6 +467,7 @@ final class OutputDefaultTests: XCTestCase {
             window.layoutIfNeeded(); chrome.layoutSubtreeIfNeeded()
             let retainedControls = try controlPrefixes.map { try XCTUnwrap(button($0)) }
             let retainedMenus = try retainedControls.map { try XCTUnwrap($0.menu) }
+            let workspaceWidth = try XCTUnwrap(button("Workspaces")).frame.width
             try saveSnapshot("eucaly-toolbar-\(Int(size.width))-\(appearance.rawValue)-absent")
             XCTAssertTrue(window.makeFirstResponder(search))
             let editor = try XCTUnwrap(search.currentEditor())
@@ -498,7 +499,8 @@ final class OutputDefaultTests: XCTestCase {
             XCTAssertEqual(workspaceButton.imagePosition, .imageLeading)
             XCTAssertEqual(workspaceButton.title, "Workspaces")
             XCTAssertEqual(workspaceButton.accessibilityValue() as? String, longWorkspaceName)
-            XCTAssertGreaterThan(workspaceButton.frame.width, 220, "Workspace navigation fills the sidebar within its native margins")
+            XCTAssertEqual(workspaceButton.frame.width, workspaceWidth, accuracy: 1,
+                           "Update reminders must preserve the compact workspace control's width")
             XCTAssertEqual(outputButton.title, "Output")
             XCTAssertTrue(try XCTUnwrap(outputButton.toolTip).contains(longName))
             XCTAssertTrue(try XCTUnwrap(outputButton.accessibilityLabel()).contains(longName))

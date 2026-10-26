@@ -74,23 +74,21 @@ final class SidebarViewController: NSViewController {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func loadView() {
-        let background = NSVisualEffectView()
-        background.material = .sidebar
-        background.blendingMode = .withinWindow
-        background.state = .followsWindowActiveState
-        view = background
+        // NavigationSplitView owns the sidebar material for its entire column.
+        // Native contents stay transparent so controls and sections share it.
+        view = NSView()
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.drawsBackground = false
         scrollView.borderType = .noBorder
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
-        background.addSubview(scrollView)
+        view.addSubview(scrollView)
         NSLayoutConstraint.activate([
-            scrollView.leadingAnchor.constraint(equalTo: background.leadingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: background.trailingAnchor),
-            scrollView.topAnchor.constraint(equalTo: background.topAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: background.bottomAnchor)
+            scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            scrollView.topAnchor.constraint(equalTo: view.topAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
         document.orientation = .vertical
         document.alignment = .leading
@@ -104,12 +102,6 @@ final class SidebarViewController: NSViewController {
         buildFailureNotice()
         appendDocument(failureNotice)
         for section in SidebarSection.allCases {
-            if section != .library {
-                let separator = NSBox()
-                separator.boxType = .separator
-                separator.identifier = NSUserInterfaceItemIdentifier("sidebar.\(section.rawValue).separator")
-                appendDocument(separator)
-            }
             let sectionView = SidebarSectionView(section: section, target: self, action: #selector(toggleSection(_:)))
             sections[section] = sectionView
             appendDocument(sectionView)
@@ -158,7 +150,6 @@ final class SidebarViewController: NSViewController {
         clearWindow.isEnabled = !configuration.captureWindows.isEmpty
         updateWindowSettings()
         sections[.windows]?.isHidden = !configuration.isWindowCaptureSupported
-        document.arrangedSubviews.first { $0.identifier?.rawValue == "sidebar.windows.separator" }?.isHidden = !configuration.isWindowCaptureSupported
         updateFailureNotice()
         refreshAudioState()
         updateOutlines()

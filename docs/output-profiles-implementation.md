@@ -59,8 +59,9 @@ workspace with no outputs and selects it in the current controls window. The
 four-workspace creation guard includes parked and closed controls; deleting an
 unused workspace enables creation again.
 
-The pinned full-width Workspaces selector uses the sidebar's existing 12-point
-margins and native control sizing. Its menu lists saved names and coloured badges,
+The pinned Workspaces selector uses its native intrinsic width within the sidebar's
+12-point margins. The native split view owns the continuous sidebar surface; header
+and list contents add no separate material or ornamental rules. Its menu lists saved names and coloured badges,
 with runtime status as a native subtitle. The checkmark identifies the workspace
 being controlled independently of which workspaces are live. Native window titles
 retain the selected workspace name and output status when the sidebar is hidden.
@@ -676,8 +677,9 @@ receiver display/audio delivery. See the [qualification plan](ndi-output-plan.md
   deletion, import-owner fencing and approved/canceled Quit restoration identity.
 - Native toolbar fixtures cover 1060/1280/1400-point windows, light/dark appearance,
   long names, update states, sidebar collapse and A→B→A remounting. UX and independent
-  code review have no outstanding findings. The Workspaces button fills the sidebar
-  within its normal margins; every quick tool remains available after returning.
+  code review have no outstanding findings. Every quick tool remains available
+  after returning. The selector's original full-width layout was subsequently
+  replaced by native intrinsic sizing in the sidebar chrome cleanup below.
 - Lyrics regressions exercise independent real undo histories through a native
   window-targeted Undo key equivalent and Redo menu action. They do not establish
   OS-level active-app keyboard delivery. Manual VoiceOver, OS-managed quit/relaunch
@@ -690,3 +692,31 @@ Logs are under `build/audit/workspace-navigation-*.log`; the native preview is
 fixtures and fake destinations, alongside the existing default SDK integration
 suites. Physical receiver/display/speaker and sustained qualification remain
 separate from these checks.
+
+## Sidebar chrome validation — 27 October 2026
+
+The native split view owns the sidebar material. The workspace header and native
+sidebar controller no longer add competing materials or ornamental horizontal
+rules; the Workspaces selector uses its native fitting width. Toolbar background
+appearance follows the system rather than a forced hidden-background override.
+This preserves the existing split, search stacking, workspace controls and
+app-owned presentation runtimes.
+
+`make test` passed: 1,149 XCTest cases reported, nine skipped, zero failures,
+one Swift Testing case, seven feed and 103 release regressions, and the network
+architecture validator. The new native header regression checks sizing across
+sidebar widths; the toolbar regression checks that update reminders preserve the
+compact selector and active search editor. An unchanged Confidence focus assertion
+failed once in the earlier broad run, then passed three isolated repetitions and
+the final full run. Its assertion and production focus behavior remain unchanged.
+`make build` archived/exported the arm64 app, which passed strict deep signature
+verification.
+
+Native observation used a separate app identity and an empty temporary library.
+The active windowed sidebar is continuous into the titlebar, and settled fullscreen
+is continuous to the top edge. The revealed fullscreen toolbar retains AppKit's
+separate material and automatic boundary; it is not an app-drawn header divider.
+Sidebar collapse/expand, workspace menus, Open in New Window and search dismissal
+were observed. UX and independent review have no remaining actionable findings.
+Logs are under `build/audit/sidebar-chrome-*.log`. These checks do not add physical
+output or manual VoiceOver qualification.
