@@ -95,7 +95,7 @@ final class OutputWorkspaceMenuController: NSObject, ObservableObject, NSMenuDel
         menu.items.first?.title = "Workspaces"
         menu.items.first?.image = badges.badge(for: workspaceID).menuImage
         button.toolTip = "Current workspace: " + name + " — Switch or open a workspace in a new window"
-        button.setToolbarAccessibility(label: "Workspaces", value: name,
+        button.setControlAccessibility(label: "Workspaces", value: name,
             help: "Switch workspaces, open a workspace in a new window, rename or manage workspaces.")
     }
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
@@ -219,6 +219,7 @@ final class OutputWorkspaceRenamer: NSObject, NSTextFieldDelegate {
 
 @MainActor
 final class OutputWorkspaceCommands {
+    let librarySearchPresenter = LibrarySearchPalettePresenter()
     private let keyWindow: @MainActor () -> NSWindow?
     init(keyWindow: @escaping @MainActor () -> NSWindow? = { NSApp.keyWindow }) { self.keyWindow = keyWindow }
     weak var window: NSWindow?

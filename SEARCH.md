@@ -22,6 +22,17 @@ The app uses a hybrid filesystem/SQLite model:
 - Escape dismisses library search and restores the previous editor or control,
   including its text selection. Search and result activation never replace Current;
   files open in Preview. The former `Shift+Cmd+O` shortcut is removed.
+- The palette is owned by AppKit in the workspace's existing native window:
+  presentation, query editing, results, footer, feedback and dismissal share one
+  lifetime. It retires native editing before removal, without a SwiftUI fade or
+  disabling the normal focus ring. Workspace switches dismiss it before saving
+  the workspace's underlying editor focus; the query model stays workspace-owned.
+- Add files using the row's **+**. Tab reaches the selected file's button, Space
+  adds it, and Shift+Tab returns to the query. The native context menu and accessible
+  Add to Playlist action remain available. The footer contains Close and Preview.
+- Playlist save outcomes appear inline inside search and are announced for
+  accessibility. Feedback clears on a new query or dismissal; adding preserves
+  the query, result selection and Current. Repeated entries remain supported.
 - Edit > Find > Find in Lyrics is a separate native AppKit Find command for the
   focused lyrics editor, without a shortcut. `Cmd+G`, `Shift+Cmd+G` and `Cmd+E`
   retain native next match, previous match and Use Selection for Find behavior;
@@ -134,6 +145,9 @@ Note:
 ## Implementation Pointers
 - Search UI/state orchestration:
   - `/Users/suku/Swift/eucaly/eucaly/ContentView.swift`
+  - `/Users/suku/Swift/eucaly/eucaly/LibrarySearchPaletteController.swift`
+  - `/Users/suku/Swift/eucaly/eucaly/LibrarySearchFieldController.swift`
+  - `/Users/suku/Swift/eucaly/eucaly/LibrarySearchResultsController.swift`
   - `/Users/suku/Swift/eucaly/eucaly/SidebarViewController.swift`
   - `/Users/suku/Swift/eucaly/eucaly/SidebarOutlineView.swift`
 - Index backend:

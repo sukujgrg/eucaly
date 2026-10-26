@@ -387,6 +387,11 @@ Future multi-window support must retain the same media-flow and explicit-selecti
   - `eucaly/ScreenCaptureManager.swift`
 - Search:
   - See `SEARCH.md` for query behavior, indexing rules, and implementation details.
+  - `LibrarySearchPalettePresenter` owns an AppKit palette in the existing workspace
+    window. Native field/results controllers own keyboard and accessibility work;
+    no SwiftUI search overlay or presentation animation owns their lifetime.
+    Dismiss it before workspace focus capture or controls teardown. Playlist feedback
+    stays inside search; adding never opens Preview or changes Current.
 
 ### Parser and Domain Models
 - Pure parser/domain-model code should remain actor-independent (`nonisolated`) when it has no UI, AppKit, SwiftUI state, `@Published`, or shared mutable state.

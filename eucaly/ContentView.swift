@@ -40,9 +40,7 @@ public struct ContentView: View {
     @State private var sidebarSelection: SidebarSelection? = nil
     @State private var selectedAudioURL: URL? = nil
     @State private var librarySearch = LibrarySearchModel()
-    @State private var librarySearchCommandRouter = LibrarySearchCommandRouter()
     @State private var libraryScrollRequest: LibraryScrollRequest?
-    @State private var isLibrarySearchPresented: Bool = false
     private let libraryInventory = LibraryInventoryStore.shared
     @State private var appliedInventoryRevision: UInt64?
     @State private var isLibraryLoading: Bool = false
@@ -180,7 +178,7 @@ public struct ContentView: View {
     }
 
     private var rootSplitView: some View {
-        rootSplitWithLibrarySearchOverlay
+        rootSplitWithNotificationObservers
     }
 
     private var rootSplitBase: some View {
@@ -197,29 +195,6 @@ public struct ContentView: View {
         .modifier(PresentationToolbar(session: session, updates: appUpdateViewModel,
             toggleSlides: toggleSlidesFromUI, searchLibrary: presentLibrarySearch,
             manageOutputs: showOutputSettings))
-    }
-
-    private var rootSplitWithLibrarySearchOverlay: some View {
-        ZStack {
-            rootSplitWithNotificationObservers
-                .excludingInterfaceAnimation(.search)
-
-            if isLibrarySearchPresented {
-                LibrarySearchOverlayContainerView(
-                    model: librarySearch,
-                    commandRouter: librarySearchCommandRouter,
-                    currentSelectedURL: currentSelectedURL,
-                    displayName: { displayName(for: $0) },
-                    onRunAction: runLibrarySearchAction,
-                    onClose: dismissLibrarySearch,
-                    onOpenResult: previewLibrarySearchResult,
-                    onAddResultToPlaylist: addLibrarySearchResultToPlaylist,
-                    onCommitQuery: commitLibrarySearchQuery
-                )
-                .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.98)))
-                .zIndex(1)
-            }
-        }
     }
 
     private var rootSplitWithStateObservers: some View {
@@ -269,6 +244,7 @@ public struct ContentView: View {
     }
 
     private func handleControlsWillClose() {
+        workspaceCommands.librarySearchPresenter.dismiss()
         lyricsCleanupController.cancel()
         fileTrashController.cancel()
         importPanel.cancel()
@@ -1250,32 +1226,23 @@ public struct ContentView: View {
 
     @MainActor
     private func presentLibrarySearch() {
-        if isLibrarySearchPresented {
-            librarySearchCommandRouter.focusExistingSearch()
+        let presenter = workspaceCommands.librarySearchPresenter
+        if presenter.isPresented {
+            presenter.focusExistingSearch()
             return
         }
-        InterfaceMotion.search.animate(reduceMotion: reduceMotion) {
-            isLibrarySearchPresented = true
-        }
+        guard let window = workspaceCommands.window, window.attachedSheet == nil else { return }
         librarySearch.refreshSearch(currentSelectedURL: currentSelectedURL)
-        librarySearch.syncSelection(
-            currentSelectedURL: currentSelectedURL,
-            preferFirstResult: true
-        )
-    }
-
-    @MainActor
-    private func dismissLibrarySearch() {
-        librarySearch.cancelDebounce()
-        InterfaceMotion.search.animate(reduceMotion: reduceMotion) {
-            isLibrarySearchPresented = false
-        }
+        librarySearch.syncSelection(currentSelectedURL: currentSelectedURL, preferFirstResult: true)
+        presenter.present(in: window, model: librarySearch,
+            currentSelectedURL: { currentSelectedURL }, displayName: { displayName(for: $0) },
+            onRunAction: runLibrarySearchAction,
+            onOpenResult: previewLibrarySearchResult,
+            onAddResultToPlaylist: addLibrarySearchResultToPlaylist)
     }
 
     @MainActor
     private func previewLibrarySearchResult(_ url: URL) {
-        dismissLibrarySearch()
-
         if let root = libraryRootURL, folderURL?.standardizedFileURL != root.standardizedFileURL {
             folderURL = root
             loadMarkdownFiles(from: root)
@@ -1286,35 +1253,24 @@ public struct ContentView: View {
     }
 
     @MainActor
-    private func addLibrarySearchResultToPlaylist(_ url: URL) {
+    private func addLibrarySearchResultToPlaylist(_ url: URL) -> LibrarySearchPlaylistAddResult {
         guard libraryRootURL != nil else {
-            newFileWarning = "Set a library root before adding to playlists."
-            return
+            return .failed("Set a library root before adding to playlists.")
         }
 
-        if playlistStore.add(url: url, after: selectedPlaylistEntryID) != nil {
-            newFileWarning = nil
-            loadPlaylists()
-            return
+        guard playlistStore.add(url: url, after: selectedPlaylistEntryID) != nil else {
+            return .failed(playlistStore.lastError ?? "Could not add this file to Playlist.")
         }
 
-        newFileWarning = playlistStore.lastError
-    }
-
-    @MainActor
-    private func commitLibrarySearchQuery() {
-        Task {
-            let url = await librarySearch.searchImmediately(currentSelectedURL: currentSelectedURL)
-            guard isLibrarySearchPresented, let url else {
-                return
-            }
-            previewLibrarySearchResult(url)
-        }
+        // The store already publishes the committed order. A second disk read
+        // must not turn a successful add into an apparent failure and retry.
+        reconcilePlaylistSelection()
+        rebuildDisplayNames(for: playlistResolvedURLs)
+        return .added
     }
 
     @MainActor
     private func runLibrarySearchAction(_ action: LibraryCommandPaletteAction) {
-        dismissLibrarySearch()
         switch action {
         case .newLyrics:
             requestEditorExit(.newLyrics)

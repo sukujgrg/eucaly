@@ -45,7 +45,7 @@ final class AppUpdateToolbarController: NSObject {
         button.toolTip = button.isEnabled
             ? "Show update details for eucaly " + (state.availableVersion ?? "")
             : label + ". Update controls are temporarily unavailable."
-        button.setToolbarAccessibility(label: label, value: detail, help: button.toolTip)
+        button.setControlAccessibility(label: label, value: detail, help: button.toolTip)
     }
 
     @objc private func showUpdate(_ sender: Any?) {

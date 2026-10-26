@@ -1,16 +1,6 @@
 import AppKit
 import SwiftUI
 
-extension NSControl {
-    /// AppKit exposes cells as accessibility elements for toolbar controls.
-    /// Keep that native element and the hosting view's metadata in agreement.
-    func setToolbarAccessibility(label: String, value: String? = nil, help: String? = nil) {
-        setAccessibilityLabel(label); cell?.setAccessibilityLabel(label)
-        if let value { setAccessibilityValue(value); cell?.setAccessibilityValue(value) }
-        if let help { setAccessibilityHelp(help); cell?.setAccessibilityHelp(help) }
-    }
-}
-
 /// One controls owner, with native toolbar items for each action. AppKit owns
 /// item layout; reminder changes never recreate the output menus.
 struct PresentationToolbar: ViewModifier {

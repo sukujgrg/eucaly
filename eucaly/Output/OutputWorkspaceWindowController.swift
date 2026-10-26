@@ -343,6 +343,7 @@ final class OutputWorkspaceWindowController: NSWindowController, NSWindowDelegat
     func present(_ next: OutputWorkspaceControls) -> Bool {
         guard !closed, let window, window.attachedSheet == nil else { return false }
         if next === controls { return true }
+        commands.librarySearchPresenter.dismiss()
         // A newly attached field may have AppKit's automatic select-all before
         // its saved focus has been restored. That is not a new operator choice.
         if pendingFocusRestoration == nil { controls.rememberFocus(in: window) }
@@ -392,6 +393,7 @@ final class OutputWorkspaceWindowController: NSWindowController, NSWindowDelegat
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { commands.confirmClose() }
     func windowWillReturnUndoManager(_ window: NSWindow) -> UndoManager? {
+        if let manager = commands.librarySearchPresenter.undoManager { return manager }
         // AppKit's Edit menu routes Undo through the window. Supply the active
         // document's stack; ordinary field editing is workspace-owned as well.
         if let editor = window.firstResponder as? LyricsTextView { return editor.undoManager }
@@ -403,6 +405,7 @@ final class OutputWorkspaceWindowController: NSWindowController, NSWindowDelegat
     }
     func closePreservingControls() {
         guard !closed else { return }
+        commands.librarySearchPresenter.dismiss()
         if let window {
             if pendingFocusRestoration == nil { controls.rememberFocus(in: window) }
             window.makeFirstResponder(nil)
@@ -413,6 +416,7 @@ final class OutputWorkspaceWindowController: NSWindowController, NSWindowDelegat
     }
     func windowWillClose(_ notification: Notification) {
         guard !closed else { return }
+        commands.librarySearchPresenter.dismiss()
         let closesControls = controls.host === self
         closed = true
         window?.setFrameAutosaveName("")

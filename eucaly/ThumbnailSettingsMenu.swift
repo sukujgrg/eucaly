@@ -33,7 +33,7 @@ final class ThumbnailSettingsMenuController: NSObject {
         button.bezelStyle = .toolbar; button.imagePosition = .imageOnly
         button.setContentHuggingPriority(.required, for: .horizontal)
         button.setContentCompressionResistancePriority(.required, for: .horizontal)
-        button.setToolbarAccessibility(label: "Thumbnails")
+        button.setControlAccessibility(label: "Thumbnails")
         refresh()
     }
     func refresh() {
@@ -55,7 +55,7 @@ final class ThumbnailSettingsMenuController: NSObject {
         addChoices("Thumbnail Font Size", key: "thumbnailFontScale", current: fontSize, presets: Array(stride(from: 30, through: 200, by: 10)), to: menu)
         button.menu = menu
         button.toolTip = "Thumbnail size: \(percentage(size)). Font size: \(percentage(fontSize))."
-        button.setToolbarAccessibility(label: "Thumbnails", value: "Size: \(percentage(size)); font size: \(percentage(fontSize))",
+        button.setControlAccessibility(label: "Thumbnails", value: "Size: \(percentage(size)); font size: \(percentage(fontSize))",
                                        help: button.toolTip)
     }
     private func addChoices(_ title: String, key: String, current: Double, presets: [Int], to menu: NSMenu) {

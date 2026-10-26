@@ -140,7 +140,7 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         let name = destination?.name ?? "None"
         let scope = destination.map { outputs.managementDestinationLabel($0) + " · " + outputs.managementWorkspaceName($0.workspaceID) } ?? "None"
         outputButton.toolTip = "Edit output appearance: \(scope). \(reason ?? "Quick edits affect only this output.")"
-        outputButton.setToolbarAccessibility(label: "Output appearance editing target: \(scope)",
+        outputButton.setControlAccessibility(label: "Output appearance editing target: \(scope)",
             help: reason ?? "Choose the appearance editing target or edit its monitor assignment.")
         let selection = SelectionState(rows: store.document.destinations.map { DefaultEntry(id: $0.id, name: outputs.managementDestinationLabel($0) + " · " + outputs.managementWorkspaceName($0.workspaceID)) }, defaultID: store.document.defaultDestinationID,
             target: target, kind: profile?.kind, network: destination?.networkSettings, technology: destination?.networkTechnology, monitors: displays.displays,
@@ -221,8 +221,8 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         appearanceButton.isEnabled = canEdit; backgroundButton.isEnabled = canEdit
         appearanceButton.toolTip = "Appearance for \(name)\n\(appearanceHelp)"
         backgroundButton.toolTip = "Background for \(name)\n\(backgroundHelp)"
-        appearanceButton.setToolbarAccessibility(label: "Appearance for output: \(scope)", help: appearanceHelp)
-        backgroundButton.setToolbarAccessibility(label: "Background for output: \(scope)", help: backgroundHelp)
+        appearanceButton.setControlAccessibility(label: "Appearance for output: \(scope)", help: appearanceHelp)
+        backgroundButton.setControlAccessibility(label: "Background for output: \(scope)", help: backgroundHelp)
         if appearance != appearanceState {
             appearanceState = appearance
             appearanceButton.menu = appearanceMenu(profile, target: target)
@@ -266,7 +266,7 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
             ? "Add an NDI or OMT output in Manage Outputs to route it between workspaces."
             : "Choose a workspace’s Current for " + technologyName + " output. A live move keeps the source name and receiver connection; a stopped output stays stopped.")
         networkButton.toolTip = [summary, help].filter { !$0.isEmpty }.joined(separator: "\n")
-        networkButton.setToolbarAccessibility(label: technologyName + " workspace routing" + (summary.isEmpty ? "" : ": " + summary), help: help)
+        networkButton.setControlAccessibility(label: technologyName + " workspace routing" + (summary.isEmpty ? "" : ": " + summary), help: help)
         if state.sources.isEmpty { menu.addItem(info("No network outputs configured.")) }
         for (index, source) in state.sources.enumerated() {
             let choices = state.sources.count == 1 ? menu : NSMenu()
