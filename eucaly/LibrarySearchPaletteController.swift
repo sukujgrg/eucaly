@@ -15,7 +15,7 @@ final class LibrarySearchPalettePresenter {
 
     @discardableResult
     func present(in window: NSWindow, model: LibrarySearchModel,
-                 currentSelectedURL: @escaping () -> URL?, displayName: @escaping (URL) -> String,
+                 currentSelectedURL: @escaping () -> URL?,
                  onRunAction: @escaping (LibraryCommandPaletteAction) -> Void,
                  onOpenResult: @escaping (URL) -> Void,
                  onAddResultToPlaylist: @escaping (URL) -> LibrarySearchPlaylistAddResult) -> Bool {
@@ -27,7 +27,7 @@ final class LibrarySearchPalettePresenter {
               let parent = window.contentViewController,
               let layoutGuide = window.contentLayoutGuide as? NSLayoutGuide else { return false }
         let controller = LibrarySearchPaletteController(model: model,
-            currentSelectedURL: currentSelectedURL, displayName: displayName,
+            currentSelectedURL: currentSelectedURL,
             onRunAction: onRunAction, onOpenResult: onOpenResult,
             onAddResultToPlaylist: onAddResultToPlaylist,
             onDismiss: { [weak self] in self?.dismiss() })
@@ -72,7 +72,6 @@ final class LibrarySearchPaletteController: NSViewController {
 
     private struct Handlers {
         let currentSelectedURL: () -> URL?
-        let displayName: (URL) -> String
         let onRunAction: (LibraryCommandPaletteAction) -> Void
         let onOpenResult: (URL) -> Void
         let onAddResultToPlaylist: (URL) -> LibrarySearchPlaylistAddResult
@@ -96,13 +95,12 @@ final class LibrarySearchPaletteController: NSViewController {
     var statusText: String { presentation.statusText }
 
     init(model: LibrarySearchModel, currentSelectedURL: @escaping () -> URL?,
-         displayName: @escaping (URL) -> String,
          onRunAction: @escaping (LibraryCommandPaletteAction) -> Void,
          onOpenResult: @escaping (URL) -> Void,
          onAddResultToPlaylist: @escaping (URL) -> LibrarySearchPlaylistAddResult,
          onDismiss: @escaping () -> Void) {
         self.model = model; lastQuery = model.query
-        handlers = Handlers(currentSelectedURL: currentSelectedURL, displayName: displayName,
+        handlers = Handlers(currentSelectedURL: currentSelectedURL,
             onRunAction: onRunAction, onOpenResult: onOpenResult,
             onAddResultToPlaylist: onAddResultToPlaylist, onDismiss: onDismiss)
         super.init(nibName: nil, bundle: nil)
@@ -331,7 +329,7 @@ final class LibrarySearchPaletteController: NSViewController {
         resultsController.view.isHidden = state.showsStatusView
         emptyState.isHidden = !state.showsStatusView
         resultsController.update(.init(selectedEntry: model.selectedEntry,
-            actions: model.matchingActions, results: model.filteredResults, displayName: handlers.displayName,
+            actions: model.matchingActions, results: model.filteredResults,
             onSelectionChange: { [weak self] entry in
                 guard let self, self.isPresented, self.model.selectedEntry != entry else { return }
                 if let entry, !self.model.selectableEntries.contains(entry) { return }
@@ -354,12 +352,12 @@ final class LibrarySearchPaletteController: NSViewController {
 
     private func addToPlaylist(_ url: URL) -> LibrarySearchPlaylistAddResult {
         guard isPresented, let handlers else { return .failed("Library search is closed.") }
-        guard model.filteredResults.contains(where: { $0.url == url }) else {
+        guard let entry = model.filteredResults.first(where: { $0.url == url }) else {
             return .failed("This search result is no longer available.")
         }
         let result = handlers.onAddResultToPlaylist(url)
         guard isPresented else { return result }
-        let title = handlers.displayName(url)
+        let title = entry.title
         let announcement: String
         switch result {
         case .added:

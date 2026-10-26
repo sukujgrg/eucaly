@@ -3,6 +3,61 @@ import SQLite3
 @testable import eucaly
 
 final class LibraryTextSearchIndexTests: XCTestCase {
+    func testSearchReturnsAuthoredAndComputedTitlesWithoutRereadingSources() async throws {
+        let (index, directory) = try makeIndex()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let lyrics = directory.appendingPathComponent("verseviewlyrics", isDirectory: true)
+        try FileManager.default.createDirectory(at: lyrics, withIntermediateDirectories: true)
+        let authored = try writeTextFile(in: lyrics, name: "220192.txt",
+            contents: "#title: Holy Forever\nVerse 1\nwe sing shareduniquetoken")
+        let computed = try writeTextFile(in: lyrics, name: "221905.txt",
+            contents: "Verse 1\nwe gather here and sing with joy\nshareduniquetoken")
+        let synced = try await index.refreshLibraryMetadata(root: directory)
+        XCTAssertTrue(synced.isIndexed)
+        // Missing files must not make search parse a new title or lose the
+        // accepted title/content before the next explicit library refresh.
+        for url in [authored, computed] { try FileManager.default.removeItem(at: url) }
+        let matches = await index.search(query: "shareduniquetoken", scopeFiles: [authored, computed])
+        XCTAssertEqual(matches.count, 2)
+        XCTAssertEqual(matches.first { $0.url == authored }?.title, "Holy Forever")
+        XCTAssertEqual(matches.first { $0.url == computed }?.title, "we gather here and sing with")
+        for result in matches {
+            XCTAssertEqual(result.title, synced.metadata.first { $0.url == result.url }?.title)
+            XCTAssertTrue(result.snippet.contains("shareduniquetoken"))
+        }
+    }
+
+    func testSearchTitleRefreshesAtTheSameURLWithTheAcceptedMetadata() async throws {
+        let (index, directory) = try makeIndex()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let song = try writeTextFile(in: directory, name: "220192.txt",
+            contents: "#title: First Title\nVerse 1\nshareduniquetoken")
+        _ = try await index.refreshLibraryMetadata(root: directory)
+        let first = await index.search(query: "shareduniquetoken", scopeFiles: [song])
+        XCTAssertEqual(first.first?.title, "First Title")
+        try "#title: A Different Authored Title\nVerse 1\nshareduniquetoken".write(to: song, atomically: true, encoding: .utf8)
+        _ = try await index.refreshLibraryMetadata(root: directory)
+        let refreshed = await index.search(query: "shareduniquetoken", scopeFiles: [song])
+        XCTAssertEqual(refreshed.first?.url, song)
+        XCTAssertEqual(refreshed.first?.title, "A Different Authored Title")
+        XCTAssertEqual(first.first?.title, "First Title", "Already accepted responses keep their own title snapshot")
+    }
+
+    func testSearchKeepsFTSMatchesWithoutMetadataAndUsesFilenameFallback() async throws {
+        let (index, directory) = try makeIndex()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let song = try writeTextFile(in: directory, name: "220192.txt", contents: "Verse 1\nWe sing")
+        _ = try seedLegacyIndex(in: directory, files: [(song, "#title: Known Title", "legacyuniquetoken")])
+        var connection: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(directory.appendingPathComponent("library-search.sqlite").path, &connection), SQLITE_OK)
+        let db = try XCTUnwrap(connection)
+        XCTAssertEqual(sqlite3_exec(db, "DELETE FROM library_file_metadata;", nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_close(db), SQLITE_OK)
+        let matches = await index.search(query: "legacyuniquetoken", scopeFiles: [song])
+        XCTAssertEqual(matches.map(\.url), [song])
+        XCTAssertEqual(matches.first?.title, "220192.txt")
+    }
+
     func testACompetingConnectionReportsFailedIndexingAndRetryFindsTheSavedToken() async throws {
         let (index, directory) = try makeIndex()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -69,6 +124,7 @@ final class LibraryTextSearchIndexTests: XCTestCase {
         XCTAssertEqual(denied.metadata.first { $0.url == original }?.title, "Original title")
         let retained = await index.search(query: "olduniquetoken")
         XCTAssertEqual(retained.map(\.url), [original])
+        XCTAssertEqual(retained.first?.title, "Original title")
         let filename = await index.search(query: "added")
         XCTAssertEqual(filename.map(\.url), [added])
         for url in [original, added] { try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path) }
@@ -82,6 +138,7 @@ final class LibraryTextSearchIndexTests: XCTestCase {
         let inserted = await index.search(query: "addeduniquetoken")
         let stale = await index.search(query: "olduniquetoken")
         XCTAssertEqual(updated.map(\.url), [original])
+        XCTAssertEqual(updated.first?.title, "Updated title")
         XCTAssertEqual(inserted.map(\.url), [added])
         XCTAssertTrue(stale.isEmpty)
     }
@@ -782,6 +839,7 @@ final class LibraryTextSearchIndexTests: XCTestCase {
         XCTAssertEqual(persisted.version, 0)
         let results = await index.search(query: "legacyuniquetoken")
         XCTAssertEqual(results.map(\.url), [song])
+        XCTAssertEqual(results.first?.title, "Holy Forever")
     }
 
     func testLegacyTitleRefreshIsIndependentOfUnchangedSearchContentAndRunsOnlyOnce() async throws {
@@ -820,6 +878,8 @@ final class LibraryTextSearchIndexTests: XCTestCase {
             XCTAssertEqual(synced.metadata.first?.title, "#title: Literal title")
             let cached = await index.cachedLibraryMetadata(root: directory)
             XCTAssertEqual(cached.first?.title, "#title: Literal title")
+            let matches = await index.search(query: "sing")
+            XCTAssertEqual(matches.first?.title, "#title: Literal title")
         }
     }
 

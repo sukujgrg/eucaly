@@ -100,7 +100,6 @@ final class LibrarySearchResultsController: NSViewController {
         let selectedEntry: LibrarySearchEntryID?
         let actions: [LibraryCommandPaletteAction]
         let results: [LibraryTextSearchIndex.SearchResult]
-        let displayName: (URL) -> String
         let onSelectionChange: (LibrarySearchEntryID?) -> Void
         let onRunAction: (LibraryCommandPaletteAction) -> Void
         let onOpenResult: (URL) -> Void
@@ -217,8 +216,7 @@ final class LibrarySearchResultsController: NSViewController {
 
             let newRows = Self.makeRows(
                 actions: view.actions,
-                results: view.results,
-                displayName: view.displayName
+                results: view.results
             )
             let contentChanged = forceReload || rows != newRows
             if contentChanged {
@@ -608,8 +606,7 @@ final class LibrarySearchResultsController: NSViewController {
 
         private static func makeRows(
             actions: [LibraryCommandPaletteAction],
-            results: [LibraryTextSearchIndex.SearchResult],
-            displayName: (URL) -> String
+            results: [LibraryTextSearchIndex.SearchResult]
         ) -> [Row] {
             var rows: [Row] = []
             if !actions.isEmpty {
@@ -624,7 +621,7 @@ final class LibrarySearchResultsController: NSViewController {
                     let url = result.url.standardizedFileURL
                     return Row(
                         id: .entry(.result(url)),
-                        content: .result(url, displayName(url), result.snippet)
+                        content: .result(url, result.title, result.snippet)
                     )
                 })
             }

@@ -286,7 +286,7 @@ final class LibrarySearchPaletteTests: XCTestCase {
             let resultURL = url
             model = LibrarySearchModel(index: LibraryTextSearchIndex(databaseURL: directory.appendingPathComponent("index.sqlite")),
                 debounce: { throw CancellationError() },
-                search: search ?? { _, _ in [.init(url: resultURL, snippet: "Song lyrics\nSecond lyric")] })
+                search: search ?? { _, _ in [.init(url: resultURL, snippet: "Song lyrics\nSecond lyric", title: "Song")] })
             window = NSWindow(contentRect: .init(x: 0, y: 0, width: 1060, height: 660),
                 styleMask: [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
             super.init()
@@ -311,7 +311,7 @@ final class LibrarySearchPaletteTests: XCTestCase {
             XCTAssertEqual(result, url)
         }
         func present() throws -> LibrarySearchPaletteController {
-            XCTAssertTrue(presenter.present(in: window, model: model, currentSelectedURL: { nil }, displayName: { _ in "Song" },
+            XCTAssertTrue(presenter.present(in: window, model: model, currentSelectedURL: { nil },
                 onRunAction: { [weak self] in self?.actions.append($0) },
                 onOpenResult: { [weak self] in self?.opened.append($0) },
                 onAddResultToPlaylist: { [weak self] url in

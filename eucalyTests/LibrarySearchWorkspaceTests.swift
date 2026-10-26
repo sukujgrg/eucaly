@@ -9,8 +9,8 @@ final class LibrarySearchWorkspaceTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("SearchContentView-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let song = root.appendingPathComponent("grace.txt")
-        try "Verse\nAmazing grace".write(to: song, atomically: true, encoding: .utf8)
+        let song = root.appendingPathComponent("220192.txt")
+        try "Verse\nAmazing grace will always carry me safely home".write(to: song, atomically: true, encoding: .utf8)
         let suite = "SearchContentView." + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defaults.set(root.path, forKey: "libraryRootPath")
@@ -49,6 +49,15 @@ final class LibrarySearchWorkspaceTests: XCTestCase {
         window.contentView?.layoutSubtreeIfNeeded()
         assertHittable(palette.searchField, in: window)
         assertHittable(palette.closeButton, in: window)
+        XCTAssertEqual(try searchResultTitle(in: palette).stringValue, "Amazing grace will always carry me")
+        let selected = model.selectedEntry
+        try "#title: Grace in every season\nVerse\nAmazing grace will always carry me safely home".write(to: song, atomically: true, encoding: .utf8)
+        inventory.refresh(root: root)
+        try await until { model.filteredResults.first?.title == "Grace in every season" }
+        await mainQueueBoundary()
+        window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertEqual(try searchResultTitle(in: palette).stringValue, "Grace in every season")
+        XCTAssertEqual(model.selectedEntry, selected)
         XCTAssertFalse(try XCTUnwrap(window.toolbar).items.isEmpty)
         NotificationCenter.default.post(name: .showLibrarySearch, object: nil)
         XCTAssertTrue(host.commands.librarySearchPresenter.activeController === palette)
@@ -86,7 +95,7 @@ final class LibrarySearchWorkspaceTests: XCTestCase {
         await mainQueueBoundary()
         let model = LibrarySearchModel()
         XCTAssertTrue(host.commands.librarySearchPresenter.present(in: window, model: model,
-            currentSelectedURL: { nil }, displayName: { $0.lastPathComponent },
+            currentSelectedURL: { nil },
             onRunAction: { _ in }, onOpenResult: { _ in }, onAddResultToPlaylist: { _ in .added }))
         let palette = try XCTUnwrap(host.commands.librarySearchPresenter.activeController)
         let content = try XCTUnwrap(window.contentView)
@@ -116,7 +125,7 @@ final class LibrarySearchWorkspaceTests: XCTestCase {
         await mainQueueBoundary()
         let model = LibrarySearchModel()
         XCTAssertTrue(host.commands.librarySearchPresenter.present(in: window, model: model,
-            currentSelectedURL: { nil }, displayName: { $0.lastPathComponent },
+            currentSelectedURL: { nil },
             onRunAction: { _ in }, onOpenResult: { _ in }, onAddResultToPlaylist: { _ in .added }))
         let palette = try XCTUnwrap(host.commands.librarySearchPresenter.activeController)
         try await until { palette.searchField.currentEditor() != nil }
@@ -167,7 +176,7 @@ final class LibrarySearchWorkspaceTests: XCTestCase {
         let presenter = host.commands.librarySearchPresenter
         var opened: [URL] = []
         XCTAssertTrue(presenter.present(in: window, model: model, currentSelectedURL: { nil },
-            displayName: { $0.lastPathComponent }, onRunAction: { _ in XCTFail("Add must not run a command") },
+            onRunAction: { _ in XCTFail("Add must not run a command") },
             onOpenResult: { opened.append($0) }, onAddResultToPlaylist: { url in
                 playlist.add(url: url, after: nil) == nil ? .failed(playlist.lastError ?? "Add failed") : .added
             }))
@@ -215,6 +224,15 @@ final class LibrarySearchWorkspaceTests: XCTestCase {
         XCTAssertTrue(hit === control || hit?.isDescendant(of: control) == true,
                       "Search controls must be visible above the native split view, not merely present in the AX tree",
                       file: file, line: line)
+    }
+
+    private func searchResultTitle(in palette: LibrarySearchPaletteController) throws -> NSTextField {
+        let table = palette.resultsController.table
+        let cell = try XCTUnwrap(table.view(atColumn: 0, row: 1, makeIfNecessary: true))
+        func labels(_ view: NSView) -> [NSTextField] {
+            view.subviews.compactMap { $0 as? NSTextField } + view.subviews.flatMap(labels)
+        }
+        return try XCTUnwrap(labels(cell).first { $0.identifier?.rawValue == "LibrarySearch.ItemTitle" })
     }
 
     private func mainQueueBoundary() async {

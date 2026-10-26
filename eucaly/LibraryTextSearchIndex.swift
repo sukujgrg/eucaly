@@ -8,6 +8,13 @@ actor LibraryTextSearchIndex {
     struct SearchResult: Hashable, Sendable {
         let url: URL
         let snippet: String
+        let title: String
+
+        init(url: URL, snippet: String, title: String? = nil) {
+            self.url = url
+            self.snippet = snippet
+            self.title = title.flatMap { $0.isEmpty ? nil : $0 } ?? url.lastPathComponent
+        }
     }
 
     struct FileMetadata: Hashable, Sendable {
@@ -287,9 +294,11 @@ actor LibraryTextSearchIndex {
         JOIN temp.library_search_scope AS search_scope ON search_scope.path = file_index.path
         """
         let sql = """
-        SELECT file_index.path, highlight(file_index, 1, char(1), char(2))
+        SELECT file_index.path, highlight(file_index, 1, char(1), char(2)),
+               metadata.title, metadata.title_format_version
         FROM file_index
         \(scopeJoin)
+        LEFT JOIN library_file_metadata AS metadata ON metadata.path = file_index.path
         WHERE file_index MATCH ?1
         ORDER BY bm25(file_index, 0.05, 1.0)
         LIMIT ?2;
@@ -316,16 +325,29 @@ actor LibraryTextSearchIndex {
             if Task.isCancelled { return [] }
             guard let cPath = sqlite3_column_text(statement, 0) else { continue }
             let path = String(cString: cPath)
+            let url = URL(fileURLWithPath: path)
             let snippet: String
             if let cSnippet = sqlite3_column_text(statement, 1) {
                 snippet = Self.previewText(from: String(cString: cSnippet))
             } else {
                 snippet = ""
             }
+            // Titles are accepted with the matching index snapshot. Search
+            // never rereads source files or consults a separate UI name cache.
+            let title: String?
+            if let cTitle = sqlite3_column_text(statement, 2) {
+                let cachedTitle = String(cString: cTitle)
+                title = sqlite3_column_int(statement, 3) == Self.titleFormatVersion
+                    ? cachedTitle
+                    : LibraryFileScannerService.displayTitle(for: url, kind: LibraryFileKind(url: url), cachedTitle: cachedTitle)
+            } else {
+                title = nil
+            }
             results.append(
                 SearchResult(
-                    url: URL(fileURLWithPath: path),
-                    snippet: snippet.trimmingCharacters(in: .whitespacesAndNewlines)
+                    url: url,
+                    snippet: snippet.trimmingCharacters(in: .whitespacesAndNewlines),
+                    title: title
                 )
             )
         }

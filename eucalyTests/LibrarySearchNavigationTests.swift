@@ -115,7 +115,7 @@ final class LibrarySearchNavigationTests: XCTestCase {
         let lyrics = URL(fileURLWithPath: "/tmp/Library/Lyrics/song.txt")
         let movie = URL(fileURLWithPath: "/tmp/Library/Videos/movie.mov")
         let fixture = SearchNavigationFixture(actions: [], results: [
-            .init(url: lyrics, snippet: "Matching passage at the end of the lyrics\nFollowing lyric"),
+            .init(url: lyrics, snippet: "Matching passage at the end of the lyrics\nFollowing lyric", title: "Amazing Grace"),
             .init(url: movie, snippet: "")
         ])
         defer { fixture.close() }
@@ -131,6 +131,10 @@ final class LibrarySearchNavigationTests: XCTestCase {
                 let labels = descendants(cell).compactMap { $0 as? NSTextField }
                 let title = try XCTUnwrap(labels.first { $0.identifier?.rawValue == "LibrarySearch.ItemTitle" })
                 let location = try XCTUnwrap(labels.first { $0.identifier?.rawValue == "LibrarySearch.ItemLocation" })
+                XCTAssertEqual(title.stringValue, row == 1 ? "Amazing Grace" : "movie.mov")
+                XCTAssertFalse(title.isHidden)
+                XCTAssertEqual(cell.accessibilityLabel(), title.stringValue)
+                XCTAssertGreaterThan(try XCTUnwrap(title.font).pointSize, try XCTUnwrap(location.font).pointSize)
                 XCTAssertFalse(location.isHidden)
                 XCTAssertEqual(location.stringValue, row == 1 ? "Lyrics/song.txt" : "Videos/movie.mov")
                 let visible = labels.filter { !$0.isHidden }
@@ -825,7 +829,7 @@ private final class SearchNavigationFixture {
     var table: LibrarySearchTableView { resultsController.table }
     var configuration: LibrarySearchResultsController.Configuration {
         .init(selectedEntry: selection, actions: actions, results: results,
-            displayName: { $0.lastPathComponent }, onSelectionChange: { [weak self] in self?.selection = $0 },
+            onSelectionChange: { [weak self] in self?.selection = $0 },
             onRunAction: { [weak self] in self?.actionsRun.append($0) },
             onOpenResult: { [weak self] in self?.opened.append($0) }, onClose: { [weak self] in self?.closeRequests += 1 },
             onAddResultToPlaylist: { [weak self] in self?.added.append($0); return .added })

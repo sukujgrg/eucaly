@@ -41,6 +41,9 @@ The app uses a hybrid filesystem/SQLite model:
   retain native next match, previous match and Use Selection for Find behavior;
   they do not navigate library results or search the library query field.
 - Search starts only when query length is `>= 3` characters.
+- Results use the cached authored or computed display title as their primary
+  label. The containing folder and filename stay secondary, above the matching
+  excerpt. Titles travel with each indexed result and refresh with the query.
 - Query is debounced (about `220ms`) to reduce unnecessary recomputation.
 - An empty library search query exposes its actions without starting a file query.
 - Library actions and file results share one keyboard selection; section

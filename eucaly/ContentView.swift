@@ -1243,7 +1243,7 @@ public struct ContentView: View {
         librarySearch.refreshSearch(currentSelectedURL: currentSelectedURL)
         librarySearch.syncSelection(currentSelectedURL: currentSelectedURL, preferFirstResult: true)
         presenter.present(in: window, model: librarySearch,
-            currentSelectedURL: { currentSelectedURL }, displayName: { displayName(for: $0) },
+            currentSelectedURL: { currentSelectedURL },
             onRunAction: runLibrarySearchAction,
             onOpenResult: previewLibrarySearchResult,
             onAddResultToPlaylist: addLibrarySearchResultToPlaylist)
