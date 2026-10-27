@@ -10,6 +10,10 @@ import Combine
 
 nonisolated enum AppLaunchContext {
     static let isRunningTests = NSClassFromString("XCTestCase") != nil
+    static let testHostFocusRequestArgument = "--eucaly-xctest-foreground"
+    static func rejectsUninjectedTestHostFocusRequest(arguments: [String], isRunningTests: Bool) -> Bool {
+        arguments.contains(testHostFocusRequestArgument) && !isRunningTests
+    }
 }
 
 @MainActor
@@ -123,6 +127,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @MainActor
 enum EucalyApp {
     static func main() {
+        #if DEBUG
+        // A test may foreground its exact existing installation. If launch
+        // services cannot reuse that injected process, never restore user data
+        // in a new, uninjected application instance.
+        guard !AppLaunchContext.rejectsUninjectedTestHostFocusRequest(
+            arguments: CommandLine.arguments, isRunningTests: AppLaunchContext.isRunningTests) else { return }
+        #endif
         if !AppLaunchContext.isRunningTests {
             SandboxPreferencesMigration.migrateIfNeeded()
             WorkspaceWindowPreferences.removeLegacyFrames(from: .standard)
@@ -139,13 +150,6 @@ enum EucalyApp {
 extension Notification.Name {
     static let showManageOutputsSettings = Notification.Name("showManageOutputsSettings")
     static let newLyrics = Notification.Name("newLyrics")
-    static let stopProjection = Notification.Name("stopProjection")
-    static let toggleSlidesVisibility = Notification.Name("toggleSlidesVisibility")
-    static let toggleBackgroundVisibility = Notification.Name("toggleBackgroundVisibility")
-    static let toggleBackgroundAudio = Notification.Name("toggleBackgroundAudio")
-    static let clearBackgroundVisual = Notification.Name("clearBackgroundVisual")
-    static let clearBackgroundAudio = Notification.Name("clearBackgroundAudio")
-    static let clearAllLayers = Notification.Name("clearAllLayers")
     static let saveLyrics = Notification.Name("saveLyrics")
     static let showLibrarySearch = Notification.Name("showLibrarySearch")
     static let refreshLibrary = Notification.Name("refreshLibrary")

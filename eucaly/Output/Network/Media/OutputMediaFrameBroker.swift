@@ -57,13 +57,9 @@ final class OutputMediaFrameBroker {
         let backgroundVideo = source(backgroundURL.map(OutputMediaRuntime.isVideo) == true ? runtime.backgroundPlayer(for: profile) : nil)
         for key in Array(players.keys) where !required.contains(key) { players.removeValue(forKey: key)?.release() }
         request(foregroundKey, slot: 0); request(backgroundKey, slot: 1)
-        var textProfile = profile; textProfile.background.bookmark = nil; textProfile.usesLegacySizing = false
-        let text = snapshot.visible && supported && !snapshot.current.isEmpty
-            ? NetworkTextRenderRequest(generation: generation, revision: 0, text: snapshot.current, profile: textProfile, transparent: true) : nil
-        let request = NetworkMediaRenderRequest(generation: generation, revision: 0, text: text,
-            foregroundFill: slide?.videoURL != nil && runtime.programFill,
-            backgroundFill: background.fit == "fill", dimming: background.dimming,
-            colour: keyMode == .chroma ? background.colour : .init(alpha: 0))
+        let request = NetworkRenderAdmission.request(generation: generation, content: snapshot.current,
+            profile: profile, visible: snapshot.visible && supported,
+            foregroundFill: slide?.videoURL != nil && runtime.programFill, keyMode: keyMode)
         guard request.isValid else { failure("Network output render state exceeds the supported limits."); return }
         plan = .init(request: request, foregroundVideo: foregroundVideo, backgroundVideo: backgroundVideo)
         refreshPlan()

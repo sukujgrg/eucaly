@@ -110,7 +110,11 @@ struct PlainTextEditor: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         guard let textView = nsView.documentView as? NSTextView else { return }
-        if textView.string != text {
+        // The binding can still contain the last committed lyrics while native
+        // composition differs, without an external document replacement;
+        // a workspace/output refresh must leave that native editing state alone.
+        // A different document uses EditorPaneContainerView's editorID identity.
+        if !textView.hasMarkedText(), textView.string != text {
             context.coordinator.replaceTextPreservingEditorState(
                 text,
                 in: textView,
@@ -135,9 +139,6 @@ struct PlainTextEditor: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextViewDelegate, NSTextStorageDelegate {
         var text: Binding<String>
         let focusController: PlainTextEditorFocusController
-        // Keep the manager used for this document's edits accessible after
-        // SwiftUI removes the editor from its window, until teardown completes.
-        private weak var editingUndoManager: UndoManager?
         private var isApplyingAttributes = false
         private var pendingEditedRange: NSRange?
         private weak var textView: NSTextView?
@@ -161,8 +162,9 @@ struct PlainTextEditor: NSViewRepresentable {
 
         func detach(_ textView: NSTextView) {
             guard self.textView === textView else { return }
-            editingUndoManager?.removeAllActions()
-            editingUndoManager = nil
+            // Explicit document teardown releases only this editor's history.
+            // Parking a workspace retains its editor and never calls detach.
+            textView.undoManager?.removeAllActions()
             self.textView = nil
             focusController.detach(textView)
         }
@@ -197,7 +199,6 @@ struct PlainTextEditor: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
-            editingUndoManager = textView.undoManager
             applySectionStylingToEditedParagraphs(in: textView)
             text.wrappedValue = textView.string
         }

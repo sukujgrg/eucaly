@@ -6,6 +6,168 @@ import Combine
 
 @MainActor
 final class WorkspaceOutputTests: XCTestCase {
+    func testLiveClearDoesNotPublishRetainedForegroundWarningsAndResolvesContentRejection() async throws {
+        for technology in NetworkOutputTechnology.allCases {
+            for hidden in [false, true] {
+                let f = Fixture(networkTechnology: technology); defer { f.outputs.stopAllOutputs() }
+                f.load(f.a, "Accepted"); f.a.showSlides()
+                if hidden { f.a.hideSlides() }
+                let saved = f.store.document
+                let visible = f.outputs.snapshot(for: f.house).visible
+                f.a.clearSlides()
+                func assertCleared() {
+                    XCTAssertTrue(f.a.isEmpty)
+                    XCTAssertTrue(f.outputs.currentMatchesAcceptedProgram(workspace: f.a.outputSourceID))
+                    XCTAssertNil(f.a.projectionDisplayIssue)
+                    XCTAssertNil(f.outputs.outputIssue(workspace: f.a.outputSourceID))
+                    for destination in [f.house, f.network] {
+                        XCTAssertTrue(f.outputs.isOpen(destination))
+                        XCTAssertNil(f.outputs.snapshot(for: destination).localMedia)
+                        XCTAssertTrue(f.outputs.snapshot(for: destination).current.isEmpty)
+                        XCTAssertEqual(f.outputs.snapshot(for: destination).visible, visible)
+                    }
+                    XCTAssertEqual(f.store.document, saved)
+                }
+                assertCleared()
+                await withCheckedContinuation { continuation in DispatchQueue.main.async { continuation.resume() } }
+                assertCleared()
+
+                f.load(f.a, String(repeating: "A", count: 32_769))
+                XCTAssertFalse(f.outputs.presentLocal(f.a, activation: .current))
+                XCTAssertNotNil(f.a.projectionDisplayIssue)
+                XCTAssertFalse(f.a.projectionDisplayIssue?.contains("Live output retains") == true,
+                               "An accepted empty picture has no previous document to name.")
+                f.a.clearSlides()
+                XCTAssertNil(f.a.projectionDisplayIssue)
+
+                f.load(f.a, "Accepted again"); f.a.showSlides()
+                f.load(f.a, String(repeating: "A", count: 32_769))
+                XCTAssertFalse(f.outputs.presentLocal(f.a, activation: .current))
+                XCTAssertTrue(f.a.projectionDisplayIssue?.contains("Live output retains") == true)
+                XCTAssertFalse(f.outputs.currentMatchesAcceptedProgram(workspace: f.a.outputSourceID))
+                f.a.clearSlides()
+                XCTAssertTrue(f.outputs.currentMatchesAcceptedProgram(workspace: f.a.outputSourceID))
+                XCTAssertNil(f.a.projectionDisplayIssue)
+                XCTAssertNil(f.outputs.outputIssue(workspace: f.a.outputSourceID))
+                await withCheckedContinuation { continuation in DispatchQueue.main.async { continuation.resume() } }
+                XCTAssertNil(f.a.projectionDisplayIssue)
+                XCTAssertNil(f.outputs.outputIssue(workspace: f.a.outputSourceID))
+                f.outputs.closeOutput(f.house)
+                XCTAssertTrue(f.outputs.assignMonitor(nil, to: f.house))
+                f.outputs.openNativeOutput(f.house)
+                let configurationIssue = f.a.projectionDisplayIssue
+                XCTAssertTrue(configurationIssue?.contains("available monitor") == true)
+                f.a.clearSlides()
+                XCTAssertEqual(f.a.projectionDisplayIssue, configurationIssue, "Clearing Current must retain an unrelated monitor configuration error.")
+            }
+        }
+    }
+
+    func testHiddenNavigationAndSourceJoinDoNotReportUnacceptedCurrent() throws {
+        for technology in NetworkOutputTechnology.allCases {
+            let f = Fixture(networkTechnology: technology); defer { f.outputs.stopAllOutputs() }
+            let slides = LyricsParser.parseDocument("Verse\nFirst\n\nChorus\nSecond").slides
+            f.a.setSlides(slides); f.a.showSlides(); f.a.hideSlides()
+            f.outputs.closeOutput(f.network)
+            let second = try XCTUnwrap(slides.last)
+            f.a.selectCurrentSlide(second.id)
+            f.outputs.startNetworkOutput(f.network)
+            XCTAssertEqual(f.a.currentSlideID, second.id)
+            XCTAssertFalse(f.outputs.snapshot(for: f.network).visible)
+            XCTAssertNotEqual(f.outputs.snapshot(for: f.network).localMedia?.id, second.id)
+            XCTAssertNil(f.a.projectionDisplayIssue)
+            XCTAssertNil(f.outputs.outputIssue(workspace: f.a.outputSourceID))
+        }
+    }
+
+    func testJoiningNetworkPublishesAcceptedEmptyOrUnsupportedCompanionPicture() throws {
+        for technology in NetworkOutputTechnology.allCases {
+            let f = Fixture(networkTechnology: technology); defer { f.outputs.stopAllOutputs() }
+            f.load(f.a, "Initial"); f.a.showSlides(); f.outputs.closeOutput(f.network)
+            f.a.setSlides([pickedWindow()])
+            XCTAssertTrue(f.outputs.presentLocal(f.a, activation: .current))
+            let accepted = f.outputs.snapshot(for: f.house)
+            f.outputs.startNetworkOutput(f.network)
+            XCTAssertTrue(f.outputs.isOpen(f.network), "A native capture companion uses the network empty picture.")
+            XCTAssertEqual(f.outputs.snapshot(for: f.network).revision, accepted.revision)
+            XCTAssertEqual(f.outputs.snapshot(for: f.network).localMedia?.captureWindowID, 42)
+            f.outputs.closeOutput(f.network)
+            f.load(f.a, String(repeating: "A", count: 32_769))
+            XCTAssertTrue(f.outputs.presentLocal(f.a, activation: .current))
+            f.a.hideSlides()
+            let hidden = f.outputs.snapshot(for: f.house)
+            f.outputs.startNetworkOutput(f.network)
+            XCTAssertTrue(f.outputs.isOpen(f.network), "A hidden native program joins as an empty network picture.")
+            XCTAssertEqual(f.outputs.snapshot(for: f.network).revision, hidden.revision)
+            XCTAssertFalse(f.outputs.snapshot(for: f.network).visible)
+            XCTAssertFalse(f.outputs.presentLocal(f.a), "A later Show must admit the actual visible text.")
+            XCTAssertFalse(f.outputs.snapshot(for: f.network).visible)
+        }
+    }
+
+    func testNativeMoveDoesNotAdmitUnrelatedDisabledOrStoppedNetworkPeers() throws {
+        for technology in NetworkOutputTechnology.allCases {
+            for disabled in [false, true] {
+                let f = Fixture(networkTechnology: technology); defer { f.outputs.stopAllOutputs() }
+                f.load(f.a, "Accepted native"); f.a.showSlides()
+                f.outputs.closeOutput(f.network)
+                XCTAssertTrue(f.outputs.moveOutput(f.network, to: f.b))
+                if disabled { XCTAssertNil(f.store.setEnabled(false, for: f.network)) }
+                f.load(f.b, String(repeating: "A", count: 32_769))
+                let starts = f.transport.starts
+                XCTAssertTrue(f.outputs.moveOutput(f.house, to: f.b))
+                XCTAssertEqual(f.outputs.destination(f.house)?.workspaceID, f.b.outputSourceID)
+                XCTAssertEqual(f.outputs.snapshot(for: f.house).current.components.first?.text.utf8.count, 32_769)
+                XCTAssertFalse(f.outputs.isOpen(f.network))
+                XCTAssertEqual(f.transport.starts, starts)
+            }
+        }
+    }
+
+    func testNetworkStartAndRetryJoinHiddenAcceptedProgramWithoutReacceptingCurrent() async throws {
+        for technology in NetworkOutputTechnology.allCases {
+            for failed in [false, true] {
+                let f = Fixture(networkTechnology: technology); defer { f.outputs.stopAllOutputs() }
+                XCTAssertTrue(f.outputs.moveOutput(f.online, to: f.b))
+                f.load(f.a, "Accepted"); f.a.showSlides(); f.a.hideSlides()
+                f.load(f.b, "Independent"); f.b.showSlides()
+                if failed { f.transport.fail(f.network) }
+                else { f.outputs.closeOutput(f.network) }
+                await settle()
+                let snapshot = f.outputs.snapshot(for: f.house)
+                let generation = f.outputs.program(f.a.outputSourceID).ownership.generation
+                let order = f.a.outputActionClock.current
+                // A rejected replacement can remain private in Current. Retry
+                // attaches to the accepted program, never to that replacement.
+                f.a.setSlides([pickedWindow()])
+                f.outputs.startNetworkOutput(f.network)
+                XCTAssertTrue(f.outputs.isOpen(f.network))
+                XCTAssertTrue(f.outputs.isOpen(f.house))
+                XCTAssertEqual(f.outputs.snapshot(for: f.network).revision, snapshot.revision)
+                XCTAssertEqual(f.outputs.snapshot(for: f.network).current, snapshot.current)
+                XCTAssertFalse(f.outputs.snapshot(for: f.network).visible)
+                XCTAssertFalse(f.a.areSlidesVisible)
+                XCTAssertEqual(f.outputs.program(f.a.outputSourceID).ownership.generation, generation)
+                XCTAssertEqual(f.a.outputActionClock.current, order)
+                XCTAssertTrue(f.b.areSlidesVisible)
+                XCTAssertEqual(f.outputs.snapshot(for: f.online).current.components.first?.text, "Independent")
+            }
+        }
+    }
+
+    func testNetworkFirstStartAfterWholeWorkspaceStopsShowsItsCurrent() {
+        for technology in NetworkOutputTechnology.allCases {
+            let f = Fixture(networkTechnology: technology); defer { f.outputs.stopAllOutputs() }
+            f.load(f.a, "Previous"); f.a.showSlides(); f.a.hideSlides(); f.a.stopPresentation()
+            f.load(f.a, "New Current")
+            f.outputs.startNetworkOutput(f.network)
+            XCTAssertTrue(f.outputs.isOpen(f.network))
+            XCTAssertFalse(f.outputs.isOpen(f.house))
+            XCTAssertTrue(f.a.areSlidesVisible)
+            XCTAssertEqual(f.outputs.snapshot(for: f.network).current.components.first?.text, "New Current")
+        }
+    }
+
     func testMixedNativeNDIAndOMTFollowOnlyExplicitWorkspaceCurrentAndMoves() throws {
         let f = Fixture(networkTechnology: .omt); defer { f.outputs.stopAllOutputs() }
         XCTAssertTrue(f.outputs.moveOutput(f.online, to: f.a))
@@ -578,9 +740,9 @@ final class WorkspaceOutputTests: XCTestCase {
         let saved = f.store.document
         let starts = f.transport.starts
         window.outputCoordinator = f.outputs
-        let command2 = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
-            timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "2",
-            charactersIgnoringModifiers: "2", isARepeat: false, keyCode: 19))
+        let commandReturn = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+            timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "\r",
+            charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
 
         for (session, destination, other) in [(f.a, f.house, f.b), (f.b, f.online, f.a)] {
             for hidden in [false, true] {
@@ -599,7 +761,7 @@ final class WorkspaceOutputTests: XCTestCase {
                 f.outputs.focusWorkspace(other)
                 window.outputDestinationID = destination
                 f.outputs.toggleSlides()
-                window.keyDown(with: command2)
+                XCTAssertTrue(window.performKeyEquivalent(with: commandReturn))
                 XCTAssertTrue(session.isEmpty)
                 XCTAssertTrue(flow.isCurrentCollapsed)
                 XCTAssertEqual(flow.previewSlides.first?.lines.first?.text, "Private Preview")

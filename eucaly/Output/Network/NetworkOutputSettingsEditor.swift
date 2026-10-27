@@ -23,6 +23,9 @@ final class NetworkOutputSettingsEditor: NSViewController, NSTextFieldDelegate {
     let validationLabel = outputSettingsLabel(secondary: true)
     private var subscription: AnyCancellable?
     private var chromaColourRow: NSView?
+    private var sourceNameDraft: String?
+    private var sourceNameProblem: String?
+    private var actionProblem: String?
     private var store: OutputProfileStore { coordinator.profiles }
     private var destination: OutputDestinationConfiguration? { store.document.destinations.first { $0.id == destinationID } }
     private var technology: NetworkOutputTechnology { destination?.networkTechnology ?? .ndi }
@@ -95,7 +98,7 @@ final class NetworkOutputSettingsEditor: NSViewController, NSTextFieldDelegate {
     }
     func render() {
         guard isViewLoaded, let destination, let settings = destination.networkSettings else { return }
-        if sourceName.currentEditor() == nil { sourceName.stringValue = settings.sourceName }
+        if sourceName.currentEditor() == nil { sourceName.stringValue = sourceNameDraft ?? settings.sourceName }
         keyMode.selectItem(at: settings.keyMode == .alpha ? 0 : 1)
         chromaColourRow?.isHidden = settings.keyMode != .chroma
         if settings.keyMode != .chroma { chromaColour.deactivate() }
@@ -142,19 +145,19 @@ final class NetworkOutputSettingsEditor: NSViewController, NSTextFieldDelegate {
             let name = store.document.destinations.first { $0.id == route }?.name ?? "selected output"
             notices.append("Network music output \(name) is inactive.")
         }
-        statusLabel.stringValue = detail
+        statusLabel.stringValue = detail + (state.active ? "" : "\nStart joins the workspace’s accepted content and current slide visibility when its outputs are already running. With all outputs stopped, Start shows Current.")
         warningLabel.stringValue = notices.joined(separator: "\n"); warningLabel.isHidden = notices.isEmpty
+        validationLabel.stringValue = [sourceNameProblem, actionProblem].compactMap { $0 }.joined(separator: "\n")
         validationLabel.isHidden = validationLabel.stringValue.isEmpty
     }
     func controlTextDidEndEditing(_ notification: Notification) {
-        guard notification.object as? NSTextField === sourceName, var settings = destination?.networkSettings else { return }
-        settings.sourceName = sourceName.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        validationLabel.stringValue = store.setNetworkSettings(settings, for: destinationID) ?? ""; render()
+        guard notification.object as? NSTextField === sourceName else { return }
+        _ = commitSourceName(); render()
     }
     @objc private func keyChanged(_ sender: Any?) {
         guard var settings = destination?.networkSettings else { return }
         settings.keyMode = keyMode.indexOfSelectedItem == 0 ? .alpha : .chroma
-        validationLabel.stringValue = store.setNetworkSettings(settings, for: destinationID) ?? ""; render()
+        actionProblem = store.setNetworkSettings(settings, for: destinationID); render()
     }
     @objc private func chromaColourChanged(_ sender: Any?) {
         guard destination?.networkSettings?.keyMode == .chroma else { render(); return }
@@ -169,7 +172,7 @@ final class NetworkOutputSettingsEditor: NSViewController, NSTextFieldDelegate {
         let wasActive = coordinator.network.state(destinationID).active
         finishOutputSettingsFieldEditing(in: view)
         if wasActive { coordinator.closeOutput(destinationID) }
-        else if validationLabel.stringValue.isEmpty { coordinator.startNetworkOutput(destinationID) }
+        else if commitSourceName() { coordinator.startNetworkOutput(destinationID) }
         render()
     }
     @objc private func openInformation(_ sender: Any?) {
@@ -177,6 +180,19 @@ final class NetworkOutputSettingsEditor: NSViewController, NSTextFieldDelegate {
         let address = technology == .ndi ? "https://ndi.video/" : "https://www.openmediatransport.org/"
         if let url = URL(string: address) { NSWorkspace.shared.open(url) }
     }
+    @discardableResult
+    private func commitSourceName() -> Bool {
+        guard var settings = destination?.networkSettings else { return false }
+        let name = sourceName.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        settings.sourceName = name
+        sourceNameProblem = store.setNetworkSettings(settings, for: destinationID)
+        sourceNameDraft = sourceNameProblem == nil ? nil : name
+        return sourceNameProblem == nil
+    }
     func finishEditing() { chromaColour.deactivate() }
-    override func viewWillDisappear() { super.viewWillDisappear(); finishEditing() }
+    override func viewWillDisappear() {
+        super.viewWillDisappear(); finishEditing()
+        discardDraft()
+    }
+    func discardDraft() { sourceNameDraft = nil; sourceNameProblem = nil; actionProblem = nil }
 }

@@ -91,7 +91,7 @@ final class LyricsCleanupApplicationTests: XCTestCase {
         let window: NSWindow
         var coordinator: PlainTextEditor.Coordinator!
         var view: LyricsTextView!
-        var undo: UndoManager { window.undoManager! }
+        var undo: UndoManager { view.undoManager! }
 
         init(_ source: String) throws {
             editor.beginEditing(text: source, sourceURL: URL(fileURLWithPath: "/tmp/cleanup-fixture.txt"))

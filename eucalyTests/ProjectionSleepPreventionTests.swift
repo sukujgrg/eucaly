@@ -73,8 +73,12 @@ final class ProjectionSleepPreventionTests: XCTestCase {
         XCTAssertEqual(recorder.ended.count, 1)
         session.showSlides()
         XCTAssertEqual(recorder.begun.count, 2)
-        NotificationCenter.default.post(name: .stopProjection, object: nil)
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        let windowID = try XCTUnwrap(session.outputCoordinator.audienceIdentity.0)
+        let projection = try XCTUnwrap(NSApp.windows.first { $0.windowNumber == Int(windowID) } as? PresentationWindow)
+        let stop = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command, .shift],
+            timestamp: 0, windowNumber: projection.windowNumber, context: nil, characters: "\r",
+            charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
+        XCTAssertTrue(projection.performKeyEquivalent(with: stop))
         XCTAssertFalse(session.isPresenting)
         XCTAssertEqual(recorder.ended, recorder.begun.map { ObjectIdentifier($0) })
     }

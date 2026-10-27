@@ -139,9 +139,9 @@ correctness. Keep shared process here and domain-specific checks in the roles.
 ### Main Entry
 - `eucaly/eucalyApp.swift`
   - Native AppKit application entry, menus and app-owned workspace `NSWindowController`s, identified by durable workspace UUIDs
-  - `OutputWorkspaceWindows` owns named tabs, detaching, reopening and native state restoration; `NSHostingController` hosts the existing SwiftUI content and toolbar
-  - AppKit Workspaces tab in the shared Settings window provides coloured workspace identities, Open, Rename and guarded Delete; the Workspace menu and workspace toolbar open that tab
-  - Toolbar and menu-bar Workspace menus share native construction and validation. Management actions are separated final rows, including Output/NDI/Appearance/Background quick menus. Workspace renaming shares one native sheet and name validator with Settings; detach is available only for a group with multiple tabs.
+  - `OutputWorkspaceWindows` owns retained workspace controls, in-place switching, explicit separate windows, reopening and native state restoration; `NSHostingController` retains each workspace’s SwiftUI content
+  - AppKit Workspaces tab in the shared Settings window provides coloured workspace identities, Open, Rename and guarded Delete; the Workspace menu and pinned sidebar Workspaces action open that tab
+  - Sidebar and menu-bar Workspace menus share native construction and validation. Management actions are separated final rows, including Output/NDI/Appearance/Background quick menus. Workspace renaming shares one native sheet and name validator with Settings. Open in New Window reuses an already visible workspace; native window tabbing is disabled.
   - Native Settings window (`SettingsWindowController`, `GeneralSettingsController`)
   - App command menu and shortcuts
 
@@ -161,10 +161,31 @@ correctness. Keep shared process here and domain-specific checks in the roles.
 - `eucaly/ContentView.swift`
   - App-level orchestrator
   - Receives the app-retained workspace `PresentationSession` and `PresentationFlowController`; SwiftUI tab visibility never owns live playback
-  - Hosts split view, toolbar controls, selection handling, and sidebar callbacks
+  - Supplies the native workspace split, detail renderers, selection handling and sidebar callbacks
 
 ### Native Sidebar
-- `eucaly/SidebarView.swift` is the thin host bridge from the SwiftUI workspace.
+- `eucaly/WorkspaceSplitView.swift` bridges the retained workspace into
+  `WorkspaceSplitViewController`, the native split/toolbar owner. Let this native
+  boundary extend through the titlebar; AppKit applies safe-area avoidance once.
+  Detail notices stay within the detail host rather than cropping the sidebar.
+- The sidebar root is its full-section `NSScrollView`. Workspaces is a native
+  top-aligned `NSSplitViewItemAccessoryViewController`, pinned at intrinsic width.
+  `PresentationToolbarController` owns a distinct native toolbar per controls
+  lifetime, explicitly targeted sidebar item and tracking separator tied to that
+  exact split. Reserved toolbar identifiers are AppKit-owned; don't use them
+  for delegate-configured workspace targets. Closing detaches
+  the window toolbar; parking retains it with the controls. Final disposal
+  retires hosted roots and sidebar callback context explicitly, so fullscreen
+  surface retention cannot extend the lifetime of workspace UI resources.
+  Final disposal also retires close-confirmation and toolbar callback owners,
+  including retained Quick Controls and thumbnail menu actions. Native/AX views
+  may outlive logical controls without retaining their workspace UI captures;
+  parking keeps those captures and commands intact.
+- The retained detail host is an adjacent native split item, using ordinary
+  titlebar safe-area avoidance. Operator panels must not be mirrored beneath
+  the sidebar with `NSBackgroundExtensionView` or an overlay/inset layout mode.
+  Native toolbar controls own glass; do not add a competing root material or
+  separator suppression.
 - `eucaly/SidebarViewController.swift` owns AppKit sidebar layout, section
   disclosure, controls, menus, sliders and UI subscriptions.
 - `eucaly/SidebarOutlineView.swift` owns the shared native outline behavior,
@@ -182,11 +203,11 @@ correctness. Keep shared process here and domain-specific checks in the roles.
 
 ### Output Profiles
 - AppDelegate owns OutputProfileStore, OutputCoordinator and NetworkOutputRouter independently of controls windows. OutputCoordinator owns native destinations, local workspace ownership, snapshots and shared media. There is no incoming presentation receiver or forwarding path.
-- Each named workspace owns one Current, Preview flow, accepted snapshot, action clock and program media runtime. Destinations have one durable workspaceID; several outputs share its program playback and different workspaces present simultaneously. Profiles own reusable appearance, never content. New workspaces have no outputs. Native tabs retain editor/Preview/Current; detaching moves the same window. Tab/focus changes never reroute or start output.
-- Home is the initial workspace. AppKit restores previous windows, native tab groups, selection, minimization and geometry; launch never opens or selects another workspace when any controls window was restored. With nothing restored, reopen the saved last-used workspace, falling back to an existing workspace if its identity was deleted. Dock reopen prefers existing controls and otherwise the saved last-used workspace. Each workspace UUID has a native frame autosave name; closing and reopening controls preserves its size and position. There is no default-workspace preference. Preserve operator names and legacy identities; retire the former launch preference and obsolete SwiftUI window-frame keys without changing content or output assignments.
-- Workspace creation is limited to four through one shared creation guard. Existing saved/recovered records above four remain available under the legacy persistence bound; do not trim or reassign them on restore. Keep at least one workspace. Manage Workspaces lists saved identities, assigned outputs (including disabled rows), playback/output status and open/closed controls. Delete is separate from closing a tab: reject any assigned destination or running program/background/audio playback, honor the native unsaved-edit check and revalidate after it. Deletion releases only that workspace's runtime/paused music owner and invalidates queued work without rerouting music or other outputs. Removed workspace restoration and late callbacks cannot revive it. Closing controls continues to preserve Current, live output and background audio.
+- Each named workspace owns one Current, Preview flow, accepted snapshot, action clock and program media runtime. Destinations have one durable workspaceID; several outputs share its program playback and different workspaces present simultaneously. Profiles own reusable appearance, never content. New workspaces have no outputs. Workspace controls retain their hosting controller, editor draft, selection and focus while parked. The Workspaces selector replaces controls in the same native window; Open in New Window explicitly presents parked/closed controls separately and focuses an existing visible owner. Switching never reroutes output.
+- Home is the initial workspace. AppKit restores previous independent windows, selected workspace identities, minimization and geometry; launch never opens or selects another workspace when any controls window was restored. With nothing restored, reopen the saved last-used workspace, falling back to an existing workspace if its identity was deleted. Dock reopen prefers existing controls and otherwise the saved last-used workspace. Each workspace UUID has a native frame autosave name; closing and reopening controls preserves its size and position. There is no default-workspace preference. Preserve operator names and legacy identities; retire the former launch preference and obsolete SwiftUI window-frame keys without changing content or output assignments.
+- Workspace creation is limited to four through one shared creation guard. Existing saved/recovered records above four remain available under the legacy persistence bound; do not trim or reassign them on restore. Keep at least one workspace. Manage Workspaces lists saved identities, assigned outputs (including disabled rows), playback/output status and open/closed controls. Delete is separate from closing controls: reject any assigned destination or running program/background/audio playback, honor the native unsaved-edit check and revalidate after it. Deletion releases only that workspace's runtime/paused music owner and invalidates queued work without rerouting music or other outputs. Removed workspace restoration and late callbacks cannot revive it. Closing controls continues to preserve Current, live output and background audio.
 - Show, live Load/Switch, visible Current navigation, same-slide activation, playback and ordinary Stop operate only on that workspace’s assigned destinations. The output picker shows the saved owner and an explicit Move to This Workspace action; Show never takes another workspace’s output. Preflight transfers before changing ownership. Hide retains its private snapshot; Clear removes foreground only. Assignments survive Hide/Clear/Stop. Stop All Outputs is a distinct global action. Background and audio controls remain independent.
-- AppDelegate owns OutputWorkspaceWindows and its native workspace window controllers. SwiftUI content receives an already prepared session and never creates or discovers controls windows. AppKit restores windows by workspace UUID and owns tab groups; detaching moves the same window. Coordinator construction never opens windows. The native workspace didBecomeKey delegate callback permits Confidence standby after the workspace exists; no timer, polling or replacement main window is used. Projection windows can become key, never main, and are excluded from automatic restoration.
+- AppDelegate owns OutputWorkspaceWindows and its native workspace window controllers. SwiftUI content receives an already prepared session and never creates or discovers controls windows. AppKit restores non-tabbable windows by their selected workspace UUID. Normal switching preserves the physical window’s geometry and never tears down the parked controls. Closing releases the visible controls only; Quit reveals and confirms every retained draft, including parked controls, then restores pre-quit selections before successful native restoration capture. Coordinator construction never opens windows. Native key activation or an explicit switch within the key controls window permits Confidence standby after the workspace exists; no timer, polling or replacement main window is used. Projection windows can become key, never main, and are excluded from automatic restoration.
 - Confidence output follows [Confidence Standby Clock](#confidence-standby-clock) below.
 - Per-workspace OutputActionClock order and session cancellation generations invalidate old queued navigation after newer commands, transfer or destination closure without canceling another workspace’s navigation. Native close and outgoing connection callbacks are generation guarded.
 - Reservations and teardown are per destination. Losing one retains the others, resources, Current and saved assignments. Reconnection requires explicit Show; never silently move output to a different monitor. Enabled destinations cannot share a monitor or NDI source name. Disabled rows retain assignments without reserving them. Pickers offer None.
@@ -194,7 +215,7 @@ correctness. Keep shared process here and domain-specific checks in the roles.
 - Explicit PDF loads replace the owning session's accepted source even when its URL is unchanged. Native page navigation reuses its accepted document; another workspace's reload or Clear cannot invalidate it.
 - Native and NDI PDF output render the accepted snapshot's retained PDF bytes.
   A rejected Current replacement cannot reopen its path or alter accepted output.
-- Each workspace’s OutputMediaRuntime owns one program AVPlayer shared by all its outputs and pools matching muted background resources. Independent workspaces have independent program players that outlive inactive tabs. ScreenCaptureManager owns one picker-approved stream with reference-counted consumers and GPU-backed sample-buffer fan-out. Closing one destination does not stop others. Independent background audio has one explicit session owner.
+- Each workspace’s OutputMediaRuntime owns one program AVPlayer shared by all its outputs and pools matching muted background resources. Independent workspaces have independent program players that outlive parked controls. ScreenCaptureManager owns one picker-approved stream with reference-counted consumers and GPU-backed sample-buffer fan-out. Closing one destination does not stop others. Independent background audio has one explicit session owner.
 - AppDelegate owns one native AppKit Settings window shared by the app menu, Manage Outputs toolbar action and inline output notices. General, Outputs and Workspaces use native toolbar tabs. Appearance and backgrounds live in Manage Outputs; thumbnail size and font size use a separate native Thumbnails toolbar menu. Add Native and Add NDI Output create disabled destinations for the controlled workspace. Native monitors are unassigned; generic NDI sources require no receiver assignment. Multiple generic NDI outputs use unique enabled names, with eucaly as the first default source name. Audience, Confidence and Lower Third are locally rendered appearance profiles. NDI output-level edits own independent customized appearances. Lower Third defaults to chroma green. Retired Meaning/Translation presets migrate to Audience while custom copies retain their settings.
 - Validate a destination's assignment before enabling it. Conflicting monitor/source-name attempts leave its saved enabled state and assignment unchanged, with an inline settings error. Disabled destinations may retain shared assignments. Output failures use an inline workspace notice with Manage Outputs and Dismiss actions; never show a blocking output-unavailable dialog.
 - Manage Outputs uses AppKit list-and-detail navigation, with native controls, colour wells and NSFontPanel. Settings apply immediately; names commit on Return or editing end, with no Save button. The Settings window owns visibility, resizing and close/reopen lifecycle. Disclosure headers are clickable across the full row. Preserve requested fonts during fallback and relative size inheritance when choosing a component font. Pickers preserve duplicate names by UUID. Audience thumbnails use its typeface/layout with independent size controls. Readability notices remain operator-only.
@@ -283,7 +304,7 @@ If a new type cannot follow this contract, treat it as a design bug and refactor
 ### Preview vs Current
 - Follow the Media Flow Contract above for every source type.
 - Clear can run while projecting; it clears Current without implicitly restoring Preview.
-- Show/Hide Slides and Cmd+2 are disabled when that workspace's Current is empty, including while outputs remain open. NDI Start/Stop/Retry, background controls and Open Confidence remain independent.
+- Show/Hide Slides and `Cmd+Return` are disabled when that workspace's Current is empty, including while outputs remain open. NDI Start/Stop/Retry, background controls and Open Confidence remain independent.
 
 ### Projection
 - Toolbar and menu control slide visibility separately from backgrounds/audio. Projection may remain active with slides hidden; see Keyboard Shortcuts below for ESC and layer commands.
@@ -296,13 +317,13 @@ If a new type cannot follow this contract, treat it as a design bug and refactor
 ### Keyboard Shortcuts (Current)
 - `Cmd+F`: Search Library in the active workspace, including from the lyrics editor; repeating focuses the existing query. See `SEARCH.md` for search focus and activation behavior.
 - Find in Lyrics: separate native Edit > Find command without a shortcut. `Cmd+G` / `Shift+Cmd+G` find the next / previous text match; `Cmd+E` uses selected lyrics for Find. These do not navigate library results.
-- `Cmd+T`: New Workspace Tab
-- `Cmd+1`: Stop Workspace Outputs (retain that workspace’s Current and assignments)
+- `Cmd+N`: New Lyrics; `Shift+Cmd+N`: New Workspace
+- `Cmd+T`: Show Fonts
+- `Cmd+Return`: Show/Hide Slides from the controlled workspace's Current; never load Preview or activate a search result
+- `Shift+Cmd+Return`: Stop Workspace Outputs (retain that workspace’s Current and assignments)
 - Stop All Outputs: explicit global Slides-menu action, without a shortcut
-- `Cmd+2`: Show/Hide Slides
-- `Cmd+3`: Clear Background Visual
-- `Cmd+4`: Clear Background Audio
-- `Cmd+5`: Clear All Layers (hide slides + clear visual/audio)
+- Clear Background Visual, Clear Background Audio and Clear All Layers (hide slides + clear visual/audio): explicit menu actions, without shortcuts
+- Projection shortcuts operate from native workspace controls, including their editor and library search, or a projection window resolved by its destination owner. Unrelated panels, Settings, attached sheets and modal dialogs do not fall back to the last focused workspace for these commands. Local sheet commands retain priority, including `Cmd+Return` to Apply in the lyrics cleanup review.
 - ESC: Dismiss library search and restore focus when search is open; otherwise Hide Slides only (does not stop projection, does not clear background/audio)
 
 ### Layer Model
@@ -387,6 +408,13 @@ Future multi-window support must retain the same media-flow and explicit-selecti
   - `eucaly/ScreenCaptureManager.swift`
 - Search:
   - See `SEARCH.md` for query behavior, indexing rules, and implementation details.
+  - `LibrarySearchPalettePresenter` owns an AppKit palette in the existing workspace
+    window. Native field/results controllers own keyboard and accessibility work;
+    no SwiftUI search overlay or presentation animation owns their lifetime.
+    `OutputWorkspaceContentController` owns the native root: the retained SwiftUI
+    host and search palette are siblings, outside SwiftUI's managed view hierarchy.
+    Dismiss it before workspace focus capture or controls teardown. Playlist feedback
+    stays inside search; adding never opens Preview or changes Current.
 
 ### Parser and Domain Models
 - Pure parser/domain-model code should remain actor-independent (`nonisolated`) when it has no UI, AppKit, SwiftUI state, `@Published`, or shared mutable state.
@@ -496,7 +524,7 @@ Completion Contract; shared flow/media changes must cover every affected type:
 - Lyrics/PDF/Image/Video/Window all load into Preview.
 - Preview does not implicitly overwrite Current.
 - Load to Current works identically across media types.
-- Projection renders its destination’s assigned workspace Current; browsing, tab/focus changes and passive preparation stay private.
+- Projection renders its destination’s assigned workspace Current; browsing, workspace/focus changes and passive preparation stay private.
 - Simultaneous workspace programs remain independent; a live NDI transfer retains source identity/helper/connection and rejects prior-owner work.
 - Ordinary controls affect their workspace; Stop All Outputs is explicitly global.
 - Migration/restoration preserve names/IDs/appearances/music and never auto-start NDI.

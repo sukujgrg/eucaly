@@ -13,7 +13,7 @@ final class OutputWorkspaceTabBadgeTests: XCTestCase {
         let badges = OutputWorkspaceTabBadges(workspaces: store.document.workspaces, defaults: defaults)
         let original = badges.assignments
         XCTAssertEqual(Set(original.values).count, 4)
-        XCTAssertEqual(Set(original.values.map(\.symbol)).count, 4)
+        XCTAssertEqual(Set(original.values.map(\.systemImage)).count, 4)
         XCTAssertEqual(Set(original.values.map(\.colour)).count, 4)
         let renamed = try XCTUnwrap(store.document.workspaces.last?.id)
         XCTAssertTrue(store.renameWorkspace(renamed, name: "Home"))

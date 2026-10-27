@@ -3,6 +3,57 @@ import XCTest
 
 @MainActor
 final class OutputProfileTests: XCTestCase {
+    func testMaximumProfileBookmarkModelRoundTripsWithinTheSharedStorageBudget() throws {
+        var document = OutputProfileMigration.migrate(defaults: nil, monitor: nil)
+        document.profiles[0].background.bookmark = String(repeating: "A", count: 65_536)
+        for index in document.profiles.count..<128 {
+            var copy = document.profiles[0]
+            copy.id = UUID(); copy.name = "Saved appearance \(index)"
+            if index.isMultiple(of: 2) { copy.customizedForDestinationID = document.destinations[0].id }
+            document.profiles.append(copy)
+        }
+        XCTAssertTrue(document.isValid)
+        let data = try JSONEncoder().encode(document)
+        XCTAssertGreaterThan(data.count, 1_048_576, "The previous read limit rejected this supported model.")
+        XCTAssertLessThanOrEqual(data.count, OutputProfileDocument.maximumEncodedBytes)
+        XCTAssertEqual(try OutputLegacyMigration.decode(data), document)
+    }
+
+    func testCopiedBookmarkProfilesPersistRestoreAndRecoverAboveTheFormerReadLimit() throws {
+        let suite = "ProfileBudget.\(UUID())", defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = OutputProfileStore(defaults: defaults)
+        store.edit { document in
+            document.profiles[0].background.bookmark = String(repeating: "A", count: 65_536)
+            for index in document.profiles.count..<24 {
+                var copy = document.profiles[0]
+                copy.id = UUID(); copy.name = "Saved appearance \(index)"
+                document.profiles.append(copy)
+            }
+        }
+        let destinationID = try XCTUnwrap(store.document.destinations.first?.id)
+        XCTAssertNotNil(store.customizeProfile(for: destinationID))
+        store.flush()
+        let saved = try XCTUnwrap(defaults.data(forKey: OutputProfileStore.key))
+        XCTAssertGreaterThan(saved.count, 1_048_576)
+        let restored = OutputProfileStore(defaults: defaults)
+        XCTAssertNil(restored.recoveryNotice)
+        XCTAssertEqual(restored.document, store.document)
+        restored.flush()
+
+        var unsupported = store.document; unsupported.version = 99
+        let original = try JSONEncoder().encode(unsupported)
+        defaults.set(original, forKey: OutputProfileStore.key)
+        let recovery = OutputProfileStore(defaults: defaults)
+        XCTAssertNotNil(recovery.recoveryNotice)
+        XCTAssertEqual(Dictionary(uniqueKeysWithValues: recovery.document.profiles.map { ($0.id, $0) }),
+                       Dictionary(uniqueKeysWithValues: store.document.profiles.map { ($0.id, $0) }))
+        recovery.recover(); recovery.flush()
+        XCTAssertNil(recovery.recoveryNotice)
+        XCTAssertEqual(defaults.data(forKey: "outputProfilesRecoveryBackup"), original)
+        XCTAssertEqual(OutputProfileStore(defaults: defaults).document, recovery.document)
+    }
+
     func testOMTSourceNamesAreReservedWithinTheirProtocolAndEditsKeepTheProtocol() throws {
         let store = OutputProfileStore()
         var ndi = OutputDestinationConfiguration(name: "NDI", profileID: OutputProfile.audienceID, monitor: nil)

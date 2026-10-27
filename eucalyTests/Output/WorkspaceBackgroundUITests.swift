@@ -6,6 +6,45 @@ import XCTest
 
 @MainActor
 final class WorkspaceBackgroundUITests: XCTestCase {
+    func testBookmarkCreationFailureReportsInlineWithoutReplacingBackground() async throws {
+        let fixture = try Fixture(); defer { fixture.close() }
+        let panel = BackgroundOpenPanel(); panel.selectedURL = fixture.visualURL
+        var completeQuick: ((NSApplication.ModalResponse) -> Void)?
+        let controls = OutputQuickControlsController(outputs: fixture.outputs, workspaceID: fixture.home.outputSourceID,
+            manageOutputs: {}, makeBackgroundPanel: { panel }, createBackgroundBookmark: { _ in nil },
+            beginBackgroundSheet: { _, _, completion in completeQuick = completion })
+        _ = fixture.hostButton(controls.backgroundButton)
+        let original = fixture.store.document
+        let failed = expectation(description: "Quick picker reports failed bookmark")
+        let observation = fixture.home.$projectionDisplayIssue.compactMap { $0 }
+            .filter { $0.contains("Choose Visual again") }.first().sink { _ in failed.fulfill() }
+        try invoke(menuItem("Choose Visual…", in: controls.backgroundButton.menu))
+        try XCTUnwrap(completeQuick)(.OK)
+        await fulfillment(of: [failed], timeout: 3)
+        withExtendedLifetime(observation) {}
+        XCTAssertEqual(fixture.store.document, original)
+        XCTAssertNil(fixture.peer.projectionDisplayIssue)
+
+        var completeProfile: ((NSApplication.ModalResponse) -> Void)?
+        let editor = OutputProfileEditor(store: fixture.store, profileID: fixture.sharedProfileID,
+            createBackgroundBookmark: { _ in nil }, makeBackgroundPanel: { panel },
+            beginBackgroundSheet: { _, _, completion in completeProfile = completion })
+        _ = fixture.host(editor)
+        let profileFailed = expectation(description: "Profile picker reports failed bookmark")
+        let labelObservation = editor.validationLabel.publisher(for: \.stringValue)
+            .filter { $0.contains("Choose Visual again") }.first().sink { _ in profileFailed.fulfill() }
+        func buttons(in view: NSView) -> [NSButton] {
+            view.subviews.compactMap { $0 as? NSButton } + view.subviews.flatMap { buttons(in: $0) }
+        }
+        try XCTUnwrap(buttons(in: editor.view).first { $0.title == "Choose Visual…" }).performClick(nil)
+        try XCTUnwrap(completeProfile)(.OK)
+        await fulfillment(of: [profileFailed], timeout: 3)
+        withExtendedLifetime(labelObservation) {}
+        XCTAssertEqual(fixture.store.document, original)
+        XCTAssertFalse(editor.validationLabel.isHidden)
+        XCTAssertFalse(fixture.outputs.isRunning)
+    }
+
     func testPlayMenuRequiresThisWorkspacesSelectedTrackWhileCurrentMayBeEmpty() throws {
         let fixture = try Fixture()
         defer { fixture.close() }
@@ -136,7 +175,7 @@ final class WorkspaceBackgroundUITests: XCTestCase {
         let projection = fixture.projectionWindow()
         fixture.outputs.focusWorkspace(fixture.peer)
         fixture.focus.window = projection
-        projection.keyDown(with: try key("5", code: 23, window: projection))
+        try invoke(clear)
 
         XCTAssertEqual(fixture.home.currentSlideID, current)
         XCTAssertFalse(fixture.home.areSlidesVisible)
@@ -148,8 +187,8 @@ final class WorkspaceBackgroundUITests: XCTestCase {
         XCTAssertNil(fixture.home.projectionDisplayIssue)
     }
 
-    func testMenuAndProjectionClearShortcutsForgetAudioAcrossControlsReopen() throws {
-        for (digit, code) in [("4", UInt16(21)), ("5", UInt16(23))] {
+    func testClearMenuActionsForgetAudioFromControlsAndProjectionAcrossControlsReopen() throws {
+        for title in ["Clear Background Audio", "Clear All Layers"] {
             for fromProjection in [false, true] {
                 let fixture = try Fixture()
                 defer { fixture.close() }
@@ -167,17 +206,18 @@ final class WorkspaceBackgroundUITests: XCTestCase {
                 let text = try XCTUnwrap(field.currentEditor() as? NSTextView)
                 text.setSelectedRange(.init(location: 3, length: 0))
                 let peerCurrent = fixture.peer.currentSlideID
+                let clear = try fixture.slideCommand(title)
+                XCTAssertTrue(clear.keyEquivalent.isEmpty, "Layer clearing is an explicit menu action.")
                 if fromProjection {
                     let projection = fixture.projectionWindow()
                     fixture.outputs.focusWorkspace(fixture.peer)
                     fixture.focus.window = projection
-                    projection.keyDown(with: try key(digit, code: code, window: projection))
-                } else {
-                    XCTAssertTrue(fixture.menus.mainMenu.performKeyEquivalent(with: try key(digit, code: code, window: window)))
-                    XCTAssertTrue(window.firstResponder === text)
-                    XCTAssertEqual(text.selectedRange(), .init(location: 3, length: 0))
-                    XCTAssertEqual(field.stringValue, "Unsaved operator text")
                 }
+                XCTAssertTrue(fixture.menus.validateMenuItem(clear))
+                try invoke(clear)
+                XCTAssertTrue(window.firstResponder === text)
+                XCTAssertEqual(text.selectedRange(), .init(location: 3, length: 0))
+                XCTAssertEqual(field.stringValue, "Unsaved operator text")
                 XCTAssertNil(fixture.home.backgroundAudioURL)
                 XCTAssertEqual(fixture.store.backgroundPreferences.settings(for: fixture.home.outputSourceID).values.audioBookmark, "")
                 XCTAssertEqual(fixture.store.backgroundPreferences.settings(for: fixture.peer.outputSourceID).values.audioBookmark, peerBookmark)
@@ -206,12 +246,6 @@ final class WorkspaceBackgroundUITests: XCTestCase {
     private func invoke(_ item: NSMenuItem) throws {
         XCTAssertTrue(NSApp.sendAction(try XCTUnwrap(item.action), to: item.target, from: item))
     }
-    private func key(_ digit: String, code: UInt16, window: NSWindow) throws -> NSEvent {
-        try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
-            timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: digit,
-            charactersIgnoringModifiers: digit, isARepeat: false, keyCode: code))
-    }
-
     @MainActor
     private final class Fixture {
         let suite = "WorkspaceBackgroundUI." + UUID().uuidString

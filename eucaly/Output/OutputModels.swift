@@ -76,6 +76,10 @@ nonisolated struct OutputDestinationConfiguration: Codable, Equatable, Identifia
 }
 
 nonisolated struct OutputProfileDocument: Codable, Equatable {
+    // 128 profiles can each retain a 64 KiB bookmark. JSON may expand an
+    // individual UTF-8 byte to six escaped bytes. Retain that supported model
+    // within one shared, finite budget for acceptance, storage and recovery.
+    static let maximumEncodedBytes = 64 * 1_024 * 1_024
     var version = 7
     var workspaces: [OutputWorkspaceRecord] = [.primary]
     var profiles: [OutputProfile]
@@ -156,7 +160,7 @@ nonisolated extension OutputProfileDocument {
               Set(destinations.map(\.id)).count == destinations.count,
               profiles.contains(where: { $0.id == OutputProfile.audienceID }),
               destinations.allSatisfy({ destination in destination.name.utf8.count <= 160 && profiles.contains { $0.id == destination.profileID } }) else { return false }
-        return profiles.allSatisfy { profile in
+        guard profiles.allSatisfy({ profile in
             guard profile.name.utf8.count <= 160, ["stacked", "columns"].contains(profile.layout),
                   ["left", "center", "right"].contains(profile.alignment), ["top", "middle", "bottom"].contains(profile.position),
                   profile.padding.isFinite, (0...2).contains(profile.padding), profile.background.dimming.isFinite,
@@ -169,7 +173,9 @@ nonisolated extension OutputProfileDocument {
                     && type.lineSpacing.isFinite && (0...200).contains(type.lineSpacing) && (type.fontName?.utf8.count ?? 0) <= 256
                     && [type.colour.red, type.colour.green, type.colour.blue, type.colour.alpha].allSatisfy { $0.isFinite && (0...1).contains($0) }
             } && [profile.background.colour.red, profile.background.colour.green, profile.background.colour.blue, profile.background.colour.alpha].allSatisfy { $0.isFinite && (0...1).contains($0) }
-        }
+        }) else { return false }
+        guard let data = try? JSONEncoder().encode(self) else { return false }
+        return data.count <= Self.maximumEncodedBytes
     }
 }
 

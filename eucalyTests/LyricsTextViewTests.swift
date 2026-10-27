@@ -7,13 +7,10 @@ import XCTest
 final class LyricsTextViewTests: XCTestCase {
     func testNativeLyricsFindRoutesDocumentAndFindBarKeysWithoutSearchingOtherFields() async throws {
         let fixture = try Fixture(text: "grace and peace grace")
+        // This test pumps native AppKit events. Its undo manager must group
+        // those events normally; the other fixtures inject explicitly grouped edits.
+        fixture.undo.groupsByEvent = true
         defer { fixture.close() }
-        let previousApplication = NSWorkspace.shared.frontmostApplication
-        defer {
-            if previousApplication?.processIdentifier != ProcessInfo.processInfo.processIdentifier {
-                previousApplication?.activate(options: [.activateIgnoringOtherApps])
-            }
-        }
         let previousMenu = NSApp.mainMenu
         let board = NSPasteboard(name: .find)
         let savedFindItems = (board.pasteboardItems ?? []).map { source in
@@ -383,7 +380,7 @@ final class LyricsTextViewTests: XCTestCase {
         var coordinator: PlainTextEditor.Coordinator!
         let window: NSWindow
         var view: LyricsTextView!
-        var undo: UndoManager { window.undoManager! }
+        var undo: UndoManager { view.undoManager! }
 
         init(text: String = "") throws {
             draft = text

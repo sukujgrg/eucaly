@@ -7,6 +7,8 @@ import Combine
 public struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let workspaceCommands: OutputWorkspaceCommands
+    private let workspaceMenu: OutputWorkspaceMenuController
+    private let controlPreferences: UserDefaults
     @State private var hasInitializedControls = false
     @State private var importPanel = LibraryImportPanelController()
     @State private var fileTrashController = LibraryFileTrashController()
@@ -27,7 +29,7 @@ public struct ContentView: View {
     @State private var previewLibraryFiles: [URL] = []
     @State private var backgroundAudioLibraryFiles: [URL] = []
     @State private var selectedPlaylistEntryIDs: Set<UUID> = []
-    @StateObject private var playlistStore = PlaylistStore.shared
+    @StateObject private var playlistStore: PlaylistStore
     @AppStorage("libraryRootPath") private var libraryRootPath: String = ""
     @AppStorage("libraryRootBookmark") private var libraryRootBookmark: String = ""
     @AppStorage("thumbnailScale") private var thumbnailScale: Double = 1.0
@@ -38,11 +40,10 @@ public struct ContentView: View {
     @State private var newFileWarning: String? = nil
     @State private var sidebarSelection: SidebarSelection? = nil
     @State private var selectedAudioURL: URL? = nil
-    @State private var librarySearch = LibrarySearchModel()
-    @State private var librarySearchCommandRouter = LibrarySearchCommandRouter()
+    @State private var librarySearch: LibrarySearchModel
     @State private var libraryScrollRequest: LibraryScrollRequest?
-    @State private var isLibrarySearchPresented: Bool = false
-    @State private var libraryLoadTask: Task<Void, Never>? = nil
+    private let libraryInventory: LibraryInventoryStore
+    @State private var appliedInventoryRevision: UInt64?
     @State private var isLibraryLoading: Bool = false
     @State private var libraryLoadFailure: LibraryLoadFailure?
     @State private var libraryRevision: Int = 0
@@ -57,9 +58,16 @@ public struct ContentView: View {
     private let windowCaptureFrameRateOptions = [24, 30, 60]
     private let libraryFileScanner = LibraryFileScannerService()
 
-    init(session: PresentationSession, commands: OutputWorkspaceCommands) {
+    init(session: PresentationSession, commands: OutputWorkspaceCommands, workspaceMenu: OutputWorkspaceMenuController,
+         librarySearch: LibrarySearchModel? = nil, playlistStore: PlaylistStore? = nil,
+         libraryInventory: LibraryInventoryStore? = nil, controlPreferences: UserDefaults = .standard) {
         self.projectionDisplays = session.outputCoordinator.displays
         workspaceCommands = commands
+        self.workspaceMenu = workspaceMenu
+        self.controlPreferences = controlPreferences
+        self.libraryInventory = libraryInventory ?? .shared
+        _librarySearch = State(initialValue: librarySearch ?? LibrarySearchModel())
+        _playlistStore = StateObject(wrappedValue: playlistStore ?? .shared)
         _session = StateObject(wrappedValue: session)
         _flow = StateObject(wrappedValue: session.outputCoordinator.program(session.outputSourceID).flow)
         _outputProfiles = ObservedObject(wrappedValue: session.outputCoordinator.profiles)
@@ -140,78 +148,52 @@ public struct ContentView: View {
             .onChange(of: lyricsEditor.isEditing) { _, isEditing in
                 if !isEditing { lyricsCleanupController.cancel() }
             }
-            .safeAreaInset(edge: .top, spacing: 0) {
-                VStack(spacing: 0) {
-                    OutputIssueBanner(session: session, manageOutputs: showOutputSettings)
-                    if isImporting {
-                        HStack {
-                            ProgressView().controlSize(.small)
-                            Text("Importing files…")
-                            Spacer()
-                        }
-                        .font(.caption)
-                        .padding(10)
-                    }
-                    if let newFileWarning, !hasActiveEditorPane || isEditorPreviewAreaCollapsed {
-                        HStack(alignment: .top) {
-                            Image(systemName: "exclamationmark.triangle")
-                            Text(newFileWarning).frame(maxWidth: .infinity, alignment: .leading)
-                            Button("Dismiss") { self.newFileWarning = nil }
-                        }
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                        .padding(10)
-                    }
-                }
-            }
             .environment(\.lyricsProjectionSize, lyricsProjectionSize)
             .environment(\.audienceOutputProfile, session.outputCoordinator.thumbnailProfile(workspace: session.outputSourceID))
             .background(
                 OutputWorkspaceCloseConfirmation(commands: workspaceCommands, shouldClose: confirmMainWindowClose,
                                                  willClose: handleControlsWillClose,
                                                  editorFileURL: { lyricsEditor.isEditing ? lyricsEditor.sourceURL : nil },
+                                                 canSaveLyrics: { hasActiveEditorPane && canSaveEditorContent },
                                                  didRemoveFile: handleRemovedLibraryFile)
                     .frame(width: 0, height: 0)
             )
     }
 
     private var rootSplitView: some View {
-        rootSplitWithLibrarySearchOverlay
+        rootSplitWithNotificationObservers
     }
 
     private var rootSplitBase: some View {
-        NavigationSplitView {
-            sidebarPane
-                .navigationSplitViewColumnWidth(min: 260, ideal: 320, max: 520)
-        } detail: {
-            detailPane
-        }
-        .navigationSplitViewStyle(.balanced)
-        .toolbar {
-            projectionToolbar
-        }
-        .applyToolbarBackgroundIfAvailable()
+        WorkspaceSplitView(sidebarConfiguration: sidebarConfiguration,
+            workspaceMenu: workspaceMenu, defaults: controlPreferences,
+            session: session, updates: appUpdateViewModel,
+            toggleSlides: toggleSlidesFromUI, searchLibrary: presentLibrarySearch,
+            manageOutputs: showOutputSettings,
+            detail: detailPane.safeAreaInset(edge: .top, spacing: 0) { workspaceNotices })
     }
 
-    private var rootSplitWithLibrarySearchOverlay: some View {
-        ZStack {
-            rootSplitWithNotificationObservers
-                .excludingInterfaceAnimation(.search)
-
-            if isLibrarySearchPresented {
-                LibrarySearchOverlayContainerView(
-                    model: librarySearch,
-                    commandRouter: librarySearchCommandRouter,
-                    currentSelectedURL: currentSelectedURL,
-                    displayName: { displayName(for: $0) },
-                    onRunAction: runLibrarySearchAction,
-                    onClose: dismissLibrarySearch,
-                    onOpenResult: previewLibrarySearchResult,
-                    onAddResultToPlaylist: addLibrarySearchResultToPlaylist,
-                    onCommitQuery: commitLibrarySearchQuery
-                )
-                .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.98)))
-                .zIndex(1)
+    private var workspaceNotices: some View {
+        VStack(spacing: 0) {
+            OutputIssueBanner(session: session, manageOutputs: showOutputSettings)
+            if isImporting {
+                HStack {
+                    ProgressView().controlSize(.small)
+                    Text("Importing files…")
+                    Spacer()
+                }
+                .font(.caption)
+                .padding(10)
+            }
+            if let newFileWarning, !hasActiveEditorPane || isEditorPreviewAreaCollapsed {
+                HStack(alignment: .top) {
+                    Image(systemName: "exclamationmark.triangle")
+                    Text(newFileWarning).frame(maxWidth: .infinity, alignment: .leading)
+                    Button("Dismiss") { self.newFileWarning = nil }
+                }
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .padding(10)
             }
         }
     }
@@ -223,9 +205,6 @@ public struct ContentView: View {
             hasInitializedControls = true
             handleRootOnAppear()
             syncWindowCaptureFrameRate()
-        }
-        .onExitCommand {
-            handleExitCommand()
         }
         .onChange(of: libraryRootBookmark) { _, _ in
             refreshLibraryRootAccess()
@@ -263,13 +242,13 @@ public struct ContentView: View {
     }
 
     private func handleControlsWillClose() {
+        workspaceCommands.librarySearchPresenter.dismiss()
         lyricsCleanupController.cancel()
         fileTrashController.cancel()
         importPanel.cancel()
         cancelFileImport()
         cancelPreviewLoad()
         librarySearch.cancelDebounce()
-        libraryLoadTask?.cancel()
         isLibraryLoading = false
         librarySearch.setIndexing(false)
         releaseSecurityScopedAccess()
@@ -277,38 +256,25 @@ public struct ContentView: View {
         // projection session (and app termination) owns global capture cleanup.
     }
 
-    private func handleExitCommand() {
-        guard (session.isPresenting && session.areSlidesVisible) else { return }
-        deferSessionChange {
-            flow.hideSlides(in: session)
-        }
-    }
-
     private var rootSplitWithNotificationObservers: some View {
         rootSplitWithStateObservers
+            .onReceive(libraryInventory.changes, perform: applyLibraryInventory)
             .onReceive(screenCaptureManager.$windows, perform: handleCaptureWindowsUpdate)
             .onReceive(screenCaptureManager.windowPickerSelections, perform: handleWindowPickerSelection)
-            .onReceive(NotificationCenter.default.publisher(for: .toggleSlidesVisibility), perform: handleToggleSlidesVisibilityNotification)
-            .onReceive(NotificationCenter.default.publisher(for: .toggleBackgroundVisibility), perform: handleToggleBackgroundVisibilityNotification)
-            .onReceive(NotificationCenter.default.publisher(for: .toggleBackgroundAudio), perform: handleToggleBackgroundAudioNotification)
-            .onReceive(NotificationCenter.default.publisher(for: .clearAllLayers), perform: handleClearAllLayersNotification)
-        .onReceive(NotificationCenter.default.publisher(for: .clearBackgroundVisual), perform: handleClearBackgroundVisualNotification)
-        .onReceive(NotificationCenter.default.publisher(for: .clearBackgroundAudio), perform: handleClearBackgroundAudioNotification)
-        .onReceive(NotificationCenter.default.publisher(for: .newLyrics), perform: handleNewLyricsNotification)
-        .onReceive(NotificationCenter.default.publisher(for: .saveLyrics), perform: handleSaveLyricsNotification)
-        .onReceive(NotificationCenter.default.publisher(for: .showLibrarySearch)) { _ in
-            guard workspaceCommands.isActive else { return }
-            presentLibrarySearch()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .refreshLibrary)) { _ in
-            guard workspaceCommands.isActive else { return }
-            refreshLibrary()
-        }
+            .onReceive(NotificationCenter.default.publisher(for: .newLyrics), perform: handleNewLyricsNotification)
+            .onReceive(NotificationCenter.default.publisher(for: .saveLyrics), perform: handleSaveLyricsNotification)
+            .onReceive(NotificationCenter.default.publisher(for: .showLibrarySearch)) { _ in
+                guard workspaceCommands.isActive else { return }
+                presentLibrarySearch()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .refreshLibrary)) { _ in
+                guard workspaceCommands.isActive else { return }
+                refreshLibrary()
+            }
     }
 
-    @ViewBuilder
-    private var sidebarPane: some View {
-        SidebarView(configuration: SidebarConfiguration(
+    private var sidebarConfiguration: SidebarConfiguration {
+        SidebarConfiguration(
             session: session,
             isWindowCaptureSupported: isWindowCaptureSupported,
             libraryFiles: previewLibraryFiles,
@@ -357,39 +323,12 @@ public struct ContentView: View {
             setBackgroundAudioLoop: { session.setBackgroundAudioLoop($0) },
             setBackgroundAudioVolumeDraft: { backgroundAudioVolumeDraft = $0 },
             setWindowCaptureFrameRate: { windowCaptureFrameRate = $0 }
-        ))
-
+        )
     }
 
     @ViewBuilder
     private var detailPane: some View {
         detailView
-    }
-
-    @ToolbarContentBuilder
-    private var projectionToolbar: some ToolbarContent {
-        ToolbarItem(placement: .principal) {
-            HStack(spacing: 10) {
-                OutputSlidesToggleButton(session: session, onToggle: toggleSlidesFromUI)
-
-                Button {
-                    presentLibrarySearch()
-                } label: {
-                    Label("Search Library", systemImage: "magnifyingglass")
-                }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.bordered)
-                .help("Search Library (⌘F)")
-            }
-        }
-
-        ToolbarItemGroup(placement: .primaryAction) {
-            AppUpdateToolbarButton(viewModel: appUpdateViewModel)
-            OutputQuickControls(outputs: session.outputCoordinator, workspaceID: session.outputSourceID, manageOutputs: showOutputSettings)
-        }
-        ToolbarItem(placement: .primaryAction) {
-            ThumbnailSettingsMenu()
-        }
     }
 
     private func showOutputSettings() {
@@ -435,52 +374,6 @@ public struct ContentView: View {
             return
         }
         handleSidebarSelectionRequest(selection)
-    }
-
-    private func handleToggleSlidesVisibilityNotification(_ notification: Notification) {
-        guard workspaceCommands.isActive else { return }
-        deferSessionChange {
-            flow.toggleSlidesVisibility(in: session)
-        }
-    }
-
-    private func handleToggleBackgroundVisibilityNotification(_ notification: Notification) {
-        guard workspaceCommands.isActive else { return }
-        deferSessionChange {
-            session.toggleBackgroundVisualVisibility()
-        }
-    }
-
-    private func handleToggleBackgroundAudioNotification(_ notification: Notification) {
-        guard workspaceCommands.isActive else { return }
-        deferSessionChange {
-            if session.isBackgroundAudioPlaying {
-                session.pauseBackgroundAudio()
-            } else {
-                session.playBackgroundAudio()
-            }
-        }
-    }
-
-    private func handleClearAllLayersNotification(_ notification: Notification) {
-        guard workspaceCommands.isActive else { return }
-        deferSessionChange {
-            session.outputCoordinator.clearAllLayers(for: session)
-        }
-    }
-
-    private func handleClearBackgroundVisualNotification(_ notification: Notification) {
-        guard workspaceCommands.isActive else { return }
-        deferSessionChange {
-            session.outputCoordinator.clearBackgrounds(for: session)
-        }
-    }
-
-    private func handleClearBackgroundAudioNotification(_ notification: Notification) {
-        guard workspaceCommands.isActive else { return }
-        deferSessionChange {
-            clearBackgroundAudio()
-        }
     }
 
     private func handleNewLyricsNotification(_ notification: Notification) {
@@ -888,8 +781,9 @@ public struct ContentView: View {
             return
         }
         guard let window = workspaceCommands.window else { return }
-        importPanel.present(source: source, for: window) { urls in
-            guard libraryRootURL?.standardizedFileURL == root.standardizedFileURL else { return }
+        importPanel.present(source: source, for: window, isCurrent: { workspaceCommands.window === window }) { urls in
+            guard workspaceCommands.window === window,
+                  libraryRootURL?.standardizedFileURL == root.standardizedFileURL else { return }
             startFileImport(urls, root: root, source: source)
         }
     }
@@ -916,16 +810,21 @@ public struct ContentView: View {
             importRequestID = nil
             importCancellation = nil
             isImporting = false
-            guard !cancellation.isCancelled, workspaceCommands.window != nil,
+            guard !cancellation.isCancelled,
                   libraryRootURL?.standardizedFileURL == root.standardizedFileURL else { return }
             if !result.importedURLs.isEmpty {
                 folderURL = root
-                loadMarkdownFiles(from: root, refreshSearchResults: true)
+                // The import service already publishes this completed mutation.
+                if let snapshot = libraryInventory.snapshot(root: root) { applyLibraryInventory(snapshot) }
                 loadPlaylists()
                 // Copying can finish after the operator has selected or edited
                 // something else. Keep the files and refresh, but preserve that
                 // newer intent instead of opening a document or starting music.
-                let maySelectImport = importSelectionGeneration == selectionGeneration
+                // Parked controls still own import results and inline feedback.
+                // Follow-up selection can prompt to save or start audio, so it
+                // additionally requires the requesting controls to remain active.
+                let maySelectImport = workspaceCommands.isActive
+                    && importSelectionGeneration == selectionGeneration
                     && previewLoadToken == previewToken && lyricsEditor == editor
                     && sidebarSelection == sidebar && flow.previewSelectionID == previewSelection
                     && selectedAudioURL == selectedAudio && session.backgroundAudioURL == activeAudio
@@ -989,64 +888,23 @@ public struct ContentView: View {
         return false
     }
 
-    private func loadMarkdownFiles(
-        from folder: URL,
-        refreshSearchResults: Bool = false
-    ) {
-        let previousSearchScopeFiles = librarySearch.scopeFilesSnapshot
-        let index = librarySearch.index
+    private func loadMarkdownFiles(from folder: URL) {
+        libraryInventory.refresh(root: folder)
+    }
 
-        libraryLoadTask?.cancel()
-        isLibraryLoading = true
-        libraryLoadFailure = nil
-        librarySearch.setIndexing(true)
-        libraryLoadTask = Task.detached(priority: .userInitiated) {
-            let cachedMetadata = await index.cachedLibraryMetadata(root: folder)
-            if !cachedMetadata.isEmpty {
-                await MainActor.run {
-                    guard !Task.isCancelled else { return }
-                    applyLibraryMetadata(cachedMetadata, for: folder)
-                }
-            }
-            guard !Task.isCancelled else { return }
-
-            let syncResult: LibraryTextSearchIndex.MetadataSyncResult
-            do {
-                syncResult = try await index.refreshLibraryMetadata(root: folder)
-            } catch is CancellationError {
-                return
-            } catch {
-                let failure = error as? LibraryLoadFailure
-                    ?? LibraryLoadFailure(url: folder, error: error)
-                await MainActor.run {
-                    guard !Task.isCancelled else { return }
-                    if !LibraryLoadFailure.shouldRetainExistingLists(
-                        displayedRoot: displayedLibraryRootURL,
-                        failedRoot: folder
-                    ) {
-                        applyLibraryMetadata([], for: folder)
-                    }
-                    libraryLoadFailure = failure
-                    isLibraryLoading = false
-                    librarySearch.setIndexing(false)
-                }
-                return
-            }
-            guard !Task.isCancelled else { return }
-
-            let metadata = syncResult.metadata
-
-            await MainActor.run {
-                guard !Task.isCancelled else { return }
-                let searchScopeFiles = applyLibraryMetadata(metadata, for: folder)
-                isLibraryLoading = false
-                librarySearch.setIndexing(false)
-                libraryLoadFailure = syncResult.failure.map { LibraryLoadFailure(url: folder, error: $0) }
-
-                if refreshSearchResults || !haveSameStandardizedURLs(previousSearchScopeFiles, searchScopeFiles) {
-                    librarySearch.refreshSearch(currentSelectedURL: currentSelectedURL)
-                }
-            }
+    private func applyLibraryInventory(_ snapshot: LibraryInventoryStore.Snapshot) {
+        guard libraryRootURL?.standardizedFileURL == snapshot.root else { return }
+        let rootChanged = displayedLibraryRootURL != snapshot.root
+        if rootChanged { appliedInventoryRevision = nil }
+        _ = applyLibraryMetadata(snapshot.metadata, for: snapshot.root)
+        isLibraryLoading = snapshot.isLoading
+        libraryLoadFailure = snapshot.failure
+        librarySearch.setIndexing(snapshot.isLoading)
+        if !snapshot.isLoading, appliedInventoryRevision != snapshot.revision {
+            appliedInventoryRevision = snapshot.revision
+            // Content/title edits can retain identical URLs. Refresh each private
+            // query against the newly committed index without resetting it.
+            librarySearch.refreshSearch(currentSelectedURL: currentSelectedURL)
         }
     }
 
@@ -1084,9 +942,6 @@ public struct ContentView: View {
         return previewFiles
     }
 
-    private func haveSameStandardizedURLs(_ lhs: [URL], _ rhs: [URL]) -> Bool {
-        lhs.map(\.standardizedFileURL) == rhs.map(\.standardizedFileURL)
-    }
 
     private func loadSelectedFile(url: URL) {
         guard permitFileUse(url) else { return }
@@ -1284,10 +1139,8 @@ public struct ContentView: View {
         playlistStore.load(fromRoot: root)
         reconcilePlaylistSelection()
         folderURL = root
-        loadMarkdownFiles(
-            from: root,
-            refreshSearchResults: true
-        )
+        libraryInventory.ensureLoaded(root: root)
+        if let snapshot = libraryInventory.snapshot(root: root) { applyLibraryInventory(snapshot) }
     }
 
     private func ensurePlaylistDirectory(in root: URL) {
@@ -1310,32 +1163,23 @@ public struct ContentView: View {
 
     @MainActor
     private func presentLibrarySearch() {
-        if isLibrarySearchPresented {
-            librarySearchCommandRouter.focusExistingSearch()
+        let presenter = workspaceCommands.librarySearchPresenter
+        if presenter.isPresented {
+            presenter.focusExistingSearch()
             return
         }
-        InterfaceMotion.search.animate(reduceMotion: reduceMotion) {
-            isLibrarySearchPresented = true
-        }
+        guard let window = workspaceCommands.window, window.attachedSheet == nil else { return }
         librarySearch.refreshSearch(currentSelectedURL: currentSelectedURL)
-        librarySearch.syncSelection(
-            currentSelectedURL: currentSelectedURL,
-            preferFirstResult: true
-        )
-    }
-
-    @MainActor
-    private func dismissLibrarySearch() {
-        librarySearch.cancelDebounce()
-        InterfaceMotion.search.animate(reduceMotion: reduceMotion) {
-            isLibrarySearchPresented = false
-        }
+        librarySearch.syncSelection(currentSelectedURL: currentSelectedURL, preferFirstResult: true)
+        presenter.present(in: window, model: librarySearch,
+            currentSelectedURL: { currentSelectedURL },
+            onRunAction: runLibrarySearchAction,
+            onOpenResult: previewLibrarySearchResult,
+            onAddResultToPlaylist: addLibrarySearchResultToPlaylist)
     }
 
     @MainActor
     private func previewLibrarySearchResult(_ url: URL) {
-        dismissLibrarySearch()
-
         if let root = libraryRootURL, folderURL?.standardizedFileURL != root.standardizedFileURL {
             folderURL = root
             loadMarkdownFiles(from: root)
@@ -1346,35 +1190,24 @@ public struct ContentView: View {
     }
 
     @MainActor
-    private func addLibrarySearchResultToPlaylist(_ url: URL) {
+    private func addLibrarySearchResultToPlaylist(_ url: URL) -> LibrarySearchPlaylistAddResult {
         guard libraryRootURL != nil else {
-            newFileWarning = "Set a library root before adding to playlists."
-            return
+            return .failed("Set a library root before adding to playlists.")
         }
 
-        if playlistStore.add(url: url, after: selectedPlaylistEntryID) != nil {
-            newFileWarning = nil
-            loadPlaylists()
-            return
+        guard playlistStore.add(url: url, after: selectedPlaylistEntryID) != nil else {
+            return .failed(playlistStore.lastError ?? "Could not add this file to Playlist.")
         }
 
-        newFileWarning = playlistStore.lastError
-    }
-
-    @MainActor
-    private func commitLibrarySearchQuery() {
-        Task {
-            let url = await librarySearch.searchImmediately(currentSelectedURL: currentSelectedURL)
-            guard isLibrarySearchPresented, let url else {
-                return
-            }
-            previewLibrarySearchResult(url)
-        }
+        // The store already publishes the committed order. A second disk read
+        // must not turn a successful add into an apparent failure and retry.
+        reconcilePlaylistSelection()
+        rebuildDisplayNames(for: playlistResolvedURLs)
+        return .added
     }
 
     @MainActor
     private func runLibrarySearchAction(_ action: LibraryCommandPaletteAction) {
-        dismissLibrarySearch()
         switch action {
         case .newLyrics:
             requestEditorExit(.newLyrics)
@@ -1499,8 +1332,7 @@ public struct ContentView: View {
             ensurePlaylistDirectory(in: root)
             folderURL = root
             loadMarkdownFiles(
-                from: root,
-                refreshSearchResults: true
+                from: root
             )
             loadPlaylists()
             return
@@ -1686,14 +1518,11 @@ public struct ContentView: View {
 
             try FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
             try lyricsEditor.draft.write(to: fileURL, atomically: true, encoding: .utf8)
+            if let rootURL { libraryInventory.refresh(root: rootURL) }
             lyricsEditor.markSaved(to: fileURL)
             if let root = libraryRootURL {
                 libraryRootPath = root.path
                 folderURL = root
-                loadMarkdownFiles(
-                    from: root,
-                    refreshSearchResults: true
-                )
             }
             loadPlaylists()
             setSidebarSelectionWithoutLoading(.library(fileURL))
@@ -1756,14 +1585,11 @@ public struct ContentView: View {
         }
         do {
             guard try LyricsFileSave.save(draft, replacing: baseline, at: url, isStillCurrent: isStillCurrent,
-                                         confirmOverwrite: { confirmLyricsOverwrite(url) }), isStillCurrent() else { return false }
+                                         confirmOverwrite: { confirmLyricsOverwrite(url) }) else { return false }
+            if let root = libraryRootURL { libraryInventory.refresh(root: root) }
+            guard isStillCurrent() else { return false }
             lyricsEditor.markSaved(to: url)
-            if let folderURL {
-                loadMarkdownFiles(
-                    from: folderURL,
-                    refreshSearchResults: true
-                )
-            } else {
+            if libraryRootURL == nil {
                 rebuildDisplayNames(for: [url] + playlistResolvedURLs)
             }
             newFileWarning = nil
@@ -1925,7 +1751,9 @@ public struct ContentView: View {
 
         lyricsEditor.beginEditing(text: contents, sourceURL: url)
         isEditorPreviewAreaCollapsed = false
-        newFileWarning = nil
+        newFileWarning = lyricsEditor.isDirty
+            ? "Characters and line endings were normalized in the draft. Review these pending changes before saving; the saved file has not changed."
+            : nil
     }
 
     private func beginCurrentLyricsEditing() {
@@ -1950,7 +1778,9 @@ public struct ContentView: View {
         setSidebarSelectionWithoutLoading(.library(url))
         lyricsEditor.beginEditing(text: contents, sourceURL: url)
         isEditorPreviewAreaCollapsed = false
-        newFileWarning = nil
+        newFileWarning = lyricsEditor.isDirty
+            ? "Characters and line endings were normalized in the draft. Review these pending changes before saving; the saved file has not changed."
+            : nil
         setPreviewSlides(doc.slides)
     }
 
@@ -1963,10 +1793,4 @@ public struct ContentView: View {
         return url
     }
 
-}
-
-extension View {
-    func applyToolbarBackgroundIfAvailable() -> some View {
-        self.toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
-    }
 }

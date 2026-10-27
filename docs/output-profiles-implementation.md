@@ -19,10 +19,18 @@ Every media type follows Sidebar → Preview → Current. Browsing, selecting a 
 window focus and passive preparation never assign or start an output. Profiles
 contain reusable appearance settings and have no content ownership.
 
-AppDelegate owns `OutputWorkspaceWindows`, with one AppKit `NSWindowController` per
-open workspace UUID. The native application entry and menus create, reopen and close
-these windows. `NSWindowRestoration` recreates only saved workspace identities and
-leaves geometry, minimization, selected tabs and tab groups to AppKit. Launch waits
+Output settings use one 64 MiB encoded-document budget for validation, persistence,
+restoration and recovery. The 128-profile model can retain a 64 KiB bookmark per
+profile, including independent copies; JSON escaping can expand each byte sixfold.
+The former 1 MiB read-only bound rejected settings the editor could save. The
+shared budget admits that bounded model and still refuses oversized input before
+JSON parsing. Original recovery and migration backups remain immutable.
+
+AppDelegate owns `OutputWorkspaceWindows`, with retained controls per workspace UUID
+and independent AppKit window controllers for visible workspaces. The native entry
+and menus create, switch, reopen and close these windows. `NSWindowRestoration`
+recreates saved visible workspace identities and leaves geometry and minimization
+to AppKit. Launch waits
 for native restoration and opens the saved last-used workspace only when no controls
 window was restored. A removed or invalid saved identity falls back to an existing
 workspace. Dock reopen selects existing controls or the saved last-used workspace
@@ -38,44 +46,94 @@ geometry regressions use temporary workspace UUIDs and remove their native defau
 The former SwiftUI window scene is gone. Launch removes only its obsolete controls
 and Settings frame keys, retaining native frames, panel geometry and content preferences.
 
-`NSHostingController` hosts the existing SwiftUI controls and uses the public macOS
-14 [toolbar hosting API](https://developer.apple.com/documentation/swiftui/nshostingscenebridgingoptions/toolbars)
-for their toolbar. Window titles, delegates,
-close approval and application-termination registration remain native. The editor
-provides its current unsaved-change decision without replacing the window delegate.
-There is no SwiftUI window scene, `openWindow` action, hidden bootstrap window,
-window-discovery view or replacement-window polling.
+`WorkspaceSplitViewController` owns the native split, sidebar accessory and
+retained SwiftUI detail host. Its bridge occupies the full-size native content
+area; AppKit alone applies titlebar and sidebar safe areas. The sidebar root is
+its full-section `NSScrollView`, and Workspaces is a top-aligned native split-item
+accessory. Output/import/editing notices occupy the detail host, preserving the
+sidebar's surface and accessory position. The detail host occupies an adjacent
+split item with normal titlebar safe-area avoidance. It does not opt into sidebar
+overlay or replicate operator panels with `NSBackgroundExtensionView`: a reflected
+copy of Preview, Current or editor controls is not useful background content.
+Collapsing the sidebar gives its entire width to the real retained detail host.
+The former root visual-effect background remains removed.
 
-New Workspace Tab in the File and Workspace menus (`Cmd+T`) creates an empty
-workspace with no outputs. The command is disabled at the four-workspace saved
-limit, including closed controls; deleting an unused workspace enables it again.
-The toolbar's Workspace menu offers the same command; no separate plus button is
-shown in the title bar or native tab bar. Workspace menus also open saved workspaces
-and detach tabs. Detach moves the same native window and retains the editor, Preview and Current.
-Tab titles include output count and Live/Hidden/Standby/Stopped or failure status.
-Each workspace has a coloured shape in its native tab title, workspace toolbar,
-and beside its name in the toolbar menu's workspace list. A native checkmark marks
-the workspace whose controls own that menu, independently of the launch default.
-The toolbar and menu-bar Workspace menus share one AppKit implementation: the
-same names, coloured shapes, ordering, availability and actions. The current
-choice remains enabled and checked; choosing it again is a no-op. Manage Workspaces
-is the final row after a separator. Move Tab to New Window is available only for
-a group with multiple tabs. Window tabs retain AppKit's active styling.
-Badges are saved as UI preferences by workspace UUID, retaining their identity
-through rename, reordering, detachment, closing and relaunch. Remaining workspaces
-keep their badges after deletion; new workspaces reuse available badges. Legacy
-saved workspaces above four remain available and share the four-badge palette.
-Closing controls releases their private view consumers; reopening uses the same
-app-owned session and Preview flow while live output continues. Native Settings
-remain one app-owned window. Search Library (`Cmd+F`) and Refresh Library target
-only the active controls window. Find in Lyrics is a separate native Edit > Find
-command; text matching and editing retain the macOS responder chain. See
-`SEARCH.md` for keyboard and focus behavior.
-Preview source identity belongs to its retained flow, and Current's lyrics file URL
-belongs to its session, so reopening retains Preview and Edit Current support. Closing cancels private pending Preview loads before releasing controls.
-The native close callback owns controls cleanup; hiding a tab does not release its
-library access or cancel its private preparation. Initial view setup runs once per
-controls window.
+Window titles, delegates, close approval and application-termination registration
+remain native. Search remains a native sibling above the hosted workspace.
+Unhandled Escape reaches `OutputWorkspaceWindow.cancelOperation`, hiding only its
+workspace's slides; search and text completion consume cancellation earlier in
+the responder chain. The editor provides its unsaved-change decision without
+replacing the window delegate. There is no SwiftUI window scene, `openWindow`
+action, hidden bootstrap window, discovery view or replacement-window polling.
+
+New Workspace in the File and Workspace menus (`Shift+Cmd+N`) creates an empty
+workspace with no outputs and selects it in the current controls window. The
+four-workspace creation guard includes parked and closed controls; deleting an
+unused workspace enables creation again.
+
+The pinned Workspaces selector uses its native intrinsic width within the sidebar's
+native accessory insets. The native split view owns the continuous sidebar surface; accessory
+and list contents add no separate material or ornamental rules. Its menu lists saved names and coloured badges,
+with runtime status as a native subtitle. The checkmark identifies the workspace
+being controlled independently of which workspaces are live. Native window titles
+retain the selected workspace name and output status when the sidebar is hidden.
+Secondary actions provide New Workspace, Open in New Window, Rename and Manage.
+The sidebar and menu bar share construction, UUID validation and action paths.
+
+`OutputWorkspaceControls` retains each workspace's session, commands, complete
+hosting controller and its native toolbar. Normal switching parks the previous controls and mounts the
+selected controls in the same `NSWindow`, retaining drafts, selection, Preview,
+Current and focus. Parked commands have no window and cannot consume active-window
+notifications. Each native toolbar has a distinct identifier for its controls
+lifetime, avoiding AppKit's synchronized toolbar-family mutations across workspaces.
+Its explicit tracking separator stays attached to its own split while parked.
+Controls receive their own retained toolbar when they return. Real window close
+detaches its toolbar before releasing content, so closed windows do not retain
+the split through its tracking item. Final controls disposal also retires the
+outer and nested hosting roots and clears the sidebar's optional configuration.
+Fullscreen native surfaces can remain cached after window closure; callbacks and
+private search/editor resources must retire independently of that cache. Run
+close cleanup before replacing roots, while the close-confirmation view exists.
+Parking and preserving-close retain the original graph. Each lyrics editor owns its undo history
+independently of the physical window; ordinary field undo is workspace-owned too.
+
+`OutputWorkspaceWindowController` owns native window lifecycle and the currently
+mounted controls. All controls windows disallow native tabbing. Open in New Window
+explicitly presents parked or closed controls separately; selecting an already
+visible workspace focuses its existing window without duplicating its editor.
+Switching waits for a window-modal sheet to finish. It never starts, stops or
+transfers program output. The native key callback and explicit in-place switching
+update command focus and preserve the existing Confidence readiness policy.
+
+AppKit restoration uses the selected workspace UUID, saved frame, minimization
+and native window state. Existing workspace identifiers remain valid and restore
+as independent windows. With any restored controls window, launch opens no extra
+workspace. With none, launch and Dock reopen use the saved last-used identity.
+Normal switching retains the physical window's geometry; separate windows and
+close/reopen retain UUID-based frame autosaves.
+
+Closing controls approves and releases the visible workspace's editor and private
+view work. Parked controls remain retained, and every program/Current remains
+app-owned. Quit reveals and confirms all retained drafts, including controls
+without a visible window. Successful approval restores previous window selections
+and the saved reopen identity before native restoration is captured; canceled
+approval leaves the relevant editor visible. File-removal protection and deletion
+inspect parked editors too. Deleted workspace callbacks cannot recreate controls.
+
+Badges remain saved by workspace UUID using the existing preference key, retaining
+colours through rename, reordering and reopening. The legacy palette and saved
+workspace identities are preserved.
+
+The native `PresentationToolbarController` keeps navigation/title leading, common
+Output/Network and Appearance/Background/Thumbnails controls in functional groups,
+and Search plus the single prominent Show/Hide action trailing. Critical actions
+have native high visibility priority. The sidebar toggle uses an app-owned item
+identifier and explicit split-controller target; AppKit configures reserved
+identifiers itself, so `.toggleSidebar` cannot carry that delegate-owned target.
+Native spacing replaces the former opaque horizontal group. The
+update reminder has a trailing icon item outside the operational groups.
+Search Library (`Cmd+F`) and Refresh Library target the active controls only.
+Find in Lyrics retains the native responder chain. See `SEARCH.md` for details.
 
 Lyrics editing keeps draft changes separate from Preview acceptance. Clean Up Lyrics
 and Text Tools → Normalize Formatting make native undoable draft edits only.
@@ -85,12 +143,12 @@ Load to Current remains explicit. Clear Draft clears the draft and Preview, and
 native Undo restores only the text. Preview Draft remains available after Undo
 even when the restored draft matches the saved file and Save is disabled.
 
-**Manage Workspaces…** in the Workspace menu and workspace toolbar opens the
+**Manage Workspaces…** in the Workspace menu and sidebar Workspaces action opens the
 **Workspaces** toolbar tab in the app's shared native AppKit Settings window.
 The existing AppKit list provides Open, Rename and Delete. It shows
 each workspace's matching coloured shape and lists each saved UUID's output
 assignments (including disabled destinations), current activity and whether controls
-are open. Opening or browsing the manager never constructs unopened sessions or
+are visible, retained or closed. Opening or browsing the manager never constructs unopened sessions or
 starts output. Rename retains Current, assignments and NDI source identity.
 While its Settings tab is visible, the manager observes session publications and actual program/audio player
 rate and time-control changes. Player replacement rebinds these observations. Late
@@ -138,7 +196,7 @@ revalidates the guards after approval, before closing controls or removing the
 record. Successful deletion cancels queued navigation, releases that program's
 media and paused local music owner, and keeps other programs and saved music routing
 unchanged. Late deleted-session actions and native restoration cannot revive the
-removed workspace. Closing a tab still retains its Current, accepted program, live
+removed workspace. Closing controls still retains its Current, accepted program, live
 NDI source and background audio; Open brings back its controls without a new program.
 
 Each destination has one optional saved `workspaceID`. Several destinations can
@@ -148,13 +206,27 @@ owner and the same explicit action. Show/Start operates only on assigned outputs
 it never takes another workspace's destinations. Ordinary Load, navigation,
 playback, Show/Hide, Clear, background controls and Stop are workspace scoped.
 **Stop All Outputs** is a distinct global Slides-menu action without a shortcut.
-`Cmd+1` stops the controlled workspace; `Cmd+2` toggles its slides; `Cmd+3/4/5` retain
-the existing layer operations within that workspace. Projection-window input and
-Slides-menu shortcuts resolve the owning workspace by destination ID, even when
-another workspace was the last controls window used. `Cmd+T` does not collide with
-standard macOS text editing.
+When another destination is already carrying a workspace's accepted program,
+per-source Start/Retry joins its accepted content and visibility without accepting
+Current again or revealing hidden peers. After the whole workspace has stopped,
+Start uses Current and shows it as a first start. Show Slides remains the explicit
+workspace-wide accept/reveal action.
+`Cmd+Return` toggles the controlled workspace's Current slides;
+`Shift+Cmd+Return` stops its outputs while retaining Current and assignments.
+These commands operate from native workspace controls, including the lyrics
+editor and library search, or a projection window. Projection-window input resolves
+the owning workspace by destination ID, even when another workspace was the last
+controls window used. Neither command loads Preview or activates a search result.
+Unrelated panels, Settings, attached sheets and modal dialogs cannot use these
+commands through a last-focused-workspace fallback. Local sheet commands retain
+priority, including `Cmd+Return` to Apply in the lyrics cleanup review.
+Clear Background Visual, Clear Background Audio and Clear All Layers remain
+explicit menu actions without shortcuts, as does the global Stop All Outputs.
+`Cmd+N` creates lyrics, `Shift+Cmd+N` creates a workspace, and `Cmd+T` opens the
+native Fonts panel. Standard editing, Find, sidebar and fullscreen shortcuts remain
+unchanged.
 
-Show/Hide Slides and `Cmd+2` require content in the controlled workspace's Current,
+Show/Hide Slides and `Cmd+Return` require content in the controlled workspace's Current,
 including virtual PDFs. Empty Current disables the toolbar and Slides-menu toggle;
 projection-window shortcuts use the same guarded session action. Clearing Current
 keeps outputs open without enabling the slide toggle. NDI Start/Stop/Retry, background
@@ -202,9 +274,15 @@ requiring a sidebar selection.
 One program AVPlayer is shared by all destinations of a workspace. Other workspaces
 have independent players. Native views and NDI consume the same player; tab changes
 never pause it, and closing one consumer does not reset it. Losing the last consumer
-releases program playback while retaining Current. Muted background-video resources
+releases program playback while retaining Current. Program playback status comes from the owned
+player/item's time-control, readiness, failure and end observations. It is distinct
+from the operator's pause intent. Non-looping EOF offers Replay and survives
+unrelated output refreshes; Replay and seeks resume only after the latest seek
+completes, respecting current pause/visibility intent. Retired item callbacks cannot
+change a replacement program. A failed item requires an explicit new Current load
+to retry, including when the source URL is unchanged. Muted background-video resources
 are pooled inside each workspace. Runtime bookmark resolution, program access and
-the selected music player's access outlive inactive tabs. ScreenCaptureManager
+the selected music player's access outlive parked controls. ScreenCaptureManager
 continues to own one system-picker-approved stream with reference-counted consumers.
 One pending picker presentation owns its request and observer until a terminal
 result is processed. The system API cannot identify overlapping new-stream
@@ -257,13 +335,18 @@ destination. Reconnection requires explicit Show; no fallback monitor is selecte
 Native close callbacks retain their destination generation guard.
 
 Confidence shows full-canvas media or Current/Next text. Empty, cleared and hidden
-Confidence shows its large centered standby clock. Standby may open only after a real
-workspace becomes key or after assignment/enable. It never takes content, starts media
+Confidence shows its large centered standby clock. Passive restoration waits until a real
+workspace becomes key. Explicit Open Native Output and assignment/enable validate the
+saved monitor without requiring key controls, including when all controls are minimized.
+Standby never takes content, starts foreground program media
 or publishes NDI. Stop, close and display loss suppress reopening until explicit
 Open Confidence/Show or a new assignment/enable. Native windows, including standby,
 hold display/system sleep prevention. NDI independently holds system sleep prevention.
 Moving a standby Confidence window retains standby in a prepared workspace; it does
 not start Current or program media.
+Changing an idle window opened for automatic Confidence standby to another appearance
+closes that window. A window carrying a program or explicitly opened background stays
+open. Every native appearance has explicit Open/Close Native Output controls.
 Stop resolves the window's saved workspace identity even when its owner has no
 prepared session or open controls. Menu validation never prepares that session.
 
@@ -507,6 +590,169 @@ order across restored stores as well as within a single store.
 
 ## Verification and limits
 
+Native workspace chrome regressions cover the full window-height split, pinned
+accessory width and scrolling, native collapse completion, exact toolbar/split
+association, inherited detail environment, retained editor state/caret/undo, and
+search above the native split. A real ContentView fixture confirms Current stays
+accepted and verifies search-model/inventory/SQLite release after fullscreen close.
+This release regression failed before explicit root and callback retirement.
+Retained-action tests verify disposed sidebar controls cannot dispatch commands.
+The follow-up collapse regression checks actual editor and host bounds at minimum
+and wide widths, after resize and in fullscreen. It reproduced a retained
+260-point mirrored strip before removing the detail overlay/extension hierarchy.
+Checks of accessory visibility alone did not establish reclaimed content width.
+Toolbar checks preserve control sizes and relative spacing, while allowing AppKit
+to position whole native clusters; Search and Show must remain visible with long
+names and an update reminder present.
+Fullscreen control coverage presses the exposed native accessibility button and
+checks its resulting split/editor geometry. Dispatching a selector directly to
+an assumed target did not establish the system-created button's behavior.
+
+Native observation on 27 October 2026 verified windowed and fullscreen placement,
+the visible detail-only output notice, fullscreen Workspaces menu, retained search
+query, search dismissal, ordinary Escape hiding slides without leaving fullscreen,
+and sidebar collapse/reopen. The macOS UX review approved the native accessory edge
+and glass control groups; independent review found no outstanding actionable issue.
+The windowed capture was inactive and does not qualify active-window contrast or
+manual VoiceOver behavior. Screenshots and diagnostic evidence are under
+`build/audit/native-accessory-*2026-10-27*`.
+
+The adjacent-pane follow-up also has native captures under
+`build/audit/sidebar-native-final-*2026-10-27*`. Actual sidebar button presses
+worked in both fullscreen states and while Search owned query focus; Preview and
+Current reclaimed the hidden column. The earlier reserved system item did not
+reach its intended target in the fullscreen observation. The inspected run is
+visual/input evidence only: its injected search fixture remained retained at
+forced close under external accessibility inspection, as also observed before
+this follow-up. Uninspected automated lifecycle regressions check release
+separately; cleanup timing under external inspection was unqualified at that
+stage. The subsequent callback-retirement investigation below closes that gap.
+
+Earlier accessory validation on 27 October 2026 passed `make test`: 1,153 XCTest cases,
+nine opt-in qualification skips, one Swift Testing case, seven feed tests,
+103 release-workflow tests and the architecture check across 39 network sources. The agent reference
+validator also passed. The native lifecycle/sidebar subset passed 54 tests,
+including fullscreen-close resource release and live workspace isolation.
+`make build` archived and exported the signed arm64 app to `~/Applications`;
+deep, strict signature verification passed.
+
+The first adjacent-pane full run reported 1,154 cases, nine skips and one
+unlocated thrown error in an unchanged search-focus test. Its xcresult reports
+`Gestures.GesturePhaseQueue<()>.InvalidTransition` in the native Gestures error
+domain (`idle` to `failed(deinit)`), without a failed search assertion. The root
+cause remains unestablished.
+The same error appears in earlier workspace test logs predating this change.
+All 30 search-navigation tests then passed unchanged in isolation. No test
+suppression, timing delay or application workaround was added for this
+intermittent native error.
+
+The unchanged full repeat passed `make test`: 1,154 XCTest cases, nine opt-in
+qualification skips, zero failures, one Swift Testing case, seven feed tests,
+103 release-workflow tests and the architecture check across 39 network sources.
+The final agent reference validator also passed. The fresh macOS UX review
+approved the shown/hidden fullscreen captures, and independent code review found
+no actionable production regression in this scoped change.
+`make build` archived and exported the signed arm64 app to
+`/Users/suku/Applications/eucaly.app`; deep, strict signature verification passed.
+The archive still reports the pre-existing unused `handlers` binding warning in
+the unchanged search-palette renderer.
+
+The subsequent cleanup investigation reproduced two concrete strong paths by
+retaining the native close-confirmation view and the fullscreen toolbar/Quick
+Controls owners separately. Both probes failed before repair: the search model,
+inventory and index survived, and SQLite did not close. Their stored callbacks
+captured `ContentView`, so removing the hosting root alone was insufficient.
+Final controls disposal now severs those callbacks once, ends toolbar observation
+and retires retained menu commands. Parking does not retire them. A third probe
+retains the complete inspected native/accessibility view graph across fullscreen
+close and checks resource release while that graph remains alive. These checks
+also preserve the accepted Current and running output. Late background-panel
+responses cannot start a new edit after retirement; a choice accepted before
+close continues under the app-owned store/output operation.
+
+Error-attribution diagnostics also established that the installed XCTest can
+report the wrong escaping Swift error. An intentionally failing temporary test
+threw `actualEscapingError`, then handled `handledDuringUnwind` in a defer;
+XCTest reported the handled error. A controlled native focus-loss test captured
+`NativeSearchTestFocusError.unavailable` before fixture cleanup, while XCTest
+reported the same `Gestures.GesturePhaseQueue<()>.InvalidTransition` seen earlier.
+The probes and result bundles are preserved under
+`build/audit/gestures-error-identity-diagnostic-*` and
+`build/audit/native-focus-interleaving-evidence-*`; deliberately failing probes
+were removed from the app test target. This reproduces the historical reported
+symptom; it does not recover the primary error from the pruned original bundle.
+
+The focus investigation then captured WindowServer rejecting the hosted test
+process because its activation count was zero. Xcode had launched it with
+`LSLaunchDoNotBringFrontmost=true`; changing readiness predicates and retaining
+foreground ownership alone did not give that process foreground admission.
+The native test harness now makes one public LaunchServices foreground-open
+transaction for its exact, already-running installation. It disables application
+substitution and new-instance requests, checks that the installation has only
+the current PID, and verifies the completion returns that same PID and URL.
+A DEBUG-only entry guard exits before preference migration or application
+construction if that marked request unexpectedly launches an uninjected copy.
+The operator's installed app is never an eligible substitute.
+
+Native editor fixtures await real active/key state before synthetic input.
+Notification consumption checks simultaneous current state rather than latching
+unrelated historical events. Per-fixture external activation is removed; the
+previous app is restored after the bundle's native fixture cleanup. A failed
+admission or focus check is recorded before throwing, preserving the primary
+failure even with the installed XCTest's misleading cleanup-error attribution.
+No retry, activation timer, hidden window or suppressed assertion is used.
+The exact failing editor-to-search sequence passed after this admission repair,
+with same-process checks intact. Denial and successful admission records are
+under `build/audit/native-focus-windowserver-denial-*`,
+`native-focus-launch-contract-*` and `native-focus-admitted-process-*`.
+
+The sidebar toggle is deliberately trailing-aligned within the sidebar's own
+tracking-separated toolbar section. Native flexible space precedes it inside
+that section; the main toolbar retains its independent flexible space. The
+regression reproduced the former traffic-light-adjacent placement and now
+measures a stable native trailing gap at 300- and 460-point sidebar widths,
+separately in windowed and fullscreen modes. Collapse still releases the whole
+detail width and the exposed native button restores the sidebar.
+
+Follow-up external native observation passed with the inspector still attached,
+Search open and inspected native views retained while controls closed. Both the
+fullscreen retained-graph fixture and the windowed fixture (also exercised into
+fullscreen) released model/inventory/index and closed SQLite within the original
+five-second teardown deadline. Current stayed accepted and output remained live
+through the observed sidebar/search workflow. Elapsed observation-test time
+includes a deliberate open-window gate and a stalled external-tool call; that
+time is not the resource-close latency. The temporary gate was removed before
+final regression validation.
+
+The macOS UX review approved the active windowed, wide, collapsed and fullscreen
+captures under `build/audit/sidebar-toggle-trailing-*2026-10-27.png`.
+Independent code review found no outstanding actionable issue in the final
+retirement, background-selection ownership, foreground-admission or native
+toolbar-section changes. The scoped integrated run passed all 80 tests.
+
+The first full follow-up run reported 1,165 cases and nine skips, with two
+alignment assertions failing in the new fullscreen geometry fixture. The
+diagnostic established that the toolbar viewer belongs to a separate native
+window in fullscreen and was still at its previous width when the content
+window's layout was sampled. AX and the native converted frame agreed; this
+was not an accessibility-cache discrepancy. Local viewer-frame notifications
+were also insufficient because native ancestors can move that viewer.
+The fixture now observes actual horizontal screen-space reflow after one resize
+request, independently of the unchanged trailing-gap assertions, and exits
+fullscreen before ordinary geometry-fixture disposal. The production layout
+was unchanged. Three subsequent controlled runs passed. Explicit fullscreen
+close/resource tests continue to exercise closing directly from fullscreen.
+
+Final reviewed validation passed `make test`: 1,165 XCTest cases, nine existing
+opt-in qualification skips and zero failures, plus one Swift Testing case,
+seven feed regressions, 103 release-workflow tests and the architecture check
+across 39 network sources. The native test-host process checks, retained-resource
+regressions and completed-reflow alignment checks all passed in that full run.
+`make build` also passed, exporting the signed arm64 app to `~/Applications`;
+deep, strict signature verification passed for the app and bundled components.
+The existing unused-binding warning in the unchanged search-palette renderer
+remains recorded above.
+
 Run `make test`. Added regressions cover tab/focus privacy, two simultaneous Currents,
 shared versus independent players, exclusive assignment/conflicts, workspace-scoped
 controls, stable live sender transfer, stale media/audio rejection, alpha → media →
@@ -524,8 +770,8 @@ seven feed regressions and 101 release-workflow regressions. This includes the n
 workspace, migration, sender-transfer, shared-media and music-routing assertions,
 helper pixel checks, native window lifecycle tests and all seven real NDI SDK
 integration tests using the installed optional runtime. No tests were skipped.
-The native workspace regressions cover controller reuse and release, tab-bar creation
-and detaching, validated restoration identities, Dock reopening, native menu shortcuts,
+Those historical native workspace regressions covered controller reuse and release, tab-bar creation
+and detaching (superseded by the workspace-switching contract above), validated restoration identities, Dock reopening, native menu shortcuts,
 close/termination approval, toolbar sizing, retained Preview/Current source metadata
 and recording controls focus before Settings becomes key. Restoration construction is
 tested without ordering windows; an OS quit/relaunch restoration roundtrip has not
@@ -609,9 +855,65 @@ fallback, retirement of the old launch field and targeted SwiftUI frame cleanup.
 `make build` also archived/exported the arm64 app successfully, and the exported
 app passed strict deep code-signature verification. Native autosave is exercised
 against AppKit; an OS-managed quit/relaunch round trip
-of restored tab groups remains a manual verification item.
+of restored windows remains a manual verification item. Native tab grouping has since
+been removed; existing UUIDs restore as independent controls windows.
 
 Physical receivers, real monitor hot-plug, alpha mixing over cameras, A/V drift,
 minimum supported OS/hardware, permission UI, accessibility and two-hour sustained
 operation remain unverified. SDK/localhost acceptance is not proof of physical
 receiver display/audio delivery. See the [qualification plan](ndi-output-plan.md).
+
+## Workspace navigation validation — 26 October 2026
+
+- `make test` passed: 1,130 XCTest cases reported, nine skipped, zero failures,
+  one Swift Testing case, seven feed and 103 release regressions, and the network
+  architecture validator. The final import/badge cleanup passed 28 affected cases.
+- New regressions cover retained SwiftUI state and native draft/caret state,
+  rapid-switch focus ordering, independent native/NDI/OMT program/player identity,
+  explicit-window reuse, modal-sheet ownership, parked draft/file protection,
+  deletion, import-owner fencing and approved/canceled Quit restoration identity.
+- Native toolbar fixtures cover 1060/1280/1400-point windows, light/dark appearance,
+  long names, update states, sidebar collapse and A→B→A remounting. UX and independent
+  code review have no outstanding findings. Every quick tool remains available
+  after returning. The selector's original full-width layout was subsequently
+  replaced by native intrinsic sizing in the sidebar chrome cleanup below.
+- Lyrics regressions exercise independent real undo histories through a native
+  window-targeted Undo key equivalent and Redo menu action. They do not establish
+  OS-level active-app keyboard delivery. Manual VoiceOver, OS-managed quit/relaunch
+  restoration and legacy tab-restoration behavior remain unobserved.
+- `make build` archived/exported the signed arm64 app successfully. Strict deep
+  code-signature verification passed with normal host trust access.
+
+Logs are under `build/audit/workspace-navigation-*.log`; the native preview is
+`build/audit/workspace-navigation-native-dark.png`. Tests use isolated stores,
+fixtures and fake destinations, alongside the existing default SDK integration
+suites. Physical receiver/display/speaker and sustained qualification remain
+separate from these checks.
+
+## Sidebar chrome validation — 27 October 2026
+
+The native split view owns the sidebar material. The workspace header and native
+sidebar controller no longer add competing materials or ornamental horizontal
+rules; the Workspaces selector uses its native fitting width. Toolbar background
+appearance follows the system rather than a forced hidden-background override.
+This preserves the existing split, search stacking, workspace controls and
+app-owned presentation runtimes.
+
+`make test` passed: 1,149 XCTest cases reported, nine skipped, zero failures,
+one Swift Testing case, seven feed and 103 release regressions, and the network
+architecture validator. The new native header regression checks sizing across
+sidebar widths; the toolbar regression checks that update reminders preserve the
+compact selector and active search editor. An unchanged Confidence focus assertion
+failed once in the earlier broad run, then passed three isolated repetitions and
+the final full run. Its assertion and production focus behavior remain unchanged.
+`make build` archived/exported the arm64 app, which passed strict deep signature
+verification.
+
+Native observation used a separate app identity and an empty temporary library.
+The active windowed sidebar is continuous into the titlebar, and settled fullscreen
+is continuous to the top edge. The revealed fullscreen toolbar retains AppKit's
+separate material and automatic boundary; it is not an app-drawn header divider.
+Sidebar collapse/expand, workspace menus, Open in New Window and search dismissal
+were observed. UX and independent review have no remaining actionable findings.
+Logs are under `build/audit/sidebar-chrome-*.log`. These checks do not add physical
+output or manual VoiceOver qualification.

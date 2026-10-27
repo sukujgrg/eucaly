@@ -4,6 +4,115 @@ import AppKit
 
 @MainActor
 final class OutputSettingsTests: XCTestCase {
+    func testRejectedNetworkNameDoesNotVetoRestoredConfigurationOnStart() throws {
+        for technology in NetworkOutputTechnology.allCases {
+            let driver = RecordingNetworkOutput()
+            let fixture = OutputSettingsFixture(network: driver); defer { fixture.close() }
+            let session = fixture.outputs.session(workspace: OutputWorkspaceRecord.primaryID)
+            session.setSlides(LyricsParser.parseDocument("Verse\nCurrent stays local").slides)
+            var row = OutputDestinationConfiguration(name: "Online", profileID: OutputProfile.audienceID, monitor: nil)
+            let settings = NetworkOutputSettings(sourceName: "Saved valid name")
+            row.destination = technology == .ndi ? .ndi(settings) : .omt(settings)
+            fixture.store.edit { $0.destinations.append(row) }
+            fixture.controller.selectDestination(row.id)
+            let editor = try XCTUnwrap(fixture.controller.destinationEditor?.networkEditor)
+            editor.sourceName.stringValue = "Invalid/Name"
+            editor.controlTextDidEndEditing(.init(name: NSControl.textDidEndEditingNotification, object: editor.sourceName))
+            XCTAssertFalse(editor.validationLabel.isHidden)
+            XCTAssertEqual(fixture.outputs.destination(row.id)?.networkSettings?.sourceName, settings.sourceName)
+            fixture.controller.selectProfile(OutputProfile.audienceID)
+            fixture.controller.selectDestination(row.id)
+            XCTAssertEqual(editor.sourceName.stringValue, settings.sourceName)
+            XCTAssertTrue(editor.validationLabel.isHidden)
+            editor.startButton.performClick(nil)
+            XCTAssertEqual(driver.starts, [row.id])
+            XCTAssertTrue(driver.activeIDs.contains(row.id))
+            // Stop must remain available even with a rejected in-field draft.
+            editor.sourceName.stringValue = "Invalid/Name"
+            editor.controlTextDidEndEditing(.init(name: NSControl.textDidEndEditingNotification, object: editor.sourceName))
+            editor.startButton.performClick(nil)
+            XCTAssertFalse(driver.activeIDs.contains(row.id))
+        }
+    }
+
+    func testSuccessfulMoveClearsPreviousUnsupportedContentError() throws {
+        for technology in NetworkOutputTechnology.allCases {
+            let driver = RecordingNetworkOutput()
+            let fixture = OutputSettingsFixture(network: driver); defer { fixture.close() }
+            let home = fixture.outputs.session(workspace: OutputWorkspaceRecord.primaryID)
+            let targetID = try XCTUnwrap(fixture.store.addWorkspace(name: "Online"))
+            let target = fixture.outputs.session(workspace: targetID)
+            home.setSlides(LyricsParser.parseDocument("Verse\nOld program").slides)
+            var row = OutputDestinationConfiguration(name: "Live source", profileID: OutputProfile.audienceID, monitor: nil)
+            let settings = NetworkOutputSettings(sourceName: "Live source")
+            row.destination = technology == .ndi ? .ndi(settings) : .omt(settings)
+            fixture.store.edit { $0.destinations.append(row) }
+            fixture.outputs.startNetworkOutput(row.id)
+            target.setSlides([Slide(index: 0, lines: [], label: "Picked Window", videoURL: nil, pdfURL: nil, pdfPageIndex: nil, imageURL: nil, captureWindowID: 42)])
+            fixture.outputs.focusWorkspace(target)
+            fixture.controller.selectDestination(row.id)
+            let editor = try XCTUnwrap(fixture.controller.destinationEditor)
+            editor.moveWorkspaceButton.performClick(nil)
+            XCTAssertFalse(editor.validationLabel.isHidden)
+            XCTAssertEqual(fixture.outputs.destination(row.id)?.workspaceID, home.outputSourceID)
+            target.setSlides(LyricsParser.parseDocument("Verse\nSupported Current").slides)
+            editor.moveWorkspaceButton.performClick(nil)
+            XCTAssertEqual(fixture.outputs.destination(row.id)?.workspaceID, targetID)
+            XCTAssertTrue(editor.validationLabel.isHidden)
+            XCTAssertTrue(editor.validationLabel.stringValue.isEmpty)
+            XCTAssertEqual(driver.starts, [row.id])
+        }
+    }
+
+    func testPriorCustomizationCanBeRestoredAfterPresetComparison() throws {
+        let fixture = OutputSettingsFixture(); defer { fixture.close() }
+        let output = fixture.store.document.destinations[0]
+        let customID = try XCTUnwrap(fixture.store.customizeProfile(for: output.id))
+        XCTAssertNil(fixture.store.editDestinationProfile(output.id) { $0.padding = 1.5; $0.typography.size = 104 })
+        let custom = try XCTUnwrap(fixture.store.profile(customID))
+        fixture.store.selectProfile(OutputProfile.lowerThirdID, for: output.id)
+        fixture.controller.selectDestination(output.id)
+        let editor = try XCTUnwrap(fixture.controller.destinationEditor)
+        let choice = try XCTUnwrap(editor.profilePicker.itemArray.first { $0.representedObject as? UUID == customID })
+        XCTAssertTrue(choice.title.contains("Restore"))
+        editor.profilePicker.select(choice)
+        NSApp.sendAction(try XCTUnwrap(editor.profilePicker.action), to: editor.profilePicker.target, from: editor.profilePicker)
+        XCTAssertEqual(fixture.outputs.destination(output.id)?.profileID, customID)
+        XCTAssertEqual(fixture.store.profile(customID), custom)
+        XCTAssertTrue(editor.appearanceNotice.stringValue.contains("Independent appearance"))
+        XCTAssertFalse(fixture.outputs.isRunning)
+    }
+
+    func testRemoveLiveMusicRouteHasDisabledUndoAndPreservesOtherOutput() throws {
+        let driver = RecordingNetworkOutput()
+        let fixture = OutputSettingsFixture(network: driver); defer { fixture.close() }
+        let home = fixture.outputs.session(workspace: OutputWorkspaceRecord.primaryID)
+        home.setSlides(LyricsParser.parseDocument("Verse\nKeep program").slides)
+        var row = OutputDestinationConfiguration(name: "Music source", profileID: OutputProfile.audienceID, monitor: nil)
+        row.ndi = .init(sourceName: "Music source")
+        fixture.store.edit { $0.destinations.append(row); $0.defaultDestinationID = row.id; $0.backgroundAudioDestinationID = row.id }
+        fixture.outputs.startNetworkOutput(row.id)
+        let other = fixture.store.document.destinations[0]
+        fixture.controller.selectDestination(row.id)
+        fixture.controller.removeOutput.performClick(nil)
+        XCTAssertNil(fixture.outputs.destination(row.id))
+        XCTAssertFalse(driver.activeIDs.contains(row.id))
+        XCTAssertNil(fixture.store.document.backgroundAudioDestinationID)
+        XCTAssertNil(fixture.store.document.defaultDestinationID)
+        XCTAssertEqual(fixture.outputs.destination(other.id), other)
+        XCTAssertFalse(fixture.controller.undoRemoveOutput.isHidden)
+        fixture.controller.undoRemoveOutput.performClick(nil)
+        let restored = try XCTUnwrap(fixture.outputs.destination(row.id))
+        XCTAssertFalse(restored.enabled)
+        XCTAssertEqual(restored.networkSettings, row.networkSettings)
+        XCTAssertEqual(restored.profileID, row.profileID)
+        XCTAssertEqual(restored.workspaceID, row.workspaceID)
+        XCTAssertEqual(fixture.store.document.backgroundAudioDestinationID, row.id)
+        XCTAssertEqual(fixture.store.document.defaultDestinationID, row.id)
+        XCTAssertFalse(driver.activeIDs.contains(row.id))
+        XCTAssertEqual(driver.starts, [row.id])
+    }
+
     func testAppearanceGroupsAndPickerPreserveSavedPrivateAndLegacyProfiles() throws {
         let fixture = OutputSettingsFixture(); defer { fixture.close() }
         fixture.window.setContentSize(.init(width: 820, height: 650))
@@ -815,7 +924,7 @@ final class OutputSettingsTests: XCTestCase {
         NSApp.sendAction(try XCTUnwrap(fixture.controller.addNative.action), to: fixture.controller.addNative.target, from: fixture.controller.addNative)
         let native = try XCTUnwrap(fixture.controller.destinationEditor)
         let nativeOutput = try XCTUnwrap(native.destination)
-        XCTAssertEqual(nativeOutput.name, "Native Output")
+        XCTAssertEqual(nativeOutput.name, "Native Output 1")
         XCTAssertEqual(nativeOutput.profileID, OutputProfile.audienceID)
         XCTAssertFalse(nativeOutput.enabled)
         XCTAssertNil(nativeOutput.monitor)
@@ -863,7 +972,7 @@ final class OutputSettingsTests: XCTestCase {
         let creationMenu = controller.addOutputMenu.menu
         XCTAssertNotNil(creationMenu?.items.first?.image, "The pull-down's first item owns the + glyph")
         XCTAssertEqual(creationMenu?.items.map(\.title), ["+", "Native Monitor Output", "NDI Output", "OMT Output"])
-        XCTAssertEqual(controller.makeDefault.title, "Default")
+        XCTAssertEqual(controller.makeDefault.title, "Editing Target")
         XCTAssertFalse(controller.makeDefault.isEnabled)
         XCTAssertTrue(fixture.window.makeFirstResponder(first.nameField))
         try XCTUnwrap(first.nameField.currentEditor()).string = "Original draft"
@@ -878,15 +987,15 @@ final class OutputSettingsTests: XCTestCase {
         XCTAssertEqual(fixture.store.defaultDestination?.id, secondID)
         XCTAssertEqual(fixture.store.defaultDestination?.name, "Second draft")
         XCTAssertFalse(try XCTUnwrap(fixture.store.defaultDestination).enabled)
-        XCTAssertEqual(controller.makeDefault.title, "Default")
+        XCTAssertEqual(controller.makeDefault.title, "Editing Target")
         XCTAssertFalse(controller.makeDefault.isEnabled)
         controller.selectDestination(original.id)
         XCTAssertEqual(fixture.store.defaultDestination?.id, secondID)
-        XCTAssertEqual(controller.makeDefault.title, "Make Default")
+        XCTAssertEqual(controller.makeDefault.title, "Edit Appearance Here")
         let row = try XCTUnwrap(controller.tableView(controller.table, viewFor: controller.table.tableColumns[0], row: 1))
-        XCTAssertTrue(try XCTUnwrap(row.accessibilityLabel()).contains("Default"))
+        XCTAssertTrue(try XCTUnwrap(row.accessibilityLabel()).contains("Appearance editing target"))
         let selectedRow = try XCTUnwrap(controller.tableView(controller.table, viewFor: controller.table.tableColumns[0], row: 0))
-        XCTAssertFalse(try XCTUnwrap(selectedRow.accessibilityLabel()).contains("Default"))
+        XCTAssertFalse(try XCTUnwrap(selectedRow.accessibilityLabel()).contains("Appearance editing target"))
         controller.reload()
         XCTAssertTrue(controller.addOutputMenu.menu === creationMenu)
         controller.selectDestination(secondID)
@@ -956,10 +1065,10 @@ final class OutputSettingsTests: XCTestCase {
                         XCTAssertGreaterThan(button.visibleRect.height, 15)
                     }
                     XCTAssertGreaterThanOrEqual(fixture.controller.removeOutput.frame.minX - fixture.controller.addOutputMenu.frame.maxX, 7)
-                    XCTAssertGreaterThanOrEqual(fixture.controller.makeDefault.frame.minX - fixture.controller.removeOutput.frame.maxX, 7)
-                    XCTAssertEqual(fixture.controller.makeDefault.frame.maxX, footer.bounds.maxX, accuracy: 1)
+                    XCTAssertFalse(fixture.controller.makeDefault.superview === fixture.controller.removeOutput.superview)
+                    XCTAssertLessThanOrEqual(fixture.controller.makeDefault.frame.maxX, footer.bounds.maxX + 1)
                     XCTAssertEqual(fixture.controller.table.focusRingType, .none)
-                    XCTAssertEqual(fixture.controller.makeDefault.title, id == original.id ? "Default" : "Make Default")
+                    XCTAssertEqual(fixture.controller.makeDefault.title, id == original.id ? "Editing Target" : "Edit Appearance Here")
                 }
             }
         }
@@ -1337,6 +1446,7 @@ private final class OutputSettingsFixture {
         store = OutputProfileStore(defaults: defaults, monitor: monitors ? monitor.target : nil)
         outputs = OutputCoordinator(profiles: store, displays: displays, network: network ?? NetworkOutputRouter(), driverFactory: { FakeOutputDriver() })
         controller = ManageOutputsController(coordinator: outputs)
+        controller.confirmOutputRemoval = { _ in true }
         window = NSWindow(contentRect: .init(x: -10000, y: -10000, width: 820, height: 650),
             styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         // This offscreen host checks native controls, not window transforms.

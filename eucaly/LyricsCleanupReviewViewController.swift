@@ -10,7 +10,7 @@ final class LyricsCleanupReviewViewController: NSViewController, NSTextViewDeleg
 
     let originalTextView = NSTextView()
     let proposedTextView = NSTextView()
-    let applyButton = NSButton(title: "Apply Changes", target: nil, action: nil)
+    let applyButton: NSButton = LyricsCleanupApplyButton(title: "Apply Changes", target: nil, action: nil)
     let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
     let resetButton = NSButton(title: "Reset Preview", target: nil, action: nil)
     let optionsDisclosureButton = NSButton(title: "Cleanup options", target: nil, action: nil)
@@ -54,7 +54,7 @@ final class LyricsCleanupReviewViewController: NSViewController, NSTextViewDeleg
         choices.spacing = 5
         let optionStates = [options.cleanCharacters, options.suggestSections, options.naturalLyricCasing,
                             options.repairLineBreaks, options.removeAnnotations, options.identifyCopyright]
-        for (index, title) in ["Clean up characters and pasted text", "Suggest verse and chorus sections", "Use natural lyric casing", "Repair PDF line breaks", "Remove chord annotations and non-lyric instructions", "Recognize licence and copyright credits"].enumerated() {
+        for (index, title) in ["Clean up characters and pasted text", "Suggest verse and chorus sections", "Use natural lyric casing", "Repair PDF line breaks", "Remove chord annotations and non-lyric instructions", "Explain detected licence and copyright credits"].enumerated() {
             let button = NSButton(checkboxWithTitle: title, target: self, action: #selector(optionChanged(_:)))
             button.tag = index
             button.state = optionStates[index] ? .on : .off
@@ -410,6 +410,19 @@ final class LyricsCleanupReviewViewController: NSViewController, NSTextViewDeleg
     @objc private func reset() { onReset?() }
     @objc private func cancel() { onCancel?() }
     @objc private func apply() { if applyButton.isEnabled { onApply?() } }
+}
+
+@MainActor
+private final class LyricsCleanupApplyButton: NSButton {
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // NSButton permits extra Shift for Return equivalents. Applying a
+        // review must require its exact advertised chord; Shift-Command-Return
+        // has a distinct workspace meaning and must not commit these edits.
+        let primary: NSEvent.ModifierFlags = [.command, .control, .option, .shift]
+        guard event.type == .keyDown,
+              event.modifierFlags.intersection(primary) == keyEquivalentModifierMask.intersection(primary) else { return false }
+        return super.performKeyEquivalent(with: event)
+    }
 }
 
 @MainActor

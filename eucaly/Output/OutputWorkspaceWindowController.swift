@@ -2,11 +2,10 @@ import AppKit
 import Combine
 import SwiftUI
 
-/// App-owned controls windows. A workspace has at most one controls window;
-/// native tab operations move that same window and its complete view hierarchy.
+/// Retained controls belong to a workspace; native windows present one context
+/// at a time. Switching never closes controls or changes a program's owner.
 @MainActor
 final class OutputWorkspaceWindows: ObservableObject {
-    static let tabbingIdentifier = "com.suku.eucaly.workspaces"
     private static let identifierPrefix = "com.suku.eucaly.workspace."
     private static let lastWorkspaceKey = "lastControlsWorkspaceID"
     private let outputs: OutputCoordinator
@@ -16,18 +15,28 @@ final class OutputWorkspaceWindows: ObservableObject {
     private let keyWindow: @MainActor () -> NSWindow?
     private let contentFactory: ((PresentationSession, OutputWorkspaceCommands) -> NSViewController)?
     private let showWorkspaceSettings: () -> Void
+    private var workspaceObservation: AnyCancellable?
+    private var hosts: [OutputWorkspaceWindowController] = []
+    @Published private(set) var controllers: [UUID: OutputWorkspaceControls] = [:]
     var profiles: OutputProfileStore { outputs.profiles }
     let tabBadges: OutputWorkspaceTabBadges
-    private var workspaceObservation: AnyCancellable?
-    @Published private(set) var controllers: [UUID: OutputWorkspaceWindowController] = [:]
     var windows: [UUID: NSWindow] { controllers.compactMapValues(\.window) }
     var activeWorkspaceID: UUID? {
         guard let window = keyWindow() else { return nil }
-        return controllers.first { $0.value.window === window }?.key
+        return hosts.first { $0.window === window }?.session.outputSourceID
+    }
+    var navigationWorkspaceID: UUID? {
+        activeWorkspaceID ?? outputs.focusedWorkspaceID.flatMap { controllers[$0]?.window == nil ? nil : $0 }
+            ?? hosts.first?.session.outputSourceID
     }
     var canCreateWorkspace: Bool {
-        outputs.profiles.canAddWorkspace
+        let window = keyWindow()
+        // Shift-Command-N belongs to New Folder while a native file panel owns
+        // input, including panels attached to Settings rather than controls.
+        return profiles.canAddWorkspace && NSApp.modalWindow == nil
+            && window?.sheetParent == nil && window?.attachedSheet == nil
     }
+    func status(workspace id: UUID) -> String { outputs.tabStatus(workspace: id) }
 
     init(outputs: OutputCoordinator, updates: AppUpdateViewModel, defaults: UserDefaults? = nil,
          autosavesWindowFrames: Bool = !AppLaunchContext.isRunningTests,
@@ -39,13 +48,14 @@ final class OutputWorkspaceWindows: ObservableObject {
         self.keyWindow = keyWindow; self.contentFactory = contentFactory
         self.showWorkspaceSettings = manageWorkspaces
         tabBadges = OutputWorkspaceTabBadges(workspaces: outputs.profiles.document.workspaces, defaults: defaults)
-        workspaceObservation = outputs.profiles.$document
-            .map(\.workspaces).removeDuplicates()
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
+        workspaceObservation = outputs.profiles.$document.map(\.workspaces).removeDuplicates()
+            .receive(on: RunLoop.main).sink { [weak self] _ in
                 guard let self else { return }
-                self.tabBadges.synchronize(self.outputs.profiles.document.workspaces)
+                self.tabBadges.synchronize(self.profiles.document.workspaces)
             }
+        ApplicationTerminationCoordinator.shared.register(owner: self) { [weak self] in
+            self?.confirmTermination() ?? true
+        }
     }
 
     static func identifier(for id: UUID) -> NSUserInterfaceItemIdentifier {
@@ -56,72 +66,67 @@ final class OutputWorkspaceWindows: ObservableObject {
         return UUID(uuidString: String(identifier.rawValue.dropFirst(identifierPrefix.count)))
     }
 
-    /// Creating a window for restoration never orders it onscreen. AppKit owns
-    /// the restored geometry, minimization and native tab groups.
+    /// Native restoration supplies selected workspace identities and geometry.
+    /// Legacy tab identities become independent, non-tabbable controls windows.
     func restoreWindow(identifier: NSUserInterfaceItemIdentifier) -> NSWindow? {
-        guard let id = Self.workspaceID(for: identifier) else { return nil }
-        return controller(for: id)?.window
+        guard let id = Self.workspaceID(for: identifier), let controls = controls(for: id) else { return nil }
+        return controls.host?.window ?? makeHost(controls).window
+    }
+
+    func canOpen(_ id: UUID, from requesterID: UUID? = nil) -> Bool {
+        guard profiles.document.workspaces.contains(where: { $0.id == id }) else { return false }
+        if let requesterID, controllers[requesterID]?.window == nil { return false }
+        let source = (requesterID ?? navigationWorkspaceID).flatMap { controllers[$0]?.window }
+        return source?.attachedSheet == nil && controllers[id]?.window?.attachedSheet == nil
+    }
+    func canOpenInNewWindow(_ id: UUID) -> Bool {
+        profiles.document.workspaces.contains { $0.id == id } && controllers[id]?.window?.attachedSheet == nil
     }
 
     @discardableResult
-    func open(_ id: UUID, beside other: UUID? = nil) -> OutputWorkspaceWindowController? {
-        let existing = controllers[id] != nil
-        guard let controller = controller(for: id), let window = controller.window else { return nil }
-        if !existing, let other, let parent = controllers[other]?.window, parent !== window {
-            parent.addTabbedWindow(window, ordered: .above)
-            if let group = parent.tabGroup, !group.isTabBarVisible { parent.toggleTabBar(nil) }
-        }
-        if window.isMiniaturized { window.deminiaturize(nil) }
-        window.tabGroup?.selectedWindow = window
-        controller.showWindow(nil)
-        return controller
+    func open(_ id: UUID, from requesterID: UUID? = nil) -> OutputWorkspaceWindowController? {
+        guard canOpen(id, from: requesterID), let controls = controls(for: id) else { return nil }
+        let host: OutputWorkspaceWindowController
+        if let existing = controls.host { host = existing }
+        else if let sourceID = requesterID ?? navigationWorkspaceID, let source = controllers[sourceID]?.host {
+            guard source.present(controls) else { return nil }
+            host = source
+        } else { host = makeHost(controls) }
+        host.showWindow(nil)
+        recordFocus(host)
+        objectWillChange.send()
+        return host
     }
 
     @discardableResult
-    func newWorkspace(beside other: UUID? = nil) -> UUID? {
-        guard let id = outputs.profiles.addWorkspace() else { return nil }
-        open(id, beside: other ?? activeWorkspaceID ?? outputs.focusedWorkspaceID)
+    func openInNewWindow(_ id: UUID) -> OutputWorkspaceWindowController? {
+        guard canOpenInNewWindow(id), let controls = controls(for: id) else { return nil }
+        let host = controls.host ?? makeHost(controls)
+        host.showWindow(nil); recordFocus(host); objectWillChange.send()
+        return host
+    }
+
+    @discardableResult
+    func newWorkspace(from requesterID: UUID? = nil) -> UUID? {
+        guard canCreateWorkspace else { return nil }
+        if let requesterID, controllers[requesterID]?.window == nil { return nil }
+        if let source = (requesterID ?? navigationWorkspaceID).flatMap({ controllers[$0]?.window }), source.attachedSheet != nil { return nil }
+        guard let id = profiles.addWorkspace() else { return nil }
+        open(id, from: requesterID)
         return id
     }
 
-    /// Called after native restoration completes. Even minimized windows count
-    /// as restored; leave their geometry, selected tabs and ordering to AppKit.
-    func openInitialWorkspace() {
-        guard controllers.isEmpty else { return }
-        reopen()
-    }
-
-    /// A Dock reopen returns to existing controls or the last saved workspace.
+    func openInitialWorkspace() { if hosts.isEmpty { reopen() } }
     func reopen() {
         let saved = defaults?.string(forKey: Self.lastWorkspaceKey).flatMap(UUID.init(uuidString:))
-        let focused = outputs.focusedWorkspaceID
-        let openFocused = focused.flatMap { controllers[$0] == nil ? nil : $0 }
-        let openSaved = saved.flatMap { controllers[$0] == nil ? nil : $0 }
-        let firstOpen = outputs.profiles.document.workspaces.first { controllers[$0.id] != nil }?.id
-        let candidates = [activeWorkspaceID, openFocused, openSaved, firstOpen, saved, focused,
-                          outputs.profiles.document.workspaces.first?.id].compactMap { $0 }
-        guard let id = candidates.first(where: { candidate in
-            outputs.profiles.document.workspaces.contains { $0.id == candidate }
-        }) else { return }
+        let candidates = [navigationWorkspaceID, saved, outputs.focusedWorkspaceID,
+                          profiles.document.workspaces.first?.id].compactMap { $0 }
+        guard let id = candidates.first(where: { candidate in profiles.document.workspaces.contains { $0.id == candidate } }) else { return }
         open(id)
     }
-
-    func canDetach(_ id: UUID?) -> Bool {
-        guard let id else { return false }
-        return (controllers[id]?.window?.tabGroup?.windows.count ?? 0) > 1
-    }
-    func detach(_ id: UUID) {
-        guard let window = controllers[id]?.window, let group = window.tabGroup, group.windows.count > 1 else { return }
-        // Move this exact controls window, even if another tab became selected
-        // after the menu opened. Its hosting view and session remain attached.
-        group.removeWindow(window)
-        window.makeKeyAndOrderFront(nil)
-    }
-    func rename(_ id: UUID) { controllers[id]?.renameWorkspace() }
+    func rename(_ id: UUID) { controllers[id]?.host?.renameWorkspace() }
     func manageWorkspaces() { showWorkspaceSettings() }
 
-    /// Query existing controls' current editor closures; do not save a second
-    /// editor/source index or create closed controls to ask about a file.
     var referencedFileURLs: Set<URL> {
         var urls = outputs.referencedFileURLs
         for controller in controllers.values {
@@ -161,173 +166,303 @@ final class OutputWorkspaceWindows: ObservableObject {
     @discardableResult
     func deleteWorkspace(_ id: UUID) -> String? {
         if let problem = outputs.workspaceDeletionProblem(id) { return problem }
-        guard controllers[id]?.commands.confirmClose() ?? true else { return "Deletion cancelled. The workspace was kept." }
-        // Unsaved-edit confirmation can process events; do not close controls
-        // or remove data if an assignment or playback started during approval.
+        if let controls = controllers[id] {
+            guard open(id) != nil else { return "Finish the open sheet before deleting this workspace." }
+            guard controls.commands.confirmClose() else { return "Deletion cancelled. The workspace was kept." }
+        }
+        // Approval may run a nested event loop; revalidate all live ownership.
         if let problem = outputs.workspaceDeletionProblem(id) { return problem }
-        controllers[id]?.window?.close()
+        if let controls = controllers[id] {
+            if let host = controls.host { host.window?.close() }
+            else { release(controls) }
+        }
         guard outputs.deleteWorkspace(id) else { return outputs.workspaceDeletionProblem(id) ?? "Unable to delete this workspace." }
         if autosavesWindowFrames { NSWindow.removeFrame(usingName: Self.identifier(for: id).rawValue) }
-        if defaults?.string(forKey: Self.lastWorkspaceKey) == id.uuidString {
-            defaults?.removeObject(forKey: Self.lastWorkspaceKey)
-        }
+        if defaults?.string(forKey: Self.lastWorkspaceKey) == id.uuidString { defaults?.removeObject(forKey: Self.lastWorkspaceKey) }
         return nil
     }
 
-    private func controller(for id: UUID) -> OutputWorkspaceWindowController? {
-        if let controller = controllers[id] { return controller }
-        guard outputs.profiles.document.workspaces.contains(where: { $0.id == id }) else { return nil }
-        tabBadges.synchronize(outputs.profiles.document.workspaces)
-        let badge = tabBadges.badge(for: id)
-        let session = outputs.session(workspace: id)
-        let commands = OutputWorkspaceCommands(keyWindow: keyWindow)
+    private func controls(for id: UUID) -> OutputWorkspaceControls? {
+        if let controls = controllers[id] { return controls }
+        guard profiles.document.workspaces.contains(where: { $0.id == id }) else { return nil }
+        let session = outputs.session(workspace: id), commands = OutputWorkspaceCommands(keyWindow: keyWindow)
         commands.workspaceWindows = self
-        let content: NSViewController
-        if let contentFactory {
-            content = contentFactory(session, commands)
-        } else {
-            content = OutputWorkspaceWindowController.hostingController(rootView: OutputWorkspaceView(session: session, commands: commands, workspaces: self)
-                .environmentObject(updates))
-        }
-        let controller = OutputWorkspaceWindowController(session: session, commands: commands, content: content, badge: badge,
-            autosavesFrame: autosavesWindowFrames,
-            didBecomeKey: { [weak self] in self?.defaults?.set(id.uuidString, forKey: Self.lastWorkspaceKey) },
-            didClose: { [weak self] closed in
-                guard self?.controllers[id] === closed else { return }
-                self?.controllers[id] = nil
+        let content = contentFactory?(session, commands) ?? OutputWorkspaceWindowController.hostingController(
+            rootView: OutputWorkspaceView(session: session, commands: commands, workspaces: self).environmentObject(updates))
+        tabBadges.synchronize(profiles.document.workspaces)
+        let controls = OutputWorkspaceControls(session: session, commands: commands, content: content, badge: tabBadges.badge(for: id))
+        controllers[id] = controls
+        return controls
+    }
+    private func makeHost(_ controls: OutputWorkspaceControls) -> OutputWorkspaceWindowController {
+        let host = OutputWorkspaceWindowController(controls: controls, autosavesFrame: autosavesWindowFrames,
+            didBecomeKey: { [weak self] host in self?.recordFocus(host) },
+            didClose: { [weak self] host, closesControls in
+                guard let self else { return }
+                self.hosts.removeAll { $0 === host }
+                if closesControls { self.release(host.controls) }
             })
-        controllers[id] = controller
-        return controller
+        hosts.append(host)
+        return host
+    }
+    private func recordFocus(_ host: OutputWorkspaceWindowController) {
+        guard hosts.contains(where: { $0 === host }), controllers[host.session.outputSourceID] === host.controls else { return }
+        outputs.focusWorkspace(host.session)
+        if host.commands.isActive { outputs.workspaceWindowReady(host.session) }
+        defaults?.set(host.session.outputSourceID.uuidString, forKey: Self.lastWorkspaceKey)
+    }
+    private func release(_ controls: OutputWorkspaceControls) {
+        let id = controls.session.outputSourceID
+        guard controllers[id] === controls else { return }
+        controls.commands.controlsWillClose()
+        (controls.content as? OutputWorkspaceContentController)?.retire()
+        controls.toolbar = nil
+        controls.fieldUndoManager.removeAllActions()
+        controllers[id] = nil
+    }
+    private func confirmTermination() -> Bool {
+        let selected = hosts.map { ($0, $0.controls, $0.window?.isMiniaturized == true, $0.window?.isVisible == true) }
+        let previousKey = keyWindow()
+        let previousFocus = outputs.focusedWorkspaceID
+        let saved = defaults?.string(forKey: Self.lastWorkspaceKey)
+        let ids = controllers.keys.sorted { $0 == navigationWorkspaceID && $1 != navigationWorkspaceID }
+        for id in ids {
+            guard let controls = controllers[id] else { continue }
+            guard open(id) != nil, controls.commands.confirmClose() else { return false }
+        }
+        // Revealing a parked draft is necessary for native confirmation. Once
+        // approved, restore the operator's window selections before AppKit
+        // captures launch restoration, including a previously windowless app.
+        for host in Array(hosts) where !selected.contains(where: { $0.0 === host }) {
+            host.closePreservingControls()
+        }
+        for (host, controls, minimized, visible) in selected {
+            guard hosts.contains(where: { $0 === host }), controllers[controls.session.outputSourceID] === controls,
+                  controls.host == nil || controls.host === host else { continue }
+            host.present(controls)
+            if minimized { host.window?.miniaturize(nil) }
+            else if !visible { host.window?.orderOut(nil) }
+        }
+        previousKey?.makeKeyAndOrderFront(nil)
+        if let previousFocus, let session = outputs.preparedSession(workspace: previousFocus) { outputs.focusWorkspace(session) }
+        if let saved { defaults?.set(saved, forKey: Self.lastWorkspaceKey) }
+        else { defaults?.removeObject(forKey: Self.lastWorkspaceKey) }
+        return true
+    }
+}
+
+/// The complete operator state survives while its content is parked offscreen.
+@MainActor
+final class OutputWorkspaceControls {
+    let session: PresentationSession
+    let commands: OutputWorkspaceCommands
+    let content: NSViewController
+    let badge: OutputWorkspaceTabBadge
+    let renamer: OutputWorkspaceRenamer
+    let fieldUndoManager = UndoManager()
+    // The hosting bridge's toolbar belongs to these controls as well. Keeping
+    // it with its host prevents reuse of another workspace's native item state.
+    var toolbar: NSToolbar?
+    weak var host: OutputWorkspaceWindowController?
+    var window: NSWindow? { host?.window }
+    private weak var responder: NSResponder?
+    private var fieldSelection: NSRange?
+
+    init(session: PresentationSession, commands: OutputWorkspaceCommands, content: NSViewController, badge: OutputWorkspaceTabBadge) {
+        self.session = session; self.commands = commands; self.content = content; self.badge = badge
+        renamer = OutputWorkspaceRenamer(profiles: session.outputCoordinator.profiles)
+    }
+    func rememberFocus(in window: NSWindow) {
+        if let editor = window.firstResponder as? NSTextView, editor.isFieldEditor,
+           let field = editingField(in: content.view, editor: editor) {
+            responder = field
+            fieldSelection = editor.selectedRange()
+        } else if let view = window.firstResponder as? NSView, view.isDescendant(of: content.view) {
+            responder = view; fieldSelection = nil
+        }
+    }
+    private func editingField(in view: NSView, editor: NSTextView) -> NSTextField? {
+        if let field = view as? NSTextField, field.currentEditor() === editor { return field }
+        for child in view.subviews {
+            if let field = editingField(in: child, editor: editor) { return field }
+        }
+        return nil
+    }
+    func restoreFocus(in window: NSWindow) {
+        guard let responder else { window.makeFirstResponder(nil); return }
+        if let fieldSelection, let field = responder as? NSTextField {
+            // Begin native field editing synchronously before restoring its
+            // selection; merely assigning firstResponder can defer select-all.
+            field.selectText(nil)
+            field.currentEditor()?.selectedRange = fieldSelection
+        } else { window.makeFirstResponder(responder) }
     }
 }
 
 @MainActor
 final class OutputWorkspaceWindow: NSWindow {
     weak var workspaceSession: PresentationSession?
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        WorkspacePresentationCommand.handleKeyEquivalent(event, in: self) || super.performKeyEquivalent(with: event)
+    }
+
+    /// Search and text completion consume cancellation earlier in the responder
+    /// chain. At the workspace boundary Escape hides slides, including when
+    /// native controls are focused or the controls window is fullscreen.
+    override func cancelOperation(_ sender: Any?) {
+        guard let session = workspaceSession, session.isPresenting, session.areSlidesVisible else { return }
+        session.hideSlides()
+    }
+
+    /// Menus also route while native search owns the responder chain, outside
+    /// the split's descendants. Resolve the mounted workspace's toolbar owner.
+    @objc func toggleSidebar(_ sender: Any?) {
+        (toolbar?.delegate as? PresentationToolbarController)?.toggleSidebar(sender)
+    }
 }
 
 @MainActor
 final class OutputWorkspaceWindowController: NSWindowController, NSWindowDelegate, NSWindowRestoration {
     static let minimumContentSize = NSSize(width: 1060, height: 600)
-    let session: PresentationSession
-    let commands: OutputWorkspaceCommands
-    let badge: OutputWorkspaceTabBadge
-    let renamer: OutputWorkspaceRenamer
-    private let didBecomeKey: () -> Void
-    private let didClose: (OutputWorkspaceWindowController) -> Void
-    private let registrationID = UUID()
+    private(set) var controls: OutputWorkspaceControls
+    var session: PresentationSession { controls.session }
+    var commands: OutputWorkspaceCommands { controls.commands }
+    var badge: OutputWorkspaceTabBadge { controls.badge }
+    var renamer: OutputWorkspaceRenamer { controls.renamer }
+    private let autosavesFrame: Bool
+    private let didBecomeKey: (OutputWorkspaceWindowController) -> Void
+    private let didClose: (OutputWorkspaceWindowController, Bool) -> Void
     private var titleObservation: AnyCancellable?
-    private var initializedFocus = false
+    private var pendingFocusRestoration: UUID?
     private var closed = false
 
     static func hostingController<Content: View>(rootView: Content) -> NSViewController {
-        let host = NSHostingController(rootView: rootView.frame(
-            minWidth: minimumContentSize.width, minHeight: minimumContentSize.height))
-        // The content supplies its minimum size. AppKit owns the window and title;
-        // the public macOS 14 hosting bridge installs its existing toolbar only.
+        let host = NSHostingController(rootView: AnyView(rootView.frame(minWidth: minimumContentSize.width, minHeight: minimumContentSize.height)))
         host.sceneBridgingOptions = [.toolbars]
         host.sizingOptions = [.minSize]
-        return host
+        return OutputWorkspaceContentController(hostedContent: host)
     }
 
-    init(session: PresentationSession, commands: OutputWorkspaceCommands, content: NSViewController, badge: OutputWorkspaceTabBadge,
-         autosavesFrame: Bool,
-         didBecomeKey: @escaping () -> Void, didClose: @escaping (OutputWorkspaceWindowController) -> Void) {
-        self.session = session; self.commands = commands
-        self.badge = badge
-        renamer = OutputWorkspaceRenamer(profiles: session.outputCoordinator.profiles)
+    init(controls: OutputWorkspaceControls, autosavesFrame: Bool,
+         didBecomeKey: @escaping (OutputWorkspaceWindowController) -> Void,
+         didClose: @escaping (OutputWorkspaceWindowController, Bool) -> Void) {
+        self.controls = controls; self.autosavesFrame = autosavesFrame
         self.didBecomeKey = didBecomeKey; self.didClose = didClose
         let window = OutputWorkspaceWindow(contentRect: .init(x: 0, y: 0, width: 1280, height: 800),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
-            backing: .buffered, defer: false)
-        window.identifier = OutputWorkspaceWindows.identifier(for: session.outputSourceID)
-        window.isReleasedWhenClosed = false
-        window.isRestorable = true
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.isRestorable = true
         window.restorationClass = OutputWorkspaceWindowController.self
-        window.tabbingIdentifier = OutputWorkspaceWindows.tabbingIdentifier
-        window.tabbingMode = .preferred
+        window.tabbingMode = .disallowed
         window.toolbarStyle = .unified
-        window.contentViewController = content
         window.contentMinSize = Self.minimumContentSize
-        window.setContentSize(.init(width: 1280, height: 800))
-        window.workspaceSession = session
         window.center()
-        // Native restoration may subsequently supply the full window/tab state.
-        // A stable UUID also remembers geometry after controls were closed.
-        if autosavesFrame { window.setFrameAutosaveName(OutputWorkspaceWindows.identifier(for: session.outputSourceID).rawValue) }
         super.init(window: window)
         shouldCascadeWindows = false
         window.delegate = self
-        commands.window = window
-        ApplicationTerminationCoordinator.shared.register(id: registrationID, window: window) { [weak commands] in
-            commands?.confirmClose() ?? true
-        }
-        updateTitle()
-        let outputs = session.outputCoordinator
-        titleObservation = Publishers.Merge(outputs.$revision.map { _ in () }, outputs.profiles.$document.map { _ in () })
-            .receive(on: RunLoop.main)
-            .sink { [weak self] in self?.updateTitle() }
+        attach(controls, preservingFrame: false)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    override func showWindow(_ sender: Any?) {
-        guard !closed else { return }
-        super.showWindow(sender)
-        window?.makeKeyAndOrderFront(sender)
-        guard !initializedFocus else { return }
-        initializedFocus = true
-        DispatchQueue.main.async { [weak self] in
-            guard let self, !self.closed, self.commands.isActive else { return }
-            self.window?.makeFirstResponder(nil)
+    /// Same native window, same retained views. A modal sheet must finish before
+    /// its controls can leave the responder chain.
+    @discardableResult
+    func present(_ next: OutputWorkspaceControls) -> Bool {
+        guard !closed, let window, window.attachedSheet == nil else { return false }
+        if next === controls { return true }
+        commands.librarySearchPresenter.dismiss()
+        // A newly attached field may have AppKit's automatic select-all before
+        // its saved focus has been restored. That is not a new operator choice.
+        if pendingFocusRestoration == nil { controls.rememberFocus(in: window) }
+        guard window.makeFirstResponder(nil) else { return false }
+        if autosavesFrame { window.saveFrame(usingName: OutputWorkspaceWindows.identifier(for: session.outputSourceID).rawValue) }
+        controls.host = nil; commands.window = nil
+        titleObservation = nil
+        controls.toolbar = window.toolbar
+        window.contentViewController = nil
+        attach(next, preservingFrame: true)
+        return true
+    }
+    private func attach(_ next: OutputWorkspaceControls, preservingFrame: Bool) {
+        guard let window = window as? OutputWorkspaceWindow else { return }
+        let frame = window.frame
+        window.setFrameAutosaveName("")
+        controls = next; next.host = self
+        next.commands.window = window; window.workspaceSession = next.session
+        window.identifier = OutputWorkspaceWindows.identifier(for: session.outputSourceID)
+        window.tabbingIdentifier = window.identifier!.rawValue
+        window.toolbar = next.toolbar
+        window.contentViewController = next.content
+        if autosavesFrame { window.setFrameAutosaveName(window.identifier!.rawValue) }
+        if preservingFrame { window.setFrame(frame, display: false) }
+        updateTitle()
+        let outputs = session.outputCoordinator
+        titleObservation = Publishers.Merge(outputs.$revision.map { _ in () }, outputs.profiles.$document.map { _ in () })
+            .receive(on: RunLoop.main).sink { [weak self] in self?.updateTitle() }
+        let focusRequest = UUID()
+        pendingFocusRestoration = focusRequest
+        DispatchQueue.main.async { [weak self, weak next, weak window] in
+            guard let self, let next, let window, !self.closed, self.controls === next, next.host === self,
+                  self.pendingFocusRestoration == focusRequest else { return }
+            next.restoreFocus(in: window)
+            self.pendingFocusRestoration = nil
         }
     }
-
+    override func showWindow(_ sender: Any?) {
+        guard !closed else { return }
+        if window?.isMiniaturized == true { window?.deminiaturize(nil) }
+        super.showWindow(sender)
+        window?.makeKeyAndOrderFront(sender)
+    }
     func windowDidBecomeKey(_ notification: Notification) {
         guard !closed, commands.isActive else { return }
-        // Native key events are already outside SwiftUI evaluation. Record the
-        // current controls owner before a toolbar action can hand key focus to
-        // Settings. A stale callback cannot overwrite a newer workspace's focus.
-        session.outputCoordinator.workspaceWindowReady(session)
-        didBecomeKey()
+        didBecomeKey(self)
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { commands.confirmClose() }
+    func windowWillReturnUndoManager(_ window: NSWindow) -> UndoManager? {
+        if let manager = commands.librarySearchPresenter.undoManager { return manager }
+        // AppKit's Edit menu routes Undo through the window. Supply the active
+        // document's stack; ordinary field editing is workspace-owned as well.
+        if let editor = window.firstResponder as? LyricsTextView { return editor.undoManager }
+        return controls.fieldUndoManager
+    }
     func renameWorkspace() {
         guard !closed, let window else { return }
         renamer.present(workspaceID: session.outputSourceID, on: window)
     }
+    func closePreservingControls() {
+        guard !closed else { return }
+        commands.librarySearchPresenter.dismiss()
+        if let window {
+            if pendingFocusRestoration == nil { controls.rememberFocus(in: window) }
+            window.makeFirstResponder(nil)
+            controls.toolbar = window.toolbar
+        }
+        commands.window = nil; controls.host = nil
+        window?.contentViewController = nil
+        window?.close()
+    }
     func windowWillClose(_ notification: Notification) {
         guard !closed else { return }
+        commands.librarySearchPresenter.dismiss()
+        let closesControls = controls.host === self
         closed = true
-        // Release the autosave name before tearing down content. A retained,
-        // closed window must not reserve the name or overwrite a reopened one.
         window?.setFrameAutosaveName("")
         renamer.cancel()
-        commands.controlsWillClose()
-        ApplicationTerminationCoordinator.shared.unregister(id: registrationID)
         titleObservation = nil
-        commands.window = nil
-        if let window = window as? OutputWorkspaceWindow {
-            window.workspaceSession = nil
-        }
-        // Removing controls releases Preview consumers and editor resources.
-        // The app-retained session, Current and live program are unaffected.
+        commands.window = nil; controls.host = nil
+        (window as? OutputWorkspaceWindow)?.workspaceSession = nil
+        window?.toolbar = nil
         window?.contentViewController = nil
-        didClose(self)
+        didClose(self, closesControls)
     }
     private func updateTitle() {
-        let outputs = session.outputCoordinator, id = session.outputSourceID
-        let name = outputs.profiles.workspaceName(id)
-        window?.title = name + " — " + outputs.tabStatus(workspace: id)
-        window?.tab.title = window?.title ?? name
-        window?.tab.attributedTitle = badge.title(window?.title ?? name)
-        window?.tab.toolTip = window?.title ?? name
+        window?.title = session.outputCoordinator.profiles.workspaceName(session.outputSourceID)
+            + " — " + session.outputCoordinator.tabStatus(workspace: session.outputSourceID)
     }
-
     static func restoreWindow(withIdentifier identifier: NSUserInterfaceItemIdentifier, state: NSCoder,
                               completionHandler: @escaping (NSWindow?, Error?) -> Void) {
-        guard !AppLaunchContext.isRunningTests, let app = NSApp.delegate as? AppDelegate else {
-            completionHandler(nil, nil); return
-        }
+        guard !AppLaunchContext.isRunningTests, let app = NSApp.delegate as? AppDelegate else { completionHandler(nil, nil); return }
         completionHandler(app.workspaceWindows.restoreWindow(identifier: identifier), nil)
     }
 }

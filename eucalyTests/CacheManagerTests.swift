@@ -4,6 +4,33 @@ import AppKit
 
 @MainActor
 final class CacheManagerTests: XCTestCase {
+    func testExpirationReleasesSizeAndCountBudgetsBeforeFreshEviction() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("eucaly-cache-budget-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        func sparse(_ name: String, megabytes: UInt64, daysOld: Double) throws -> URL {
+            let url = root.appendingPathComponent(name)
+            XCTAssertTrue(FileManager.default.createFile(atPath: url.path, contents: nil))
+            let file = try FileHandle(forWritingTo: url)
+            try file.truncate(atOffset: megabytes * 1024 * 1024)
+            try file.close()
+            try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-daysOld * 86400)], ofItemAtPath: url.path)
+            return url
+        }
+        let expired = try sparse("expired", megabytes: 80, daysOld: 40)
+        let fresh = try sparse("fresh", megabytes: 70, daysOld: 1)
+        let keys = CacheManager.performCleanupSync(diskURL: root, days: 30, maxMB: 100, maxFiles: 1)
+        XCTAssertEqual(keys, ["fresh"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: expired.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fresh.path))
+        let older = try sparse("older", megabytes: 25, daysOld: 2)
+        let newest = try sparse("newest", megabytes: 30, daysOld: 0)
+        let survivors = CacheManager.performCleanupSync(diskURL: root, days: 30, maxMB: 100, maxFiles: 2)
+        XCTAssertEqual(survivors, ["fresh", "newest"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: older.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: newest.path))
+    }
+
     func testMemoryThumbnailIsInvalidatedWhenSourceFileChanges() async throws {
         let directoryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("eucaly-cache-tests-\(UUID().uuidString)", isDirectory: true)

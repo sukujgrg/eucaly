@@ -4,7 +4,6 @@ enum InterfaceMotion: Equatable, Sendable {
     case disclosure
     case selectionScroll
     case selectionHighlight
-    case search
     case hover
     case press
 
@@ -20,7 +19,6 @@ enum InterfaceMotion: Equatable, Sendable {
         case .disclosure: return .smooth(duration: 0.24)
         case .selectionScroll: return .smooth(duration: 0.18)
         case .selectionHighlight: return .easeInOut(duration: 0.12)
-        case .search: return .smooth(duration: 0.2)
         case .hover: return .easeOut(duration: 0.1)
         case .press: return .easeOut(duration: 0.08)
         }

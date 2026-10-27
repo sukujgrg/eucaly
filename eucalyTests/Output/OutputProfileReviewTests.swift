@@ -171,6 +171,8 @@ final class OutputProfileReviewTests: XCTestCase {
     }
 
     func testEveryVideoRendererUsesOneProgramPlayerAndHideLeavesOnlyConfidenceClock() async throws {
+        let url = try await NetworkRegressionTests.makePortraitVideoFixture()
+        defer { try? FileManager.default.removeItem(at: url) }
         let (outputs, session, _) = setup(.audience)
         outputs.profiles.edit { doc in
             for profile in doc.profiles.dropFirst() {
@@ -178,7 +180,8 @@ final class OutputProfileReviewTests: XCTestCase {
             }
         }
         defer { outputs.stop() }
-        session.setSlides([.init(index: 1, lines: [], label: "Video", videoURL: URL(fileURLWithPath: "/tmp/output-review-video.mov"), pdfURL: nil, pdfPageIndex: nil, imageURL: nil)])
+        session.videoPaused = true
+        session.setSlides([.init(index: 1, lines: [], label: "Video", videoURL: url, pdfURL: nil, pdfPageIndex: nil, imageURL: nil)])
         session.showSlides()
         let program = try XCTUnwrap(outputs.media.program)
         var hosts: [(NSWindow, NSHostingView<OutputCompositionView>)] = []
@@ -196,9 +199,29 @@ final class OutputProfileReviewTests: XCTestCase {
             XCTAssertEqual(outputs.profiles.document.destinations[index].enabled, true)
         }
         let confidence = try XCTUnwrap(hosts.enumerated().first { outputs.profiles.profile(outputs.profiles.document.destinations[$0.offset].profileID)?.kind == .confidence }?.element.1)
+        func waitForState(_ expected: VideoPlaybackState) async throws {
+            let deadline = ProcessInfo.processInfo.systemUptime + 8
+            while session.playbackProgress.videoPlaybackState != expected,
+                  ProcessInfo.processInfo.systemUptime < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertEqual(session.playbackProgress.videoPlaybackState, expected)
+            guard session.playbackProgress.videoPlaybackState == expected else { throw NetworkHelperWire.Failure.unavailable }
+        }
+        try await waitForState(.paused)
+        session.videoPaused = false
+        try await waitForState(.playing)
+        await settle()
+        XCTAssertEqual(session.playbackProgress.videoPlaybackState, .playing)
         let playing = try bitmap(confidence).representation(using: .png, properties: [:])
-        session.videoPaused = true; session.videoMuted = true; session.videoFill = true; await settle()
+        let progressBeforePause = session.videoCurrentTime
+        session.videoPaused = true
+        XCTAssertEqual(session.playbackProgress.videoPlaybackState, .paused,
+                       "Actual pause status must publish during the command, without awaiting the periodic progress observer")
+        XCTAssertEqual(session.videoCurrentTime, progressBeforePause)
+        await settle()
         XCTAssertNotEqual(playing, try bitmap(confidence).representation(using: .png, properties: [:]), "Confidence must observe Paused immediately without a progress tick")
+        session.videoMuted = true; session.videoFill = true; await settle()
         XCTAssertTrue(program.isMuted)
         for (_, view) in hosts {
             XCTAssertEqual(descendants(view).compactMap { $0 as? AVPlayerView }.first?.videoGravity, .resizeAspectFill)
@@ -225,7 +248,7 @@ final class OutputProfileReviewTests: XCTestCase {
         let (window, view) = host(outputs, destination: destination); defer { window.close() }
         await settle(); try assertCenteredClock(view)
         outputs.stop(); outputs.toggleSlides(); await settle()
-        XCTAssertFalse(outputs.isRunning, "Cmd+2 cannot start outputs with empty Current")
+        XCTAssertFalse(outputs.isRunning, "Show/Hide Current cannot start outputs with empty Current")
         outputs.openConfidence(destination); await settle(); try assertCenteredClock(view)
         XCTAssertTrue(outputs.isRunning, "Open Confidence resumes the clock without a slide")
         XCTAssertFalse(session.isPresenting)

@@ -1,10 +1,101 @@
 import AppKit
+import Combine
 import SwiftUI
 import XCTest
 @testable import eucaly
 
 @MainActor
 final class OutputDefaultTests: XCTestCase {
+    func testRetiredQuickControlsRejectNestedPanelCreationAndLateSheetResult() async throws {
+        for retireDuringCreation in [true, false] {
+            let fixture = try QuickBackgroundRetirementFixture()
+            defer { fixture.close() }
+            let panel = QuickBackgroundRetirementPanel()
+            panel.selectedURL = fixture.visualURL
+            let unexpectedBookmark = expectation(description: "Retired controls must not admit background preparation")
+            unexpectedBookmark.isInverted = true
+            var completion: ((NSApplication.ModalResponse) -> Void)?
+            var controls: OutputQuickControlsController?
+            defer { controls = nil }
+            var managementRequests = 0
+            controls = OutputQuickControlsController(outputs: fixture.hub.outputs,
+                manageOutputs: { managementRequests += 1 },
+                makeBackgroundPanel: {
+                    if retireDuringCreation { controls?.retire() }
+                    return panel
+                }, createBackgroundBookmark: { _ in
+                    unexpectedBookmark.fulfill()
+                    return "unadmitted background"
+                }, beginBackgroundSheet: { _, _, completed in completion = completed })
+            let retained = try XCTUnwrap(controls)
+            fixture.host(retained.backgroundButton)
+            let choose = try item("Choose Visual…", in: retained.backgroundButton.menu)
+            let change = try item("Visual Enabled", in: retained.backgroundButton.menu)
+            let manage = try item("Manage Outputs…", in: retained.backgroundButton.menu)
+            let original = fixture.hub.outputs.profiles.document
+            let current = fixture.hub.outputs.snapshot(for: fixture.hub.nativeRow).current
+            invoke(choose)
+            if retireDuringCreation {
+                XCTAssertNil(completion, "A nested native event must not present a retired controls' panel")
+            } else {
+                let complete = try XCTUnwrap(completion)
+                retained.retire()
+                complete(.OK)
+            }
+            // Retained native menu actions must be inert even if invoked
+            // directly instead of through their disabled popup button.
+            invoke(change)
+            invoke(manage)
+            retained.render()
+            XCTAssertFalse(retained.backgroundButton.isEnabled)
+            await fulfillment(of: [unexpectedBookmark], timeout: 0.15)
+            XCTAssertEqual(managementRequests, 0)
+            XCTAssertEqual(fixture.hub.outputs.profiles.document, original)
+            XCTAssertEqual(fixture.hub.outputs.snapshot(for: fixture.hub.nativeRow).current, current)
+            XCTAssertTrue(fixture.hub.session.isPresenting)
+        }
+    }
+
+    func testAcceptedQuickBackgroundChoiceFinishesAfterControlsRetire() async throws {
+        let fixture = try QuickBackgroundRetirementFixture()
+        defer { fixture.close() }
+        let panel = QuickBackgroundRetirementPanel()
+        panel.selectedURL = fixture.visualURL
+        let started = expectation(description: "Accepted background bookmark preparation starts")
+        let committed = expectation(description: "Accepted background choice commits after controls retire")
+        let gate = QuickBackgroundBookmarkGate(started: started)
+        defer { gate.open() }
+        var completion: ((NSApplication.ModalResponse) -> Void)?
+        let controls = OutputQuickControlsController(outputs: fixture.hub.outputs, manageOutputs: {},
+            makeBackgroundPanel: { panel }, createBackgroundBookmark: { gate.createBookmark($0) },
+            beginBackgroundSheet: { _, _, completed in completion = completed })
+        fixture.host(controls.backgroundButton)
+        let store = fixture.hub.outputs.profiles
+        let original = store.document
+        let current = fixture.hub.outputs.snapshot(for: fixture.hub.nativeRow).current
+        var observedCommit = false
+        let observation = store.objectWillChange.sink {
+            Task { @MainActor in
+                if !observedCommit, store.defaultDestination.flatMap({ store.profile($0.profileID) })?.background.bookmark != nil {
+                    observedCommit = true
+                    committed.fulfill()
+                }
+            }
+        }
+        defer { observation.cancel() }
+        invoke(try item("Choose Visual…", in: controls.backgroundButton.menu))
+        try XCTUnwrap(completion)(.OK)
+        await fulfillment(of: [started], timeout: 3)
+        controls.retire()
+        XCTAssertEqual(store.document, original, "The controlled bookmark worker is still suspended")
+        gate.open()
+        await fulfillment(of: [committed], timeout: 3)
+        XCTAssertNotNil(store.defaultDestination.flatMap { store.profile($0.profileID) }?.background.bookmark)
+        XCTAssertEqual(fixture.hub.outputs.snapshot(for: fixture.hub.nativeRow).current, current)
+        XCTAssertTrue(fixture.hub.session.isPresenting)
+        XCTAssertFalse(controls.backgroundButton.isEnabled)
+    }
+
     func testDefaultMigrationPersistenceAndRemoval() throws {
         let suite = "DefaultOutputs.\(UUID())", defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -99,9 +190,9 @@ final class OutputDefaultTests: XCTestCase {
         let oldColumns = try item("Columns", in: controls.appearanceButton.menu)
         let oldVisual = try item("Visual Enabled", in: controls.backgroundButton.menu)
         let oldMonitor = try item("None", in: item("Monitor: None", in: controls.outputButton.menu).submenu)
-        let defaultMenu = try item("Default: " + first.name, in: controls.outputButton.menu)
+        let defaultMenu = try item("Edit Output Appearance: " + first.name, in: controls.outputButton.menu)
         XCTAssertNotNil(defaultMenu.submenu)
-        XCTAssertEqual(try item(first.name + " · " + store.workspaceName(first.workspaceID), in: defaultMenu.submenu).state, .on)
+        XCTAssertEqual(try item(outputs.managementDestinationLabel(first) + " · " + store.workspaceName(first.workspaceID), in: defaultMenu.submenu).state, .on)
         XCTAssertNil(try? item("Default Output", in: controls.outputButton.menu))
         XCTAssertNil(try? item("Identify Monitor", in: controls.outputButton.menu), "Monitor identification belongs in Manage Outputs")
         let selection = controls.outputButton.menu, appearance = controls.appearanceButton.menu, background = controls.backgroundButton.menu
@@ -131,15 +222,15 @@ final class OutputDefaultTests: XCTestCase {
         XCTAssertFalse(controls.appearanceButton.isEnabled)
         XCTAssertFalse(controls.backgroundButton.isEnabled)
         XCTAssertTrue(controls.outputButton.isEnabled)
-        XCTAssertNotNil(try? item("Default output is disabled.", in: controls.outputButton.menu))
+        XCTAssertNotNil(try? item("Appearance editing target is disabled.", in: controls.outputButton.menu))
         XCTAssertFalse(controls.outputButton.menu?.items.contains { $0.title.hasPrefix("Monitor:") } ?? false)
-        XCTAssertTrue(try item("Default: " + first.name, in: controls.outputButton.menu).isEnabled)
+        XCTAssertTrue(try item("Edit Output Appearance: " + first.name, in: controls.outputButton.menu).isEnabled)
         for button in [controls.appearanceButton, controls.backgroundButton] {
             let tooltip = try XCTUnwrap(button.toolTip)
             XCTAssertTrue(tooltip.contains(first.name))
-            XCTAssertTrue(tooltip.contains("Default output is disabled."))
+            XCTAssertTrue(tooltip.contains("Appearance editing target is disabled."))
             XCTAssertTrue(tooltip.contains("Enable it in Manage Outputs"))
-            XCTAssertTrue(try XCTUnwrap(button.accessibilityHelp()).contains("choose another default"))
+            XCTAssertTrue(try XCTUnwrap(button.accessibilityHelp()).contains("choose another target"))
         }
         XCTAssertNotNil(try? item("Manage Outputs…", in: controls.outputButton.menu))
         XCTAssertEqual(store.defaultDestination?.id, first.id)
@@ -152,9 +243,9 @@ final class OutputDefaultTests: XCTestCase {
         invoke(removedAction)
         XCTAssertNil(store.defaultDestination)
         XCTAssertFalse(controls.appearanceButton.isEnabled)
-        XCTAssertTrue(try XCTUnwrap(controls.appearanceButton.toolTip).contains("Choose a default output from the Output menu"))
-        XCTAssertNotNil(try item("Default: None", in: controls.outputButton.menu).submenu)
-        XCTAssertNotNil(try? item("Choose a default output to use quick controls.", in: controls.outputButton.menu))
+        XCTAssertTrue(try XCTUnwrap(controls.appearanceButton.toolTip).contains("Choose an appearance editing target from the Output menu"))
+        XCTAssertNotNil(try item("Edit Output Appearance: None", in: controls.outputButton.menu).submenu)
+        XCTAssertNotNil(try? item("Choose an appearance editing target to use quick controls.", in: controls.outputButton.menu))
         XCTAssertNotNil(try? item("Manage Outputs…", in: controls.outputButton.menu))
     }
 
@@ -234,7 +325,7 @@ final class OutputDefaultTests: XCTestCase {
         XCTAssertNotEqual(firstBefore, firstAfter, "The edited destination must render its new font")
         XCTAssertEqual(try pixels(secondView), secondBefore, "A shared profile must not leak quick edits into another output")
         let firstCustomID = try XCTUnwrap(store.defaultDestination?.profileID)
-        invoke(try item(second.name + " · " + store.workspaceName(second.workspaceID), in: item("Default: " + first.name, in: controls.outputButton.menu).submenu))
+        invoke(try item(outputs.managementDestinationLabel(second) + " · " + store.workspaceName(second.workspaceID), in: item("Edit Output Appearance: " + first.name, in: controls.outputButton.menu).submenu))
         controls.render()
         invoke(try item("120 pt", in: controls.appearanceButton.menu)); controls.render()
         for _ in 0..<20 { await Task.yield() }
@@ -347,33 +438,105 @@ final class OutputDefaultTests: XCTestCase {
     }
 
     func testNativeToolbarAtMinimumWidthRetainsSearchEditorWhenUpdateAppears() async throws {
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            try await verifyNativeToolbar(appearance: appearance)
+        }
+    }
+
+    private func verifyNativeToolbar(appearance: NSAppearance.Name) async throws {
         let suite = "ThumbnailToolbar.\(UUID())", thumbnailDefaults = UserDefaults(suiteName: suite)!
         defer { thumbnailDefaults.removePersistentDomain(forName: suite) }
         thumbnailDefaults.set(1.2345, forKey: "thumbnailScale")
         thumbnailDefaults.set(1.4, forKey: "thumbnailFontScale")
-        let store = OutputProfileStore()
-        let displays = ProjectionDisplayManager(displays: { [] })
+        let monitor = ProjectionMonitor(id: 1, identity: UUID().uuidString, name: "House",
+            frame: .init(x: 0, y: 0, width: 1920, height: 1080))
+        let store = OutputProfileStore(monitor: monitor.target)
+        let displays = ProjectionDisplayManager(displays: { [monitor] })
         let outputs = OutputCoordinator(profiles: store, displays: displays, driverFactory: { FakeOutputDriver() })
         let driver = ToolbarUpdateDriver()
         let updates = AppUpdateViewModel(driver: driver)
+        let session = PresentationSession(projectionDisplays: displays, outputCoordinator: outputs)
         let search = LibrarySearchField()
         search.placeholderString = "Search"
         search.widthAnchor.constraint(equalToConstant: 220).isActive = true
-        let window = NSWindow(contentRect: .init(x: -10000, y: -10000, width: 1060, height: 600),
-            styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        // Toolbar layout and editing do not depend on show/close animations.
+        weak var workspaceReference: OutputWorkspaceWindows?
+        let workspaces = OutputWorkspaceWindows(outputs: outputs, updates: updates, autosavesWindowFrames: false,
+            contentFactory: { owner, _ in
+                let menu = OutputWorkspaceMenuController(workspaces: workspaceReference!, workspaceID: owner.outputSourceID)
+                let field = owner.outputSourceID == session.outputSourceID ? search : NSSearchField()
+                let fixture = OutputToolbarFixture(session: owner, updates: updates,
+                    workspaceMenu: menu, search: field, thumbnailDefaults: thumbnailDefaults)
+                return OutputWorkspaceWindowController.hostingController(rootView: fixture.environment(\.accessibilityEnabled, true))
+            })
+        workspaceReference = workspaces
+        let controller = try XCTUnwrap(workspaces.open(session.outputSourceID))
+        let window = try XCTUnwrap(controller.window)
+        window.appearance = NSAppearance(named: appearance)
+        // Use the production toolbar bridge, native title and window geometry.
+        window.setFrameOrigin(.init(x: -10000, y: -10000))
+        window.setContentSize(.init(width: 1060, height: 600))
         window.animationBehavior = .none
-        window.isReleasedWhenClosed = false; window.toolbarStyle = .unified
-        window.contentViewController = NSHostingController(rootView: OutputToolbarFixture(outputs: outputs, updates: updates, search: search, thumbnailDefaults: thumbnailDefaults))
         window.orderBack(nil)
-        defer { window.close(); outputs.stop() }
+        defer { window.close(); outputs.stop(); withExtendedLifetime((controller, workspaces)) {} }
         let chrome = try XCTUnwrap(window.contentView?.superview)
         func button(_ labelPrefix: String) -> NSPopUpButton? {
             descendants(NSPopUpButton.self, in: chrome).first { $0.accessibilityLabel()?.hasPrefix(labelPrefix) == true }
         }
         try await waitForUIState("native toolbar controls to mount") {
-            ["Output, default:", "Network workspace routing", "Appearance for default output:", "Background for default output:", "Thumbnails"].allSatisfy { button($0) != nil }
+            ["Workspaces", "Output appearance editing target:", "Network workspace routing", "Appearance for output:", "Background for output:", "Thumbnails"].allSatisfy { button($0) != nil }
         }
+        // Locate the reminder independently of the native view wrapper.
+        func updateItem() -> NSToolbarItem? { window.toolbar?.items.first { $0.itemIdentifier.rawValue == "app.update" } }
+        func hasUpdateReminder() -> Bool { updateItem() != nil }
+        func accessibilityElements() -> [any NSAccessibilityProtocol] {
+            var visited: Set<ObjectIdentifier> = []
+            func collect(_ object: Any) -> [any NSAccessibilityProtocol] {
+                guard let element = object as? any NSAccessibilityProtocol,
+                      visited.insert(ObjectIdentifier(element)).inserted else { return [] }
+                return [element] + (element.accessibilityChildren() ?? []).flatMap(collect)
+            }
+            return collect(window)
+        }
+        func updateAction() -> (any NSAccessibilityProtocol)? {
+            accessibilityElements().first {
+                $0.accessibilityRole() == .button
+                    && $0.accessibilityLabel()?.hasPrefix("Update available: eucaly") == true
+            }
+        }
+        func toolbarIndex(of control: NSView) throws -> Int {
+            try XCTUnwrap(window.toolbar?.items.firstIndex { entry in
+                guard let view = entry.view else { return false }
+                return control === view || control.isDescendant(of: view)
+            }, "Every quick control must have its own native toolbar item")
+        }
+        func saveSnapshot(_ name: String) throws {
+            window.layoutIfNeeded(); chrome.layoutSubtreeIfNeeded()
+            window.display()
+            let bitmap = try XCTUnwrap(chrome.bitmapImageRepForCachingDisplay(in: chrome.bounds))
+            chrome.effectiveAppearance.performAsCurrentDrawingAppearance {
+                chrome.cacheDisplay(in: chrome.bounds, to: bitmap)
+            }
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                .write(to: URL(fileURLWithPath: "/tmp/\(name).png"))
+            let image = try XCTUnwrap(bitmap.cgImage)
+            let scale = CGFloat(bitmap.pixelsHigh) / chrome.bounds.height
+            let top = try XCTUnwrap(image.cropping(to: .init(x: 0, y: 0, width: CGFloat(bitmap.pixelsWide),
+                height: CGFloat(min(bitmap.pixelsHigh, Int(ceil(100 * scale)))))))
+            try XCTUnwrap(NSBitmapImageRep(cgImage: top).representation(using: .png, properties: [:]))
+                .write(to: URL(fileURLWithPath: "/tmp/\(name)-chrome.png"))
+        }
+        driver.state.availableVersion = "99.0"
+        try await waitForUIState("the compact native Update reminder to mount") { hasUpdateReminder() }
+        window.makeKeyAndOrderFront(nil)
+        await drainMainQueue()
+        let applicationState = NSApp.isActive ? "active-app" : "inactive-app"
+        let keyState = window.isKeyWindow ? "key" : "nonkey"
+        try saveSnapshot("eucaly-toolbar-home-\(keyState)-\(applicationState)-available")
+        window.resignKey()
+        await drainMainQueue()
+        try saveSnapshot("eucaly-toolbar-home-nonkey-\(applicationState)-available")
+        driver.state.availableVersion = nil
+        try await waitForUIState("the normal-name Update reminder to clear") { !hasUpdateReminder() }
         let longName = String(repeating: "Long output name ", count: 9)
         let longWorkspaceName = String(repeating: "Long workspace name ", count: 7).trimmingCharacters(in: .whitespaces)
         XCTAssertTrue(store.renameWorkspace(OutputWorkspaceRecord.primaryID, name: longWorkspaceName))
@@ -382,84 +545,244 @@ final class OutputDefaultTests: XCTestCase {
         store.edit { $0.destinations.append(network) }
         store.edit { $0.destinations[0].name = longName }
         try await waitForUIState("the renamed default to reach the toolbar") {
-            button("Output, default:")?.toolTip?.contains(longName) == true && button("NDI workspace routing")?.toolTip?.contains(longWorkspaceName) == true
+            button("Output appearance editing target:")?.toolTip?.contains(longName) == true && button("NDI workspace routing")?.toolTip?.contains(longWorkspaceName) == true
         }
-        func hasUpdateReminder() -> Bool {
-            window.toolbar?.items.contains { $0.label == "Update" } == true
-        }
-        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
-            window.appearance = NSAppearance(named: appearance)
-            for size in [NSSize(width: 1060, height: 600), .init(width: 1400, height: 800)] {
-                window.setContentSize(size)
-                driver.state.availableVersion = nil
-                try await waitForUIState("the Update reminder to disappear") { !hasUpdateReminder() }
+        let controlPrefixes = ["Workspaces", "Output appearance editing target:", "NDI workspace routing",
+                               "Appearance for output:", "Background for output:", "Thumbnails"]
+        for size in [NSSize(width: 1060, height: 600), .init(width: 1280, height: 800), .init(width: 1400, height: 800)] {
+            window.setContentSize(size)
+            await drainMainQueue()
+            driver.state.canCheckForUpdates = true
+            driver.state.availableVersion = nil
+            try await waitForUIState("the Update reminder to disappear") { !hasUpdateReminder() }
+            window.layoutIfNeeded(); chrome.layoutSubtreeIfNeeded()
+            let retainedControls = try controlPrefixes.map { try XCTUnwrap(button($0)) }
+            let retainedMenus = try retainedControls.map { try XCTUnwrap($0.menu) }
+            let workspaceWidth = try XCTUnwrap(button("Workspaces")).frame.width
+            try saveSnapshot("eucaly-toolbar-\(Int(size.width))-\(appearance.rawValue)-absent")
+            XCTAssertTrue(window.makeFirstResponder(search))
+            let editor = try XCTUnwrap(search.currentEditor())
+            editor.string = "active search draft"
+            editor.selectedRange = NSRange(location: 7, length: 6)
+            driver.state.availableVersion = "99.0"
+            try await waitForUIState("the Update reminder and toolbar controls to appear while search is focused") {
                 window.layoutIfNeeded(); chrome.layoutSubtreeIfNeeded()
-                XCTAssertTrue(window.makeFirstResponder(search))
-                let editor = try XCTUnwrap(search.currentEditor())
-                editor.string = "active search draft"
-                editor.selectedRange = NSRange(location: 7, length: 6)
-                driver.state.availableVersion = "99.0"
-                try await waitForUIState("the Update reminder and toolbar controls to appear while search is focused") {
-                    window.layoutIfNeeded(); chrome.layoutSubtreeIfNeeded()
-                    return hasUpdateReminder() && ["Output, default:", "NDI workspace routing", "Appearance for default output:",
-                                           "Background for default output:", "Thumbnails"].allSatisfy { label in
-                        guard let control = button(label) else { return false }
-                        return chrome.bounds.insetBy(dx: -1, dy: -1).contains(chrome.convert(control.bounds, from: control))
-                    }
+                return hasUpdateReminder() && updateAction()?.isAccessibilityEnabled() == true && controlPrefixes.allSatisfy { label in
+                    guard let control = button(label) else { return false }
+                    return chrome.bounds.insetBy(dx: -1, dy: -1).contains(chrome.convert(control.bounds, from: control))
                 }
-                window.layoutIfNeeded(); chrome.layoutSubtreeIfNeeded()
-                // SwiftUI can remount toolbar items when the item set changes.
-                // Inspect the controls actually mounted in the window.
-                let outputButton = try XCTUnwrap(button("Output, default:"))
-                let networkButton = try XCTUnwrap(button("NDI workspace routing"))
-                let appearanceButton = try XCTUnwrap(button("Appearance for default output:"))
-                let backgroundButton = try XCTUnwrap(button("Background for default output:"))
-                let thumbnailButton = try XCTUnwrap(button("Thumbnails"))
-                XCTAssertTrue(window.firstResponder === editor)
-                XCTAssertTrue(search.currentEditor() === editor)
-                XCTAssertEqual(editor.string, "active search draft")
-                XCTAssertEqual(editor.selectedRange, NSRange(location: 7, length: 6))
-                XCTAssertEqual(outputButton.title, "Output")
-                XCTAssertTrue(try XCTUnwrap(outputButton.toolTip).contains(longName))
-                XCTAssertTrue(try XCTUnwrap(outputButton.accessibilityLabel()).contains(longName))
-                XCTAssertNotNil(try? item("Default: " + longName, in: outputButton.menu))
-                XCTAssertTrue(networkButton.title.hasPrefix("NDI: ")); XCTAssertTrue(networkButton.title.hasSuffix("…"))
-                XCTAssertLessThan(networkButton.frame.width, 220)
-                XCTAssertTrue(try XCTUnwrap(networkButton.accessibilityLabel()).contains(longWorkspaceName))
-                XCTAssertEqual(try item("Move to " + longWorkspaceName, in: networkButton.menu).state, .on)
-                for button in [outputButton, networkButton, appearanceButton, backgroundButton, thumbnailButton] {
-                    XCTAssertGreaterThan(button.visibleRect.width, 20)
-                    XCTAssertGreaterThanOrEqual(button.frame.width, button.intrinsicContentSize.width - 1)
-                }
-                let bitmap = try XCTUnwrap(chrome.bitmapImageRepForCachingDisplay(in: chrome.bounds))
-                chrome.cacheDisplay(in: chrome.bounds, to: bitmap)
-                try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: "/tmp/eucaly-toolbar-\(Int(size.width))-\(appearance.rawValue).png"))
             }
+            window.layoutIfNeeded(); chrome.layoutSubtreeIfNeeded()
+            // Inspect the controls actually mounted in the native toolbar.
+            let outputButton = try XCTUnwrap(button("Output appearance editing target:"))
+            let networkButton = try XCTUnwrap(button("NDI workspace routing"))
+            let appearanceButton = try XCTUnwrap(button("Appearance for output:"))
+            let backgroundButton = try XCTUnwrap(button("Background for output:"))
+            let thumbnailButton = try XCTUnwrap(button("Thumbnails"))
+            let workspaceButton = try XCTUnwrap(button("Workspaces"))
+            let reminder = try XCTUnwrap(updateItem())
+            let availableAction = try XCTUnwrap(updateAction())
+            XCTAssertTrue(window.firstResponder === editor)
+            XCTAssertTrue(search.currentEditor() === editor)
+            XCTAssertEqual(editor.string, "active search draft")
+            XCTAssertEqual(editor.selectedRange, NSRange(location: 7, length: 6))
+            XCTAssertEqual(workspaceButton.imagePosition, .imageLeading)
+            XCTAssertEqual(workspaceButton.title, "Workspaces")
+            XCTAssertEqual(workspaceButton.accessibilityValue() as? String, longWorkspaceName)
+            XCTAssertEqual(workspaceButton.frame.width, workspaceWidth, accuracy: 1,
+                           "Update reminders must preserve the compact workspace control's width")
+            XCTAssertEqual(outputButton.title, "Output")
+            XCTAssertTrue(try XCTUnwrap(outputButton.toolTip).contains(longName))
+            XCTAssertTrue(try XCTUnwrap(outputButton.accessibilityLabel()).contains(longName))
+            XCTAssertNotNil(try? item("Edit Output Appearance: " + longName, in: outputButton.menu))
+            XCTAssertTrue(networkButton.title.hasPrefix("NDI: ")); XCTAssertTrue(networkButton.title.hasSuffix("…"))
+            XCTAssertLessThan(networkButton.frame.width, 220)
+            XCTAssertTrue(try XCTUnwrap(networkButton.accessibilityLabel()).contains(longWorkspaceName))
+            XCTAssertEqual(try item("Move to " + longWorkspaceName, in: networkButton.menu).state, .on)
+            let quickButtons = [outputButton, networkButton, appearanceButton, backgroundButton, thumbnailButton]
+            let toolbarIndices = try quickButtons.map { try toolbarIndex(of: $0) }
+            XCTAssertEqual(Set(toolbarIndices).count, quickButtons.count, "An opaque stack must not absorb multiple output controls")
+            XCTAssertEqual(toolbarIndices, toolbarIndices.sorted())
+            XCTAssertNil(workspaceButton.enclosingScrollView, "Workspace navigation must stay outside the scrolling library")
+            XCTAssertLessThan(chrome.convert(workspaceButton.bounds, from: workspaceButton).maxX,
+                              chrome.convert(outputButton.bounds, from: outputButton).minX)
+            let reminderIndex = try XCTUnwrap(window.toolbar?.items.firstIndex { $0 === reminder })
+            XCTAssertGreaterThan(reminderIndex, try XCTUnwrap(toolbarIndices.last))
+            XCTAssertTrue(reminder.isVisible, "The available update must fit in the supported minimum toolbar width")
+            for (identifier, label) in [(PresentationToolbarController.searchID, "Search Library"),
+                                        (PresentationToolbarController.slidesID, "Show Slides")] {
+                let criticalItem = try XCTUnwrap(window.toolbar?.items.first { $0.itemIdentifier == identifier })
+                XCTAssertTrue(criticalItem.isVisible, "Critical workspace controls must stay outside overflow")
+                let action = try XCTUnwrap(accessibilityElements().first {
+                    $0.accessibilityRole() == .button && $0.accessibilityLabel() == label
+                })
+                let frame = action.accessibilityFrame()
+                XCTAssertGreaterThan(frame.width, 20)
+                XCTAssertGreaterThan(frame.height, 20)
+                XCTAssertTrue(window.frame.contains(frame), "The critical action must be exposed inside the window")
+            }
+            XCTAssertEqual(reminder.style, .plain)
+            XCTAssertTrue(try XCTUnwrap(availableAction.accessibilityLabel()).contains("99.0"))
+            let nativeMenuElements = accessibilityElements().filter { $0.accessibilityRole() == .menuButton }
+            for prefix in controlPrefixes {
+                XCTAssertTrue(nativeMenuElements.contains { $0.accessibilityLabel()?.hasPrefix(prefix) == true },
+                              "The exposed native cell must announce \(prefix)")
+            }
+            XCTAssertEqual(nativeMenuElements.first { $0.accessibilityLabel() == "Workspaces" }?.accessibilityValue() as? String,
+                           longWorkspaceName)
+            for button in quickButtons {
+                XCTAssertGreaterThan(button.visibleRect.width, 20)
+                XCTAssertGreaterThanOrEqual(button.frame.width, button.intrinsicContentSize.width - 1)
+                XCTAssertEqual(button.bezelStyle, .toolbar)
+            }
+            for index in retainedControls.indices {
+                XCTAssertTrue(button(controlPrefixes[index]) === retainedControls[index])
+                XCTAssertTrue(retainedControls[index].menu === retainedMenus[index])
+            }
+            try saveSnapshot("eucaly-toolbar-\(Int(size.width))-\(appearance.rawValue)-available")
+            let availableFrames = retainedControls.map { chrome.convert($0.bounds, from: $0) }
+            let availableFrame = availableAction.accessibilityFrame()
+            XCTAssertGreaterThan(availableFrame.width, 20)
+            XCTAssertLessThan(availableFrame.width, 60, "The update reminder must be an icon action rather than a text pill")
+            driver.state.canCheckForUpdates = false
+            try await waitForUIState("unavailable updater controls to render") {
+                updateAction()?.isAccessibilityEnabled() == false
+            }
+            let unavailableReminder = try XCTUnwrap(updateItem())
+            XCTAssertTrue(unavailableReminder === reminder)
+            XCTAssertTrue(unavailableReminder.isVisible)
+            XCTAssertEqual(unavailableReminder.style, .plain)
+            let unavailableAction = try XCTUnwrap(updateAction())
+            try saveSnapshot("eucaly-toolbar-\(Int(size.width))-\(appearance.rawValue)-busy")
+            XCTAssertEqual(unavailableAction.accessibilityFrame(), availableFrame)
+            let unavailableFrames = retainedControls.map { chrome.convert($0.bounds, from: $0) }
+            XCTAssertEqual(unavailableFrames[0], availableFrames[0], "Workspaces remains pinned")
+            // AppKit positions the common toolbar cluster relative to native
+            // trailing glass. Verify its geometry and spacing, not an absolute
+            // origin that the system may adjust as capabilities change.
+            XCTAssertEqual(unavailableFrames.dropFirst().map { $0.offsetBy(dx: -unavailableFrames[1].minX, dy: 0) },
+                           availableFrames.dropFirst().map { $0.offsetBy(dx: -availableFrames[1].minX, dy: 0) },
+                           "Updater capability must preserve native control sizes and relative spacing")
+            XCTAssertTrue((unavailableAction.accessibilityHelp() ?? "").contains("temporarily unavailable"))
+            XCTAssertTrue(window.firstResponder === editor)
+            XCTAssertEqual(editor.string, "active search draft")
+            XCTAssertEqual(editor.selectedRange, NSRange(location: 7, length: 6))
+            driver.state.availableVersion = nil
+            try await waitForUIState("the finished update session to remove the reminder") { !hasUpdateReminder() }
+            for index in retainedControls.indices {
+                XCTAssertTrue(button(controlPrefixes[index]) === retainedControls[index])
+                XCTAssertTrue(retainedControls[index].menu === retainedMenus[index])
+            }
+            XCTAssertTrue(window.firstResponder === editor)
+            XCTAssertEqual(editor.string, "active search draft")
+            XCTAssertEqual(editor.selectedRange, NSRange(location: 7, length: 6))
         }
+        XCTAssertEqual(driver.checks, 0, "Passive reminder and toolbar rendering must never start an update check")
+        XCTAssertFalse(outputs.isRunning)
+        XCTAssertNil(outputs.ownership.source)
+        driver.state.canCheckForUpdates = true
+        driver.state.availableVersion = "99.0"
+        try await waitForUIState("the enabled Update action to return") { updateAction()?.isAccessibilityEnabled() == true }
+        let action = try XCTUnwrap(updateAction())
+        _ = action.accessibilityPerformPress()
+        try await waitForUIState("the native Update action to use the shared updater") { driver.checks == 1 }
+        try await waitForUIState("the native Update action to become unavailable") { updateAction()?.isAccessibilityEnabled() == false }
+        // A queued action retained before the capability change must still be
+        // rejected by the shared updater, independently of native validation.
+        _ = action.accessibilityPerformPress()
+        XCTAssertEqual(driver.checks, 1, "An unavailable action must not reenter Sparkle")
+        driver.state.availableVersion = nil
+        driver.state.canCheckForUpdates = true
+        try await waitForUIState("the completed reminder to disappear") { !hasUpdateReminder() }
+        _ = action.accessibilityPerformPress()
+        XCTAssertEqual(driver.checks, 1, "An expired reminder must not start a new update check")
         let defaultID = try XCTUnwrap(store.defaultDestination?.id)
         XCTAssertNil(store.setEnabled(false, for: defaultID))
         try await waitForUIState("disabled-default controls to refresh") {
-            button("Appearance for default output:")?.isEnabled == false && button("Background for default output:")?.isEnabled == false
+            button("Appearance for output:")?.isEnabled == false && button("Background for output:")?.isEnabled == false
         }
-        XCTAssertFalse(try XCTUnwrap(button("Appearance for default output:")).isEnabled)
-        XCTAssertFalse(try XCTUnwrap(button("Background for default output:")).isEnabled)
-        XCTAssertTrue(try XCTUnwrap(button("Output, default:")).isEnabled)
+        XCTAssertFalse(try XCTUnwrap(button("Appearance for output:")).isEnabled)
+        XCTAssertFalse(try XCTUnwrap(button("Background for output:")).isEnabled)
+        XCTAssertTrue(try XCTUnwrap(button("Output appearance editing target:")).isEnabled)
         XCTAssertTrue(try XCTUnwrap(button("Thumbnails")).isEnabled)
         store.setDefaultDestination(nil)
         try await waitForUIState("the None default to reach the toolbar") {
-            button("Output, default:")?.accessibilityLabel() == "Output, default: None"
+            button("Output appearance editing target:")?.accessibilityLabel() == "Output appearance editing target: None"
         }
-        XCTAssertNotNil(try? item("Choose a default output to use quick controls.", in: button("Output, default:")?.menu))
+        XCTAssertNotNil(try? item("Choose an appearance editing target to use quick controls.", in: button("Output appearance editing target:")?.menu))
         XCTAssertTrue(try XCTUnwrap(button("Thumbnails")).isEnabled)
         store.setDefaultDestination(defaultID)
         XCTAssertNil(store.setEnabled(true, for: defaultID))
         try await waitForUIState("enabled-default controls to refresh") {
-            button("Appearance for default output:")?.isEnabled == true && button("Background for default output:")?.isEnabled == true
+            button("Appearance for output:")?.isEnabled == true && button("Background for output:")?.isEnabled == true
         }
-        XCTAssertTrue(try XCTUnwrap(button("Appearance for default output:")).isEnabled)
-        XCTAssertTrue(try XCTUnwrap(button("Background for default output:")).isEnabled)
+        XCTAssertTrue(try XCTUnwrap(button("Appearance for output:")).isEnabled)
+        XCTAssertTrue(try XCTUnwrap(button("Background for output:")).isEnabled)
+        let splitController = try XCTUnwrap(descendants(NSSplitView.self, in: chrome)
+            .compactMap { $0.delegate as? NSSplitViewController }.first)
+        let sidebar = try XCTUnwrap(splitController.splitViewItems.first)
+        XCTAssertFalse(sidebar.isCollapsed)
+        await toggleSidebarAndWaitForAnimation(splitController)
+        try await waitForUIState("the native sidebar to finish closing") {
+            guard let header = button("Workspaces") else { return sidebar.isCollapsed }
+            return sidebar.isCollapsed && (header.isHiddenOrHasHiddenAncestor || header.visibleRect.isEmpty)
+        }
+        try saveSnapshot("eucaly-toolbar-sidebar-hidden-\(appearance.rawValue)")
+        for prefix in controlPrefixes.dropFirst() {
+            let control = try XCTUnwrap(button(prefix))
+            XCTAssertGreaterThan(control.visibleRect.width, 20)
+            XCTAssertTrue(chrome.bounds.insetBy(dx: -1, dy: -1).contains(chrome.convert(control.bounds, from: control)))
+        }
+        await toggleSidebarAndWaitForAnimation(splitController)
+        try await waitForUIState("the native sidebar and its workspace header to return") {
+            guard let header = button("Workspaces") else { return false }
+            return !sidebar.isCollapsed && header.window === window
+                && !header.isHiddenOrHasHiddenAncestor && !header.visibleRect.isEmpty
+        }
+        let restoredHeader = try XCTUnwrap(button("Workspaces"))
+        XCTAssertGreaterThan(restoredHeader.visibleRect.width, 0)
+        XCTAssertGreaterThan(restoredHeader.visibleRect.height, 0)
+        window.setContentSize(.init(width: 1060, height: 600))
+        XCTAssertTrue(window.makeFirstResponder(search))
+        let draftEditor = try XCTUnwrap(search.currentEditor())
+        draftEditor.string = "retained workspace search"
+        draftEditor.selectedRange = .init(location: 9, length: 9)
+        let homeControls = try controlPrefixes.map { try XCTUnwrap(button($0)) }
+        let secondID = try XCTUnwrap(store.addWorkspace(name: "Online"))
+        XCTAssertTrue(workspaces.open(secondID, from: session.outputSourceID) === controller)
+        try await waitForUIState("the second workspace's native controls to mount") {
+            button("Workspaces")?.accessibilityValue() as? String == "Online"
+                && window.title.hasPrefix("Online —")
+        }
+        XCTAssertEqual(window.tabbingMode, .disallowed)
+        XCTAssertNil(window.tabGroup)
+        try saveSnapshot("eucaly-workspaces-second-\(appearance.rawValue)")
+        XCTAssertTrue(workspaces.open(session.outputSourceID, from: secondID) === controller)
+        try await waitForUIState("the retained workspace controls and editor focus to return") {
+            button("Workspaces") === homeControls.first && window.firstResponder === draftEditor
+                && controlPrefixes.allSatisfy { button($0) != nil }
+                && draftEditor.selectedRange == NSRange(location: 9, length: 9)
+        }
+        // Native toolbar cells remount through the hosting bridge; verify their
+        // restored operator context rather than temporary native cell identity.
+        for prefix in controlPrefixes { XCTAssertNotNil(button(prefix)) }
+        XCTAssertEqual(button("Workspaces")?.accessibilityValue() as? String, longWorkspaceName)
+        XCTAssertTrue(window.title.hasPrefix(longWorkspaceName + " —"))
+        XCTAssertEqual(draftEditor.string, "retained workspace search")
+        XCTAssertEqual(draftEditor.selectedRange, NSRange(location: 9, length: 9))
+        try saveSnapshot("eucaly-workspaces-return-\(appearance.rawValue)")
         XCTAssertEqual(thumbnailDefaults.double(forKey: "thumbnailScale"), 1.2345, accuracy: 0.000001)
         XCTAssertEqual(thumbnailDefaults.double(forKey: "thumbnailFontScale"), 1.4, accuracy: 0.000001)
+    }
+
+    private func toggleSidebarAndWaitForAnimation(_ split: NSSplitViewController) async {
+        await withCheckedContinuation { continuation in
+            NSAnimationContext.runAnimationGroup { _ in
+                split.toggleSidebar(nil)
+            } completionHandler: {
+                continuation.resume()
+            }
+        }
     }
 
     // SwiftUI may commit toolbar changes after several main-queue turns. Wait
@@ -491,8 +814,9 @@ final class OutputDefaultTests: XCTestCase {
 private final class ToolbarUpdateDriver: AppUpdateDriving {
     var state = AppUpdateState(canCheckForUpdates: true) { didSet { onStateChange?(state) } }
     var onStateChange: ((AppUpdateState) -> Void)?
+    private(set) var checks = 0
     func start() {}
-    func checkForUpdates() {}
+    func checkForUpdates() { checks += 1; state.canCheckForUpdates = false }
     func setAutomaticChecks(_ enabled: Bool) {}
 }
 
@@ -503,21 +827,80 @@ private struct OutputToolbarSearch: NSViewRepresentable {
 }
 
 private struct OutputToolbarFixture: View {
-    let outputs: OutputCoordinator
+    let session: PresentationSession
     let updates: AppUpdateViewModel
+    let workspaceMenu: OutputWorkspaceMenuController
     let search: NSSearchField
     let thumbnailDefaults: UserDefaults
     var body: some View {
-        Color.clear.frame(minWidth: 1060, minHeight: 600)
-            .toolbar {
-                ToolbarItem(placement: .principal) { OutputToolbarSearch(search: search) }
-                ToolbarItemGroup(placement: .primaryAction) {
-                    AppUpdateToolbarButton(viewModel: updates)
-                    OutputQuickControls(outputs: outputs, manageOutputs: {})
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    ThumbnailSettingsMenu(defaults: thumbnailDefaults)
-                }
+        WorkspaceSplitView(sidebarConfiguration: WorkspaceChromeFixture.sidebar(session: session),
+            workspaceMenu: workspaceMenu, defaults: thumbnailDefaults, session: session, updates: updates,
+            toggleSlides: session.toggleSlidesVisibility, searchLibrary: {}, manageOutputs: {},
+            detail: VStack {
+                OutputToolbarSearch(search: search).frame(width: 220)
+                Spacer()
             }
+            .padding())
+        .frame(minWidth: 1060, minHeight: 600)
+    }
+}
+
+@MainActor
+private final class QuickBackgroundRetirementFixture {
+    let hub = LocalOutputHarness()
+    let window: NSWindow
+    let visualURL: URL
+
+    init() throws {
+        visualURL = FileManager.default.temporaryDirectory.appendingPathComponent("quick-background-retirement-\(UUID()).png")
+        let image = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 1, pixelsHigh: 1,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 4, bitsPerPixel: 32))
+        image.setColor(.white, atX: 0, y: 0)
+        try XCTUnwrap(image.representation(using: .png, properties: [:])).write(to: visualURL)
+        window = NSWindow(contentRect: .init(x: -10000, y: -10000, width: 400, height: 200),
+            styleMask: .titled, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        hub.load("Verse\nCurrent remains live while controls retire")
+        hub.session.showSlides()
+    }
+
+    func host(_ button: NSButton) {
+        button.frame = .init(x: 10, y: 10, width: 160, height: 28)
+        window.contentView?.addSubview(button)
+    }
+
+    func close() {
+        window.close()
+        hub.outputs.stopAllOutputs()
+        try? FileManager.default.removeItem(at: visualURL)
+    }
+}
+
+@MainActor
+private final class QuickBackgroundRetirementPanel: NSOpenPanel {
+    var selectedURL: URL?
+    override var url: URL? { selectedURL }
+}
+
+private final class QuickBackgroundBookmarkGate: @unchecked Sendable {
+    let started: XCTestExpectation
+    private let condition = NSCondition()
+    private var isOpen = false
+    init(started: XCTestExpectation) { self.started = started }
+
+    func createBookmark(_ url: URL) -> String? {
+        started.fulfill()
+        condition.lock()
+        while !isOpen { condition.wait() }
+        condition.unlock()
+        return SecurityScopedBookmarks.createBookmark(for: url)
+    }
+
+    func open() {
+        condition.lock()
+        isOpen = true
+        condition.broadcast()
+        condition.unlock()
     }
 }

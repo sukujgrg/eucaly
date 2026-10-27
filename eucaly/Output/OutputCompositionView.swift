@@ -54,7 +54,7 @@ struct OutputCompositionView: View {
             .frame(width: size.width, height: size.height)
             .overlay(alignment: .bottomLeading) {
                 if profile.kind == .confidence && slide.videoURL != nil {
-                    OutputConfidencePlaybackStatus(session: session, progress: session.playbackProgress,
+                    OutputConfidencePlaybackStatus(progress: session.playbackProgress,
                                                    typography: profile.typography(for: .footer), size: size)
                 }
             }.clipped()

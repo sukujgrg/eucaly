@@ -96,11 +96,6 @@ struct OutputWorkspaceView: View {
         _menu = StateObject(wrappedValue: OutputWorkspaceMenuController(workspaces: workspaces, workspaceID: session.outputSourceID))
     }
     var body: some View {
-        ContentView(session: session, commands: commands)
-        .toolbar {
-            ToolbarItem {
-                OutputWorkspaceMenuButton(controls: menu)
-            }
-        }
+        ContentView(session: session, commands: commands, workspaceMenu: menu)
     }
 }

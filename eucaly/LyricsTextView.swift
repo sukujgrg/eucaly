@@ -4,6 +4,11 @@ import AppKit
 /// committed input is cleaned; setMarkedText is intentionally left untouched.
 @MainActor
 final class LyricsTextView: NSTextView {
+    // A workspace can move its retained editor between controls windows. Native
+    // text edits belong to this document, never to whichever window hosts it.
+    private let documentUndoManager = UndoManager()
+    override var undoManager: UndoManager? { documentUndoManager }
+
     var isActiveForLyricsFind: Bool {
         guard let window, window.isKeyWindow, let responder = window.firstResponder as? NSView else { return false }
         if responder === self { return true }

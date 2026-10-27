@@ -306,7 +306,7 @@ class CacheManager: ObservableObject {
         }
     }
 
-    private static nonisolated func performCleanupSync(diskURL: URL, days: Int, maxMB: Int, maxFiles: Int) -> Set<String>? {
+    static nonisolated func performCleanupSync(diskURL: URL, days: Int, maxMB: Int, maxFiles: Int) -> Set<String>? {
         let fileManager = FileManager.default
         guard let allFiles = try? fileManager.contentsOfDirectory(
             at: diskURL,
@@ -316,7 +316,6 @@ class CacheManager: ObservableObject {
         let files = allFiles.filter { $0.lastPathComponent != "modification_dates.json" }
 
         let cutoffDate = Calendar.current.date(byAdding: .day, value: -days, to: Date())!
-        var totalSize: Int64 = 0
         var fileSizes: [URL: Int64] = [:]
         var fileDates: [URL: Date] = [:]
         var filesToDelete = Set<URL>()
@@ -330,7 +329,6 @@ class CacheManager: ObservableObject {
             let creationDate = attrs[.creationDate] as? Date
             let effectiveDate = modifiedDate ?? creationDate ?? .distantPast
 
-            totalSize += size
             fileSizes[file] = size
             fileDates[file] = effectiveDate
 
@@ -340,38 +338,19 @@ class CacheManager: ObservableObject {
             }
         }
 
-        // Also delete if total cache size exceeds limit
-        let maxBytes = Int64(maxMB) * 1024 * 1024
-        if totalSize > maxBytes {
-            // Sort by file date, delete oldest first
-            let sortedFiles = files.sorted { file1, file2 in
-                let date1 = fileDates[file1] ?? .distantPast
-                let date2 = fileDates[file2] ?? .distantPast
-                return date1 < date2
-            }
-
-            var currentSize = totalSize
-            for file in sortedFiles {
-                if currentSize <= maxBytes { break }
-
-                if let size = fileSizes[file], !filesToDelete.contains(file) {
-                    filesToDelete.insert(file)
-                    currentSize -= size
-                }
-            }
+        // Age, size and count are successive constraints on the same survivors.
+        // Expired entries must not consume either budget a second time.
+        let survivors = files.filter { !filesToDelete.contains($0) }.sorted {
+            (fileDates[$0] ?? .distantPast) < (fileDates[$1] ?? .distantPast)
         }
-
-        // Also enforce max file count on disk
-        if files.count > maxFiles {
-            let sortedFiles = files.sorted { file1, file2 in
-                let date1 = fileDates[file1] ?? .distantPast
-                let date2 = fileDates[file2] ?? .distantPast
-                return date1 < date2
-            }
-            let excess = files.count - maxFiles
-            for file in sortedFiles.prefix(excess) {
-                filesToDelete.insert(file)
-            }
+        var survivorBytes = survivors.reduce(Int64(0)) { $0 + (fileSizes[$1] ?? 0) }
+        var survivorCount = survivors.count
+        let maxBytes = Int64(maxMB) * 1024 * 1024
+        for file in survivors {
+            guard survivorBytes > maxBytes || survivorCount > maxFiles else { break }
+            filesToDelete.insert(file)
+            survivorBytes -= fileSizes[file] ?? 0
+            survivorCount -= 1
         }
 
         for file in filesToDelete {

@@ -25,7 +25,7 @@ final class LibrarySearchModel: ObservableObject {
 
     // Only derived indexing is shared. Queries, scope and entry selection belong
     // to the workspace, including command rows that do not require the index.
-    private static let sharedIndex = LibraryTextSearchIndex()
+    static let sharedIndex = LibraryTextSearchIndex()
     let index: LibraryTextSearchIndex
 
     @Published private(set) var query = ""
@@ -194,7 +194,7 @@ final class LibrarySearchModel: ObservableObject {
             return false
         }
         debounceTask = nil
-        results = response.map { .init(url: $0.url.standardizedFileURL, snippet: $0.snippet) }
+        results = response.map { .init(url: $0.url.standardizedFileURL, snippet: $0.snippet, title: $0.title) }
         resultsQuery = request.query
         refreshFilteredResults()
         queryPhase = .completed
@@ -218,7 +218,7 @@ final class LibrarySearchModel: ObservableObject {
     ) {
         guard searchQuery == trimmedQuery else { return }
         cancelDebounce()
-        results = response.map { .init(url: $0.url.standardizedFileURL, snippet: $0.snippet) }
+        results = response.map { .init(url: $0.url.standardizedFileURL, snippet: $0.snippet, title: $0.title) }
         resultsQuery = searchQuery
         refreshFilteredResults()
         queryPhase = .completed

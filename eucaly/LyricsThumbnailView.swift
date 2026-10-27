@@ -5,25 +5,22 @@ struct LyricsThumbnailView: View {
     let slide: Slide
     let size: CGSize
     @AppStorage("thumbnailFontScale") private var thumbnailFontScale: Double = 1.0
-    @AppStorage("presentationLyricsLayout") private var presentationLyricsLayout: PresentationLyricsLayout = .stacked
-    @AppStorage("presentationPaddingScale") private var presentationPaddingScale: Double = 1.0
-    @AppStorage("presentationTextAlignment") private var presentationTextAlignment: PresentationTextAlignment = .center
-    @AppStorage("presentationVerticalPosition") private var presentationVerticalPosition: PresentationVerticalPosition = .middle
 
     var body: some View {
+        let profile = audienceProfile ?? OutputProfile.builtIns[0]
         ZStack {
             Color.black
 
             LyricsSlideContentView(
                 lines: slide.lines,
                 size: size,
-                layout: presentationLyricsLayout,
-                textAlignment: presentationTextAlignment,
-                verticalPosition: presentationVerticalPosition,
+                layout: PresentationLyricsLayout(rawValue: profile.layout) ?? .stacked,
+                textAlignment: PresentationTextAlignment(rawValue: profile.alignment) ?? .center,
+                verticalPosition: PresentationVerticalPosition(rawValue: profile.position) ?? .middle,
                 fontScale: thumbnailFontScale,
-                paddingScale: presentationPaddingScale,
+                paddingScale: profile.padding,
                 rendering: .thumbnail,
-                profile: audienceProfile
+                profile: profile
             )
         }
         .frame(width: size.width, height: size.height)

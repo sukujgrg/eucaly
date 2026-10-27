@@ -36,41 +36,6 @@ struct OutputAudioListeningState: Equatable {
     }
 }
 
-/// Native intrinsic sizes keep the toolbar independent of destination-name length.
-/// The controls and their menus survive unrelated output/status view updates.
-struct OutputQuickControls: View {
-    @StateObject private var controls: OutputQuickControlsController
-    let manageOutputs: () -> Void
-    init(outputs: OutputCoordinator, workspaceID: UUID? = nil, manageOutputs: @escaping () -> Void) {
-        self.manageOutputs = manageOutputs
-        _controls = StateObject(wrappedValue: OutputQuickControlsController(outputs: outputs, workspaceID: workspaceID, manageOutputs: manageOutputs))
-    }
-    var body: some View {
-        HStack(spacing: 8) {
-            OutputQuickButton(button: controls.outputButton, controls: controls, manageOutputs: manageOutputs)
-            OutputQuickButton(button: controls.networkButton, controls: controls, manageOutputs: manageOutputs)
-            OutputQuickButton(button: controls.backgroundButton, controls: controls, manageOutputs: manageOutputs)
-            OutputQuickButton(button: controls.appearanceButton, controls: controls, manageOutputs: manageOutputs)
-        }.fixedSize()
-    }
-}
-
-private struct OutputQuickButton: NSViewRepresentable {
-    let button: NSPopUpButton
-    let controls: OutputQuickControlsController
-    let manageOutputs: () -> Void
-    @ObservedObject private var outputs: OutputCoordinator
-    @ObservedObject private var store: OutputProfileStore
-    @ObservedObject private var displays: ProjectionDisplayManager
-    init(button: NSPopUpButton, controls: OutputQuickControlsController, manageOutputs: @escaping () -> Void) {
-        self.button = button; self.controls = controls; self.manageOutputs = manageOutputs
-        outputs = controls.outputs; store = controls.store; displays = controls.outputs.displays
-    }
-    func makeNSView(context: Context) -> NSPopUpButton { button }
-    func updateNSView(_ view: NSPopUpButton, context: Context) {
-        controls.manageOutputs = manageOutputs; controls.render()
-    }
-}
 
 @MainActor
 final class OutputQuickControlsController: NSObject, ObservableObject {
@@ -81,7 +46,8 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
     let outputs: OutputCoordinator
     let workspaceID: UUID?
     var store: OutputProfileStore { outputs.profiles }
-    var manageOutputs: () -> Void
+    let manageOutputs: () -> Void
+    private let createBackgroundBookmark: @Sendable (URL) -> String?
     private let makeBackgroundPanel: @MainActor () -> NSOpenPanel
     private let beginBackgroundSheet: @MainActor (NSOpenPanel, NSWindow, @escaping (NSApplication.ModalResponse) -> Void) -> Void
     private struct DefaultEntry: Equatable {
@@ -123,17 +89,23 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
     private var selectionState: SelectionState?
     private var appearanceState: AppearanceState?
     private var networkRoutingState: NetworkRoutingState?
+    // Runtime state changes update descriptions on retained native items. Menu
+    // identity belongs to the saved routing topology, preserving open menus.
+    private var networkMoveActions: [(item: NSMenuItem, destinationID: UUID, workspaceID: UUID)] = []
+    private var isRetired = false
 
     init(outputs: OutputCoordinator, workspaceID: UUID? = nil, manageOutputs: @escaping () -> Void,
          makeBackgroundPanel: @escaping @MainActor () -> NSOpenPanel = { NSOpenPanel() },
+         createBackgroundBookmark: @escaping @Sendable (URL) -> String? = { SecurityScopedBookmarks.createBookmark(for: $0) },
          beginBackgroundSheet: @escaping @MainActor (NSOpenPanel, NSWindow, @escaping (NSApplication.ModalResponse) -> Void) -> Void = {
              $0.beginSheetModal(for: $1, completionHandler: $2)
          }) {
         self.outputs = outputs; self.workspaceID = workspaceID ?? outputs.focusedWorkspaceID; self.manageOutputs = manageOutputs
+        self.createBackgroundBookmark = createBackgroundBookmark
         self.makeBackgroundPanel = makeBackgroundPanel; self.beginBackgroundSheet = beginBackgroundSheet
         super.init()
         for button in [outputButton, networkButton, backgroundButton, appearanceButton] {
-            button.bezelStyle = .rounded
+            button.bezelStyle = .toolbar
             button.imagePosition = button === outputButton || button === networkButton ? .imageLeft : .imageOnly
             button.setContentHuggingPriority(.required, for: .horizontal)
             button.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -142,19 +114,21 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
     }
 
     func render() {
+        guard !isRetired else { return }
         renderNetworkRouting()
         let destination = store.defaultDestination
         let profile = destination.flatMap { store.profile($0.profileID) }
         let target = store.quickEditTarget
         let displays = outputs.displays
-        let reason = store.recoveryNotice ?? (destination == nil ? "Choose a default output to use quick controls."
-            : destination?.enabled == false ? "Default output is disabled."
+        let reason = store.recoveryNotice ?? (destination == nil ? "Choose an appearance editing target to use quick controls."
+            : destination?.enabled == false ? "Appearance editing target is disabled."
             : nil)
         let name = destination?.name ?? "None"
-        outputButton.toolTip = "Default output: \(name). \(reason ?? "Quick edits affect only this output.")"
-        outputButton.setAccessibilityLabel("Output, default: \(name)")
-        outputButton.setAccessibilityHelp(reason ?? "Choose the default output or edit its monitor assignment.")
-        let selection = SelectionState(rows: store.document.destinations.map { DefaultEntry(id: $0.id, name: store.destinationLabel($0) + " · " + store.workspaceName($0.workspaceID)) }, defaultID: store.document.defaultDestinationID,
+        let scope = destination.map { outputs.managementDestinationLabel($0) + " · " + outputs.managementWorkspaceName($0.workspaceID) } ?? "None"
+        outputButton.toolTip = "Edit output appearance: \(scope). \(reason ?? "Quick edits affect only this output.")"
+        outputButton.setControlAccessibility(label: "Output appearance editing target: \(scope)",
+            help: reason ?? "Choose the appearance editing target or edit its monitor assignment.")
+        let selection = SelectionState(rows: store.document.destinations.map { DefaultEntry(id: $0.id, name: outputs.managementDestinationLabel($0) + " · " + outputs.managementWorkspaceName($0.workspaceID)) }, defaultID: store.document.defaultDestinationID,
             target: target, kind: profile?.kind, network: destination?.networkSettings, technology: destination?.networkTechnology, monitors: displays.displays,
             labels: displays.displays.map { displays.label(for: $0.target) },
             monitorProblems: displays.displays.map { display in destination.flatMap { outputs.monitorAssignmentProblem(for: display.target, destinationID: $0.id) } },
@@ -171,17 +145,17 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
                     self?.store.setDefaultDestination(row.id)
                 })
             }
-            submenu("Default: \(name)", defaults, in: menu)
+            submenu("Edit Output Appearance: \(name)", defaults, in: menu)
             let assignments = NSMenu(); assignments.autoenablesItems = false
             for row in store.document.destinations {
-                let owner = store.workspaceName(row.workspaceID)
+                let owner = outputs.managementWorkspaceName(row.workspaceID)
                 let actions = NSMenu(); actions.autoenablesItems = false
                 actions.addItem(info("Owner: " + owner))
                 actions.addItem(command("Move to This Workspace", enabled: workspaceID != nil && row.workspaceID != workspaceID) { [weak self] in
                     guard let self, let id = self.workspaceID else { return }
                     _ = self.outputs.moveOutput(row.id, toWorkspace: id, reportingTo: id)
                 })
-                submenu(store.destinationLabel(row) + " · " + owner, actions, in: assignments)
+                submenu(outputs.managementDestinationLabel(row) + " · " + owner, actions, in: assignments)
             }
             submenu("Workspace Assignments", assignments, in: menu)
             if let reason { menu.addItem(info(reason)) }
@@ -224,18 +198,17 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         let appearance = AppearanceState(target: target, profile: profile, canEdit: canEdit)
         let help: String
         if let recovery = store.recoveryNotice { help = recovery }
-        else if destination == nil { help = "Choose a default output from the Output menu to use these controls." }
-        else if destination?.enabled == false { help = "Default output is disabled. Enable it in Manage Outputs or choose another default from the Output menu." }
+        else if destination == nil { help = "Choose an appearance editing target from the Output menu to use these controls." }
+        else if destination?.enabled == false { help = "Appearance editing target is disabled. Enable it in Manage Outputs or choose another target from the Output menu." }
         else { help = reason ?? (canEdit ? "Quick edits affect only \(name)." : "The profile limit has been reached. Manage Outputs to edit profiles.") }
-        let appearanceHelp = help
-        let backgroundHelp = help
+        let connection = " Customizing any property makes the whole appearance independent; future reusable-profile changes no longer apply."
+        let appearanceHelp = help + connection
+        let backgroundHelp = help + connection
         appearanceButton.isEnabled = canEdit; backgroundButton.isEnabled = canEdit
         appearanceButton.toolTip = "Appearance for \(name)\n\(appearanceHelp)"
         backgroundButton.toolTip = "Background for \(name)\n\(backgroundHelp)"
-        appearanceButton.setAccessibilityLabel("Appearance for default output: \(name)")
-        backgroundButton.setAccessibilityLabel("Background for default output: \(name)")
-        appearanceButton.setAccessibilityHelp(appearanceHelp)
-        backgroundButton.setAccessibilityHelp(backgroundHelp)
+        appearanceButton.setControlAccessibility(label: "Appearance for output: \(scope)", help: appearanceHelp)
+        backgroundButton.setControlAccessibility(label: "Background for output: \(scope)", help: backgroundHelp)
         if appearance != appearanceState {
             appearanceState = appearance
             appearanceButton.menu = appearanceMenu(profile, target: target)
@@ -246,11 +219,12 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
     private func renderNetworkRouting() {
         let state = NetworkRoutingState(sources: store.document.destinations.compactMap { row in
             guard let settings = row.networkSettings, let technology = row.networkTechnology else { return nil }
-            return .init(id: row.id, label: store.destinationLabel(row), sourceName: settings.sourceName,
+            return .init(id: row.id, label: outputs.managementDestinationLabel(row), sourceName: settings.sourceName,
                          technology: technology, workspaceID: row.workspaceID, enabled: row.enabled)
         }, workspaces: store.document.workspaces, recoveryNotice: store.recoveryNotice)
-        guard state != networkRoutingState else { return }
+        guard state != networkRoutingState else { refreshNetworkMoveDescriptions(); return }
         networkRoutingState = state
+        networkMoveActions.removeAll()
         let technologies = Set(state.sources.map(\.technology))
         let technologyName = technologies.count == 1 ? technologies.first!.title : "Network"
         func owner(_ id: UUID?) -> String {
@@ -278,8 +252,7 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
             ? "Add an NDI or OMT output in Manage Outputs to route it between workspaces."
             : "Choose a workspace’s Current for " + technologyName + " output. A live move keeps the source name and receiver connection; a stopped output stays stopped.")
         networkButton.toolTip = [summary, help].filter { !$0.isEmpty }.joined(separator: "\n")
-        networkButton.setAccessibilityLabel(technologyName + " workspace routing" + (summary.isEmpty ? "" : ": " + summary))
-        networkButton.setAccessibilityHelp(help)
+        networkButton.setControlAccessibility(label: technologyName + " workspace routing" + (summary.isEmpty ? "" : ": " + summary), help: help)
         if state.sources.isEmpty { menu.addItem(info("No network outputs configured.")) }
         for (index, source) in state.sources.enumerated() {
             let choices = state.sources.count == 1 ? menu : NSMenu()
@@ -287,11 +260,13 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
             choices.addItem(info(source.technology.title + " source: " + source.sourceName + (source.enabled ? "" : " · Disabled")))
             choices.addItem(info("Current from: " + owner(source.workspaceID)))
             for workspace in state.workspaces {
-                choices.addItem(command("Move to " + owner(workspace.id),
+                let action = command("Move to " + owner(workspace.id),
                     enabled: state.recoveryNotice == nil && source.workspaceID != workspace.id,
                     selected: source.workspaceID == workspace.id) { [weak self] in
                         self?.moveNetworkOutput(source.id, technology: source.technology, to: workspace.id)
-                    })
+                    }
+                networkMoveActions.append((action, source.id, workspace.id))
+                choices.addItem(action)
             }
             if state.sources.count > 1 {
                 let duplicate = state.sources.filter { $0.label == source.label && $0.technology == source.technology }.count > 1
@@ -302,6 +277,16 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         if let notice = state.recoveryNotice { menu.addItem(info(notice)) }
         addManagementFooter(to: menu)
         networkButton.menu = menu
+        refreshNetworkMoveDescriptions()
+    }
+
+    private func refreshNetworkMoveDescriptions() {
+        for action in networkMoveActions {
+            action.item.toolTip = outputs.isOpen(action.destinationID)
+                ? "Moves this live source to " + outputs.managementWorkspaceName(action.workspaceID) + "’s Current immediately."
+                    + (outputs.preparedSession(workspace: action.workspaceID)?.isEmpty != false ? " The target Current is empty." : "")
+                : "Changes assignment; this output remains stopped."
+        }
     }
 
     private func moveNetworkOutput(_ destinationID: UUID, technology: NetworkOutputTechnology, to targetWorkspaceID: UUID) {
@@ -320,6 +305,7 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         let menu = menu(caption: "Appearance", symbol: "textformat")
         defer { addManagementFooter(to: menu) }
         guard let profile, let target else { return menu }
+        menu.addItem(info("Edits this output’s complete independent appearance; future reusable-profile changes no longer apply."))
         for (title, key, values) in [
             ("Layout", \OutputProfile.layout, [("Stacked", "stacked"), ("Columns", "columns")]),
             ("Alignment", \OutputProfile.alignment, [("Left", "left"), ("Centre", "center"), ("Right", "right")]),
@@ -368,6 +354,7 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         let menu = menu(caption: "Background", symbol: "photo.on.rectangle")
         defer { addManagementFooter(to: menu) }
         guard let profile, let target else { return menu }
+        menu.addItem(info("Edits this output’s complete independent appearance; future reusable-profile changes no longer apply."))
         menu.addItem(command("Choose Visual…") { [weak self] in self?.chooseBackground(target) })
         menu.addItem(edit("Clear Visual", target) { $0.background.bookmark = nil })
         menu.addItem(edit("Visual Enabled", target, selected: profile.background.visible) { $0.background.visible.toggle() })
@@ -382,10 +369,12 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         return menu
     }
     private func chooseBackground(_ target: OutputProfileStore.QuickEditTarget) {
-        guard let destination = store.enabledDefault(for: target), store.profile(destination.profileID) != nil,
+        guard !isRetired,
+              let destination = store.enabledDefault(for: target), store.profile(destination.profileID) != nil,
               let window = backgroundButton.window, window.attachedSheet == nil else { return }
         let store = store
         let outputs = outputs
+        let createBackgroundBookmark = createBackgroundBookmark
         guard let requestingWorkspaceID = workspaceID ?? destination.workspaceID,
               store.document.workspaces.contains(where: { $0.id == requestingWorkspaceID }) else { return }
         if let problem = store.profileCustomizationProblem(for: destination.id) {
@@ -396,24 +385,29 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         panel.allowedContentTypes = [.image, .movie]
         // Creating an AppKit panel may run a nested event loop. The controls,
         // requesting workspace and default output must still be the same.
-        guard backgroundButton.window === window, window.attachedSheet == nil,
+        guard !isRetired, backgroundButton.window === window, window.attachedSheet == nil,
               store.document.workspaces.contains(where: { $0.id == requestingWorkspaceID }),
               store.enabledDefault(for: target) != nil else { return }
-        beginBackgroundSheet(panel, window) { result in
-            guard result == .OK, let url = panel.url else { return }
+        beginBackgroundSheet(panel, window) { [weak self] result in
+            guard self?.isRetired == false, result == .OK, let url = panel.url else { return }
+            // Accepting the native selection transfers preparation to the app's
+            // store/output owners. Closing controls after this admission must
+            // not discard an explicitly accepted background choice.
             let fileAcquisitionGuard = outputs.makeFileAcquisitionGuard(for: url)
             Task { @MainActor in
-                let bookmark = await Task.detached { SecurityScopedBookmarks.createBookmark(for: url) }.value
+                let bookmark = await Task.detached { createBackgroundBookmark(url) }.value
                 guard store.document.workspaces.contains(where: { $0.id == requestingWorkspaceID }) else { return }
                 guard case .allowed = fileAcquisitionGuard(url) else {
                     outputs.reportFileActionIssue("The selected file changed while it was being prepared. Choose it again.",
                                                  workspace: requestingWorkspaceID)
                     return
                 }
-                if let bookmark {
-                    let problem = store.editDefaultProfile(target) { $0.background.bookmark = bookmark }
-                    outputs.reportAppearanceEditIssue(problem, workspace: requestingWorkspaceID)
+                guard let bookmark else {
+                    outputs.reportAppearanceEditIssue("The selected background could not be saved. Choose Visual again to retry; the existing background is unchanged.", workspace: requestingWorkspaceID)
+                    return
                 }
+                let problem = store.editDefaultProfile(target) { $0.background.bookmark = bookmark }
+                outputs.reportAppearanceEditIssue(problem, workspace: requestingWorkspaceID)
             }
         }
     }
@@ -454,7 +448,14 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         item.target = self; item.representedObject = Command(action); item.isEnabled = enabled; item.state = selected ? .on : .off
         return item
     }
-    @objc private func performCommand(_ sender: NSMenuItem) { (sender.representedObject as? Command)?.action() }
+    func retire() {
+        isRetired = true
+        for button in [outputButton, networkButton, appearanceButton, backgroundButton] { button.isEnabled = false }
+    }
+    @objc private func performCommand(_ sender: NSMenuItem) {
+        guard !isRetired else { return }
+        (sender.representedObject as? Command)?.action()
+    }
     private final class Command {
         let action: () -> Void
         init(_ action: @escaping () -> Void) { self.action = action }
