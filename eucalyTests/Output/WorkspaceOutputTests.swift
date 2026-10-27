@@ -740,9 +740,9 @@ final class WorkspaceOutputTests: XCTestCase {
         let saved = f.store.document
         let starts = f.transport.starts
         window.outputCoordinator = f.outputs
-        let command2 = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
-            timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "2",
-            charactersIgnoringModifiers: "2", isARepeat: false, keyCode: 19))
+        let commandReturn = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+            timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "\r",
+            charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
 
         for (session, destination, other) in [(f.a, f.house, f.b), (f.b, f.online, f.a)] {
             for hidden in [false, true] {
@@ -761,7 +761,7 @@ final class WorkspaceOutputTests: XCTestCase {
                 f.outputs.focusWorkspace(other)
                 window.outputDestinationID = destination
                 f.outputs.toggleSlides()
-                window.keyDown(with: command2)
+                XCTAssertTrue(window.performKeyEquivalent(with: commandReturn))
                 XCTAssertTrue(session.isEmpty)
                 XCTAssertTrue(flow.isCurrentCollapsed)
                 XCTAssertEqual(flow.previewSlides.first?.lines.first?.text, "Private Preview")

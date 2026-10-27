@@ -175,7 +175,7 @@ final class WorkspaceBackgroundUITests: XCTestCase {
         let projection = fixture.projectionWindow()
         fixture.outputs.focusWorkspace(fixture.peer)
         fixture.focus.window = projection
-        projection.keyDown(with: try key("5", code: 23, window: projection))
+        try invoke(clear)
 
         XCTAssertEqual(fixture.home.currentSlideID, current)
         XCTAssertFalse(fixture.home.areSlidesVisible)
@@ -187,8 +187,8 @@ final class WorkspaceBackgroundUITests: XCTestCase {
         XCTAssertNil(fixture.home.projectionDisplayIssue)
     }
 
-    func testMenuAndProjectionClearShortcutsForgetAudioAcrossControlsReopen() throws {
-        for (digit, code) in [("4", UInt16(21)), ("5", UInt16(23))] {
+    func testClearMenuActionsForgetAudioFromControlsAndProjectionAcrossControlsReopen() throws {
+        for title in ["Clear Background Audio", "Clear All Layers"] {
             for fromProjection in [false, true] {
                 let fixture = try Fixture()
                 defer { fixture.close() }
@@ -206,17 +206,18 @@ final class WorkspaceBackgroundUITests: XCTestCase {
                 let text = try XCTUnwrap(field.currentEditor() as? NSTextView)
                 text.setSelectedRange(.init(location: 3, length: 0))
                 let peerCurrent = fixture.peer.currentSlideID
+                let clear = try fixture.slideCommand(title)
+                XCTAssertTrue(clear.keyEquivalent.isEmpty, "Layer clearing is an explicit menu action.")
                 if fromProjection {
                     let projection = fixture.projectionWindow()
                     fixture.outputs.focusWorkspace(fixture.peer)
                     fixture.focus.window = projection
-                    projection.keyDown(with: try key(digit, code: code, window: projection))
-                } else {
-                    XCTAssertTrue(fixture.menus.mainMenu.performKeyEquivalent(with: try key(digit, code: code, window: window)))
-                    XCTAssertTrue(window.firstResponder === text)
-                    XCTAssertEqual(text.selectedRange(), .init(location: 3, length: 0))
-                    XCTAssertEqual(field.stringValue, "Unsaved operator text")
                 }
+                XCTAssertTrue(fixture.menus.validateMenuItem(clear))
+                try invoke(clear)
+                XCTAssertTrue(window.firstResponder === text)
+                XCTAssertEqual(text.selectedRange(), .init(location: 3, length: 0))
+                XCTAssertEqual(field.stringValue, "Unsaved operator text")
                 XCTAssertNil(fixture.home.backgroundAudioURL)
                 XCTAssertEqual(fixture.store.backgroundPreferences.settings(for: fixture.home.outputSourceID).values.audioBookmark, "")
                 XCTAssertEqual(fixture.store.backgroundPreferences.settings(for: fixture.peer.outputSourceID).values.audioBookmark, peerBookmark)
@@ -245,12 +246,6 @@ final class WorkspaceBackgroundUITests: XCTestCase {
     private func invoke(_ item: NSMenuItem) throws {
         XCTAssertTrue(NSApp.sendAction(try XCTUnwrap(item.action), to: item.target, from: item))
     }
-    private func key(_ digit: String, code: UInt16, window: NSWindow) throws -> NSEvent {
-        try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
-            timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: digit,
-            charactersIgnoringModifiers: digit, isARepeat: false, keyCode: code))
-    }
-
     @MainActor
     private final class Fixture {
         let suite = "WorkspaceBackgroundUI." + UUID().uuidString

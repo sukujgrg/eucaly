@@ -29,7 +29,13 @@ final class OutputWorkspaceWindows: ObservableObject {
         activeWorkspaceID ?? outputs.focusedWorkspaceID.flatMap { controllers[$0]?.window == nil ? nil : $0 }
             ?? hosts.first?.session.outputSourceID
     }
-    var canCreateWorkspace: Bool { profiles.canAddWorkspace }
+    var canCreateWorkspace: Bool {
+        let window = keyWindow()
+        // Shift-Command-N belongs to New Folder while a native file panel owns
+        // input, including panels attached to Settings rather than controls.
+        return profiles.canAddWorkspace && NSApp.modalWindow == nil
+            && window?.sheetParent == nil && window?.attachedSheet == nil
+    }
     func status(workspace id: UUID) -> String { outputs.tabStatus(workspace: id) }
 
     init(outputs: OutputCoordinator, updates: AppUpdateViewModel, defaults: UserDefaults? = nil,
@@ -102,6 +108,7 @@ final class OutputWorkspaceWindows: ObservableObject {
 
     @discardableResult
     func newWorkspace(from requesterID: UUID? = nil) -> UUID? {
+        guard canCreateWorkspace else { return nil }
         if let requesterID, controllers[requesterID]?.window == nil { return nil }
         if let source = (requesterID ?? navigationWorkspaceID).flatMap({ controllers[$0]?.window }), source.attachedSheet != nil { return nil }
         guard let id = profiles.addWorkspace() else { return nil }
@@ -295,6 +302,10 @@ final class OutputWorkspaceControls {
 @MainActor
 final class OutputWorkspaceWindow: NSWindow {
     weak var workspaceSession: PresentationSession?
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        WorkspacePresentationCommand.handleKeyEquivalent(event, in: self) || super.performKeyEquivalent(with: event)
+    }
 
     /// Search and text completion consume cancellation earlier in the responder
     /// chain. At the workspace boundary Escape hides slides, including when

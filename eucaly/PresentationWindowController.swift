@@ -873,20 +873,14 @@ final class PresentationWindow: NSWindow {
     // as the app's main document window.
     override var canBecomeMain: Bool { false }
 
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        WorkspacePresentationCommand.handleKeyEquivalent(event, in: self) || super.performKeyEquivalent(with: event)
+    }
+
     override func keyDown(with event: NSEvent) {
         switch event.keyCode {
         case 53: // Esc
             cancelOperation(nil)
-        case 18 where event.modifierFlags.contains(.command): // Cmd+1
-            requestStopProjection()
-        case 19 where event.modifierFlags.contains(.command): // Cmd+2
-            requestToggleSlidesVisibility()
-        case 20 where event.modifierFlags.contains(.command): // Cmd+3
-            requestClearBackgroundVisual()
-        case 21 where event.modifierFlags.contains(.command): // Cmd+4
-            requestClearBackgroundAudio()
-        case 23 where event.modifierFlags.contains(.command): // Cmd+5
-            requestClearAllLayers()
         case 123: // Left
             requestMoveSelection(direction: .previousItem)
         case 124: // Right
@@ -911,16 +905,6 @@ final class PresentationWindow: NSWindow {
     private var commandSession: PresentationSession? { outputCoordinator?.commandSession(for: self) }
 
     private func requestHideSlides() { commandSession?.hideSlides() }
-    private func requestStopProjection() {
-        guard let outputCoordinator, let owner = outputCoordinator.commandWorkspaceID(for: self) else { return }
-        outputCoordinator.stop(workspace: owner)
-    }
-    private func requestToggleSlidesVisibility() { commandSession?.toggleSlidesVisibility() }
-    private func requestClearBackgroundVisual() { if let session = commandSession { outputCoordinator?.clearBackgrounds(for: session) } }
-    private func requestClearBackgroundAudio() { commandSession?.clearBackgroundAudio() }
-    private func requestClearAllLayers() {
-        if let session = commandSession { outputCoordinator?.clearAllLayers(for: session) }
-    }
 
     private func requestMoveSelection(_ delta: Int) {
         commandSession?.moveSelection(delta)

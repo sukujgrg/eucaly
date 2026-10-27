@@ -70,12 +70,12 @@ final class AppMenuTests: XCTestCase {
         XCTAssertTrue(app.workspaceWindows.controllers.isEmpty)
         XCTAssertEqual(profiles.document, saved)
 
-        let key = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+        let key = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command, .shift],
                                                timestamp: 0, windowNumber: projection.windowNumber, context: nil,
-                                               characters: "1", charactersIgnoringModifiers: "1", isARepeat: false, keyCode: 18))
-        projection.keyDown(with: key)
+                                               characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
+        XCTAssertTrue(projection.performKeyEquivalent(with: key))
         XCTAssertFalse(outputs.isOpen(standby.id))
-        XCTAssertTrue(outputs.isOpen(audience), "Cmd+1 must preserve another workspace's program.")
+        XCTAssertTrue(outputs.isOpen(audience), "Stopping a workspace must preserve another workspace's program.")
         XCTAssertTrue(home.isPresenting)
         XCTAssertNil(outputs.preparedSession(workspace: owner))
 
@@ -89,20 +89,26 @@ final class AppMenuTests: XCTestCase {
         profiles.edit { $0.destinations.removeAll { $0.id == standby.id } }
         XCTAssertTrue(outputs.deleteWorkspace(owner))
         XCTAssertFalse(menus.validateMenuItem(stop), "A stale projection window must not fall back to focused Home.")
-        projection.keyDown(with: key)
+        XCTAssertTrue(projection.performKeyEquivalent(with: key))
         XCTAssertTrue(outputs.isOpen(audience))
     }
 
     func testSlidesCommandRequiresCurrentInTheControlledWorkspace() throws {
-        let hub = LocalOutputHarness()
-        defer { hub.outputs.stopAllOutputs() }
+        let focus = MenuFocus()
+        let hub = LocalOutputHarness(keyWindow: { focus.window })
+        let window = OutputWorkspaceWindow(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.workspaceSession = hub.session
+        focus.window = window
+        defer { hub.outputs.stopAllOutputs(); window.close() }
         let app = AppDelegate()
         app.outputProfiles = hub.outputs.profiles; app.outputs = hub.outputs
         app.workspaceWindows = makeWorkspaceWindows(outputs: hub.outputs)
         let menus = AppMenuController(app: app)
         let slides = try XCTUnwrap(menus.mainMenu.item(withTitle: "Slides")?.submenu)
         let toggle = try XCTUnwrap(slides.item(withTitle: "Show/Hide Slides"))
-        XCTAssertEqual(toggle.keyEquivalent, "2")
+        XCTAssertEqual(toggle.keyEquivalent, "\r")
+        XCTAssertEqual(toggle.keyEquivalentModifierMask, .command)
         XCTAssertFalse(menus.validateMenuItem(toggle))
 
         hub.load("Verse\nLoaded Current")
@@ -113,13 +119,15 @@ final class AppMenuTests: XCTestCase {
         let otherID = try XCTUnwrap(app.outputProfiles.addWorkspace(name: "Online"))
         let other = hub.outputs.session(workspace: otherID)
         hub.outputs.focusWorkspace(other)
-        XCTAssertFalse(menus.validateMenuItem(toggle), "Another workspace's Current cannot enable Cmd+2")
+        window.workspaceSession = other
+        XCTAssertFalse(menus.validateMenuItem(toggle), "Another workspace's Current cannot enable Command-Return")
         // Virtual PDFs have no materialized slides but still count as Current.
         other.setPDFSlideSource(.init(url: URL(fileURLWithPath: "/tmp/menu-current.pdf"), pageCount: 200))
         XCTAssertTrue(other.slides.isEmpty)
         XCTAssertTrue(menus.validateMenuItem(toggle))
 
         hub.outputs.focusWorkspace(hub.session)
+        window.workspaceSession = hub.session
         hub.session.clearSlides()
         XCTAssertTrue(hub.session.isPresenting, "Clear retains the output")
         XCTAssertFalse(menus.validateMenuItem(toggle))
@@ -187,8 +195,22 @@ final class AppMenuTests: XCTestCase {
         let grouped = Dictionary(grouping: shortcuts) { $0.keyEquivalent + ":" + String($0.keyEquivalentModifierMask.rawValue) }
         XCTAssertTrue(grouped.values.allSatisfy { $0.count == 1 }, "Every command shortcut must have one owner")
         let file = try XCTUnwrap(menus.mainMenu.item(withTitle: "File")?.submenu)
-        XCTAssertEqual(file.item(withTitle: "New Workspace")?.keyEquivalent, "t")
+        XCTAssertEqual(file.item(withTitle: "New Workspace")?.keyEquivalent, "n")
+        XCTAssertEqual(file.item(withTitle: "New Workspace")?.keyEquivalentModifierMask, [.command, .shift])
         XCTAssertEqual(file.item(withTitle: "New Lyrics")?.keyEquivalent, "n")
+        let fonts = try XCTUnwrap(edit.item(withTitle: "Show Fonts"))
+        XCTAssertEqual(fonts.keyEquivalent, "t")
+        XCTAssertEqual(fonts.keyEquivalentModifierMask, .command)
+        XCTAssertEqual(fonts.action, #selector(NSFontManager.orderFrontFontPanel(_:)))
+        XCTAssertTrue(fonts.target === NSFontManager.shared)
+        let slides = try XCTUnwrap(menus.mainMenu.item(withTitle: "Slides")?.submenu)
+        XCTAssertEqual(Array(slides.items.prefix(2).map(\.title)), ["Show/Hide Slides", "Stop Workspace Outputs"])
+        XCTAssertEqual(slides.item(withTitle: "Stop Workspace Outputs")?.keyEquivalent, "\r")
+        XCTAssertEqual(slides.item(withTitle: "Stop Workspace Outputs")?.keyEquivalentModifierMask, [.command, .shift])
+        for title in ["Clear Background Visual", "Clear Background Audio", "Clear All Layers", "Stop All Outputs"] {
+            XCTAssertEqual(slides.item(withTitle: title)?.keyEquivalent, "")
+        }
+        XCTAssertFalse(shortcuts.contains { ["1", "2", "3", "4", "5"].contains($0.keyEquivalent) })
         XCTAssertEqual(file.item(withTitle: "Close Window")?.action, #selector(NSWindow.performClose(_:)))
         XCTAssertNil(file.item(withTitle: "Quick Open…"))
         XCTAssertFalse(shortcuts.contains { $0.keyEquivalent == "o" && $0.keyEquivalentModifierMask == [.command, .shift] })

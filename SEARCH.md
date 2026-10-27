@@ -49,6 +49,9 @@ The app uses a hybrid filesystem/SQLite model:
 - Library actions and file results share one keyboard selection; section
   headings stay outside selection. Arrow keys traverse available entries and
   Return activates the selected action or opens the selected file in Preview.
+- `Cmd+Return` shows/hides the workspace's existing Current slides, and
+  `Shift+Cmd+Return` stops its outputs. Neither activates the selected result,
+  loads Preview into Current or changes the search query and selection.
 - Search status covers both debounce and query execution. An empty-result message
   appears only after the current query completes; cancelled or superseded queries
   cannot overwrite a newer query's results or status.

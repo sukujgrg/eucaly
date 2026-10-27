@@ -39,7 +39,7 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
 
         let file = submenu("File")
         add("New Lyrics", to: file, command: .newLyrics, key: "n")
-        add("New Workspace", to: file, command: .newWorkspace, key: "t")
+        add("New Workspace", to: file, command: .newWorkspace, key: "n", modifiers: [.command, .shift])
         add("Refresh Library", to: file, command: .refresh, key: "r")
         file.addItem(.separator())
         add("Save Lyrics", to: file, command: .save, key: "s")
@@ -67,7 +67,7 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
             let item = add(title, to: find, action: #selector(LyricsTextView.performLyricsFindAction(_:)), key: key, modifiers: modifiers)
             item.tag = action.rawValue
         }
-        add("Show Fonts", to: edit, action: #selector(NSFontManager.orderFrontFontPanel(_:))).target = NSFontManager.shared
+        add("Show Fonts", to: edit, action: #selector(NSFontManager.orderFrontFontPanel(_:)), key: "t").target = NSFontManager.shared
 
         let view = submenu("View")
         add("Show/Hide Sidebar", to: view, action: #selector(NSSplitViewController.toggleSidebar(_:)), key: "s", modifiers: [.command, .control])
@@ -77,16 +77,17 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         workspace.submenu = workspaceMenu; mainMenu.addItem(workspace)
 
         let slides = submenu("Slides")
-        add("Stop Workspace Outputs", to: slides, command: .stop, key: "1")
-        add("Stop All Outputs", to: slides, command: .stopAll)
+        add("Show/Hide Slides", to: slides, command: .slides, shortcut: .toggleSlides)
+        add("Stop Workspace Outputs", to: slides, command: .stop, shortcut: .stopOutputs)
         slides.addItem(.separator())
-        add("Show/Hide Slides", to: slides, command: .slides, key: "2")
         add("Show/Hide Background", to: slides, command: .background)
         add("Pause/Play Background Audio", to: slides, command: .audio)
         slides.addItem(.separator())
-        add("Clear Background Visual", to: slides, command: .clearBackground, key: "3")
-        add("Clear Background Audio", to: slides, command: .clearAudio, key: "4")
-        add("Clear All Layers", to: slides, command: .clearAll, key: "5")
+        add("Clear Background Visual", to: slides, command: .clearBackground)
+        add("Clear Background Audio", to: slides, command: .clearAudio)
+        add("Clear All Layers", to: slides, command: .clearAll)
+        slides.addItem(.separator())
+        add("Stop All Outputs", to: slides, command: .stopAll)
 
         let output = NSMenuItem(title: "Output", action: nil, keyEquivalent: "")
         output.submenu = outputMenu; mainMenu.addItem(output)
@@ -146,8 +147,8 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         case .save:
             guard let id = app.workspaceWindows.activeWorkspaceID else { return false }
             return app.workspaceWindows.controllers[id]?.commands.canSaveLyrics == true
-        case .slides: return app.outputs.commandSession?.isEmpty == false
-        case .stop: return app.outputs.commandWorkspaceID != nil
+        case .slides: return WorkspacePresentationCommand.toggleSlides.isEnabled(in: app.outputs.commandWindow, outputs: app.outputs)
+        case .stop: return WorkspacePresentationCommand.stopOutputs.isEnabled(in: app.outputs.commandWindow, outputs: app.outputs)
         case .audio: return app.outputs.commandSession?.backgroundAudioURL != nil
         case .background, .clearBackground, .clearAudio, .clearAll:
             return app.outputs.commandSession != nil
@@ -174,9 +175,9 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         case .searchLibrary: post(.showLibrarySearch)
         case .refresh: post(.refreshLibrary)
         case .save: post(.saveLyrics)
-        case .stop: app.outputs.stop()
+        case .stop: WorkspacePresentationCommand.stopOutputs.perform(in: app.outputs.commandWindow, outputs: app.outputs)
         case .stopAll: app.outputs.stopAllOutputs()
-        case .slides: app.outputs.toggleSlides()
+        case .slides: WorkspacePresentationCommand.toggleSlides.perform(in: app.outputs.commandWindow, outputs: app.outputs)
         case .background: app.outputs.commandSession?.toggleBackgroundVisualVisibility()
         case .audio:
             if let session = app.outputs.commandSession {
@@ -193,6 +194,10 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         let menu = NSMenu(title: title); item.submenu = menu; mainMenu.addItem(item)
         return menu
+    }
+    @discardableResult
+    private func add(_ title: String, to menu: NSMenu, command: Command, shortcut: WorkspacePresentationCommand) -> NSMenuItem {
+        add(title, to: menu, command: command, key: shortcut.keyEquivalent, modifiers: shortcut.modifiers)
     }
     @discardableResult
     private func add(_ title: String, to menu: NSMenu, command: Command, key: String = "",

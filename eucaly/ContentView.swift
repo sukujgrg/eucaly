@@ -261,22 +261,16 @@ public struct ContentView: View {
             .onReceive(libraryInventory.changes, perform: applyLibraryInventory)
             .onReceive(screenCaptureManager.$windows, perform: handleCaptureWindowsUpdate)
             .onReceive(screenCaptureManager.windowPickerSelections, perform: handleWindowPickerSelection)
-            .onReceive(NotificationCenter.default.publisher(for: .toggleSlidesVisibility), perform: handleToggleSlidesVisibilityNotification)
-            .onReceive(NotificationCenter.default.publisher(for: .toggleBackgroundVisibility), perform: handleToggleBackgroundVisibilityNotification)
-            .onReceive(NotificationCenter.default.publisher(for: .toggleBackgroundAudio), perform: handleToggleBackgroundAudioNotification)
-            .onReceive(NotificationCenter.default.publisher(for: .clearAllLayers), perform: handleClearAllLayersNotification)
-        .onReceive(NotificationCenter.default.publisher(for: .clearBackgroundVisual), perform: handleClearBackgroundVisualNotification)
-        .onReceive(NotificationCenter.default.publisher(for: .clearBackgroundAudio), perform: handleClearBackgroundAudioNotification)
-        .onReceive(NotificationCenter.default.publisher(for: .newLyrics), perform: handleNewLyricsNotification)
-        .onReceive(NotificationCenter.default.publisher(for: .saveLyrics), perform: handleSaveLyricsNotification)
-        .onReceive(NotificationCenter.default.publisher(for: .showLibrarySearch)) { _ in
-            guard workspaceCommands.isActive else { return }
-            presentLibrarySearch()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .refreshLibrary)) { _ in
-            guard workspaceCommands.isActive else { return }
-            refreshLibrary()
-        }
+            .onReceive(NotificationCenter.default.publisher(for: .newLyrics), perform: handleNewLyricsNotification)
+            .onReceive(NotificationCenter.default.publisher(for: .saveLyrics), perform: handleSaveLyricsNotification)
+            .onReceive(NotificationCenter.default.publisher(for: .showLibrarySearch)) { _ in
+                guard workspaceCommands.isActive else { return }
+                presentLibrarySearch()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .refreshLibrary)) { _ in
+                guard workspaceCommands.isActive else { return }
+                refreshLibrary()
+            }
     }
 
     private var sidebarConfiguration: SidebarConfiguration {
@@ -380,52 +374,6 @@ public struct ContentView: View {
             return
         }
         handleSidebarSelectionRequest(selection)
-    }
-
-    private func handleToggleSlidesVisibilityNotification(_ notification: Notification) {
-        guard workspaceCommands.isActive else { return }
-        deferSessionChange {
-            flow.toggleSlidesVisibility(in: session)
-        }
-    }
-
-    private func handleToggleBackgroundVisibilityNotification(_ notification: Notification) {
-        guard workspaceCommands.isActive else { return }
-        deferSessionChange {
-            session.toggleBackgroundVisualVisibility()
-        }
-    }
-
-    private func handleToggleBackgroundAudioNotification(_ notification: Notification) {
-        guard workspaceCommands.isActive else { return }
-        deferSessionChange {
-            if session.isBackgroundAudioPlaying {
-                session.pauseBackgroundAudio()
-            } else {
-                session.playBackgroundAudio()
-            }
-        }
-    }
-
-    private func handleClearAllLayersNotification(_ notification: Notification) {
-        guard workspaceCommands.isActive else { return }
-        deferSessionChange {
-            session.outputCoordinator.clearAllLayers(for: session)
-        }
-    }
-
-    private func handleClearBackgroundVisualNotification(_ notification: Notification) {
-        guard workspaceCommands.isActive else { return }
-        deferSessionChange {
-            session.outputCoordinator.clearBackgrounds(for: session)
-        }
-    }
-
-    private func handleClearBackgroundAudioNotification(_ notification: Notification) {
-        guard workspaceCommands.isActive else { return }
-        deferSessionChange {
-            clearBackgroundAudio()
-        }
     }
 
     private func handleNewLyricsNotification(_ notification: Notification) {

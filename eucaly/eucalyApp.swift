@@ -150,13 +150,6 @@ enum EucalyApp {
 extension Notification.Name {
     static let showManageOutputsSettings = Notification.Name("showManageOutputsSettings")
     static let newLyrics = Notification.Name("newLyrics")
-    static let stopProjection = Notification.Name("stopProjection")
-    static let toggleSlidesVisibility = Notification.Name("toggleSlidesVisibility")
-    static let toggleBackgroundVisibility = Notification.Name("toggleBackgroundVisibility")
-    static let toggleBackgroundAudio = Notification.Name("toggleBackgroundAudio")
-    static let clearBackgroundVisual = Notification.Name("clearBackgroundVisual")
-    static let clearBackgroundAudio = Notification.Name("clearBackgroundAudio")
-    static let clearAllLayers = Notification.Name("clearAllLayers")
     static let saveLyrics = Notification.Name("saveLyrics")
     static let showLibrarySearch = Notification.Name("showLibrarySearch")
     static let refreshLibrary = Notification.Name("refreshLibrary")

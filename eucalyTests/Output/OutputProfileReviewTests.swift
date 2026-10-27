@@ -248,7 +248,7 @@ final class OutputProfileReviewTests: XCTestCase {
         let (window, view) = host(outputs, destination: destination); defer { window.close() }
         await settle(); try assertCenteredClock(view)
         outputs.stop(); outputs.toggleSlides(); await settle()
-        XCTAssertFalse(outputs.isRunning, "Cmd+2 cannot start outputs with empty Current")
+        XCTAssertFalse(outputs.isRunning, "Show/Hide Current cannot start outputs with empty Current")
         outputs.openConfidence(destination); await settle(); try assertCenteredClock(view)
         XCTAssertTrue(outputs.isRunning, "Open Confidence resumes the clock without a slide")
         XCTAssertFalse(session.isPresenting)

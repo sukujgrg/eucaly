@@ -39,7 +39,7 @@ final class LayerControlsTests: XCTestCase {
         XCTAssertTrue(result.backgroundVisible, "ESC should NOT affect background visibility")
     }
 
-    func testCmdZTogglesSlidesIndependently() async {
+    func testSlidesVisibilityTogglesIndependently() async {
         let result = await MainActor.run { () -> (firstSlides: Bool, firstBg: Bool, secondSlides: Bool, secondBg: Bool) in
             let (outputs, session) = projectedSession()
             defer { outputs.stop() }
@@ -71,7 +71,7 @@ final class LayerControlsTests: XCTestCase {
         XCTAssertTrue(result.secondBg, "Second toggle should not affect background")
     }
 
-    func testCmdBTogglesBackgroundIndependently() async {
+    func testBackgroundVisibilityTogglesIndependently() async {
         let result = await MainActor.run { () -> (firstSlides: Bool, firstBg: Bool, secondSlides: Bool, secondBg: Bool) in
             let fixture = LocalOutputHarness(); defer { fixture.stop() }
             let session = fixture.session
@@ -103,7 +103,7 @@ final class LayerControlsTests: XCTestCase {
 
     // MARK: - Background Audio Layer Tests
 
-    func testCmdATogglesBackgroundAudio() async {
+    func testBackgroundAudioPlaybackTogglesIndependently() async {
         let result = await MainActor.run { () -> (firstPlaying: Bool, secondPlaying: Bool) in
             let session = PresentationSession()
 
@@ -438,11 +438,11 @@ final class LayerControlsTests: XCTestCase {
             session.hideSlides()
             let step2 = (session.areSlidesVisible, session.isBackgroundVisualVisible)
 
-            // Step 3: Cmd+B hides background
+            // Step 3: Hide the background
             session.toggleBackgroundVisualVisibility()
             let step3 = (session.areSlidesVisible, session.isBackgroundVisualVisible)
 
-            // Step 4: Cmd+Z shows slides
+            // Step 4: Show slides
             session.showSlides()
             let step4 = (session.areSlidesVisible, session.isBackgroundVisualVisible)
 
@@ -462,12 +462,12 @@ final class LayerControlsTests: XCTestCase {
         XCTAssertFalse(result.step2Slides, "ESC hides slides")
         XCTAssertTrue(result.step2Bg, "ESC keeps background visible")
 
-        // Step 3: Cmd+B hides background
+        // Step 3: Hide the background
         XCTAssertFalse(result.step3Slides, "Slides still hidden")
-        XCTAssertFalse(result.step3Bg, "Cmd+B hides background")
+        XCTAssertFalse(result.step3Bg, "Hiding the background preserves the other layers")
 
-        // Step 4: Cmd+Z shows slides
-        XCTAssertTrue(result.step4Slides, "Cmd+Z shows slides")
+        // Step 4: Show slides
+        XCTAssertTrue(result.step4Slides, "Showing slides restores only the slides layer")
         XCTAssertFalse(result.step4Bg, "Background still hidden")
     }
 }

@@ -165,7 +165,8 @@ final class PresentationToolbarController: NSObject, NSToolbarDelegate, NSToolba
         slides?.label = label
         slides?.image = NSImage(systemSymbolName: showing ? "rectangle.slash" : "rectangle", accessibilityDescription: nil)
         slides?.isEnabled = !session.isEmpty
-        slides?.toolTip = session.isEmpty ? "Load a document into Current to show slides." : label
+        slides?.toolTip = session.isEmpty ? "Load a document into Current to show slides."
+            : "\(label) (\(WorkspacePresentationCommand.toggleSlides.shortcutDescription))"
         quickControls.render(); renderSidebar()
         for (identifier, button) in [("output.destination", quickControls.outputButton),
                                      ("output.network", quickControls.networkButton),

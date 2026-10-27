@@ -9,7 +9,8 @@ import XCTest
 final class NativeTestApplicationFocus: NSObject, XCTestObservation {
     static let shared = NativeTestApplicationFocus()
     private var previousApplication: NSRunningApplication?
-    private var admission: Task<Void, Error>?
+    private var hasFocusLease = false
+    private let admission = NativeTestForegroundAdmission()
 
     private override init() {
         super.init()
@@ -17,42 +18,43 @@ final class NativeTestApplicationFocus: NSObject, XCTestObservation {
     }
 
     func activate() async throws {
-        if admission == nil {
+        if !hasFocusLease {
             previousApplication = NSWorkspace.shared.frontmostApplication
-            admission = Task { @MainActor in
-                let bundleURL = Bundle.main.bundleURL.resolvingSymlinksInPath().standardizedFileURL
-                let pid = ProcessInfo.processInfo.processIdentifier
-                let matching = NSWorkspace.shared.runningApplications.filter {
-                    $0.bundleURL?.resolvingSymlinksInPath().standardizedFileURL == bundleURL
-                }
-                guard matching.count == 1, matching.first?.processIdentifier == pid else {
-                    throw NativeTestFocusError.ambiguousInstallation
-                }
-                // Xcode background-launches hosted tests. LaunchServices owns
-                // foreground admission; an NSApp activation request alone can
-                // be rejected with a zero activation count. Reopen only this
-                // exact, already-running installation and verify process reuse.
-                let configuration = NSWorkspace.OpenConfiguration()
-                configuration.activates = true
-                configuration.createsNewApplicationInstance = false
-                configuration.allowsRunningApplicationSubstitution = false
-                configuration.addsToRecentItems = false
-                configuration.promptsUserIfNeeded = false
-                configuration.arguments = [AppLaunchContext.testHostFocusRequestArgument]
-                let running = try await NSWorkspace.shared.openApplication(at: bundleURL, configuration: configuration)
-                guard running.processIdentifier == pid,
-                      running.bundleURL?.resolvingSymlinksInPath().standardizedFileURL == bundleURL else {
-                    throw NativeTestFocusError.unexpectedProcess
-                }
-            }
+            hasFocusLease = true
         }
-        try await admission?.value
-        NSApp.activate()
+        try await admission.activate(isForeground: {
+            NSApp.isActive && NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier
+        }, request: {
+            let bundleURL = Bundle.main.bundleURL.resolvingSymlinksInPath().standardizedFileURL
+            let pid = ProcessInfo.processInfo.processIdentifier
+            let matching = NSWorkspace.shared.runningApplications.filter {
+                $0.bundleURL?.resolvingSymlinksInPath().standardizedFileURL == bundleURL
+            }
+            guard matching.count == 1, matching.first?.processIdentifier == pid else {
+                throw NativeTestFocusError.ambiguousInstallation
+            }
+            // Xcode background-launches hosted tests. LaunchServices owns
+            // foreground admission; an NSApp activation request alone can
+            // be rejected with a zero activation count. Reopen only this
+            // exact, already-running installation and verify process reuse.
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            configuration.createsNewApplicationInstance = false
+            configuration.allowsRunningApplicationSubstitution = false
+            configuration.addsToRecentItems = false
+            configuration.promptsUserIfNeeded = false
+            configuration.arguments = [AppLaunchContext.testHostFocusRequestArgument]
+            let running = try await NSWorkspace.shared.openApplication(at: bundleURL, configuration: configuration)
+            guard running.processIdentifier == pid,
+                  running.bundleURL?.resolvingSymlinksInPath().standardizedFileURL == bundleURL else {
+                throw NativeTestFocusError.unexpectedProcess
+            }
+        })
     }
 
     private func restore() {
-        guard admission != nil else { return }
-        admission = nil
+        guard hasFocusLease else { return }
+        hasFocusLease = false
         let previous = previousApplication
         previousApplication = nil
         if previous?.processIdentifier != ProcessInfo.processInfo.processIdentifier {
@@ -68,6 +70,24 @@ final class NativeTestApplicationFocus: NSObject, XCTestObservation {
         } else {
             DispatchQueue.main.sync { MainActor.assumeIsolated { restore() } }
         }
+    }
+}
+
+/// Only an in-flight request is shared. A completed request cannot prove that
+/// the test app still owns foreground after another application takes focus.
+@MainActor
+final class NativeTestForegroundAdmission {
+    private var inFlight: Task<Void, Error>?
+
+    func activate(isForeground: () -> Bool, request: @escaping @MainActor () async throws -> Void) async throws {
+        guard !isForeground() else { return }
+        if let inFlight { try await inFlight.value; return }
+        let task = Task { [weak self] in
+            defer { self?.inFlight = nil }
+            try await request()
+        }
+        inFlight = task
+        try await task.value
     }
 }
 

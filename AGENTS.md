@@ -304,7 +304,7 @@ If a new type cannot follow this contract, treat it as a design bug and refactor
 ### Preview vs Current
 - Follow the Media Flow Contract above for every source type.
 - Clear can run while projecting; it clears Current without implicitly restoring Preview.
-- Show/Hide Slides and Cmd+2 are disabled when that workspace's Current is empty, including while outputs remain open. NDI Start/Stop/Retry, background controls and Open Confidence remain independent.
+- Show/Hide Slides and `Cmd+Return` are disabled when that workspace's Current is empty, including while outputs remain open. NDI Start/Stop/Retry, background controls and Open Confidence remain independent.
 
 ### Projection
 - Toolbar and menu control slide visibility separately from backgrounds/audio. Projection may remain active with slides hidden; see Keyboard Shortcuts below for ESC and layer commands.
@@ -317,13 +317,13 @@ If a new type cannot follow this contract, treat it as a design bug and refactor
 ### Keyboard Shortcuts (Current)
 - `Cmd+F`: Search Library in the active workspace, including from the lyrics editor; repeating focuses the existing query. See `SEARCH.md` for search focus and activation behavior.
 - Find in Lyrics: separate native Edit > Find command without a shortcut. `Cmd+G` / `Shift+Cmd+G` find the next / previous text match; `Cmd+E` uses selected lyrics for Find. These do not navigate library results.
-- `Cmd+T`: New Workspace
-- `Cmd+1`: Stop Workspace Outputs (retain that workspace’s Current and assignments)
+- `Cmd+N`: New Lyrics; `Shift+Cmd+N`: New Workspace
+- `Cmd+T`: Show Fonts
+- `Cmd+Return`: Show/Hide Slides from the controlled workspace's Current; never load Preview or activate a search result
+- `Shift+Cmd+Return`: Stop Workspace Outputs (retain that workspace’s Current and assignments)
 - Stop All Outputs: explicit global Slides-menu action, without a shortcut
-- `Cmd+2`: Show/Hide Slides
-- `Cmd+3`: Clear Background Visual
-- `Cmd+4`: Clear Background Audio
-- `Cmd+5`: Clear All Layers (hide slides + clear visual/audio)
+- Clear Background Visual, Clear Background Audio and Clear All Layers (hide slides + clear visual/audio): explicit menu actions, without shortcuts
+- Projection shortcuts operate from native workspace controls, including their editor and library search, or a projection window resolved by its destination owner. Unrelated panels, Settings, attached sheets and modal dialogs do not fall back to the last focused workspace for these commands. Local sheet commands retain priority, including `Cmd+Return` to Apply in the lyrics cleanup review.
 - ESC: Dismiss library search and restore focus when search is open; otherwise Hide Slides only (does not stop projection, does not clear background/audio)
 
 ### Layer Model

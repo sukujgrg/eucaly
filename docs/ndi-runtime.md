@@ -45,14 +45,15 @@ keep their protocol and source identity. See [OMT outputs](omt-runtime.md) for t
 OMT format, bundled dependencies and cross-protocol audio policy. Picked windows
 remain native-only for both protocols.
 
-1. Create/name workspace tabs from the Workspace menu (`Cmd+T` creates a tab).
-   Each keeps one independent Sidebar → Preview → Current flow. Move Tab to New
-   Window retains the same workspace for side-by-side operation.
-   **Manage Workspaces…**, also in the workspace toolbar, provides Open, Rename
+1. Create/name workspaces from the Workspace menu (`Shift+Cmd+N` creates one).
+   Each keeps one independent Sidebar → Preview → Current flow. The pinned
+   **Workspaces** selector switches the controlled workspace in the same window;
+   **Open in New Window** provides side-by-side operation without moving outputs.
+   **Manage Workspaces…**, also in the Workspaces selector, provides Open, Rename
    and Delete. New creation is limited to four workspaces; older saved workspaces
    above that limit remain accessible. Keep at least one. Delete is available only
    after all output assignments (including disabled rows) are moved/removed and
-   playback is stopped. Closing a tab keeps its saved workspace, Current, live NDI
+   playback is stopped. Closing controls keeps the saved workspace, Current, live NDI
    source and background audio running.
 2. In Settings → Outputs, use **+ → NDI Output**. New rows start disabled,
    retain the default-output editing preference, and suggest `eucaly` (then an

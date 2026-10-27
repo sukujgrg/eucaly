@@ -65,7 +65,6 @@ final class OutputCoordinator: ObservableObject {
     private var targets: [UUID: ProjectionMonitorTarget] = [:]
     private var displayObservation: UUID?
     private var profileObservation: UUID?
-    private var stopObserver: NSObjectProtocol?
     private var captureObservation: AnyCancellable?
     private var legacyMonitorTarget: ProjectionMonitorTarget?
     private var standbyConfigurations: [OutputDestinationConfiguration]
@@ -93,8 +92,9 @@ final class OutputCoordinator: ObservableObject {
     // These are operator editing conveniences only. Rendering always resolves a
     // destination's saved owner; focus never participates in output routing.
     var preferredLocalSession: PresentationSession? { focusedWorkspaceID.flatMap { programs[$0]?.session } }
-    var commandWorkspaceID: UUID? { commandWorkspaceID(for: keyWindow()) }
-    var commandSession: PresentationSession? { commandSession(for: keyWindow()) }
+    var commandWindow: NSWindow? { keyWindow() }
+    var commandWorkspaceID: UUID? { commandWorkspaceID(for: commandWindow) }
+    var commandSession: PresentationSession? { commandSession(for: commandWindow) }
     /// Standby outputs can exist without controls or a prepared session. Resolve
     /// their saved owner without preparing Current or falling back to focus.
     func commandWorkspaceID(for window: NSWindow?) -> UUID? {
@@ -166,9 +166,6 @@ final class OutputCoordinator: ObservableObject {
         displayObservation = displays.observe { [weak self] in self?.displaysChanged() }
         profileObservation = profiles.observe { [weak self] in self?.profilesChanged() }
         captureObservation = self.captureManager?.issues.sink { [weak self] in self?.receiveWindowCaptureIssue($0) }
-        stopObserver = NotificationCenter.default.addObserver(forName: .stopProjection, object: nil, queue: .main) { [weak self] _ in
-            DispatchQueue.main.async { self?.stop() }
-        }
     }
     func program(_ id: UUID) -> OutputWorkspaceProgram {
         if let value = programs[id] { return value }
@@ -1075,7 +1072,6 @@ final class OutputCoordinator: ObservableObject {
         setIssue(nil, workspace: id)
     }
     deinit {
-        if let stopObserver { NotificationCenter.default.removeObserver(stopObserver) }
         let displays = displays, profiles = profiles, displayObservation = displayObservation, profileObservation = profileObservation, windows = windows
         DispatchQueue.main.async {
             if let displayObservation { displays.removeObserver(displayObservation) }

@@ -409,7 +409,7 @@ final class ProjectionDisplayTests: XCTestCase {
         }
     }
 
-    func testStopProjectionCommandWorksWithoutAControlsViewAndReleasesAssignmentLock() throws {
+    func testProjectionStopShortcutWorksWithoutControlsAndReleasesAssignmentLock() throws {
         let actual = try usableConnectedMonitors()[0]
         let manager = ProjectionDisplayManager(displays: { [actual] })
         XCTAssertTrue(manager.select(actual.target))
@@ -417,8 +417,12 @@ final class ProjectionDisplayTests: XCTestCase {
         defer { session.stopPresentation() }
         session.showSlides()
         XCTAssertTrue(manager.isLocked)
-        NotificationCenter.default.post(name: .stopProjection, object: nil)
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        let windowID = try XCTUnwrap(session.outputCoordinator.audienceIdentity.0)
+        let projection = try XCTUnwrap(NSApp.windows.first { $0.windowNumber == Int(windowID) } as? PresentationWindow)
+        let stop = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command, .shift],
+            timestamp: 0, windowNumber: projection.windowNumber, context: nil, characters: "\r",
+            charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
+        XCTAssertTrue(projection.performKeyEquivalent(with: stop))
         XCTAssertFalse(session.isPresenting)
         XCTAssertFalse(manager.isLocked)
         XCTAssertEqual(manager.target, actual.target)

@@ -66,7 +66,7 @@ the responder chain. The editor provides its unsaved-change decision without
 replacing the window delegate. There is no SwiftUI window scene, `openWindow`
 action, hidden bootstrap window, discovery view or replacement-window polling.
 
-New Workspace in the File and Workspace menus (`Cmd+T`) creates an empty
+New Workspace in the File and Workspace menus (`Shift+Cmd+N`) creates an empty
 workspace with no outputs and selects it in the current controls window. The
 four-workspace creation guard includes parked and closed controls; deleting an
 unused workspace enables creation again.
@@ -211,13 +211,22 @@ per-source Start/Retry joins its accepted content and visibility without accepti
 Current again or revealing hidden peers. After the whole workspace has stopped,
 Start uses Current and shows it as a first start. Show Slides remains the explicit
 workspace-wide accept/reveal action.
-`Cmd+1` stops the controlled workspace; `Cmd+2` toggles its slides; `Cmd+3/4/5` retain
-the existing layer operations within that workspace. Projection-window input and
-Slides-menu shortcuts resolve the owning workspace by destination ID, even when
-another workspace was the last controls window used. `Cmd+T` does not collide with
-standard macOS text editing.
+`Cmd+Return` toggles the controlled workspace's Current slides;
+`Shift+Cmd+Return` stops its outputs while retaining Current and assignments.
+These commands operate from native workspace controls, including the lyrics
+editor and library search, or a projection window. Projection-window input resolves
+the owning workspace by destination ID, even when another workspace was the last
+controls window used. Neither command loads Preview or activates a search result.
+Unrelated panels, Settings, attached sheets and modal dialogs cannot use these
+commands through a last-focused-workspace fallback. Local sheet commands retain
+priority, including `Cmd+Return` to Apply in the lyrics cleanup review.
+Clear Background Visual, Clear Background Audio and Clear All Layers remain
+explicit menu actions without shortcuts, as does the global Stop All Outputs.
+`Cmd+N` creates lyrics, `Shift+Cmd+N` creates a workspace, and `Cmd+T` opens the
+native Fonts panel. Standard editing, Find, sidebar and fullscreen shortcuts remain
+unchanged.
 
-Show/Hide Slides and `Cmd+2` require content in the controlled workspace's Current,
+Show/Hide Slides and `Cmd+Return` require content in the controlled workspace's Current,
 including virtual PDFs. Empty Current disables the toolbar and Slides-menu toggle;
 projection-window shortcuts use the same guarded session action. Clearing Current
 keeps outputs open without enabling the slide toggle. NDI Start/Stop/Retry, background
