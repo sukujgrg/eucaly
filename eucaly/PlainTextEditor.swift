@@ -110,7 +110,11 @@ struct PlainTextEditor: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         guard let textView = nsView.documentView as? NSTextView else { return }
-        if textView.string != text {
+        // The binding can still contain the last committed lyrics while native
+        // composition differs, without an external document replacement;
+        // a workspace/output refresh must leave that native editing state alone.
+        // A different document uses EditorPaneContainerView's editorID identity.
+        if !textView.hasMarkedText(), textView.string != text {
             context.coordinator.replaceTextPreservingEditorState(
                 text,
                 in: textView,
