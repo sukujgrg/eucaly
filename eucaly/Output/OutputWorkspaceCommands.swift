@@ -92,7 +92,7 @@ final class OutputWorkspaceMenuController: NSObject, ObservableObject, NSMenuDel
     func updateButtonLabel() {
         guard let workspaceID else { return }
         let name = profiles.workspaceName(workspaceID)
-        menu.items.first?.title = "Workspaces"
+        menu.items.first?.title = name
         menu.items.first?.image = badges.badge(for: workspaceID).menuImage
         button.toolTip = "Current workspace: " + name + " — Switch or open a workspace in a new window"
         button.setControlAccessibility(label: "Workspaces", value: name,
