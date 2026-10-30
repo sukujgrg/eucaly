@@ -312,7 +312,7 @@ final class LibrarySearchPaletteController: NSViewController {
     }
 
     private func render() {
-        guard isPresented, let handlers else { return }
+        guard isPresented, handlers != nil else { return }
         if model.query != lastQuery {
             primaryTask?.cancel(); primaryTask = nil
             clearFeedback(); lastQuery = model.query

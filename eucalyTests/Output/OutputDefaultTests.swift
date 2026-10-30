@@ -587,7 +587,7 @@ final class OutputDefaultTests: XCTestCase {
             XCTAssertEqual(editor.string, "active search draft")
             XCTAssertEqual(editor.selectedRange, NSRange(location: 7, length: 6))
             XCTAssertEqual(workspaceButton.imagePosition, .imageLeading)
-            XCTAssertEqual(workspaceButton.title, "Workspaces")
+            XCTAssertEqual(workspaceButton.title, longWorkspaceName)
             XCTAssertEqual(workspaceButton.accessibilityValue() as? String, longWorkspaceName)
             XCTAssertEqual(workspaceButton.frame.width, workspaceWidth, accuracy: 1,
                            "Update reminders must preserve the compact workspace control's width")
