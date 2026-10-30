@@ -18,6 +18,16 @@ final class OutputProfileStore: ObservableObject {
 
     var reusableProfiles: [OutputProfile] { document.profiles.filter(\.isReusable) }
 
+    /// Built-in Confidence is a native monitor composition role (Current/Next/clock).
+    /// Network destinations render program Current only, so that built-in is not
+    /// offered as a Confidence stage. An already-assigned reference stays valid.
+    func reusableAppearanceChoices(for destinationID: UUID) -> [OutputProfile] {
+        let profiles = reusableProfiles
+        guard let destination = document.destinations.first(where: { $0.id == destinationID }),
+              destination.isNetworkDestination else { return profiles }
+        return profiles.filter { $0.id != OutputProfile.confidenceID }
+    }
+
     func profileRemovalProblem(_ id: UUID) -> String? {
         guard recoveryNotice == nil else { return recoveryNotice }
         guard let profile = profile(id) else { return "This profile no longer exists." }

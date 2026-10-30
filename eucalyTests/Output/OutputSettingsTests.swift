@@ -248,6 +248,28 @@ final class OutputSettingsTests: XCTestCase {
         }
     }
 
+    func testNetworkAppearancePickerOmitsBuiltInConfidenceUnlessAlreadyAssigned() throws {
+        let fixture = OutputSettingsFixture(); defer { fixture.close() }
+        NSApp.sendAction(try XCTUnwrap(fixture.controller.addNDI.action), to: fixture.controller.addNDI.target, from: fixture.controller.addNDI)
+        let network = try XCTUnwrap(fixture.controller.destinationEditor?.destination)
+        XCTAssertTrue(network.isNetworkDestination)
+        let offered = fixture.store.reusableAppearanceChoices(for: network.id)
+        XCTAssertFalse(offered.contains { $0.id == OutputProfile.confidenceID })
+        XCTAssertTrue(offered.contains { $0.id == OutputProfile.audienceID })
+        let editor = try XCTUnwrap(fixture.controller.destinationEditor)
+        editor.render()
+        XCTAssertNil(editor.profilePicker.itemArray.first { $0.representedObject as? UUID == OutputProfile.confidenceID })
+        fixture.store.selectProfile(OutputProfile.confidenceID, for: network.id)
+        editor.render()
+        XCTAssertNotNil(editor.profilePicker.itemArray.first { $0.representedObject as? UUID == OutputProfile.confidenceID },
+                        "An already-assigned Confidence reference remains selectable")
+        XCTAssertTrue(editor.appearanceNotice.stringValue.contains("Current"),
+                      "Network Confidence assignment must not promise Next/clock")
+        XCTAssertTrue(editor.standbyNotice.isHidden)
+        let native = fixture.store.document.destinations[0]
+        XCTAssertTrue(fixture.store.reusableAppearanceChoices(for: native.id).contains { $0.id == OutputProfile.confidenceID })
+    }
+
     func testAddOMTUsesControlledWorkspaceWithoutChangingNDIOrStartingOutputs() throws {
         let fixture = OutputSettingsFixture(); defer { fixture.close() }
         let workspace = try XCTUnwrap(fixture.store.addWorkspace(name: "Online"))
