@@ -476,6 +476,7 @@ private struct OutputSettingsReadabilityInput: Equatable {
         let next: OutputTextContent?
         let visible: Bool
         let hasMedia: Bool
+        let isNetworkDestination: Bool
     }
     let assignments: [Assignment]
     @MainActor init(coordinator: OutputCoordinator) {
@@ -488,7 +489,8 @@ private struct OutputSettingsReadabilityInput: Equatable {
             let snapshot = coordinator.snapshot(for: destination.id)
             return .init(id: destination.id, profile: profile, size: size, current: snapshot.current,
                 next: snapshot.next, visible: snapshot.visible,
-                hasMedia: snapshot.localMedia.map { OutputContentClassifier.mode(for: $0) == .media } ?? false)
+                hasMedia: snapshot.localMedia.map { OutputContentClassifier.mode(for: $0) == .media } ?? false,
+                isNetworkDestination: destination.isNetworkDestination)
         }
     }
 }
@@ -500,8 +502,13 @@ private struct OutputSettingsReadabilityView: View {
         ZStack {
             ForEach(input.assignments) { assignment in
                 if assignment.visible && !assignment.hasMedia {
-                    if assignment.profile.kind == .confidence {
-                        OutputConfidenceReadabilityProbe(snapshot: .init(current: assignment.current, next: assignment.next, visible: assignment.visible), profile: assignment.profile, size: assignment.size)
+                    if OutputConfidenceContent.usesNativeMonitorComposition(
+                        profile: assignment.profile, isNetworkDestination: assignment.isNetworkDestination
+                    ) {
+                        OutputConfidenceReadabilityProbe(
+                            snapshot: .init(current: assignment.current, next: assignment.next, visible: assignment.visible),
+                            profile: assignment.profile, size: assignment.size
+                        )
                     } else {
                         OutputReadabilityProbe(content: assignment.current, profile: assignment.profile, size: assignment.size)
                     }

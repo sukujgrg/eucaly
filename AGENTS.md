@@ -342,7 +342,7 @@ Projection screen rule:
 
 ### Confidence Standby Clock
 - Confidence is a native stage-monitor composition role. Native Confidence shows Current stacked above Next when Next has selected text (no empty Next band), with a centered 24-hour clock behind lyrics. Empty, cleared or hidden Confidence shows that clock at full strength. Media on Confidence remains full-bleed without the clock. There is no source-name header or media filename on the Confidence text stack.
-- Built-in Confidence is offered for native monitor destinations. Network (NDI/OMT) destinations are program feeds: they render accepted Current with appearance styling and do not receive Confidence Next, clock or auto-standby. An already-assigned Confidence appearance on a network row keeps Current-only styling without promising monitor composition.
+- Confidence-kind appearances are offered for native monitor destinations. Network (NDI/OMT) destinations are program feeds: they render accepted Current with appearance styling and do not receive Confidence Next, clock or auto-standby. Network appearance pickers omit Confidence-kind reusable profiles; an already-assigned Confidence appearance keeps Current-only styling and readability without promising monitor composition.
 - Enabled, assigned native Confidence opens automatically after the real workspace becomes key or after assignment/enable, including before the first slide.
 - Standby stays local to Confidence: it never shows a slide, steals focus, takes ownership, starts program media, publishes NDI or changes Current/session presentation state.
 - Stop, native close and display loss suppress reopening until Open Confidence/Show or a new assignment/enable; resume only on the saved physical identity.

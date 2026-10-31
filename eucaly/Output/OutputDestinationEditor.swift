@@ -98,7 +98,7 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
         moveNotice.stringValue = coordinator.isOpen(destinationID)
             ? "Moves this live output to " + targetWorkspace + "’s Current immediately." + (coordinator.focusedWorkspaceID.flatMap { coordinator.preparedSession(workspace: $0) }?.isEmpty == false ? "" : " The target Current is empty.")
             : "Changes assignment to " + targetWorkspace + "; this output remains stopped."
-        if destination.isNetworkDestination && (profile.id == OutputProfile.confidenceID || profile.kind == .confidence) {
+        if destination.isNetworkDestination && profile.kind == .confidence {
             appearanceNotice.stringValue = "This network feed publishes accepted Current with this appearance’s styling. Confidence Next, clock and standby belong to native Confidence monitors only."
         } else {
             appearanceNotice.stringValue = profile.isReusable

@@ -8,6 +8,12 @@ nonisolated struct OutputConfidenceContent {
     let media: Slide?
     let isIdle: Bool
 
+    /// Confidence-kind appearances own native monitor composition (Current/Next/clock).
+    /// Network destinations stay program Current for render and readability alike.
+    nonisolated static func usesNativeMonitorComposition(profile: OutputProfile, isNetworkDestination: Bool) -> Bool {
+        !isNetworkDestination && profile.kind == .confidence
+    }
+
     init(snapshot: OutputContentSnapshot, profile: OutputProfile) {
         current = snapshot.current
         next = snapshot.next.flatMap { profile.components(in: $0).isEmpty ? nil : $0 }
