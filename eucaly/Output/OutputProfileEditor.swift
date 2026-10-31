@@ -16,7 +16,7 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
     let backgroundColourNotice = outputSettingsLabel(secondary: true)
     let textControls = OutputSettingsGroup()
     let visualControls = OutputSettingsGroup()
-    private let confidenceNotice = outputSettingsLabel("Confidence always shows a large centered clock when content is empty or hidden.", secondary: true)
+    private let confidenceNotice = outputSettingsLabel("Confidence is a native stage monitor. It stacks Current above Next when present, keeps a centered 24-hour clock behind lyrics, and shows that clock at full strength when empty or hidden. Network outputs using this appearance publish Current only.", secondary: true)
     private var legacyControl: NSButton?
     private(set) var numberRows: [OutputSettingsNumberRow] = []
     private var renders: [(OutputProfile) -> Void] = []

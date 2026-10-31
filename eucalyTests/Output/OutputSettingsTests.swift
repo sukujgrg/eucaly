@@ -248,6 +248,41 @@ final class OutputSettingsTests: XCTestCase {
         }
     }
 
+    func testNetworkAppearancePickerOmitsConfidenceKindUnlessAlreadyAssigned() throws {
+        let fixture = OutputSettingsFixture(); defer { fixture.close() }
+        NSApp.sendAction(try XCTUnwrap(fixture.controller.addNDI.action), to: fixture.controller.addNDI.target, from: fixture.controller.addNDI)
+        let network = try XCTUnwrap(fixture.controller.destinationEditor?.destination)
+        XCTAssertTrue(network.isNetworkDestination)
+        var copy = try XCTUnwrap(fixture.store.profile(OutputProfile.confidenceID))
+        copy.id = UUID()
+        copy.name = "Confidence Copy"
+        copy.customizedForDestinationID = nil
+        fixture.store.edit { $0.profiles.append(copy) }
+        let offered = fixture.store.reusableAppearanceChoices(for: network.id)
+        XCTAssertFalse(offered.contains { $0.kind == .confidence })
+        XCTAssertTrue(offered.contains { $0.id == OutputProfile.audienceID })
+        let editor = try XCTUnwrap(fixture.controller.destinationEditor)
+        editor.render()
+        XCTAssertNil(editor.profilePicker.itemArray.first { $0.representedObject as? UUID == OutputProfile.confidenceID })
+        XCTAssertNil(editor.profilePicker.itemArray.first { $0.representedObject as? UUID == copy.id })
+        fixture.store.selectProfile(copy.id, for: network.id)
+        editor.render()
+        XCTAssertNotNil(editor.profilePicker.itemArray.first { $0.representedObject as? UUID == copy.id },
+                        "An already-assigned Confidence-kind reference remains selectable")
+        XCTAssertTrue(editor.appearanceNotice.stringValue.contains("Current"),
+                      "Network Confidence assignment must not promise Next/clock")
+        XCTAssertTrue(editor.standbyNotice.isHidden)
+        let native = fixture.store.document.destinations[0]
+        let nativeChoices = fixture.store.reusableAppearanceChoices(for: native.id)
+        XCTAssertTrue(nativeChoices.contains { $0.id == OutputProfile.confidenceID })
+        XCTAssertTrue(nativeChoices.contains { $0.id == copy.id })
+        XCTAssertTrue(OutputConfidenceContent.usesNativeMonitorComposition(
+            profile: try XCTUnwrap(fixture.store.profile(OutputProfile.confidenceID)), isNetworkDestination: false))
+        XCTAssertFalse(OutputConfidenceContent.usesNativeMonitorComposition(
+            profile: try XCTUnwrap(fixture.store.profile(copy.id)), isNetworkDestination: true),
+                       "Network feeds keep Current-only readability and composition")
+    }
+
     func testAddOMTUsesControlledWorkspaceWithoutChangingNDIOrStartingOutputs() throws {
         let fixture = OutputSettingsFixture(); defer { fixture.close() }
         let workspace = try XCTUnwrap(fixture.store.addWorkspace(name: "Online"))

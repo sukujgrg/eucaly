@@ -8,6 +8,12 @@ nonisolated struct OutputConfidenceContent {
     let media: Slide?
     let isIdle: Bool
 
+    /// Confidence-kind appearances own native monitor composition (Current/Next/clock).
+    /// Network destinations stay program Current for render and readability alike.
+    nonisolated static func usesNativeMonitorComposition(profile: OutputProfile, isNetworkDestination: Bool) -> Bool {
+        !isNetworkDestination && profile.kind == .confidence
+    }
+
     init(snapshot: OutputContentSnapshot, profile: OutputProfile) {
         current = snapshot.current
         next = snapshot.next.flatMap { profile.components(in: $0).isEmpty ? nil : $0 }
@@ -37,8 +43,9 @@ nonisolated struct OutputConfidenceContent {
     }
 }
 
-/// Pin text to explicit column boxes. Next reserves space only
-/// when it has selected text; Current otherwise receives the full inner frame.
+/// Pin text to explicit vertical boxes. Next reserves height only when it has
+/// selected text; Current otherwise receives the full inner frame. Next chrome
+/// (hairline + heading) is measured so verse text never shares that band.
 nonisolated struct OutputConfidenceGeometry {
     let width: CGFloat
     let height: CGFloat
@@ -46,6 +53,8 @@ nonisolated struct OutputConfidenceGeometry {
     let spacing: CGFloat
     let fontSize: CGFloat
     let headingHeight: CGFloat
+    let separatorHeight: CGFloat
+    let nextChromeHeight: CGFloat
     let currentSize: CGSize
     let nextSize: CGSize
 
@@ -53,14 +62,20 @@ nonisolated struct OutputConfidenceGeometry {
         padding = min(32, max(0, min(size.width, size.height) * 0.05))
         width = max(0, size.width - padding * 2)
         height = max(0, size.height - padding * 2)
-        spacing = min(24, max(0, size.width * 0.02))
-        fontSize = min(24, max(1, size.height * 0.04))
-        headingHeight = fontSize * 1.4
-        let columnsWidth = max(0, width - (hasNext ? spacing * 2 + 1 : 0))
-        currentSize = CGSize(width: columnsWidth * (hasNext ? 0.68 : 1),
-                             height: height)
-        nextSize = CGSize(width: hasNext ? columnsWidth * 0.32 : 0,
-                          height: max(0, height - headingHeight - spacing / 3))
+        spacing = min(24, max(0, size.height * 0.02))
+        fontSize = min(22, max(1, size.height * 0.035))
+        headingHeight = fontSize * 1.35
+        separatorHeight = 1
+        // Hairline, gap under it, heading, gap before Next lyrics.
+        nextChromeHeight = hasNext ? separatorHeight + spacing * 0.5 + headingHeight + spacing / 3 : 0
+        if hasNext {
+            let nextBlock = max(0, height * 0.34)
+            nextSize = CGSize(width: width, height: max(0, nextBlock - nextChromeHeight))
+            currentSize = CGSize(width: width, height: max(0, height - nextBlock - spacing))
+        } else {
+            nextSize = .zero
+            currentSize = CGSize(width: width, height: height)
+        }
     }
 }
 
@@ -70,25 +85,59 @@ struct OutputConfidenceView: View {
     let size: CGSize
 
     var body: some View {
+        ZStack {
+            OutputConfidenceClock(size: size, prominence: content.isIdle ? .standby : .backdrop)
+            if !content.isIdle {
+                lyrics
+            }
+        }
+        .frame(width: size.width, height: size.height)
+    }
+
+    private var lyrics: some View {
         let geometry = OutputConfidenceGeometry(size: size, hasNext: content.next != nil)
-        HStack(alignment: .top, spacing: geometry.spacing) {
+        return VStack(alignment: .leading, spacing: geometry.spacing) {
             text(content.current, size: geometry.currentSize)
             if let next = content.next {
-                Divider().frame(width: 1, height: geometry.height).accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: geometry.spacing / 3) {
-                    heading("Next", label: next.label, width: geometry.nextSize.width, geometry: geometry)
-                    text(next, size: geometry.nextSize, style: OutputConfidenceContent.nextProfile(profile))
-                }.frame(width: geometry.nextSize.width, height: geometry.height, alignment: .topLeading)
+                nextSection(next, geometry: geometry)
             }
-        }.frame(width: geometry.width, height: geometry.height, alignment: .topLeading)
-            .padding(geometry.padding).frame(width: size.width, height: size.height)
+        }
+        .frame(width: geometry.width, height: geometry.height, alignment: .topLeading)
+        .padding(geometry.padding)
+        .frame(width: size.width, height: size.height, alignment: .topLeading)
     }
-    private func heading(_ title: String, label: String?, width: CGFloat, geometry: OutputConfidenceGeometry) -> some View {
-        Text(title + (label.map { " · \($0)" } ?? ""))
-            .font(profile.typography.font(at: geometry.fontSize)).foregroundStyle(profile.typography.colour.color)
-            .lineLimit(1).fixedSize(horizontal: false, vertical: true)
-            .frame(width: width, height: geometry.headingHeight, alignment: .leading)
+
+    private func nextSection(_ next: OutputTextContent, geometry: OutputConfidenceGeometry) -> some View {
+        let colour = profile.typography.colour.color
+        let label = next.label?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return VStack(alignment: .leading, spacing: 0) {
+            Rectangle()
+                .fill(colour.opacity(0.35))
+                .frame(width: geometry.width, height: geometry.separatorHeight)
+                .accessibilityHidden(true)
+            Color.clear.frame(height: geometry.spacing * 0.5)
+            HStack(alignment: .firstTextBaseline, spacing: max(8, geometry.fontSize * 0.45)) {
+                Text("NEXT")
+                    .font(.system(size: geometry.fontSize * 0.82, weight: .semibold, design: .rounded))
+                    .tracking(1.4)
+                    .foregroundStyle(colour.opacity(0.5))
+                if let label, !label.isEmpty {
+                    Text(label)
+                        .font(profile.typography.font(at: geometry.fontSize))
+                        .foregroundStyle(colour.opacity(0.78))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.5)
+                }
+            }
+            .frame(width: geometry.width, height: geometry.headingHeight, alignment: .leading)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(label.flatMap { $0.isEmpty ? nil : "Next, \($0)" } ?? "Next")
+            Color.clear.frame(height: geometry.spacing / 3)
+            text(next, size: geometry.nextSize, style: OutputConfidenceContent.nextProfile(profile))
+        }
+        .frame(width: geometry.width, height: geometry.nextSize.height + geometry.nextChromeHeight, alignment: .topLeading)
     }
+
     private func text(_ content: OutputTextContent, size: CGSize, style: OutputProfile? = nil) -> some View {
         let style = style ?? profile
         return OutputTextView(content: OutputConfidenceContent.labeled(content, profile: style), profile: style, size: size)
@@ -96,26 +145,39 @@ struct OutputConfidenceView: View {
 }
 
 /// Confidence remains useful to the stage when there is no visible program.
-/// The standby clock is local to Confidence and never takes output ownership.
-struct OutputConfidenceIdleClock: View {
+/// The clock is local to Confidence composition and never takes output ownership.
+struct OutputConfidenceClock: View {
+    enum Prominence {
+        case standby
+        case backdrop
+    }
+
     let size: CGSize
+    var prominence: Prominence = .standby
+
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             let calendar = Calendar.autoupdatingCurrent
-            let clock = String(format: "%02d:%02d", calendar.component(.hour, from: context.date), calendar.component(.minute, from: context.date))
+            let clock = String(format: "%02d:%02d",
+                               calendar.component(.hour, from: context.date),
+                               calendar.component(.minute, from: context.date))
+            let scale: CGFloat = prominence == .standby ? 1 : 0.82
+            let opacity: Double = prominence == .standby ? 1 : 0.28
             Text(clock)
-                .font(.system(size: max(1, min(size.width * 0.23, size.height * 0.45)), weight: .heavy, design: .rounded))
-                .monospacedDigit().foregroundStyle(Color(red: 1, green: 0.82, blue: 0.24))
+                .font(.system(size: max(1, min(size.width * 0.23, size.height * 0.45) * scale),
+                              weight: .heavy, design: .rounded))
+                .monospacedDigit().foregroundStyle(Color(red: 1, green: 0.82, blue: 0.24).opacity(opacity))
                 .lineLimit(1).minimumScaleFactor(0.1)
                 .padding(min(32, max(0, size.height * 0.04)))
-                .background(.black.opacity(0.85), in: RoundedRectangle(cornerRadius: 16))
+                .background(Color.black.opacity(prominence == .standby ? 0.85 : 0.35), in: RoundedRectangle(cornerRadius: 16))
                 .accessibilityLabel("Clock").accessibilityValue(clock)
+                .accessibilityHidden(prominence == .backdrop)
                 .frame(width: size.width, height: size.height, alignment: .center)
         }
     }
 }
 
-/// Measure the same labeled text and column boxes as the stage composition.
+/// Measure the same labeled text and vertical boxes as the stage composition.
 struct OutputConfidenceReadabilityProbe: View {
     let snapshot: OutputContentSnapshot
     let profile: OutputProfile

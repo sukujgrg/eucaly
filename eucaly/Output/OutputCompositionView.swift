@@ -25,9 +25,9 @@ struct OutputCompositionView: View {
     @ViewBuilder private func content(profile: OutputProfile, snapshot: OutputContentSnapshot,
                                       confidence: OutputConfidenceContent, size: CGSize) -> some View {
         if profile.kind == .confidence {
-            if confidence.isIdle {
-                OutputConfidenceIdleClock(size: size)
-            } else if let slide = confidence.media, let session = coordinator.session(for: destinationID) {
+            // Idle (empty/hidden) wins over retained localMedia so Hide restores the clock.
+            if let slide = confidence.media, !confidence.isIdle,
+               let session = coordinator.session(for: destinationID) {
                 media(slide, snapshot: snapshot, profile: profile, session: session, size: size)
             } else {
                 OutputConfidenceView(profile: profile, content: confidence, size: size)
@@ -41,8 +41,8 @@ struct OutputCompositionView: View {
             }
         }
     }
-    /// Media uses the whole output canvas in every profile. Confidence's text
-    /// columns and playback status must not reduce the native playback frame.
+    /// Media uses the whole output canvas in every profile. Confidence's stacked
+    /// text layout and playback status must not reduce the native playback frame.
     private func media(_ slide: Slide, snapshot: OutputContentSnapshot, profile: OutputProfile,
                        session: PresentationSession, size: CGSize) -> some View {
         // Native PDFKit retains its parsed document across pages of one accepted

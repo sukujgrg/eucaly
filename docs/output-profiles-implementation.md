@@ -334,21 +334,26 @@ UUIDs remain pinned: missing, mirrored or ambiguous identities close only the af
 destination. Reconnection requires explicit Show; no fallback monitor is selected.
 Native close callbacks retain their destination generation guard.
 
-Confidence shows full-canvas media or Current/Next text. Empty, cleared and hidden
-Confidence shows its large centered standby clock. Passive restoration waits until a real
-workspace becomes key. Explicit Open Native Output and assignment/enable validate the
-saved monitor without requiring key controls, including when all controls are minimized.
-Standby never takes content, starts foreground program media
-or publishes NDI. Stop, close and display loss suppress reopening until explicit
-Open Confidence/Show or a new assignment/enable. Native windows, including standby,
-hold display/system sleep prevention. NDI independently holds system sleep prevention.
-Moving a standby Confidence window retains standby in a prepared workspace; it does
-not start Current or program media.
-Changing an idle window opened for automatic Confidence standby to another appearance
-closes that window. A window carrying a program or explicitly opened background stays
-open. Every native appearance has explicit Open/Close Native Output controls.
-Stop resolves the window's saved workspace identity even when its owner has no
-prepared session or open controls. Menu validation never prepares that session.
+Confidence is a native stage-monitor composition. It shows full-canvas media, or
+Current stacked above Next when Next has selected text, with a centered 24-hour clock
+behind lyrics (full strength when empty, cleared or hidden). Network destinations remain
+program feeds: appearance styling may follow a Confidence profile, but NDI/OMT publish
+accepted Current only and never receive Confidence Next, clock or auto-standby.
+Confidence-kind reusable profiles are not offered in network appearance pickers; an
+already-assigned reference keeps Current-only styling and readability. Passive restoration
+waits until a real workspace becomes key.
+Explicit Open Native Output and assignment/enable validate the saved monitor without
+requiring key controls, including when all controls are minimized. Standby never takes
+content, starts foreground program media or publishes NDI. Stop, close and display loss
+suppress reopening until explicit Open Confidence/Show or a new assignment/enable. Native
+windows, including standby, hold display/system sleep prevention. NDI independently holds
+system sleep prevention. Moving a standby Confidence window retains standby in a prepared
+workspace; it does not start Current or program media. Changing an idle window opened for
+automatic Confidence standby to another appearance closes that window. A window carrying a
+program or explicitly opened background stays open. Every native appearance has explicit
+Open/Close Native Output controls. Stop resolves the window's saved workspace identity even
+when its owner has no prepared session or open controls. Menu validation never prepares
+that session.
 
 ## Generic NDI sender and transfer
 
@@ -464,7 +469,9 @@ Both typography and background controls apply to every generic NDI output. Numer
 choices use document validation; fields commit on Return/editing end. Thumbnails
 have separate sizing and use a representative assigned workspace profile and canvas.
 Readability checks use each destination's actual workspace snapshot and remain
-operator-only. Settings visibility, resizing, drafts and NSFontPanel remain native.
+operator-only. Native Confidence monitors measure the stacked Current/Next layout;
+network destinations always measure full-canvas Current, even with a Confidence-kind
+appearance. Settings visibility, resizing, drafts and NSFontPanel remain native.
 
 The app-owned profile store also owns `WorkspaceBackgroundPreferences`, using the
 same defaults domain. It materializes each workspace's existing bookmark, volume

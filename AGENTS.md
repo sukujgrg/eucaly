@@ -341,8 +341,9 @@ Projection screen rule:
 - Do not hardcode screen selection (`NSScreen.screens[1]`) in call sites.
 
 ### Confidence Standby Clock
-- An open Confidence output with no visible text or media shows a large centered clock, including when empty, cleared or hidden. Visible content shows Current on the left and Next on the right, with no source-name header or media filename.
-- Enabled, assigned Confidence opens automatically after the real workspace becomes key or after assignment/enable, including before the first slide.
+- Confidence is a native stage-monitor composition role. Native Confidence shows Current stacked above Next when Next has selected text (no empty Next band), with a centered 24-hour clock behind lyrics. Empty, cleared or hidden Confidence shows that clock at full strength. Media on Confidence remains full-bleed without the clock. There is no source-name header or media filename on the Confidence text stack.
+- Confidence-kind appearances are offered for native monitor destinations. Network (NDI/OMT) destinations are program feeds: they render accepted Current with appearance styling and do not receive Confidence Next, clock or auto-standby. Network appearance pickers omit Confidence-kind reusable profiles; an already-assigned Confidence appearance keeps Current-only styling and readability without promising monitor composition.
+- Enabled, assigned native Confidence opens automatically after the real workspace becomes key or after assignment/enable, including before the first slide.
 - Standby stays local to Confidence: it never shows a slide, steals focus, takes ownership, starts program media, publishes NDI or changes Current/session presentation state.
 - Stop, native close and display loss suppress reopening until Open Confidence/Show or a new assignment/enable; resume only on the saved physical identity.
 - The old optional Timer/Clock overlay and countdown controls have been removed.
@@ -531,7 +532,7 @@ Completion Contract; shared flow/media changes must cover every affected type:
 - Background visual/audio remain independent from slides visibility.
 - Projection display picker selects the correct monitor across start/toggle/background actions.
 - Display unplug/hot-plug closes invalid output and keeps the chosen identity; reconnect and a new Show Slides use that identity even with a new runtime ID.
-- Confidence shows its centered standby clock when empty, cleared or hidden, and other profiles have no Timer/Clock overlay.
+- Native Confidence shows Current above Next when present, with a centered clock behind lyrics (full strength when empty, cleared or hidden); network feeds stay Current-only; other profiles have no Timer/Clock overlay.
 - No new SwiftUI publish-during-update warnings.
 - No stale capture streams after slide/session teardown.
 

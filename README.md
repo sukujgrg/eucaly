@@ -29,7 +29,7 @@ Browsing never silently replaces **Current**.
 - Videos
 - Background visual layer for lyrics
 - Background audio layer
-- Confidence output with Current/Next columns and a large centered standby clock
+- Native Confidence monitor with Current above Next, a centered 24-hour clock behind lyrics, and a full-strength standby clock when empty
 - Live app-window capture with ScreenCaptureKit for native displays
 - Recursive text search under library root
 - [Named projection monitors](docs/projection-monitors.md) with remembered numbers, physical display identity, and an Identify action

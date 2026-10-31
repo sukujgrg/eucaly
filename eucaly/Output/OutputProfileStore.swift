@@ -18,6 +18,17 @@ final class OutputProfileStore: ObservableObject {
 
     var reusableProfiles: [OutputProfile] { document.profiles.filter(\.isReusable) }
 
+    /// Confidence-kind appearances are a native monitor composition role
+    /// (Current/Next/clock). Network destinations publish program Current only,
+    /// so those appearances are not offered there. An already-assigned reference
+    /// stays selectable in the destination editor.
+    func reusableAppearanceChoices(for destinationID: UUID) -> [OutputProfile] {
+        let profiles = reusableProfiles
+        guard let destination = document.destinations.first(where: { $0.id == destinationID }),
+              destination.isNetworkDestination else { return profiles }
+        return profiles.filter { $0.kind != .confidence }
+    }
+
     func profileRemovalProblem(_ id: UUID) -> String? {
         guard recoveryNotice == nil else { return recoveryNotice }
         guard let profile = profile(id) else { return "This profile no longer exists." }

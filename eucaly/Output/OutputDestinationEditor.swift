@@ -98,10 +98,14 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
         moveNotice.stringValue = coordinator.isOpen(destinationID)
             ? "Moves this live output to " + targetWorkspace + "’s Current immediately." + (coordinator.focusedWorkspaceID.flatMap { coordinator.preparedSession(workspace: $0) }?.isEmpty == false ? "" : " The target Current is empty.")
             : "Changes assignment to " + targetWorkspace + "; this output remains stopped."
-        appearanceNotice.stringValue = profile.isReusable
-            ? "Uses reusable profile “" + profile.name + "”. Customizing any property creates an independent appearance for this output; future changes to the reusable profile no longer apply."
-            : "Independent appearance: future changes to reusable profiles no longer apply. Editing affects this output only."
-        standbyNotice.stringValue = "Confidence opens a local standby clock automatically on its assigned monitor, including when Current is empty or hidden. Changing an idle standby to another appearance closes that standby window."
+        if destination.isNetworkDestination && profile.kind == .confidence {
+            appearanceNotice.stringValue = "This network feed publishes accepted Current with this appearance’s styling. Confidence Next, clock and standby belong to native Confidence monitors only."
+        } else {
+            appearanceNotice.stringValue = profile.isReusable
+                ? "Uses reusable profile “" + profile.name + "”. Customizing any property creates an independent appearance for this output; future changes to the reusable profile no longer apply."
+                : "Independent appearance: future changes to reusable profiles no longer apply. Editing affects this output only."
+        }
+        standbyNotice.stringValue = "Confidence is a native stage monitor: Current above Next when present, with a centered 24-hour clock behind lyrics (full strength when empty or hidden). It opens automatically on its assigned monitor. Changing an idle standby to another appearance closes that standby window."
         standbyNotice.isHidden = !destination.isMonitorDestination || profile.kind != .confidence
         moveWorkspaceButton.title = "Move to This Workspace (" + coordinator.managementWorkspaceName(coordinator.focusedWorkspaceID) + ")"
         moveWorkspaceButton.isEnabled = coordinator.focusedWorkspaceID != nil && destination.workspaceID != coordinator.focusedWorkspaceID
@@ -115,7 +119,11 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
         let help = customizeButton.isEnabled ? nil : "The profile limit has been reached. Edit reusable profiles in Profiles."
         customizeButton.toolTip = help ?? "Edit an independent appearance for this output. Reusable profiles remain available in Profiles."
         clearBackgroundButton.toolTip = help ?? "Clear the background for this output only."
-        var choices = store.reusableProfiles.map { ProfileEntry(id: $0.id, title: $0.name) }
+        var offered = store.reusableAppearanceChoices(for: destinationID)
+        if profile.isReusable, !offered.contains(where: { $0.id == profile.id }) {
+            offered.insert(profile, at: 0)
+        }
+        var choices = offered.map { ProfileEntry(id: $0.id, title: $0.name) }
         if !profile.isReusable {
             choices.insert(.init(id: profile.id, title: "Custom Appearance (" + profile.name + ")"), at: 0)
         }
