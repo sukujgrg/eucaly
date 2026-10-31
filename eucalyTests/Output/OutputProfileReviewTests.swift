@@ -507,8 +507,10 @@ final class OutputProfileReviewTests: XCTestCase {
         XCTAssertEqual(geometry.currentSize.width, geometry.width)
         XCTAssertEqual(geometry.nextSize.width, geometry.width)
         XCTAssertGreaterThan(geometry.currentSize.height, geometry.nextSize.height)
-        XCTAssertEqual(geometry.currentSize.height + geometry.nextSize.height + geometry.headingHeight
-                       + geometry.spacing / 3 + geometry.spacing, geometry.height, accuracy: 0.01)
+        XCTAssertEqual(geometry.currentSize.height + geometry.nextSize.height + geometry.nextChromeHeight
+                       + geometry.spacing, geometry.height, accuracy: 0.01)
+        XCTAssertGreaterThan(geometry.nextChromeHeight, geometry.headingHeight,
+                             "Next chrome includes the hairline separator above the heading")
         let full = OutputConfidenceGeometry(size: size, hasNext: false)
         XCTAssertEqual(full.currentSize.width, full.width)
         XCTAssertEqual(full.currentSize.height, full.height)
