@@ -41,7 +41,7 @@ final class OutputWindowDestination: NSObject, OutputDestinationDriving, NSWindo
     func reposition(monitor: ProjectionMonitor) -> Bool {
         // Resolve the same physical UUID, never a fallback screen.
         guard let screen = ProjectionScreenResolver.screen(for: monitor) else { return false }
-        if window?.frame != screen.frame { window?.setFrame(screen.frame, display: true) }
+        if let window { ProjectionWindowPlacement.move(window, to: screen.frame) }
         return true
     }
     func close() {
@@ -58,5 +58,14 @@ final class OutputWindowDestination: NSObject, OutputDestinationDriving, NSWindo
     deinit {
         let output = window
         DispatchQueue.main.async { output?.delegate = nil; output?.close() }
+    }
+}
+
+/// Live same-monitor geometry updates cover the screen without forcing
+/// displayIfNeeded. An unchanged frame makes no window call.
+enum ProjectionWindowPlacement {
+    static func move(_ window: NSWindow, to frame: CGRect) {
+        guard window.frame != frame else { return }
+        window.setFrame(frame, display: false)
     }
 }
