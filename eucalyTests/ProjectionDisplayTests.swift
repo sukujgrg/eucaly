@@ -487,6 +487,134 @@ final class ProjectionDisplayTests: XCTestCase {
         }
     }
 
+    func testUnlockDuringDisplayNotificationDoesNotReenterObservers() {
+        let manager = ProjectionDisplayManager(displays: { [] })
+        let owner = UUID()
+        let target = ProjectionMonitorTarget(identity: leftID, name: "Live")
+        var depth = 0
+        var maxDepth = 0
+        var calls = 0
+        var lockedAtStart: [Bool] = []
+        _ = manager.observe {
+            calls += 1
+            depth += 1
+            maxDepth = max(maxDepth, depth)
+            lockedAtStart.append(manager.isLocked)
+            if calls == 1 {
+                manager.unlock(owner: owner)
+                XCTAssertEqual(calls, 1, "Unlock must not deliver observers before the current pass returns.")
+            }
+            depth -= 1
+        }
+        manager.lock(target, owner: owner)
+        XCTAssertEqual(maxDepth, 1)
+        XCTAssertEqual(calls, 2)
+        XCTAssertEqual(lockedAtStart, [true, false])
+        XCTAssertFalse(manager.isLocked)
+    }
+
+    func testSameMonitorPlacementDoesNotForceDisplayAndSkipsAnUnchangedFrame() {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 180),
+                              styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let selector = #selector(NSWindow.setFrame(_:display:))
+        guard let current = class_getInstanceMethod(NSWindow.self, selector),
+              let replacement = class_getInstanceMethod(NSWindow.self, #selector(NSWindow.eucalyTests_setFrame(_:display:))) else {
+            return XCTFail("NSWindow setFrame(_:display:) is unavailable")
+        }
+        method_exchangeImplementations(current, replacement)
+        defer { method_exchangeImplementations(current, replacement) }
+        QuietPlacementSpy.flags.removeAll()
+        let moved = window.frame.offsetBy(dx: 25, dy: 0)
+        ProjectionWindowPlacement.move(window, to: moved)
+        XCTAssertEqual(QuietPlacementSpy.flags, [false])
+        XCTAssertEqual(window.frame, moved)
+        QuietPlacementSpy.flags.removeAll()
+        ProjectionWindowPlacement.move(window, to: moved)
+        XCTAssertTrue(QuietPlacementSpy.flags.isEmpty)
+    }
+
+    func testSameIdentityInventoryChangesKeepTheOutputAndResolveFailuresCloseIt() {
+        let assigned = monitor(10, leftID)
+        let inventory = MonitorInventory([assigned])
+        let manager = ProjectionDisplayManager(displays: { inventory.displays })
+        XCTAssertTrue(manager.select(assigned.target))
+        let driver = RecordingOutputDriver()
+        let outputs = OutputCoordinator(profiles: OutputProfileStore(monitor: assigned.target), displays: manager, driverFactory: { driver })
+        let session = PresentationSession(projectionDisplays: manager, outputCoordinator: outputs)
+        defer { session.stopPresentation() }
+        session.setSlides(LyricsParser.parseDocument("Verse\nKeep").slides)
+        session.showSlides()
+        XCTAssertTrue(session.isPresenting)
+        XCTAssertEqual(driver.closes, 0)
+
+        func refresh(_ displays: [ProjectionMonitor], staysOpen: Bool, file: StaticString = #filePath, line: UInt = #line) {
+            inventory.displays = displays
+            let closes = driver.closes
+            let repositioned = driver.repositioned.count
+            manager.refresh()
+            XCTAssertEqual(session.isPresenting, staysOpen, file: file, line: line)
+            if staysOpen {
+                XCTAssertEqual(driver.closes, closes, file: file, line: line)
+                XCTAssertGreaterThan(driver.repositioned.count, repositioned, file: file, line: line)
+            } else {
+                XCTAssertGreaterThan(driver.closes, closes, file: file, line: line)
+            }
+        }
+
+        refresh([ProjectionMonitor(id: 80, identity: leftID, name: "Renamed", frame: assigned.frame, isBuiltIn: true)], staysOpen: true)
+        refresh([ProjectionMonitor(id: assigned.id, identity: assigned.identity, name: assigned.name,
+                                   frame: CGRect(x: 80, y: 0, width: 1280, height: 720)), monitor(11, rightID)], staysOpen: true)
+        refresh([ProjectionMonitor(id: assigned.id, identity: assigned.identity, name: assigned.name, frame: .zero)], staysOpen: false)
+    }
+
+    func testDuplicateMirroredAndNonUUIDIdentitiesCloseBeforeRefreshReturns() {
+        for replacement in [
+            [monitor(10, leftID), monitor(11, leftID)],
+            [monitor(10, leftID, mirrored: true)],
+            [monitor(10, "not-a-uuid")],
+            [monitor(10, nil)],
+            [monitor(99, rightID)]
+        ] {
+            let assigned = monitor(10, leftID)
+            let inventory = MonitorInventory([assigned])
+            let manager = ProjectionDisplayManager(displays: { inventory.displays })
+            XCTAssertTrue(manager.select(assigned.target))
+            let driver = RecordingOutputDriver()
+            let outputs = OutputCoordinator(profiles: OutputProfileStore(monitor: assigned.target), displays: manager, driverFactory: { driver })
+            let session = PresentationSession(projectionDisplays: manager, outputCoordinator: outputs)
+            defer { session.stopPresentation() }
+            session.showSlides()
+            XCTAssertTrue(session.isPresenting)
+            inventory.displays = replacement
+            manager.refresh()
+            XCTAssertFalse(session.isPresenting)
+            XCTAssertGreaterThan(driver.closes, 0)
+        }
+    }
+
+    func testLiveRepositionReturnsAMovedWindowToTheMonitorFrame() throws {
+        let actual = try usableConnectedMonitors()[0]
+        let manager = ProjectionDisplayManager(displays: { [actual] })
+        XCTAssertTrue(manager.select(actual.target))
+        let driver = OutputWindowDestination()
+        let outputs = OutputCoordinator(profiles: OutputProfileStore(monitor: actual.target), displays: manager, driverFactory: { driver })
+        let session = PresentationSession(projectionDisplays: manager, outputCoordinator: outputs)
+        defer { session.stopPresentation() }
+        session.showSlides()
+        let windowID = try XCTUnwrap(driver.windowNumber)
+        let window = try XCTUnwrap(NSApp.windows.first { $0.windowNumber == Int(windowID) })
+        window.setFrame(window.frame.offsetBy(dx: 30, dy: 0), display: false)
+        XCTAssertNotEqual(window.frame, actual.frame)
+        XCTAssertTrue(driver.reposition(monitor: actual))
+        XCTAssertEqual(window.frame, actual.frame)
+        let renamed = ProjectionMonitor(id: actual.id &+ 9, identity: actual.identity, name: "Renamed",
+                                        frame: actual.frame, isBuiltIn: !actual.isBuiltIn)
+        XCTAssertTrue(driver.reposition(monitor: renamed))
+        XCTAssertEqual(window.frame, actual.frame)
+    }
+
     func testUnavailableLiveDisplayChecksSkipRatherThanFail() {
         let unavailableInventories: [[ProjectionMonitor]] = [
             [],
@@ -500,6 +628,32 @@ final class ProjectionDisplayTests: XCTestCase {
             }
         }
     }
+}
+
+private enum QuietPlacementSpy {
+    static var flags: [Bool] = []
+}
+
+extension NSWindow {
+    @objc(eucalyTests_setFrame:display:)
+    func eucalyTests_setFrame(_ frameRect: NSRect, display flag: Bool) {
+        QuietPlacementSpy.flags.append(flag)
+        eucalyTests_setFrame(frameRect, display: flag)
+    }
+}
+
+@MainActor
+private final class RecordingOutputDriver: OutputDestinationDriving {
+    let generation = UUID()
+    var windowNumber: UInt32? = 7
+    var closes = 0
+    var repositioned: [ProjectionMonitor] = []
+    func open(monitor: ProjectionMonitor, coordinator: OutputCoordinator, destinationID: UUID, activate: Bool) -> Bool { true }
+    func reposition(monitor: ProjectionMonitor) -> Bool {
+        repositioned.append(monitor)
+        return true
+    }
+    func close() { closes += 1 }
 }
 
 @MainActor

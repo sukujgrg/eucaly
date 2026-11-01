@@ -41,6 +41,8 @@ final class ProjectionDisplayManager: ObservableObject {
     // availability remains separate so an output can resolve its own monitor.
     var selectionConstraint: ((ProjectionMonitorTarget) -> String?)?
     private var screenObserver: NSObjectProtocol?
+    private var isDeliveringChanges = false
+    private var hasPendingChangeDelivery = false
     private let identifier = ProjectionMonitorIdentifier()
     @Published private(set) var revision = 0
     private(set) var displays: [ProjectionMonitor]
@@ -271,6 +273,18 @@ final class ProjectionDisplayManager: ObservableObject {
 
     private func changed() {
         revision &+= 1
-        for observer in Array(observers.values) { observer() }
+        // unlock() during a close runs inside displaysChanged. Deliver that
+        // follow-up after the current pass, before this call returns, so a
+        // lost monitor still closes on the same turn as refresh().
+        if isDeliveringChanges {
+            hasPendingChangeDelivery = true
+            return
+        }
+        isDeliveringChanges = true
+        defer { isDeliveringChanges = false }
+        repeat {
+            hasPendingChangeDelivery = false
+            for observer in Array(observers.values) { observer() }
+        } while hasPendingChangeDelivery
     }
 }
