@@ -44,6 +44,35 @@ final class SidebarOutlineLayoutTests: XCTestCase {
         XCTAssertEqual(selectionChangeCount, 0, "Resizing must not select a source")
     }
 
+    func testLayoutPassesDoNotRemeasureSettledOutlineHeight() async throws {
+        let model = SidebarOutlineModel(roots: (0..<8).map {
+            SidebarOutlineItem(id: .library(URL(fileURLWithPath: "/sidebar-layout-fixture/measure-\($0).txt")), title: "Item \($0)")
+        })
+        let controller = SidebarOutlineController(configuration: SidebarOutlineConfiguration(
+            contentRevision: 1, modelBuilder: { model }, selectedItemIDs: [], primarySelectedItemID: nil,
+            expansionStore: SidebarOutlineExpansionStore(), onSelectionChange: { _, _ in true }))
+        let window = makeWindow(controller: controller, width: 260)
+        defer { controller.detach(); window.close() }
+        try await settle(window)
+        let scroll = controller.scrollView
+        let outline = controller.outlineView
+        let expected = outline.fittingSize.height
+        XCTAssertEqual(scroll.frame.height, expected, accuracy: 1)
+        scroll.maximumHeight = expected
+        try await settle(window)
+        let heightBefore = scroll.frame.height
+        for _ in 0..<5 {
+            window.contentView?.layoutSubtreeIfNeeded()
+            scroll.layoutSubtreeIfNeeded()
+        }
+        XCTAssertEqual(scroll.frame.height, heightBefore, accuracy: 0.5,
+                       "Layout passes must not rewrite a settled height constraint")
+        scroll.maximumHeight = expected / 2
+        try await settle(window)
+        XCTAssertEqual(scroll.frame.height, expected / 2, accuracy: 1)
+        XCTAssertGreaterThan(outline.fittingSize.height, scroll.contentView.bounds.height)
+    }
+
     func testNativeSourceListMeasurementFitsSingleRowsAndTracksExpansion() async throws {
         let children = (0..<2).map { SidebarOutlineItem(id: .library(URL(fileURLWithPath: "/sidebar-layout-fixture/\($0).txt")), title: "Item \($0)") }
         let group = SidebarOutlineItem(id: .group("kind:lyrics"), title: "Lyrics", children: children)

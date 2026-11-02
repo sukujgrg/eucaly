@@ -109,14 +109,38 @@ final class SidebarViewController: NSViewController {
         repairKeyViewLoop()
     }
 
+    private var outlineMaximumHeightPassScheduled = false
+
     override func viewDidLayout() {
         super.viewDidLayout()
         guard !isDetached else { return }
-        libraryOutline.scrollView.maximumHeight = max(160, min(320, view.bounds.height * 0.35))
-        audioOutline.scrollView.maximumHeight = max(120, min(240, view.bounds.height * 0.25))
+        // Defer constraint writes off the layout pass. Measuring fittingSize or
+        // mutating height anchors here re-enters Auto Layout for every section.
+        guard !outlineMaximumHeightPassScheduled else { return }
+        outlineMaximumHeightPassScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.outlineMaximumHeightPassScheduled = false
+            self.applyOutlineMaximumHeights()
+        }
+    }
+
+    private func applyOutlineMaximumHeights() {
+        guard !isDetached else { return }
+        applyOutlineMaximumHeight(
+            libraryOutline.scrollView,
+            max(160, min(320, view.bounds.height * 0.35)))
+        applyOutlineMaximumHeight(
+            audioOutline.scrollView,
+            max(120, min(240, view.bounds.height * 0.25)))
         let standardMaximum = max(104, min(208, view.bounds.height * 0.22))
-        playlistOutline.scrollView.maximumHeight = standardMaximum
-        windowOutline.scrollView.maximumHeight = standardMaximum
+        applyOutlineMaximumHeight(playlistOutline.scrollView, standardMaximum)
+        applyOutlineMaximumHeight(windowOutline.scrollView, standardMaximum)
+    }
+
+    private func applyOutlineMaximumHeight(_ scrollView: SidebarOutlineScrollView, _ maximum: CGFloat) {
+        guard abs(scrollView.maximumHeight - maximum) > 0.5 else { return }
+        scrollView.maximumHeight = maximum
     }
 
     func update(_ configuration: SidebarConfiguration) {
