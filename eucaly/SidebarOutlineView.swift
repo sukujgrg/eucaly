@@ -1186,26 +1186,40 @@ final class SidebarOutlineController {
     }
 }
 
-/// AppKit supplies source-list row margins as part of the document's measured
-/// height. Keep short lists at that height, and let longer lists scroll within
-/// their section's viewport limit.
+/// Keep short lists at their document height, and let longer lists scroll within
+/// their section's viewport limit. Source-list padding is part of the document
+/// height AppKit reports through `fittingSize`. Measure from content updates and
+/// one deferred pass after AppKit tiles — never from every `layout()` call.
 @MainActor
 final class SidebarOutlineScrollView: NSScrollView {
     var maximumHeight: CGFloat = 240 {
-        didSet { updateMeasuredHeight() }
+        didSet {
+            guard abs(maximumHeight - oldValue) > 0.5 else { return }
+            updateMeasuredHeight()
+        }
     }
     private lazy var measuredHeight = heightAnchor.constraint(equalToConstant: 0)
+    private var deferredRemeasureScheduled = false
 
     func updateMeasuredHeight() {
-        let height = min(maximumHeight, documentView?.fittingSize.height ?? 0)
-        guard measuredHeight.constant != height || !measuredHeight.isActive else { return }
-        measuredHeight.constant = height
-        measuredHeight.isActive = true
+        applyMeasuredHeight()
+        // Source-list insets can settle on the next turn after reload/expand.
+        // One coalesced follow-up replaces the old layout()-driven remeasure.
+        guard !deferredRemeasureScheduled else { return }
+        deferredRemeasureScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.deferredRemeasureScheduled = false
+            self.applyMeasuredHeight()
+        }
     }
 
-    override func layout() {
-        super.layout()
-        updateMeasuredHeight()
+    private func applyMeasuredHeight() {
+        let contentHeight = documentView?.fittingSize.height ?? 0
+        let height = min(maximumHeight, contentHeight)
+        guard abs(measuredHeight.constant - height) > 0.5 || !measuredHeight.isActive else { return }
+        measuredHeight.constant = height
+        measuredHeight.isActive = true
     }
 }
 
