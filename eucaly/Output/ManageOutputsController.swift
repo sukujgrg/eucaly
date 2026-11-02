@@ -8,8 +8,20 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     var confirmOutputRemoval: (OutputDestinationConfiguration) -> Bool = { destination in
         let alert = NSAlert()
         alert.messageText = "Remove “" + destination.name + "”?"
-        alert.informativeText = "This removes its saved configuration and stops this output if it is running. Its appearance editing target and music route are cleared when selected. Other outputs keep running. Undo Remove restores the configuration disabled."
+        if let settings = destination.networkSettings, let technology = destination.networkTechnology {
+            alert.informativeText = technology.title + " source “" + settings.sourceName
+                + "”. This removes its saved configuration and stops this output if it is running. Its appearance editing target and music route are cleared when selected. Other outputs keep running. Undo Remove restores the configuration disabled."
+        } else {
+            alert.informativeText = "This removes its saved configuration and stops this output if it is running. Its appearance editing target and music route are cleared when selected. Other outputs keep running. Undo Remove restores the configuration disabled."
+        }
         alert.addButton(withTitle: "Remove Output"); alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+    var confirmProfileRemoval: (OutputProfile) -> Bool = { profile in
+        let alert = NSAlert()
+        alert.messageText = "Remove “" + profile.name + "”?"
+        alert.informativeText = "This permanently deletes the unused appearance. Outputs are unchanged."
+        alert.addButton(withTitle: "Remove Appearance"); alert.addButton(withTitle: "Cancel")
         return alert.runModal() == .alertFirstButtonReturn
     }
     let coordinator: OutputCoordinator
@@ -389,7 +401,13 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         guard var profile = store.profile(OutputProfile.audienceID) else { return }
         profile.id = UUID(); profile.name = sourceName + " Appearance"
         profile.usesLegacySizing = false; profile.background = OutputBackground(); profile.background.colour = .chromaGreen
-        var output = OutputDestinationConfiguration(name: technology.title + " Output", profileID: profile.id, monitor: nil,
+        var outputNumber = 1
+        var outputName = technology.title + " Output"
+        while store.document.destinations.contains(where: { $0.name == outputName }) {
+            outputNumber += 1
+            outputName = technology.title + " Output \(outputNumber)"
+        }
+        var output = OutputDestinationConfiguration(name: outputName, profileID: profile.id, monitor: nil,
             enabled: false, workspaceID: coordinator.focusedWorkspaceID)
         let settings = NetworkOutputSettings(sourceName: sourceName)
         output.destination = technology == .ndi ? .ndi(settings) : .omt(settings)
@@ -436,9 +454,14 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         reload()
     }
     @objc private func removeSelectedProfile(_ sender: Any?) {
-        guard profilesMode, let id = selectedID else { return }
+        guard profilesMode, let id = selectedID, let profile = store.profile(id) else { return }
         finishEditing()
-        if store.removeProfile(id) { selectedID = nil }
+        let ids = profileRows().compactMap(\.id)
+        guard let index = ids.firstIndex(of: id) else { return }
+        guard confirmProfileRemoval(profile) else { return }
+        guard store.removeProfile(id) else { reload(); return }
+        let remaining = ids.filter { $0 != id }
+        selectedID = index < remaining.count ? remaining[index] : remaining.last
         reload()
     }
     @objc private func makeSelectedDefault(_ sender: Any?) {
