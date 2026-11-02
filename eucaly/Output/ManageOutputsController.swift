@@ -125,8 +125,8 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         profileActions.orientation = .horizontal; profileActions.alignment = .centerY
         profileActions.spacing = 8
         for action in [addProfile, removeProfile, NSView()] { profileActions.addArrangedSubview(action) }
-        // Appearance edits live on Customize/Edit Appearance… → Profiles.
-        // Toolbar Output menu owns the quick-controls editing target.
+        // Appearance edits live under Profiles. Toolbar Output menu owns the
+        // quick-controls profile editing target.
         let recoveryActions = outputSettingsActionRow([undoRemoveOutput])
         let sidebar = NSStackView(views: [section, list, outputActions, recoveryActions, removalNotice, profileActions])
         sidebar.orientation = .vertical; sidebar.alignment = .leading; sidebar.spacing = 8
@@ -207,16 +207,17 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         profileActions.isHidden = !profilesMode
         addProfile.isEnabled = profilesMode && selectedID.flatMap(store.profile) != nil
             && store.document.profiles.count < 128 && store.recoveryNotice == nil
-        let reusable = selectedID.flatMap(store.profile)?.isReusable ?? true
-        addProfile.setAccessibilityLabel(reusable ? "Add Profile" : "Save as Reusable Profile")
-        addProfile.toolTip = !addProfile.isEnabled && store.document.profiles.count >= 128 ? "The 128 appearance limit has been reached. Remove an unused appearance before creating another." : reusable ? "Create a reusable profile by copying the selected profile." : "Save a reusable copy without changing this output’s appearance."
+        addProfile.setAccessibilityLabel("Duplicate Profile")
+        addProfile.toolTip = !addProfile.isEnabled && store.document.profiles.count >= 128
+            ? "The 128 profile limit has been reached. Remove an unused profile before creating another."
+            : "Create a reusable profile by copying the selected profile."
         let removalProblem = selectedID.map(store.profileRemovalProblem) ?? "Select a profile to remove."
         removeProfile.isEnabled = profilesMode && selectedID != nil && removalProblem == nil
         removeProfile.toolTip = removalProblem ?? "Remove this unused profile. Output settings stay unchanged."
         let canAdd = !profilesMode && store.document.destinations.count < 16 && store.recoveryNotice == nil
         addOutputMenu.toolTip = canAdd ? "Add a disabled, unassigned output." : "The 16 output limit has been reached. Remove an unused output before adding another."
         addNative.isEnabled = canAdd && store.profile(OutputProfile.audienceID) != nil
-        addNDI.isEnabled = canAdd && store.profile(OutputProfile.audienceID) != nil && store.document.profiles.count < 128
+        addNDI.isEnabled = canAdd && store.profile(OutputProfile.audienceID) != nil
         addOMT.isEnabled = addNDI.isEnabled
         addOutputMenu.isEnabled = canAdd
         removeOutput.isEnabled = !profilesMode && selectedID != nil && store.recoveryNotice == nil
@@ -236,20 +237,10 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         updateReadability()
     }
     private func profileRows() -> [ListRow] {
-        let used = Set(store.document.destinations.map(\.profileID))
-        let groups: [(String, [OutputProfile])] = [
-            ("Reusable Profiles", store.reusableProfiles),
-            ("Output Appearances", store.document.profiles.filter { !$0.isReusable && used.contains($0.id) }),
-            ("Unused Appearances", store.document.profiles.filter { !$0.isReusable && !used.contains($0.id) })
-        ]
-        return groups.flatMap { title, profiles -> [ListRow] in
-            guard !profiles.isEmpty else { return [] }
-            return [ListRow(id: nil, title: title, detail: "")] + profiles.map { profile in
-                let names = store.document.destinations.filter { $0.profileID == profile.id }.map(\.name)
-                let detail = names.isEmpty ? "Unused · " + (profile.isReusable ? "Reusable profile" : "Saved output appearance")
-                    : "Used by: " + names.joined(separator: ", ")
-                return ListRow(id: profile.id, title: profile.name, detail: detail)
-            }
+        store.document.profiles.map { profile in
+            let names = store.document.destinations.filter { $0.profileID == profile.id }.map(\.name)
+            let detail = names.isEmpty ? "Unused" : "Used by: " + names.joined(separator: ", ")
+            return ListRow(id: profile.id, title: profile.name, detail: detail)
         }
     }
     private func renderStatus() {
@@ -384,7 +375,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     @objc private func addOMTOutput(_ sender: Any?) { addNetworkOutput(.omt) }
     private func addNetworkOutput(_ technology: NetworkOutputTechnology) {
         guard !profilesMode, store.recoveryNotice == nil, store.document.destinations.count < 16,
-              store.document.profiles.count < 128 else { return }
+              store.profile(OutputProfile.audienceID) != nil else { return }
         finishEditing()
         var sourceName = "eucaly", number = 2
         while store.document.destinations.contains(where: {
@@ -392,23 +383,18 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         }) {
             sourceName = "eucaly \(number)"; number += 1
         }
-        // Seed from the reusable Audience template — never destinations.first’s
-        // private/customized audience-kind look (store.audience mirrors that row).
-        guard var profile = store.profile(OutputProfile.audienceID) else { return }
-        profile.id = UUID(); profile.name = sourceName + " Appearance"
-        profile.usesLegacySizing = false; profile.background = OutputBackground(); profile.background.colour = .chromaGreen
         var outputNumber = 1
         var outputName = technology.title + " Output"
         while store.document.destinations.contains(where: { $0.name == outputName }) {
             outputNumber += 1
             outputName = technology.title + " Output \(outputNumber)"
         }
-        var output = OutputDestinationConfiguration(name: outputName, profileID: profile.id, monitor: nil,
+        var settings = NetworkOutputSettings(sourceName: sourceName)
+        settings.keyColour = .chromaGreen
+        var output = OutputDestinationConfiguration(name: outputName, profileID: OutputProfile.audienceID, monitor: nil,
             enabled: false, workspaceID: coordinator.focusedWorkspaceID)
-        let settings = NetworkOutputSettings(sourceName: sourceName)
         output.destination = technology == .ndi ? .ndi(settings) : .omt(settings)
-        profile.customizedForDestinationID = output.id
-        store.edit { $0.profiles.append(profile); $0.destinations.append(output) }
+        store.edit { $0.destinations.append(output) }
         selectDestination(output.id)
     }
     @objc private func addSelectedProfile(_ sender: Any?) {

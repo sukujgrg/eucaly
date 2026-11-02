@@ -23,7 +23,8 @@ final class OutputMediaFrameBroker {
             }
         }
     }
-    func update(_ snapshot: OutputContentSnapshot, profile: OutputProfile, runtime: OutputMediaRuntime, keyMode: NetworkOutputSettings.KeyMode = .alpha) {
+    func update(_ snapshot: OutputContentSnapshot, profile: OutputProfile, runtime: OutputMediaRuntime,
+                keyMode: NetworkOutputSettings.KeyMode = .alpha, keyColour: OutputColour = .chromaGreen) {
         guard !stopped else { return }
         let supported = !snapshot.visible || (snapshot.localMedia.map(OutputContentClassifier.supportsNetworkOutput) ?? true)
         let slide = snapshot.visible && supported ? snapshot.localMedia : nil
@@ -59,7 +60,7 @@ final class OutputMediaFrameBroker {
         request(foregroundKey, slot: 0); request(backgroundKey, slot: 1)
         let request = NetworkRenderAdmission.request(generation: generation, content: snapshot.current,
             profile: profile, visible: snapshot.visible && supported,
-            foregroundFill: slide?.videoURL != nil && runtime.programFill, keyMode: keyMode)
+            foregroundFill: slide?.videoURL != nil && runtime.programFill, keyMode: keyMode, keyColour: keyColour)
         guard request.isValid else { failure("Network output render state exceeds the supported limits."); return }
         plan = .init(request: request, foregroundVideo: foregroundVideo, backgroundVideo: backgroundVideo)
         refreshPlan()

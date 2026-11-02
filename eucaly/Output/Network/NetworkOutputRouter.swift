@@ -169,7 +169,8 @@ final class NetworkOutputRouter: ObservableObject, NetworkOutputDriving {
                 }
             }
             profile.usesLegacySizing = false
-            entry.media?.update(snapshot, profile: profile, runtime: media, keyMode: entry.settings.keyMode)
+            entry.media?.update(snapshot, profile: profile, runtime: media,
+                               keyMode: entry.settings.keyMode, keyColour: entry.settings.keyColour)
         }
     }
     private func receive(_ event: NetworkHelperSupervisor.Event, id: UUID) {

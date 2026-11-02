@@ -137,7 +137,7 @@ final class WorkspaceMigrationTests: XCTestCase {
         store.editDestinationProfile(lyrics.id) { $0.typography.size = 112; $0.background.colour = .chromaGreen }
         let original = store.document
         let migrated = try OutputLegacyMigration.decode(legacy(original))
-        XCTAssertEqual(migrated.version, 7)
+        XCTAssertEqual(migrated.version, 8)
         XCTAssertEqual(migrated.workspaces, [.primary])
         XCTAssertEqual(migrated.destinations, original.destinations)
         XCTAssertEqual(migrated.profiles, original.profiles)
@@ -191,6 +191,33 @@ final class WorkspaceMigrationTests: XCTestCase {
         XCTAssertTrue(restored.destinations.allSatisfy { !$0.enabled })
         XCTAssertEqual(restored.destinations.compactMap(\.ndi), [a.ndi!, b.ndi!])
     }
+    func testVersionSevenPromotesExclusiveProfilesAndCopiesNetworkKeyColour() throws {
+        let exclusiveID = UUID(), destinationID = UUID()
+        var exclusive = OutputProfile(id: exclusiveID, name: "Online Custom", kind: .audience)
+        exclusive.customizedForDestinationID = destinationID
+        exclusive.background.colour = .init(red: 0.2, green: 0.4, blue: 0.6)
+        var row = OutputDestinationConfiguration(id: destinationID, name: "Online", profileID: exclusiveID, monitor: nil)
+        row.ndi = .init(sourceName: "Online")
+        var document = OutputProfileDocument(version: 7, profiles: OutputProfile.builtIns + [exclusive], destinations: [row])
+        var root = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(document)) as? [String: Any])
+        root["version"] = 7
+        var destinations = try XCTUnwrap(root["destinations"] as? [[String: Any]])
+        for index in destinations.indices {
+            guard var payload = destinations[index]["destination"] as? [String: Any],
+                  var ndi = payload["ndi"] as? [String: Any],
+                  var settings = ndi["_0"] as? [String: Any] else { continue }
+            settings.removeValue(forKey: "keyColour")
+            ndi["_0"] = settings
+            payload["ndi"] = ndi
+            destinations[index]["destination"] = payload
+        }
+        root["destinations"] = destinations
+        let migrated = try OutputLegacyMigration.decode(JSONSerialization.data(withJSONObject: root))
+        XCTAssertEqual(migrated.version, 8)
+        XCTAssertNil(migrated.profiles.first { $0.id == exclusiveID }?.customizedForDestinationID)
+        XCTAssertEqual(migrated.destinations.first?.ndi?.keyColour, exclusive.background.colour)
+    }
+
     private func legacy(_ document: OutputProfileDocument) throws -> Data {
         var root = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(document)) as? [String: Any])
         root["version"] = 5; root.removeValue(forKey: "workspaces")

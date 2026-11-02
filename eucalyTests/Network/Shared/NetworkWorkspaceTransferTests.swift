@@ -96,7 +96,9 @@ final class NetworkWorkspaceTransferTests: XCTestCase {
         var stationary = OutputDestinationConfiguration(name: "Stationary", profileID: OutputProfile.audienceID, monitor: nil, workspaceID: onlineID)
         stationary.ndi = .init(sourceName: "Stationary")
         store.edit { $0.destinations = [moving, stationary] }
-        store.editDestinationProfile(moving.id) { $0.background.colour = .chromaGreen }
+        var seed = try XCTUnwrap(moving.ndi)
+        seed.keyColour = .chromaGreen
+        XCTAssertNil(store.setNetworkSettings(seed, for: moving.id))
         let outputs = OutputCoordinator(profiles: store, displays: ProjectionDisplayManager(displays: { [] }), retainsPreparedSessions: true, network: router)
         let home = outputs.session(workspace: homeID), online = outputs.session(workspace: onlineID)
         defer { outputs.stopAllOutputs() }
@@ -114,7 +116,9 @@ final class NetworkWorkspaceTransferTests: XCTestCase {
             let mode: NetworkOutputSettings.KeyMode = checkpoint % 4 < 2 ? .alpha : .chroma
             let target = homeOwnsOutput ? home : online, previous = homeOwnsOutput ? online : home
             let colour: OutputColour = checkpoint < 4 ? .chromaGreen : .init(red: 1, blue: 1)
-            store.editDestinationProfile(moving.id) { $0.background.colour = colour }
+            var keyed = try XCTUnwrap(outputs.destination(moving.id)?.ndi)
+            keyed.keyColour = colour
+            XCTAssertNil(store.setNetworkSettings(keyed, for: moving.id))
             for step in 0..<12 {
                 var settings = try XCTUnwrap(outputs.destination(moving.id)?.ndi)
                 settings.keyMode = step.isMultiple(of: 2) ? (mode == .alpha ? .chroma : .alpha) : mode
@@ -161,7 +165,6 @@ final class NetworkWorkspaceTransferTests: XCTestCase {
         let first = try XCTUnwrap(log.senders.first { $0.name == "One" })
         let second = try XCTUnwrap(log.senders.first { $0.name == "Two" })
         let firstGeneration = first.generation, secondGeneration = second.generation
-        let reusable = try XCTUnwrap(store.profile(OutputProfile.audienceID))
         for index in 0..<40 {
             outputs.focusWorkspace(index.isMultiple(of: 2) ? b : a)
             XCTAssertTrue(outputs.moveOutput(one.id, to: index.isMultiple(of: 2) ? b : a))
@@ -182,7 +185,7 @@ final class NetworkWorkspaceTransferTests: XCTestCase {
         XCTAssertEqual(second.submissions.last?.request.text?.text.components.first?.text, "Online · Ελληνικά")
         XCTAssertEqual(first.submissions.last?.request.contentEpoch, 41)
         XCTAssertEqual(second.submissions.last?.request.contentEpoch, 1)
-        XCTAssertEqual(store.profile(OutputProfile.audienceID), reusable)
+        XCTAssertEqual(outputs.destination(one.id)?.profileID, OutputProfile.audienceID)
         XCTAssertEqual(outputs.destination(two.id)?.profileID, OutputProfile.audienceID)
         XCTAssertEqual(log.senders.count, 2)
         for (sender, generation) in [(first, firstGeneration), (second, secondGeneration)] {

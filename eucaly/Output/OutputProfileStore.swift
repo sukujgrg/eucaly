@@ -67,98 +67,44 @@ final class OutputProfileStore: ObservableObject {
     }
     @discardableResult
     func editDefaultProfile(_ target: QuickEditTarget, _ change: (inout OutputProfile) -> Void) -> String? {
-        guard let destination = enabledDefault(for: target) else { return recoveryNotice ?? "The selected output has changed. Choose it again before editing its appearance." }
+        guard let destination = enabledDefault(for: target) else { return recoveryNotice ?? "The selected output has changed. Choose it again before editing its profile." }
         return editDestinationProfile(destination.id, change)
     }
-    func canCustomizeProfile(for destinationID: UUID) -> Bool {
-        profileCustomizationProblem(for: destinationID) == nil
-    }
-    func profileCustomizationProblem(for destinationID: UUID) -> String? {
-        if case .failure(let problem) = destinationProfileEdits([destinationID], customizeUnchanged: true, { _, _ in }) {
-            return problem.message
-        }
-        return nil
-    }
-    /// Output-level editing is independent even when its reusable profile is
-    /// shared with disabled outputs. Direct Profiles-list edits remain shared.
-    func customizeProfile(for destinationID: UUID) -> UUID? {
-        guard case .success(let changes) = destinationProfileEdits([destinationID], customizeUnchanged: true, { _, _ in }),
-              commitDestinationProfileEdits(changes) == nil else { return nil }
-        return document.destinations.first { $0.id == destinationID }?.profileID
-    }
+    /// Edits the Profile assigned to a destination in place. Shared consumers observe the same change.
     @discardableResult
     func editDestinationProfile(_ destinationID: UUID, _ change: (inout OutputProfile) -> Void) -> String? {
         editDestinationProfiles([destinationID]) { profile, _ in change(&profile) }
     }
-    /// Workspace commands preflight every required private appearance before
-    /// committing. No observer can see half of a multi-output change.
+    /// Workspace commands edit each distinct assigned Profile once. No observer
+    /// can see half of a multi-output change.
     @discardableResult
     func editDestinationProfiles(_ destinationIDs: [UUID],
                                  _ change: (inout OutputProfile, OutputDestinationConfiguration) -> Void) -> String? {
-        switch destinationProfileEdits(destinationIDs, customizeUnchanged: false, change) {
-        case .success(let changes): return commitDestinationProfileEdits(changes)
-        case .failure(let problem): return problem.message
-        }
-    }
-    private func isExclusiveCustomization(_ profile: OutputProfile, for destinationID: UUID) -> Bool {
-        profile.customizedForDestinationID == destinationID
-            && !document.destinations.contains { $0.id != destinationID && $0.profileID == profile.id }
-    }
-    private struct DestinationProfileChange {
-        let destinationIndex: Int
-        let profileIndex: Int
-        let profile: OutputProfile
-        let needsCopy: Bool
-    }
-    private struct DestinationProfileProblem: Error {
-        let message: String
-    }
-    private func destinationProfileEdits(_ destinationIDs: [UUID], customizeUnchanged: Bool,
-                                         _ change: (inout OutputProfile, OutputDestinationConfiguration) -> Void)
-        -> Result<[DestinationProfileChange], DestinationProfileProblem> {
-        if let recoveryNotice { return .failure(.init(message: recoveryNotice)) }
+        if let recoveryNotice { return recoveryNotice }
         let ids = Set(destinationIDs)
         guard ids.isSubset(of: Set(document.destinations.map(\.id))) else {
-            return .failure(.init(message: "An output no longer exists. Choose its appearance again."))
+            return "An output no longer exists. Choose its appearance again."
         }
-        var changes: [DestinationProfileChange] = []
-        for index in document.destinations.indices where ids.contains(document.destinations[index].id) {
-            let destination = document.destinations[index]
-            guard let profileIndex = document.profiles.firstIndex(where: { $0.id == destination.profileID }) else {
-                return .failure(.init(message: "An output appearance no longer exists. Choose another appearance in Manage Outputs."))
+        var next = document
+        var editedProfileIDs = Set<UUID>()
+        for destination in document.destinations where ids.contains(destination.id) {
+            guard let profileIndex = next.profiles.firstIndex(where: { $0.id == destination.profileID }) else {
+                return "An output appearance no longer exists. Choose another appearance in Manage Outputs."
             }
-            let original = document.profiles[profileIndex]
+            guard !editedProfileIDs.contains(destination.profileID) else { continue }
+            let original = next.profiles[profileIndex]
             var profile = original
             change(&profile, destination)
-            guard profile.id == original.id, profile.customizedForDestinationID == original.customizedForDestinationID else {
-                return .failure(.init(message: "An appearance edit cannot change its saved identity or owner."))
+            guard profile.id == original.id else {
+                return "An appearance edit cannot change its saved identity."
             }
-            let needsCopy = !isExclusiveCustomization(original, for: destination.id)
-            guard profile != original || (customizeUnchanged && needsCopy) else { continue }
-            changes.append(.init(destinationIndex: index, profileIndex: profileIndex, profile: profile, needsCopy: needsCopy))
-        }
-        guard document.profiles.count + changes.filter(\.needsCopy).count <= 128 else {
-            return .failure(.init(message: "The profile limit has been reached. Remove an unused appearance in Manage Outputs before changing these outputs."))
-        }
-        return .success(changes)
-    }
-    private func commitDestinationProfileEdits(_ changes: [DestinationProfileChange]) -> String? {
-        var next = document
-        for change in changes {
-            var profile = change.profile
-            if change.needsCopy {
-                let destination = document.destinations[change.destinationIndex]
-                profile.id = UUID(); profile.customizedForDestinationID = destination.id
-                let name = destination.name + " Customized"
-                profile.name = name.utf8.count <= 160 ? name : "Customized Output"
-                next.profiles.append(profile)
-                next.destinations[change.destinationIndex].profileID = profile.id
-            } else {
-                next.profiles[change.profileIndex] = profile
-            }
+            profile.customizedForDestinationID = nil
+            guard profile != original else { continue }
+            next.profiles[profileIndex] = profile
+            editedProfileIDs.insert(destination.profileID)
         }
         guard next.isValid else { return "The appearance change contains invalid settings and could not be saved." }
-        edit { $0 = next }
+        if next != document { edit { $0 = next } }
         return nil
     }
 
@@ -188,6 +134,11 @@ final class OutputProfileStore: ObservableObject {
                    (root["version"] as? Int ?? 0) < 7,
                    defaults?.data(forKey: "outputProfilesOMTMigrationBackup") == nil {
                     defaults?.set(data, forKey: "outputProfilesOMTMigrationBackup")
+                }
+                if let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   (root["version"] as? Int ?? 0) < 8,
+                   defaults?.data(forKey: "outputProfilesProfileOwnershipMigrationBackup") == nil {
+                    defaults?.set(data, forKey: "outputProfilesProfileOwnershipMigrationBackup")
                 }
                 let defaultsRevision = defaults?.integer(forKey: Self.defaultsRevisionKey) ?? 0
                 if defaultsRevision < 1 {
@@ -276,8 +227,7 @@ final class OutputProfileStore: ObservableObject {
         return "\(names) share a destination. Choose a different monitor or source name for each enabled output of the same protocol."
     }
     /// Preference-mirror helper for the first destination when it still uses an
-    /// audience-kind appearance (including exclusive customizations). New network
-    /// outputs must seed from `profile(OutputProfile.audienceID)`, not this value.
+    /// audience-kind appearance. New network outputs assign `audienceID` directly.
     var audience: OutputProfile {
         if let destination = document.destinations.first, let profile = profile(destination.profileID), profile.kind == .audience { return profile }
         return profile(OutputProfile.audienceID) ?? document.profiles[0]
@@ -350,19 +300,11 @@ final class OutputProfileStore: ObservableObject {
         }
         recoveryNotice = nil; recoveryOriginalData = nil; persist()
     }
-    @discardableResult
-    func clearDestinationBackground(_ destinationID: UUID) -> String? {
-        editDestinationProfiles([destinationID]) { profile, destination in
-            profile.clearBackground(preservingKeyColour: destination.isNetworkDestination)
-        }
-    }
     func clearBackgrounds() {
         edit { doc in
-            let enabled = doc.destinations.filter(\.enabled)
-            let ids = Set(enabled.map(\.profileID))
-            let keys = Set(enabled.filter(\.isNetworkDestination).map(\.profileID))
+            let ids = Set(doc.destinations.filter(\.enabled).map(\.profileID))
             for index in doc.profiles.indices where ids.contains(doc.profiles[index].id) {
-                doc.profiles[index].clearBackground(preservingKeyColour: keys.contains(doc.profiles[index].id))
+                doc.profiles[index].clearBackground()
             }
         }
     }

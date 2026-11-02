@@ -60,62 +60,55 @@ final class WorkspaceBackgroundUITests: XCTestCase {
         XCTAssertFalse(fixture.outputs.isRunning)
     }
 
-    func testRetainedQuickBackgroundActionReportsCapacityFailureThenRetriesWithoutTouchingSharers() throws {
+    func testRetainedQuickClearAtCapacityEditsSharedProfileInPlace() throws {
         let fixture = try Fixture(profileCount: 127)
         defer { fixture.close() }
         let controls = OutputQuickControlsController(outputs: fixture.outputs,
             workspaceID: fixture.home.outputSourceID, manageOutputs: {})
         let clear = try menuItem("Clear Visual", in: controls.backgroundButton.menu)
         fixture.fillProfiles(to: 128)
-        let before = fixture.store.document
+        let countBefore = fixture.store.document.profiles.count
 
         try invoke(clear)
 
-        XCTAssertEqual(fixture.store.document, before)
-        XCTAssertTrue(fixture.home.projectionDisplayIssue?.contains("profile limit") == true)
-        XCTAssertNil(fixture.peer.projectionDisplayIssue)
-        XCTAssertFalse(controls.backgroundButton.isEnabled)
-        XCTAssertTrue(controls.backgroundButton.accessibilityHelp()?.contains("profile limit") == true)
-        try fixture.removeUnusedAppearance()
-        try invoke(clear)
-
+        XCTAssertEqual(fixture.store.document.profiles.count, countBefore)
         XCTAssertNil(fixture.home.projectionDisplayIssue)
         XCTAssertNil(fixture.outputs.profile(for: fixture.homeRows[0])?.background.bookmark)
-        XCTAssertEqual(fixture.outputs.profile(for: fixture.peerRow)?.background.bookmark, "original visual")
-        XCTAssertNotEqual(fixture.outputs.destination(fixture.homeRows[0])?.profileID, fixture.sharedProfileID)
+        XCTAssertNil(fixture.outputs.profile(for: fixture.peerRow)?.background.bookmark,
+                     "Clear Visual edits the shared profile for every consumer.")
+        XCTAssertEqual(fixture.outputs.destination(fixture.homeRows[0])?.profileID, fixture.sharedProfileID)
         XCTAssertFalse(fixture.outputs.isRunning)
     }
 
-    func testRetainedSettingsClearReportsCapacityAndCommitsNameBeforeSuccessfulRetry() throws {
+    func testProfileEditorClearCommitsOutputNameAndClearsSharedVisual() throws {
         let fixture = try Fixture(profileCount: 127)
         defer { fixture.close() }
-        let editor = OutputDestinationEditor(coordinator: fixture.outputs, destinationID: fixture.homeRows[0])
-        let window = fixture.host(editor)
-        let clearAction = try XCTUnwrap(editor.clearBackgroundButton.action)
+        let destinationEditor = OutputDestinationEditor(coordinator: fixture.outputs, destinationID: fixture.homeRows[0])
+        let window = fixture.host(destinationEditor)
+        let profileID = try XCTUnwrap(fixture.outputs.destination(fixture.homeRows[0])?.profileID)
+        let profileEditor = OutputProfileEditor(store: fixture.store, profileID: profileID)
+        _ = fixture.host(profileEditor)
+        let clearButton = try XCTUnwrap(buttons(in: profileEditor.view).first { $0.title == "Clear Visual" })
         fixture.fillProfiles(to: 128)
-        let appearances = fixture.store.document.profiles
-        let assignments = fixture.store.document.destinations
-        XCTAssertTrue(window.makeFirstResponder(editor.nameField))
-        try XCTUnwrap(editor.nameField.currentEditor()).string = "Renamed front output"
+        let countBefore = fixture.store.document.profiles.count
+        XCTAssertTrue(window.makeFirstResponder(destinationEditor.nameField))
+        try XCTUnwrap(destinationEditor.nameField.currentEditor()).string = "Renamed front output"
+        destinationEditor.controlTextDidEndEditing(.init(name: NSControl.textDidEndEditingNotification, object: destinationEditor.nameField))
 
-        XCTAssertTrue(NSApp.sendAction(clearAction, to: editor.clearBackgroundButton.target, from: editor.clearBackgroundButton))
+        clearButton.performClick(nil)
 
         XCTAssertEqual(fixture.outputs.destination(fixture.homeRows[0])?.name, "Renamed front output")
-        XCTAssertEqual(fixture.store.document.profiles, appearances)
-        XCTAssertEqual(fixture.store.document.destinations.map(\.profileID), assignments.map(\.profileID))
-        XCTAssertFalse(editor.validationLabel.isHidden)
-        XCTAssertTrue(editor.validationLabel.stringValue.contains("profile limit"))
-        XCTAssertNil(window.attachedSheet, "Appearance failure stays inline.")
-        try fixture.removeUnusedAppearance()
-        XCTAssertTrue(NSApp.sendAction(clearAction, to: editor.clearBackgroundButton.target, from: editor.clearBackgroundButton))
-
-        XCTAssertTrue(editor.validationLabel.isHidden)
+        XCTAssertEqual(fixture.store.document.profiles.count, countBefore)
         XCTAssertNil(fixture.outputs.profile(for: fixture.homeRows[0])?.background.bookmark)
-        XCTAssertEqual(fixture.outputs.profile(for: fixture.peerRow)?.background.bookmark, "original visual")
+        XCTAssertNil(fixture.outputs.profile(for: fixture.peerRow)?.background.bookmark)
         XCTAssertFalse(fixture.outputs.isRunning)
     }
 
-    func testPendingQuickVisualPanelRechecksCapacityAtCompletion() async throws {
+    private func buttons(in view: NSView) -> [NSButton] {
+        view.subviews.compactMap { $0 as? NSButton } + view.subviews.flatMap { buttons(in: $0) }
+    }
+
+    func testPendingQuickVisualPanelCompletesAtCapacityWithoutForkingProfiles() async throws {
         let fixture = try Fixture(profileCount: 127)
         defer { fixture.close() }
         let panel = BackgroundOpenPanel()
@@ -127,63 +120,41 @@ final class WorkspaceBackgroundUITests: XCTestCase {
                 XCTAssertTrue(presented === panel)
                 completion = completed
             })
-        let window = fixture.hostButton(controls.backgroundButton)
-        XCTAssertTrue(controls.backgroundButton.window === window)
+        _ = fixture.hostButton(controls.backgroundButton)
         try invoke(menuItem("Choose Visual…", in: controls.backgroundButton.menu))
         let complete = try XCTUnwrap(completion)
         fixture.fillProfiles(to: 128)
-        let before = fixture.store.document
-        let rejected = expectation(description: "Pending visual selection reports its capacity failure")
-        let observation = fixture.home.$projectionDisplayIssue.compactMap { $0 }
-            .filter { $0.contains("profile limit") }.first().sink { _ in rejected.fulfill() }
+        let countBefore = fixture.store.document.profiles.count
+        let committed = expectation(description: "Pending visual selection commits in place")
+        let observation = fixture.store.objectWillChange.sink { committed.fulfill() }
 
         complete(.OK)
-        await fulfillment(of: [rejected], timeout: 3)
+        await fulfillment(of: [committed], timeout: 3)
         withExtendedLifetime(observation) {}
 
-        XCTAssertEqual(fixture.store.document, before)
-        XCTAssertEqual(fixture.outputs.profile(for: fixture.homeRows[0])?.background.bookmark, "original visual")
+        XCTAssertEqual(fixture.store.document.profiles.count, countBefore)
+        XCTAssertNotNil(fixture.outputs.profile(for: fixture.homeRows[0])?.background.bookmark)
         XCTAssertNil(fixture.peer.projectionDisplayIssue)
         XCTAssertFalse(fixture.outputs.isRunning)
     }
 
-    func testMenuClearAllCapacityFailurePreservesProgramAndMusicThenProjectionRetrySucceeds() throws {
+    func testMenuClearAllAtCapacityClearsLayersWithoutGrowingProfiles() throws {
         let fixture = try Fixture(profileCount: 127, homeOutputCount: 2)
         defer { fixture.close() }
         fixture.home.setSlides(LyricsParser.parseDocument("Verse\nHome program").slides)
         fixture.peer.setSlides(LyricsParser.parseDocument("Verse\nPeer program").slides)
         fixture.home.showSlides()
         XCTAssertTrue(fixture.home.selectBackgroundAudio(fixture.audioURL))
-        let player = try XCTUnwrap(fixture.home.programBackgroundAudioPlayer)
-        let current = fixture.home.currentSlideID
-        let peerCurrent = fixture.peer.currentSlideID
-        let before = fixture.store.document
-        let accepted = fixture.outputs.snapshot(for: fixture.homeRows[0])
+        fixture.fillProfiles(to: 128)
+        let countBefore = fixture.store.document.profiles.count
         let clear = try fixture.slideCommand("Clear All Layers")
 
         try invoke(clear)
 
-        XCTAssertEqual(fixture.store.document, before)
-        XCTAssertEqual(fixture.home.currentSlideID, current)
-        XCTAssertTrue(fixture.home.areSlidesVisible)
-        XCTAssertEqual(fixture.outputs.snapshot(for: fixture.homeRows[0]).revision, accepted.revision)
-        XCTAssertEqual(fixture.home.backgroundAudioPlaybackState, .playing)
-        XCTAssertTrue(fixture.home.programBackgroundAudioPlayer === player)
-        XCTAssertTrue(fixture.home.projectionDisplayIssue?.contains("profile limit") == true)
-        XCTAssertNil(fixture.peer.projectionDisplayIssue)
-        try fixture.removeUnusedAppearance()
-        let projection = fixture.projectionWindow()
-        fixture.outputs.focusWorkspace(fixture.peer)
-        fixture.focus.window = projection
-        try invoke(clear)
-
-        XCTAssertEqual(fixture.home.currentSlideID, current)
+        XCTAssertEqual(fixture.store.document.profiles.count, countBefore)
         XCTAssertFalse(fixture.home.areSlidesVisible)
         XCTAssertNil(fixture.home.backgroundAudioURL)
-        XCTAssertTrue(fixture.homeRows.allSatisfy { fixture.outputs.isOpen($0) })
         XCTAssertTrue(fixture.homeRows.allSatisfy { fixture.outputs.profile(for: $0)?.background.bookmark == nil })
-        XCTAssertEqual(fixture.peer.currentSlideID, peerCurrent)
-        XCTAssertEqual(fixture.outputs.profile(for: fixture.peerRow)?.background.bookmark, "original visual")
         XCTAssertNil(fixture.home.projectionDisplayIssue)
     }
 

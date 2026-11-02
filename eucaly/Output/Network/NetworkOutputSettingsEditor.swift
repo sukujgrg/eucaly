@@ -112,14 +112,14 @@ final class NetworkOutputSettingsEditor: NSViewController, NSTextFieldDelegate {
         chromaColourRow?.isHidden = !showChroma
         if !showChroma { chromaColour.deactivate() }
         // Never push into an active colour panel; the well owns the draft until commit.
-        if showChroma, !chromaColour.isActive, let profile = store.profile(destination.profileID) {
-            chromaColour.color = profile.background.colour.nativeColor
+        if showChroma, !chromaColour.isActive {
+            chromaColour.color = settings.keyColour.nativeColor
         }
-        chromaColour.isEnabled = store.canCustomizeProfile(for: destinationID)
-        chromaColour.toolTip = chromaColour.isEnabled ? "Change the key colour for this output only. The saved colour is retained when using Alpha." : "The appearance limit has been reached. Remove an unused profile to customize this colour."
+        chromaColour.isEnabled = store.recoveryNotice == nil
+        chromaColour.toolTip = "Change the key colour for this output. The saved colour is retained when using Alpha."
         transparencyNotice.stringValue = settings.keyMode == .alpha
             ? "Surroundings are transparent. Compatible receivers can composite the picture over another source; display-only receivers show it over black. The saved chroma colour is inactive; enabled image or video backgrounds still show."
-            : "Surroundings use the Chroma Colour below. Configure the receiver to remove that colour. Changing it customizes this output only; full-frame media still uses this connection."
+            : "Surroundings use the Chroma Colour below. Configure the receiver to remove that colour. Full-frame media still uses this connection."
         let outputs = store.document.destinations.filter(\.isNetworkDestination)
         let names = ["Off"] + outputs.map { output in
             return output.name + " (" + (output.networkTechnology?.title ?? "") + ": "
@@ -176,9 +176,10 @@ final class NetworkOutputSettingsEditor: NSViewController, NSTextFieldDelegate {
         actionProblem = store.setNetworkSettings(settings, for: destinationID); render()
     }
     @objc private func chromaColourChanged(_ sender: Any?) {
-        guard destination?.networkSettings?.keyMode == .chroma else { render(); return }
+        guard var settings = destination?.networkSettings, settings.keyMode == .chroma else { render(); return }
         finishOutputSettingsFieldEditing(in: view)
-        store.editDestinationProfile(destinationID) { $0.background.colour = OutputColour(nativeColor: chromaColour.color, opaque: true) }
+        settings.keyColour = OutputColour(nativeColor: chromaColour.color, opaque: true)
+        actionProblem = store.setNetworkSettings(settings, for: destinationID)
         render()
     }
     @objc private func routeChanged(_ sender: Any?) {

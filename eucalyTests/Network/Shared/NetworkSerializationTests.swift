@@ -22,7 +22,8 @@ final class NetworkSerializationTests: XCTestCase {
                   "height": 1080,
                   "frameRateNumerator": 30,
                   "frameRateDenominator": 1,
-                  "keyMode": "alpha"
+                  "keyMode": "alpha",
+                  "keyColour": { "red": 0, "green": 1, "blue": 0, "alpha": 1 }
                 }
               }
             }
@@ -42,7 +43,8 @@ final class NetworkSerializationTests: XCTestCase {
                   "height": 1080,
                   "frameRateNumerator": 30,
                   "frameRateDenominator": 1,
-                  "keyMode": "chroma"
+                  "keyMode": "chroma",
+                  "keyColour": { "red": 0, "green": 1, "blue": 0, "alpha": 1 }
                 }
               }
             }

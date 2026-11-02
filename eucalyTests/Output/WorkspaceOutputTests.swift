@@ -499,8 +499,17 @@ final class WorkspaceOutputTests: XCTestCase {
         XCTAssertEqual(f.outputs.profile(for: f.network)?.background.colour, .chromaGreen)
     }
 
-    func testBackgroundClearOnlyCustomizesAssignedWorkspaceOutputs() throws {
+    func testBackgroundClearOnlyAffectsEnabledOutputsInTheClearedWorkspace() throws {
         let f = Fixture(); defer { f.outputs.stopAllOutputs() }
+        var onlineProfile = f.store.audience
+        onlineProfile.id = UUID()
+        onlineProfile.name = "Online visual"
+        f.store.edit { doc in
+            doc.profiles.append(onlineProfile)
+            if let index = doc.destinations.firstIndex(where: { $0.id == f.online }) {
+                doc.destinations[index].profileID = onlineProfile.id
+            }
+        }
         XCTAssertTrue(f.outputs.moveOutput(f.online, to: f.b))
         XCTAssertNil(f.store.editDestinationProfiles([f.house, f.network]) { profile, _ in
             profile.background.bookmark = "house visual"
@@ -509,13 +518,10 @@ final class WorkspaceOutputTests: XCTestCase {
         XCTAssertEqual(f.outputs.profile(for: f.house)?.background.bookmark, "house visual")
         XCTAssertEqual(f.outputs.profile(for: f.network)?.background.bookmark, "house visual")
         XCTAssertEqual(f.outputs.profile(for: f.online)?.background.bookmark, "online visual")
-        XCTAssertNotEqual(f.outputs.destination(f.house)?.profileID, f.outputs.destination(f.online)?.profileID)
-        f.outputs.focusWorkspace(f.b)
         f.outputs.clearBackgrounds(for: f.a)
         XCTAssertNil(f.outputs.profile(for: f.house)?.background.bookmark)
         XCTAssertNil(f.outputs.profile(for: f.network)?.background.bookmark)
         XCTAssertEqual(f.outputs.profile(for: f.online)?.background.bookmark, "online visual")
-        XCTAssertTrue(f.outputs.profile(for: f.online)?.background.visible == true)
     }
 
     func testReservationsAndNamesRemainGlobalWhileDisabledAssignmentsMayOverlap() throws {
@@ -705,6 +711,15 @@ final class WorkspaceOutputTests: XCTestCase {
 
     func testSettingsBackgroundOpensIndependentlyOfEmptyCurrentSlideCommands() throws {
         let f = Fixture(); defer { f.outputs.stopAllOutputs() }
+        var onlineProfile = f.store.audience
+        onlineProfile.id = UUID()
+        onlineProfile.name = "Online settings visual"
+        f.store.edit { doc in
+            doc.profiles.append(onlineProfile)
+            if let index = doc.destinations.firstIndex(where: { $0.id == f.online }) {
+                doc.destinations[index].profileID = onlineProfile.id
+            }
+        }
         XCTAssertTrue(f.outputs.moveOutput(f.online, to: f.b))
         f.store.editDestinationProfile(f.house) { $0.background.bookmark = "settings visual" }
         f.store.editDestinationProfile(f.online) { $0.background.bookmark = "other workspace visual" }

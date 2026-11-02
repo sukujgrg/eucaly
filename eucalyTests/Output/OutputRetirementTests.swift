@@ -7,10 +7,11 @@ final class OutputRetirementTests: XCTestCase {
     func testMixedLegacyDocumentRetainsNativeSettingsAndRemovesRetiredDefault() throws {
         let fixture = try legacy()
         let document = try OutputLegacyMigration.decode(fixture.data)
-        XCTAssertEqual(document.version, 7)
+        XCTAssertEqual(document.version, 8)
         XCTAssertEqual(document.destinations, [fixture.native])
         XCTAssertNil(document.defaultDestinationID)
-        XCTAssertEqual(document.profiles, fixture.profiles)
+        var expected = fixture.profiles + [fixture.promotedExclusive]
+        XCTAssertEqual(document.profiles, expected)
         XCTAssertEqual(try OutputLegacyMigration.decode(JSONEncoder().encode(document)), document)
     }
     func testRemoteOnlyDocumentCreatesNoReplacementOrAutomaticDestination() throws {
@@ -92,6 +93,7 @@ final class OutputRetirementTests: XCTestCase {
         let object: [String: Any]
         let native: OutputDestinationConfiguration
         let profiles: [OutputProfile]
+        let promotedExclusive: OutputProfile
         var data: Data { get throws { try JSONSerialization.data(withJSONObject: object) } }
     }
     private func legacy() throws -> Fixture {
@@ -117,7 +119,9 @@ final class OutputRetirementTests: XCTestCase {
         rows.append(["id": UUID().uuidString, "name": "Retired media", "profileID": retired["id"]!, "enabled": false,
                      "destination": ["srt": ["_0": [:]]]])
         object["destinations"] = rows
-        return .init(object: object, native: native, profiles: profiles)
+        var promotedExclusive = exclusive
+        promotedExclusive.customizedForDestinationID = nil
+        return .init(object: object, native: native, profiles: profiles, promotedExclusive: promotedExclusive)
     }
 }
 

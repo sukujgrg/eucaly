@@ -85,21 +85,22 @@ final class NetworkOutputTests: XCTestCase {
     }
     func testClearingNDILyricsVisualPreservesItsKeyColourAndNativeAppearance() throws {
         let fixture = Fixture(); defer { fixture.outputs.stop() }
-        fixture.store.editDestinationProfile(fixture.lyrics) {
-            $0.background.colour = .chromaGreen
-            $0.background.bookmark = "selected visual"
-        }
+        var settings = try XCTUnwrap(fixture.outputs.destination(fixture.lyrics)?.ndi)
+        settings.keyColour = .chromaGreen
+        XCTAssertNil(fixture.store.setNetworkSettings(settings, for: fixture.lyrics))
         let originalNative = fixture.store.audience
-        fixture.store.clearDestinationBackground(fixture.lyrics)
+        fixture.store.editDestinationProfile(fixture.lyrics) { $0.background.bookmark = "selected visual" }
+        fixture.store.editDestinationProfile(fixture.lyrics) { $0.clearBackground() }
         var profile = try XCTUnwrap(fixture.outputs.profile(for: fixture.lyrics))
         XCTAssertNil(profile.background.bookmark)
-        XCTAssertEqual(profile.background.colour, .chromaGreen)
-        XCTAssertEqual(fixture.store.audience, originalNative)
+        XCTAssertEqual(fixture.outputs.destination(fixture.lyrics)?.ndi?.keyColour, .chromaGreen)
+        XCTAssertEqual(fixture.store.audience.background.bookmark, originalNative.background.bookmark)
         fixture.store.editDestinationProfile(fixture.lyrics) { $0.background.bookmark = "selected visual" }
         fixture.store.clearBackgrounds()
         profile = try XCTUnwrap(fixture.outputs.profile(for: fixture.lyrics))
         XCTAssertNil(profile.background.bookmark)
-        XCTAssertEqual(profile.background.colour, .chromaGreen, "Clear All must retain the receiver's configured key colour")
+        XCTAssertEqual(fixture.outputs.destination(fixture.lyrics)?.ndi?.keyColour, .chromaGreen,
+                       "Clear All must retain the receiver's configured key colour")
         fixture.store.selectProfile(OutputProfile.confidenceID, for: fixture.lyrics)
         XCTAssertFalse(fixture.outputs.hasEnabledConfidenceOutput, "A profile must not turn NDI into a native standby destination")
     }

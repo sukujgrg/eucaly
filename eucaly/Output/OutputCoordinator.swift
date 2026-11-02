@@ -919,8 +919,8 @@ final class OutputCoordinator: ObservableObject {
     @discardableResult
     func clearBackgrounds(for session: PresentationSession? = nil) -> Bool {
         guard let id = backgroundWorkspace(for: session) else { return false }
-        let problem = profiles.editDestinationProfiles(destinations(workspace: id).filter(\.enabled).map(\.id)) { profile, row in
-            profile.clearBackground(preservingKeyColour: row.isNetworkDestination)
+        let problem = profiles.editDestinationProfiles(destinations(workspace: id).filter(\.enabled).map(\.id)) { profile, _ in
+            profile.clearBackground()
         }
         reportAppearanceEditIssue(problem, workspace: id)
         guard problem == nil else { return false }

@@ -80,14 +80,14 @@ nonisolated struct OutputProfileDocument: Codable, Equatable {
     // individual UTF-8 byte to six escaped bytes. Retain that supported model
     // within one shared, finite budget for acceptance, storage and recovery.
     static let maximumEncodedBytes = 64 * 1_024 * 1_024
-    var version = 7
+    var version = 8
     var workspaces: [OutputWorkspaceRecord] = [.primary]
     var profiles: [OutputProfile]
     var destinations: [OutputDestinationConfiguration]
     var defaultDestinationID: UUID? = nil
     var backgroundAudioDestinationID: UUID? = nil
 
-    init(version: Int = 7, profiles: [OutputProfile], destinations: [OutputDestinationConfiguration], defaultDestinationID: UUID? = nil) {
+    init(version: Int = 8, profiles: [OutputProfile], destinations: [OutputDestinationConfiguration], defaultDestinationID: UUID? = nil) {
         self.version = version; self.profiles = profiles; self.destinations = destinations
         self.defaultDestinationID = defaultDestinationID
     }
@@ -152,7 +152,7 @@ nonisolated extension OutputProfileDocument {
         let network = destinations.compactMap(\.networkSettings)
         guard network.allSatisfy(\.isValid), Set(network.map(\.sourceID)).count == network.count,
               backgroundAudioDestinationID == nil || destinations.contains(where: { $0.id == backgroundAudioDestinationID && $0.isNetworkDestination }) else { return false }
-        guard version == 7, (1...OutputWorkspaceRecord.legacyPersistenceLimit).contains(workspaces.count),
+        guard version == 8, (1...OutputWorkspaceRecord.legacyPersistenceLimit).contains(workspaces.count),
               Set(workspaces.map(\.id)).count == workspaces.count,
               workspaces.allSatisfy({ !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.name.utf8.count <= 160 }),
               destinations.allSatisfy({ destination in destination.workspaceID == nil || workspaces.contains(where: { $0.id == destination.workspaceID }) }), (1...128).contains(profiles.count), destinations.count <= 16,

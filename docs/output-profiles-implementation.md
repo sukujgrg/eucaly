@@ -4,10 +4,12 @@ Network destinations now choose NDI or OMT per saved output. Both share the
 accepted-Current rendering, workspace playback, single music-destination policy,
 native Settings editor and routing controls described below. Document version 7
 adds OMT while preserving version-6 identities and assignments, and retains the
-original pre-v7 bytes in a separate migration backup. Protocol-specific OMT
-format, SDK lifetime, packaging and connection-count details are documented in
-[OMT outputs](omt-runtime.md). Picked-window network output remains deferred for
-both protocols.
+original pre-v7 bytes in a separate migration backup. Document version 8 makes
+Outputs select reusable Profiles only: former exclusive appearances are promoted,
+and network chroma colour moves onto each destination’s `keyColour`, with a
+separate pre-v8 backup. Protocol-specific OMT format, SDK lifetime, packaging and
+connection-count details are documented in [OMT outputs](omt-runtime.md).
+Picked-window network output remains deferred for both protocols.
 
 ## Content, assignment and lifetime
 
@@ -455,16 +457,15 @@ See [runtime setup](ndi-runtime.md).
 
 ## Settings and persistence
 
-Reusable profiles and output appearances retain native font/colour controls, multilingual fitting,
-stacked/column layout, padding and relative component typography. Output-level edits
-create/reuse an exclusive customization; direct Profiles-list edits intentionally
-affect every consumer. The default-output picker remains an editing preference.
-Workspace background commands plan every enabled destination's customization
-before committing one document change. At the 128-profile limit, a command either
-updates all affected outputs or reports an inline error without changing selections,
-visibility, music or output lifecycle. Clear All performs this preflight before
-hiding slides or clearing audio. Reusable appearances and disabled sharers retain
-their settings. Retained menu actions and pending file panels revalidate at commit.
+Profiles retain native font/colour controls, multilingual fitting, stacked/column
+layout, padding and relative component typography. Outputs select a Profile only;
+Profiles-list and toolbar Edit Profile edits affect every consumer of that Profile.
+Duplicate a Profile before editing when an independent look is required. The
+default-output picker remains an editing preference for quick Profile edits.
+Workspace background commands edit each distinct assigned Profile once before
+committing one document change. Clear All clears those Profile visuals before
+hiding slides or clearing audio. Retained menu actions and pending file panels
+revalidate at commit.
 Both typography and background controls apply to every generic NDI output. Numeric
 choices use document validation; fields commit on Return/editing end. Thumbnails
 have separate sizing and use a representative assigned workspace profile and canvas.
@@ -547,24 +548,19 @@ window Preview content, preserving a newer pending file selection.
 Explicit file loads recheck readable regular-file availability on the loading
 queue; stale scan entries fail through the same guarded Preview transition.
 
-The Profiles list separates reusable profiles, assigned output appearances and
-unused saved appearances using customization metadata and actual references, never
-names. Output pickers offer reusable profiles plus the output's current customized
-appearance; another output's private copies are not offered as presets. The +
-action saves a reusable copy without changing any output assignment. The − action
+The Profiles list is a flat reusable list. Output pickers offer Profiles
+(Confidence-kind omitted for network destinations unless already assigned). The +
+action duplicates a Profile without changing any output assignment. The − action
 removes only unused custom profiles, rechecking all destinations including disabled
-rows. Built-in profiles cannot be removed. Old named NDI appearances remain saved
-and can be explicitly removed when unused; listing settings never deletes or
-renames them. This organization requires no document migration.
+rows. Built-in profiles cannot be removed. Former exclusive output appearances are
+promoted to ordinary Profiles by document version 8.
 
-NDI outputs label Alpha/Chroma as Transparency. Chroma Colour exposes a native colour
-well on the output and saves changes through its exclusive appearance customization,
-preserving reusable profiles and other consumers. Alpha hides that well and retains
-the saved colour. NDI-only appearance editors direct colour changes to the output;
-shared/native editors explain that the existing colour is a native solid background
-and an NDI chroma key, with transparent solid surroundings in Alpha. Explicit image
-and video backgrounds remain independent in both modes. These controls do not alter
-source identity, workspace ownership, music routing or sender lifetime.
+Network outputs label Alpha/Chroma as Transparency on the destination. Chroma Colour
+saves to that destination’s `keyColour` (retained while Alpha is selected). Profile
+Colour remains the native solid background; network-only Profile editors point
+operators to each output’s Transparency controls. Explicit image and video
+backgrounds remain independent in both modes. These controls do not alter source
+identity, workspace ownership, music routing or sender lifetime.
 
 Document version 6 adds durable workspace records and destination ownership. Existing
 native rows and both legacy NDI rows migrate to Home with their UUIDs, monitor
@@ -575,6 +571,13 @@ without renaming or dropping them. An original pre-v6 document backup is saved u
 `outputProfilesWorkspaceMigrationBackup`. An orphaned v6 owner becomes a named recovered
 workspace and its destinations are disabled. No owner falls back to the focused tab.
 New workspaces start unassigned. Restoration never starts NDI.
+
+Document version 8 promotes every exclusive customized appearance to an ordinary
+reusable Profile, copies each network destination’s prior profile background colour
+onto `NetworkOutputSettings.keyColour` (defaulting to chroma green when missing),
+and retains the original pre-v8 bytes in `outputProfilesProfileOwnershipMigrationBackup`
+without replacing earlier migration backups. Migration never adds a network output
+or starts a helper.
 
 Earlier version-5 retirement still removes AltView/SRT rows and factory/exclusive
 profiles, while retaining supported native appearance, backgrounds and monitor UUIDs.

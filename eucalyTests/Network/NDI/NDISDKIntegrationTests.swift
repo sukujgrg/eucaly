@@ -145,7 +145,9 @@ final class NDISDKIntegrationTests: XCTestCase {
             let target = homeOwnsOutput ? home : peer, other = homeOwnsOutput ? peer : home
             let previousRender = senderLog.state.renderedRevision
             keyColour = checkpoint < 4 ? .chromaGreen : .init(red: 1, blue: 1)
-            store.editDestinationProfile(row.id) { $0.background.colour = keyColour }
+            var settings = try XCTUnwrap(outputs.destination(row.id)?.ndi)
+            settings.keyColour = keyColour
+            XCTAssertNil(store.setNetworkSettings(settings, for: row.id))
             // Each 60 ms burst crosses ownership and changes format faster than
             // the 30 Hz output clock. Settled checkpoints cover all four pairs.
             for step in 0..<12 {
