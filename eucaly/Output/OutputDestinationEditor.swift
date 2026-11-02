@@ -20,6 +20,7 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
     let confidenceButton = NSButton(title: "Open Confidence", target: nil, action: nil)
     let identifyButton = NSButton(title: "Identify", target: nil, action: nil)
     let nameMonitorButton = NSButton(title: "Name Monitor…", target: nil, action: nil)
+    let editProfileButton = NSButton(title: "Edit Profile…", target: nil, action: nil)
     var onEditProfile: (UUID) -> Void = { _ in }
     private struct MonitorEntry: Equatable { let target: ProjectionMonitorTarget?; let title: String; let enabled: Bool }
     private struct ProfileEntry: Equatable { let id: UUID; let title: String }
@@ -43,11 +44,12 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
         profilePicker.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         profilePicker.cell?.lineBreakMode = .byTruncatingMiddle
         profilePicker.target = self; profilePicker.action = #selector(profileChanged(_:)); profilePicker.setAccessibilityLabel("Appearance profile")
+        editProfileButton.target = self; editProfileButton.action = #selector(editProfile(_:))
         form.add(outputSettingsRow("Name", nameField)); form.add(enabledButton)
         moveWorkspaceButton.target = self; moveWorkspaceButton.action = #selector(moveWorkspace(_:))
         form.add(ownerLabel); form.add(outputSettingsActionRow([moveWorkspaceButton])); form.add(moveNotice)
         validationLabel.textColor = .systemOrange; validationLabel.isHidden = true; form.add(validationLabel)
-        form.add(outputSettingsFieldGroup("Profile", profilePicker, actions: []))
+        form.add(outputSettingsFieldGroup("Profile", profilePicker, actions: [editProfileButton]))
         form.add(appearanceNotice)
         form.add(standbyNotice)
         if destination?.isNetworkDestination == true {
@@ -193,6 +195,10 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
               store.profile(id) != nil else { return }
         store.selectProfile(id, for: destinationID)
         render()
+    }
+    @objc private func editProfile(_ sender: Any?) {
+        guard let destination else { return }
+        onEditProfile(destination.profileID)
     }
     @objc private func monitorChanged(_ sender: Any?) {
         let target = monitorPicker.selectedItem?.representedObject as? ProjectionMonitorTarget

@@ -146,6 +146,67 @@ final class OutputSettingsTests: XCTestCase {
         XCTAssertEqual(fixture.store.document, saved, "Listing profiles must not migrate or change output settings")
     }
 
+    func testBuiltInProfilesKeepFixedNamesKindCuesAndScopedEditor() throws {
+        let suite = "BuiltInProfileCoherence.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var renamed = OutputProfile.builtIns
+        renamed[0].name = "Audience appearance"
+        renamed[1].name = "Stage Confidence"
+        let destination = OutputDestinationConfiguration(name: "Audience", profileID: OutputProfile.audienceID, monitor: nil)
+        let document = OutputProfileDocument(profiles: renamed, destinations: [destination], defaultDestinationID: destination.id)
+        defaults.set(try JSONEncoder().encode(document), forKey: OutputProfileStore.key)
+        let restored = OutputProfileStore(defaults: defaults)
+        XCTAssertEqual(restored.profile(OutputProfile.audienceID)?.name, "Audience")
+        XCTAssertEqual(restored.profile(OutputProfile.confidenceID)?.name, "Confidence")
+        XCTAssertEqual(restored.profile(OutputProfile.lowerThirdID)?.name, "Lower Third")
+        restored.edit { $0.profiles[0].name = "Still Audience" }
+        XCTAssertEqual(restored.profile(OutputProfile.audienceID)?.name, "Audience")
+        var confidence = try XCTUnwrap(restored.profile(OutputProfile.confidenceID))
+        confidence.name = "Nope"
+        restored.update(confidence)
+        XCTAssertEqual(restored.profile(OutputProfile.confidenceID)?.name, "Confidence")
+
+        let fixture = OutputSettingsFixture(); defer { fixture.close() }
+        fixture.controller.section.selectedSegment = 1
+        fixture.controller.reload()
+        let audienceRow = try XCTUnwrap((0..<fixture.controller.table.numberOfRows).compactMap { row -> NSTableCellView? in
+            fixture.controller.tableView(fixture.controller.table, viewFor: nil, row: row) as? NSTableCellView
+        }.first { $0.accessibilityLabel()?.hasPrefix("Audience,") == true })
+        XCTAssertTrue(audienceRow.accessibilityLabel()?.contains("Audience · Built-in") == true)
+        XCTAssertTrue(audienceRow.accessibilityLabel()?.contains("Used by:") == true)
+
+        fixture.controller.selectProfile(OutputProfile.audienceID)
+        let audience = try XCTUnwrap(fixture.controller.profileEditor)
+        XCTAssertFalse(audience.nameField.isEditable)
+        XCTAssertFalse(audience.kindNotice.isHidden)
+        XCTAssertTrue(audience.kindNotice.stringValue.contains("built-in"))
+        XCTAssertTrue(audience.confidenceNotice.isHidden)
+        XCTAssertTrue(audience.lowerThirdNotice.isHidden)
+        let legacy = try button("Scale fonts for short displays", in: audience.view)
+        XCTAssertFalse(legacy.isHidden)
+
+        fixture.controller.selectProfile(OutputProfile.confidenceID)
+        XCTAssertTrue(fixture.controller.profileEditor === audience)
+        XCTAssertFalse(audience.confidenceNotice.isHidden)
+        XCTAssertTrue(audience.lowerThirdNotice.isHidden)
+        XCTAssertTrue(legacy.isHidden)
+
+        fixture.controller.selectProfile(OutputProfile.lowerThirdID)
+        XCTAssertTrue(audience.confidenceNotice.isHidden)
+        XCTAssertFalse(audience.lowerThirdNotice.isHidden)
+        XCTAssertTrue(legacy.isHidden)
+
+        fixture.controller.section.selectedSegment = 0
+        fixture.controller.reload()
+        fixture.controller.selectDestination(fixture.store.document.destinations[0].id)
+        let destinationEditor = try XCTUnwrap(fixture.controller.destinationEditor)
+        destinationEditor.editProfileButton.performClick(nil)
+        XCTAssertEqual(fixture.controller.section.selectedSegment, 1)
+        XCTAssertEqual(fixture.controller.selectedID, OutputProfile.audienceID)
+        XCTAssertEqual(fixture.controller.profileEditor?.profileID, OutputProfile.audienceID)
+    }
+
     func testUnusedProfileRemovalProtectsBuiltInsAndDisabledConsumersAndPersists() throws {
         let fixture = OutputSettingsFixture(); defer { fixture.close() }
         var copy = fixture.store.audience; copy.id = UUID(); copy.name = "Unused copy"
@@ -506,9 +567,13 @@ final class OutputSettingsTests: XCTestCase {
         fixture.store.edit { $0.profiles[0].typography.size = 100 }
         fixture.controller.reload()
         XCTAssertTrue(first.profilePicker.menu === menu, "Appearance edits must not rebuild a menu of profile names")
-        fixture.store.edit { $0.profiles[0].name = "Audience appearance" }
+        var copy = try XCTUnwrap(fixture.store.profile(OutputProfile.audienceID))
+        copy.id = UUID(); copy.name = "Audience appearance"
+        fixture.store.edit { $0.profiles.append(copy) }
+        fixture.store.selectProfile(copy.id, for: firstID)
         fixture.controller.reload()
-        XCTAssertEqual(first.profilePicker.itemArray.first { $0.representedObject as? UUID == OutputProfile.audienceID }?.title, "Audience appearance")
+        XCTAssertEqual(first.profilePicker.itemArray.first { $0.representedObject as? UUID == copy.id }?.title, "Audience appearance")
+        XCTAssertEqual(first.profilePicker.itemArray.first { $0.representedObject as? UUID == OutputProfile.audienceID }?.title, "Audience")
         fixture.controller.selectDestination(second.id)
         XCTAssertTrue(fixture.controller.destinationEditor === stage)
         XCTAssertTrue(fixture.window.makeFirstResponder(fixture.controller.table))
@@ -845,11 +910,22 @@ final class OutputSettingsTests: XCTestCase {
         XCTAssertEqual(editor.nameField.stringValue, "Choir screen")
         XCTAssertFalse(editor.validationLabel.stringValue.isEmpty)
         fixture.controller.selectProfile(OutputProfile.audienceID)
+        let builtIn = try XCTUnwrap(fixture.controller.profileEditor)
+        XCTAssertFalse(builtIn.nameField.isEditable)
+        builtIn.nameField.stringValue = "Renamed Audience"
+        builtIn.controlTextDidEndEditing(.init(name: NSControl.textDidEndEditingNotification, object: builtIn.nameField))
+        XCTAssertEqual(fixture.store.profile(OutputProfile.audienceID)?.name, "Audience")
+        XCTAssertEqual(builtIn.nameField.stringValue, "Audience")
+        var copy = try XCTUnwrap(fixture.store.profile(OutputProfile.audienceID))
+        copy.id = UUID(); copy.name = "Choir look"
+        fixture.store.edit { $0.profiles.append(copy) }
+        fixture.controller.selectProfile(copy.id)
         let profile = try XCTUnwrap(fixture.controller.profileEditor)
+        XCTAssertTrue(profile.nameField.isEditable)
         profile.nameField.stringValue = String(repeating: "ക", count: 60)
         profile.controlTextDidEndEditing(.init(name: NSControl.textDidEndEditingNotification, object: profile.nameField))
-        XCTAssertEqual(fixture.store.audience.name, "Audience")
-        XCTAssertEqual(profile.nameField.stringValue, "Audience")
+        XCTAssertEqual(fixture.store.profile(copy.id)?.name, "Choir look")
+        XCTAssertEqual(profile.nameField.stringValue, "Choir look")
         XCTAssertFalse(profile.validationLabel.stringValue.isEmpty)
     }
 

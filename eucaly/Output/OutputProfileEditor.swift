@@ -16,7 +16,9 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
     let backgroundColourNotice = outputSettingsLabel(secondary: true)
     let textControls = OutputSettingsGroup()
     let visualControls = OutputSettingsGroup()
-    private let confidenceNotice = outputSettingsLabel("Confidence is a native stage monitor. It stacks Current above Next when present, keeps a centered 24-hour clock behind lyrics, and shows that clock at full strength when empty or hidden. Network outputs using this appearance publish Current only.", secondary: true)
+    let kindNotice = outputSettingsLabel(secondary: true)
+    let confidenceNotice = outputSettingsLabel("Confidence is a native stage monitor. It stacks Current above Next when present, keeps a centered 24-hour clock behind lyrics, and shows that clock at full strength when empty or hidden. Network outputs using this appearance publish Current only.", secondary: true)
+    let lowerThirdNotice = outputSettingsLabel("Lower Third defaults to primary lyrics at the bottom with a green solid Colour for native keying. Network Transparency and chroma colour are set on each network output, not on this profile.", secondary: true)
     private var legacyControl: NSButton?
     private(set) var numberRows: [OutputSettingsNumberRow] = []
     private var renders: [(OutputProfile) -> Void] = []
@@ -56,6 +58,9 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
         form.add(appearanceHeading)
         form.add(outputSettingsRow("Name", nameField))
         form.add(validationLabel)
+        form.add(kindNotice)
+        form.add(confidenceNotice)
+        form.add(lowerThirdNotice)
         form.add(affectedOutputs)
         form.add(scopeNotice)
         form.add(usageNotice)
@@ -76,7 +81,6 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
         text.add(choice("Alignment", titles: ["Left", "Centre", "Right"], values: ["left", "center", "right"], key: \.alignment))
         text.add(choice("Position", titles: ["Top", "Middle", "Bottom"], values: ["top", "middle", "bottom"], key: \.position))
         text.add(number("Padding", range: 0...200, scale: 100, unit: "%", get: { $0.padding }, set: { $0.padding = $1 }))
-        text.add(confidenceNotice)
 
         text.section("Typography")
         addTypography(role: nil, add: text.add)
@@ -123,7 +127,14 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
     private static let invalidNameMessage = "Use a short, non-empty profile name on one line."
     func render(force: Bool = false) {
         guard isViewLoaded, let profile = store.profile(profileID) else { return }
-        if nameField.currentEditor() == nil {
+        let builtIn = profile.isBuiltIn
+        nameField.isEditable = !builtIn
+        nameField.isSelectable = !builtIn
+        nameField.setAccessibilityLabel("Profile name")
+        nameField.setAccessibilityHelp(builtIn
+            ? "Built-in profile names are fixed. Duplicate with + to rename a copy."
+            : "Profile name")
+        if nameField.currentEditor() == nil || builtIn {
             nameField.stringValue = profile.name
             if validationLabel.stringValue == Self.invalidNameMessage { validationLabel.stringValue = "" }
         }
@@ -137,7 +148,9 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
         let technologies = Set(consumers.compactMap(\.networkTechnology))
         let networkName = technologies.count == 1 ? technologies.first!.title : "Network"
         appearanceHeading.stringValue = "Profile"
-        nameField.setAccessibilityLabel("Profile name")
+        kindNotice.stringValue = builtIn
+            ? profile.kind.displayTitle + " is a built-in profile. Its name is fixed; duplicate with + for an independent renameable copy."
+            : profile.kind.displayTitle + " profile."
         scopeNotice.stringValue = "Changes apply immediately to every output using this profile. Duplicate with + before editing if you need an independent look."
         usageNotice.stringValue = hasNetwork ? networkName + " outputs use the owning workspace’s lyrics, images, PDFs and video, with independent backgrounds. Transparency and chroma colour are set on each " + networkName + " output." : ""
         usageNotice.isHidden = usageNotice.stringValue.isEmpty
@@ -153,9 +166,10 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
             backgroundColourNotice.stringValue = "Colour sets the solid background. Background images and videos use the controls below."
         }
         textControls.isHidden = false; visualControls.isHidden = false
-        legacyControl?.isHidden = networkOnly || (!hasNative && !consumers.isEmpty)
-        // Keep the Current-only network warning visible for Confidence on network feeds.
+        // Audience-only legacy sizing; network render paths ignore it.
+        legacyControl?.isHidden = profile.kind != .audience || networkOnly || (!hasNative && !consumers.isEmpty)
         confidenceNotice.isHidden = profile.kind != .confidence
+        lowerThirdNotice.isHidden = profile.kind != .lowerThird
         // Output status changes do not require font lookup or control updates.
         guard force || profile != renderedProfile else { return }
         renderedProfile = profile
@@ -202,6 +216,12 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
 
     func controlTextDidEndEditing(_ notification: Notification) {
         guard notification.object as? NSTextField === nameField, let profile = store.profile(profileID) else { return }
+        guard !profile.isBuiltIn else {
+            nameField.stringValue = profile.name
+            validationLabel.stringValue = ""
+            validationLabel.isHidden = true
+            return
+        }
         let name = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, name.utf8.count <= 160, !name.contains(where: \.isNewline) else {
             validationLabel.stringValue = Self.invalidNameMessage

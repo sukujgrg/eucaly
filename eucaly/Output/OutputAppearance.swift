@@ -86,6 +86,14 @@ nonisolated struct OutputProfile: Codable, Equatable, Sendable, Identifiable {
     enum Kind: String, Codable, CaseIterable, Sendable {
         case audience, confidence, lowerThird
 
+        var displayTitle: String {
+            switch self {
+            case .audience: return "Audience"
+            case .confidence: return "Confidence"
+            case .lowerThird: return "Lower Third"
+            }
+        }
+
         init(from decoder: any Decoder) throws {
             let value = try decoder.singleValueContainer().decode(String.self)
             // Old custom copies retain their components and appearance as Audience profiles.
@@ -131,13 +139,24 @@ nonisolated struct OutputProfile: Codable, Equatable, Sendable, Identifiable {
     static let confidenceID = UUID(uuidString: "00000000-0000-4000-8000-000000000002")!
     static let lowerThirdID = UUID(uuidString: "00000000-0000-4000-8000-000000000005")!
     var isBuiltIn: Bool { [Self.audienceID, Self.confidenceID, Self.lowerThirdID].contains(id) }
+    /// Fixed titles for built-in IDs. Custom duplicates keep operator-chosen names.
+    static func canonicalBuiltInName(for id: UUID) -> String? {
+        switch id {
+        case audienceID: return Kind.audience.displayTitle
+        case confidenceID: return Kind.confidence.displayTitle
+        case lowerThirdID: return Kind.lowerThird.displayTitle
+        default: return nil
+        }
+    }
+    mutating func restoreBuiltInNameIfNeeded() {
+        if let canonical = Self.canonicalBuiltInName(for: id) { name = canonical }
+    }
     /// Every saved profile is reusable. Outputs select a profile; they do not own one.
     var isReusable: Bool { true }
     static var builtIns: [Self] {
         let identities: [(Kind, UUID)] = [(.audience, audienceID), (.confidence, confidenceID), (.lowerThird, lowerThirdID)]
         return identities.map { kind, identity in
-            var profile = Self(id: identity,
-                               name: kind == .lowerThird ? "Lower Third" : kind.rawValue.capitalized, kind: kind)
+            var profile = Self(id: identity, name: kind.displayTitle, kind: kind)
             switch kind {
             case .audience:
                 profile.usesLegacySizing = true
