@@ -228,9 +228,7 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         let technologies = Set(state.sources.map(\.technology))
         let technologyName = technologies.count == 1 ? technologies.first!.title : "Network"
         func owner(_ id: UUID?) -> String {
-            guard let index = state.workspaces.firstIndex(where: { $0.id == id }) else { return "Unassigned" }
-            let record = state.workspaces[index]
-            return record.name + (state.workspaces.filter { $0.name == record.name }.count > 1 ? " (\(index + 1))" : "")
+            outputs.managementWorkspaceName(id)
         }
         let caption: String
         if let source = state.sources.first, state.sources.count == 1 { caption = technologyName + ": " + owner(source.workspaceID) }
@@ -344,8 +342,17 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         }
         submenu("Font Size", sizes, in: menu)
         let padding = NSMenu(); padding.autoenablesItems = false
-        for percent in stride(from: 0, through: 200, by: 25) {
-            padding.addItem(edit("\(percent)%", target, selected: abs(profile.padding * 100 - Double(percent)) < 0.01) { $0.padding = Double(percent) / 100 })
+        let paddingPresets = Array(stride(from: 0, through: 200, by: 25))
+        let paddingPercent = profile.padding * 100
+        if !paddingPresets.contains(where: { abs(paddingPercent - Double($0)) < 0.01 }) {
+            let label = paddingPercent == paddingPercent.rounded()
+                ? "\(Int(paddingPercent))% (Current)"
+                : String(format: "%.1f%% (Current)", paddingPercent)
+            let current = info(label)
+            current.state = .on; padding.addItem(current)
+        }
+        for percent in paddingPresets {
+            padding.addItem(edit("\(percent)%", target, selected: abs(paddingPercent - Double(percent)) < 0.01) { $0.padding = Double(percent) / 100 })
         }
         submenu("Lyrics Padding", padding, in: menu)
         return menu

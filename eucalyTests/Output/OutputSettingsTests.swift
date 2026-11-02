@@ -170,7 +170,8 @@ final class OutputSettingsTests: XCTestCase {
         fixture.controller.removeProfile.performClick(nil)
         XCTAssertNil(fixture.store.profile(appearance))
         XCTAssertEqual(fixture.store.document.destinations, destinations)
-        XCTAssertEqual(fixture.controller.selectedID, OutputProfile.audienceID)
+        XCTAssertEqual(fixture.controller.selectedID, OutputProfile.lowerThirdID,
+                       "Removing an unused appearance keeps selection on the adjacent Profiles row")
         XCTAssertFalse(fixture.controller.removeProfile.isEnabled)
         fixture.store.flush()
         XCTAssertEqual(OutputProfileStore(defaults: fixture.defaults).document, fixture.store.document)
@@ -1525,6 +1526,7 @@ private final class OutputSettingsFixture {
         outputs = OutputCoordinator(profiles: store, displays: displays, network: network ?? NetworkOutputRouter(), driverFactory: { FakeOutputDriver() })
         controller = ManageOutputsController(coordinator: outputs)
         controller.confirmOutputRemoval = { _ in true }
+        controller.confirmProfileRemoval = { _ in true }
         window = NSWindow(contentRect: .init(x: -10000, y: -10000, width: 820, height: 650),
             styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         // This offscreen host checks native controls, not window transforms.

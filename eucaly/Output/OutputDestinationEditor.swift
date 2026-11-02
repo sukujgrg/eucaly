@@ -172,17 +172,24 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
         nameMonitorButton.isEnabled = destination.monitor.map(displays.canRename) ?? false
         let conflict = destination.monitor.flatMap { store.monitorAssignmentProblem(for: $0, excluding: destinationID) }
         let problem = destination.monitor.flatMap { displays.problem(for: $0) }
+        let isConfidence = profile.kind == .confidence
         let nativeStatus = conflict ?? problem ?? (destination.monitor == nil ? "Choose a monitor, or keep None to leave this output unassigned."
             : !destination.enabled ? "Enable this output to use its assigned monitor."
             : coordinator.isOpen(destinationID) ? "Output open. Appearance follows the selected profile."
-            : "Show Slides to open this output.")
+            : isConfidence
+                ? "Confidence opens a standby clock on this monitor. Show Slides presents Current above Next when text is selected."
+                : "Show Slides opens this output with Current. Open Native Output places a background-only window without accepting Current.")
         let ownerIssue = destination.workspaceID.flatMap { coordinator.outputIssue(workspace: $0) }
         let workspaceStatus = ownerIssue.map { "Workspace " + coordinator.managementWorkspaceName(destination.workspaceID) + ": " + $0 }
         statusLabel.stringValue = [nativeStatus, workspaceStatus].compactMap { $0 }.joined(separator: "\n")
         statusLabel.textColor = conflict != nil || problem != nil || ownerIssue != nil ? .systemOrange : .secondaryLabelColor
         confidenceButton.isHidden = false
         confidenceActions?.isHidden = false
-        confidenceButton.title = coordinator.isOpen(destinationID) ? "Close Native Output" : "Open Native Output"
+        if coordinator.isOpen(destinationID) {
+            confidenceButton.title = isConfidence ? "Close Confidence" : "Close Native Output"
+        } else {
+            confidenceButton.title = isConfidence ? "Open Confidence" : "Open Native Output"
+        }
         confidenceButton.isEnabled = coordinator.isOpen(destinationID) || (destination.enabled && conflict == nil && destination.monitor.flatMap { displays.resolve($0) } != nil)
     }
     func controlTextDidEndEditing(_ notification: Notification) {
