@@ -1381,6 +1381,14 @@ final class OutputSettingsTests: XCTestCase {
         row.controlTextDidChange(.init(name: NSControl.textDidChangeNotification, object: row.field))
         XCTAssertTrue(fixture.window.makeFirstResponder(nil))
         XCTAssertEqual(fixture.store.audience.typography.size, 84.5, accuracy: 0.001, "An intentional edit may choose the displayed rounded value")
+        row.render(84.5)
+        let displayed = row.field.stringValue
+        XCTAssertTrue(fixture.window.makeFirstResponder(row.field))
+        try XCTUnwrap(row.field.currentEditor()).string = displayed
+        row.controlTextDidChange(.init(name: NSControl.textDidChangeNotification, object: row.field))
+        XCTAssertTrue(fixture.window.makeFirstResponder(nil))
+        XCTAssertEqual(fixture.store.audience.typography.size, 84.5, accuracy: 0.001,
+                       "Committing the locale-formatted readout must not fail validation")
     }
 
     func testInlineNoticeClearsAfterMonitorConfigurationIsFixed() throws {
