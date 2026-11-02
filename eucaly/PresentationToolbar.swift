@@ -20,6 +20,12 @@ final class PresentationToolbarController: NSObject, NSToolbarDelegate, NSToolba
     private var items: [NSToolbarItem.Identifier: NSToolbarItem] = [:]
     private var observations: Set<AnyCancellable> = []
     private var collapseObservation: NSKeyValueObservation?
+    private var renderTask: Task<Void, Never>?
+    private struct SlidesChrome: Equatable {
+        let isEmpty: Bool
+        let showing: Bool
+    }
+    private var slidesChrome: SlidesChrome?
 
     init(session: PresentationSession, updates: AppUpdateViewModel,
          thumbnailDefaults: UserDefaults, toggleSlides: @escaping () -> Void,
@@ -39,14 +45,16 @@ final class PresentationToolbarController: NSObject, NSToolbarDelegate, NSToolba
         toolbar.displayMode = .iconOnly
         toolbar.allowsUserCustomization = false
         let outputs = session.outputCoordinator
+        // Session playback ticks publish frequently. Coalesce onto the next
+        // main turn; menu topology still rebuilds only when quick-control state changes.
         Publishers.MergeMany([
             session.objectWillChange.eraseToAnyPublisher(), outputs.objectWillChange.eraseToAnyPublisher(),
             outputs.profiles.objectWillChange.eraseToAnyPublisher(), outputs.displays.objectWillChange.eraseToAnyPublisher()
         ])
         .receive(on: RunLoop.main)
-        .sink { [weak self] _ in self?.render() }.store(in: &observations)
+        .sink { [weak self] _ in self?.scheduleRender() }.store(in: &observations)
         updates.$state.receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.render() }.store(in: &observations)
+            .sink { [weak self] _ in self?.scheduleRender() }.store(in: &observations)
         NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.thumbnailControls.refresh() }.store(in: &observations)
@@ -74,6 +82,8 @@ final class PresentationToolbarController: NSObject, NSToolbarDelegate, NSToolba
     /// fullscreen retention. Final disposal ends command ownership immediately.
     func retire() {
         actions.handlers = nil
+        renderTask?.cancel()
+        renderTask = nil
         observations.removeAll()
         collapseObservation = nil
         splitController = nil
@@ -157,16 +167,29 @@ final class PresentationToolbarController: NSObject, NSToolbarDelegate, NSToolba
         return item
     }
 
+    private func scheduleRender() {
+        guard actions.handlers != nil, renderTask == nil else { return }
+        renderTask = Task { @MainActor [weak self] in
+            await Task.yield()
+            guard let self, !Task.isCancelled else { return }
+            self.renderTask = nil
+            self.render()
+        }
+    }
+
     private func render() {
         guard actions.handlers != nil else { return }
-        let showing = !session.isEmpty && session.isPresenting && session.areSlidesVisible
-        let label = showing ? "Hide Slides" : "Show Slides"
-        let slides = items[Self.slidesID]
-        slides?.label = label
-        slides?.image = NSImage(systemSymbolName: showing ? "rectangle.slash" : "rectangle", accessibilityDescription: nil)
-        slides?.isEnabled = !session.isEmpty
-        slides?.toolTip = session.isEmpty ? "Load a document into Current to show slides."
-            : "\(label) (\(WorkspacePresentationCommand.toggleSlides.shortcutDescription))"
+        let chrome = slidesChromeState()
+        if chrome != slidesChrome {
+            slidesChrome = chrome
+            let label = chrome.showing ? "Hide Slides" : "Show Slides"
+            let slides = items[Self.slidesID]
+            slides?.label = label
+            slides?.image = NSImage(systemSymbolName: chrome.showing ? "rectangle.slash" : "rectangle", accessibilityDescription: nil)
+            slides?.isEnabled = !chrome.isEmpty
+            slides?.toolTip = chrome.isEmpty ? "Load a document into Current to show slides."
+                : "\(label) (\(WorkspacePresentationCommand.toggleSlides.shortcutDescription))"
+        }
         quickControls.render(); renderSidebar()
         for (identifier, button) in [("output.destination", quickControls.outputButton),
                                      ("output.network", quickControls.networkButton),
@@ -191,6 +214,12 @@ final class PresentationToolbarController: NSObject, NSToolbarDelegate, NSToolba
             toolbar.removeItem(at: reminderIndex)
             if reminderIndex > 0, toolbar.items[reminderIndex - 1].itemIdentifier == .space { toolbar.removeItem(at: reminderIndex - 1) }
         }
+    }
+
+    private func slidesChromeState() -> SlidesChrome {
+        SlidesChrome(
+            isEmpty: session.isEmpty,
+            showing: !session.isEmpty && session.isPresenting && session.areSlidesVisible)
     }
 
     private func renderSidebar() {

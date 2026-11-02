@@ -65,6 +65,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     private var report = LyricsReadabilityReport()
     private var readabilityHost: NSHostingView<OutputSettingsReadabilityView>?
     private var readabilityInput: OutputSettingsReadabilityInput?
+    private var readabilityTask: Task<Void, Never>?
     private(set) var isPresented = false
     private var isSuspended = false
     var profileEditor: OutputProfileEditor? { child as? OutputProfileEditor }
@@ -80,7 +81,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    deinit { reloadTask?.cancel() }
+    deinit { reloadTask?.cancel(); readabilityTask?.cancel() }
 
     override func loadView() {
         view = NSView()
@@ -167,6 +168,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         }
         else {
             reloadTask?.cancel(); reloadTask = nil
+            readabilityTask?.cancel(); readabilityTask = nil
             if isViewLoaded { finishEditing(); destinationEditor?.networkEditor?.discardDraft() }
         }
     }
@@ -234,7 +236,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         pruneDestinationForms()
         profileEditor?.render(); destinationEditor?.render()
         renderStatus()
-        updateReadability()
+        scheduleReadabilityUpdate()
     }
     private func profileRows() -> [ListRow] {
         store.document.profiles.map { profile in
@@ -450,16 +452,27 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     }
     @objc private func recoverSettings(_ sender: Any?) { store.recover(); reload() }
 
-    // Preserve the existing SwiftUI font-metric probes for all assigned profiles,
-    // independently of which native editor is selected. They never render output.
-    private func updateReadability() {
+    /// Font-metric probes stay available for every assigned destination, but
+    /// coordinator ticks must not rebuild the hidden SwiftUI host on every reload.
+    private func scheduleReadabilityUpdate() {
+        guard isViewLoaded, !isSuspended else { return }
+        readabilityTask?.cancel()
+        readabilityTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(80))
+            guard let self, !Task.isCancelled, self.isViewLoaded, !self.isSuspended else { return }
+            self.readabilityTask = nil
+            self.applyReadability()
+        }
+    }
+
+    private func applyReadability() {
         let input = OutputSettingsReadabilityInput(coordinator: coordinator)
         guard readabilityInput != input else { return }
         readabilityInput = input
         let root = OutputSettingsReadabilityView(input: input) { [weak self] report in
-                guard let self, self.readabilityInput == input, self.report != report else { return }
-                self.report = report; self.renderStatus()
-            }
+            guard let self, self.readabilityInput == input, self.report != report else { return }
+            self.report = report; self.renderStatus()
+        }
         if let readabilityHost { readabilityHost.rootView = root }
         else {
             let host = NSHostingView(rootView: root)

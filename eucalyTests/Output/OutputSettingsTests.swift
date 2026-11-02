@@ -1118,11 +1118,15 @@ final class OutputSettingsTests: XCTestCase {
         let controller = fixture.controller
         let original = try XCTUnwrap(fixture.store.defaultDestination)
         controller.selectProfile(OutputProfile.audienceID)
+        controller.addProfile.performClick(nil)
+        let copyID = try XCTUnwrap(controller.selectedID)
+        XCTAssertNotEqual(copyID, OutputProfile.audienceID)
         let profile = try XCTUnwrap(controller.profileEditor)
+        XCTAssertTrue(profile.nameField.isEditable, "Only custom profile copies accept rename drafts")
         XCTAssertTrue(fixture.window.makeFirstResponder(profile.nameField))
         try XCTUnwrap(profile.nameField.currentEditor()).string = "Profile draft"
         controller.addProfile.performClick(nil)
-        XCTAssertEqual(fixture.store.profile(OutputProfile.audienceID)?.name, "Profile draft")
+        XCTAssertEqual(fixture.store.profile(copyID)?.name, "Profile draft")
         XCTAssertEqual(controller.profileEditor?.nameField.stringValue, "Profile draft Copy")
         let outputCount = fixture.store.document.destinations.count
         NSApp.sendAction(try XCTUnwrap(controller.addNative.action), to: controller.addNative.target, from: controller.addNative)
