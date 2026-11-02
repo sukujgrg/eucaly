@@ -99,10 +99,12 @@ final class OutputProfileStore: ObservableObject {
                 return "An appearance edit cannot change its saved identity."
             }
             profile.customizedForDestinationID = nil
+            profile.restoreBuiltInNameIfNeeded()
             guard profile != original else { continue }
             next.profiles[profileIndex] = profile
             editedProfileIDs.insert(destination.profileID)
         }
+        next.restoreBuiltInProfileNames()
         guard next.isValid else { return "The appearance change contains invalid settings and could not be saved." }
         if next != document { edit { $0 = next } }
         return nil
@@ -152,13 +154,16 @@ final class OutputProfileStore: ObservableObject {
                 }
                 // Revision 2 also saves the removal of compatibility-decoded
                 // scripture roles and typography overrides in version 3 files.
+                document.restoreBuiltInProfileNames()
             } catch {
                 document = OutputLegacyMigration.recover(data, fallback: fallback)
+                document.restoreBuiltInProfileNames()
                 recoveryOriginalData = data
                 recoveryNotice = "Saved output settings could not be read completely. The original data is retained; choose Recover Settings to save readable settings with all outputs disabled."
             }
         } else {
             document = fallback
+            document.restoreBuiltInProfileNames()
         }
         persist(allowsLegacyGlobalVisual: allowsLegacyGlobalVisual)
     }
@@ -238,6 +243,7 @@ final class OutputProfileStore: ObservableObject {
     func removeObserver(_ id: UUID) { observers.removeValue(forKey: id) }
     func edit(_ action: (inout OutputProfileDocument) -> Void) {
         var next = document; action(&next)
+        next.restoreBuiltInProfileNames()
         if !next.destinations.contains(where: { $0.id == next.defaultDestinationID }) { next.defaultDestinationID = nil }
         if !next.destinations.contains(where: { $0.id == next.backgroundAudioDestinationID && $0.isNetworkDestination }) { next.backgroundAudioDestinationID = nil }
         guard next.isValid, next != document else { return }
@@ -265,6 +271,8 @@ final class OutputProfileStore: ObservableObject {
         defaults.set(profile.typography.size / 84, forKey: "presentationFontScale")
     }
     func update(_ profile: OutputProfile) {
+        var profile = profile
+        profile.restoreBuiltInNameIfNeeded()
         edit { doc in
             if let index = doc.profiles.firstIndex(where: { $0.id == profile.id }) { doc.profiles[index] = profile }
         }

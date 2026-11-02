@@ -399,8 +399,8 @@ actor, in addition to the router's destination epoch. A new Current or Stop
 invalidates the old error without discarding the replacement plan.
 A proven opaque full-canvas image/PDF or NV12 layer can omit alpha;
 unknown BGRA opacity and any fit gutters retain UYVA. Alpha mode leaves surroundings
-transparent; chroma uses the remembered profile
-colour. An enabled opaque visual background remains independent. Hide and Clear
+transparent; chroma uses each network destination’s `keyColour`. An enabled opaque
+visual background remains independent. Hide and Clear
 submit actual replacement pictures, including zero-alpha pixels when no opaque
 background is present. Clearing visual assets retains the configured key colour.
 Visual dimming affects the texture only: empty/key frames and fitted-image gutters
@@ -548,12 +548,14 @@ window Preview content, preserving a newer pending file selection.
 Explicit file loads recheck readable regular-file availability on the loading
 queue; stale scan entries fail through the same guarded Preview transition.
 
-The Profiles list is a flat reusable list. Output pickers offer Profiles
-(Confidence-kind omitted for network destinations unless already assigned). The +
-action duplicates a Profile without changing any output assignment. The − action
-removes only unused custom profiles, rechecking all destinations including disabled
-rows. Built-in profiles cannot be removed. Former exclusive output appearances are
-promoted to ordinary Profiles by document version 8.
+The Profiles list is a flat reusable list with kind and Built-in cues. Audience,
+Confidence and Lower Third keep fixed names; + duplicates without changing any
+output assignment, and only those copies are renameable. Output pickers offer
+Profiles (Confidence-kind omitted for network destinations unless already
+assigned). The − action removes only unused custom profiles, rechecking all
+destinations including disabled rows. Built-in profiles cannot be removed.
+Former exclusive output appearances are promoted to ordinary Profiles by
+document version 8.
 
 Network outputs label Alpha/Chroma as Transparency on the destination. Chroma Colour
 saves to that destination’s `keyColour` (retained while Alpha is selected). Profile

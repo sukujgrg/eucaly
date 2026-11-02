@@ -148,6 +148,11 @@ nonisolated struct OutputContentSnapshot {
 }
 
 nonisolated extension OutputProfileDocument {
+    /// Built-in IDs own fixed titles. Custom duplicates keep operator names.
+    mutating func restoreBuiltInProfileNames() {
+        for index in profiles.indices { profiles[index].restoreBuiltInNameIfNeeded() }
+    }
+
     var isValid: Bool {
         let network = destinations.compactMap(\.networkSettings)
         guard network.allSatisfy(\.isValid), Set(network.map(\.sourceID)).count == network.count,

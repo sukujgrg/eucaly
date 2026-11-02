@@ -239,8 +239,10 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     private func profileRows() -> [ListRow] {
         store.document.profiles.map { profile in
             let names = store.document.destinations.filter { $0.profileID == profile.id }.map(\.name)
-            let detail = names.isEmpty ? "Unused" : "Used by: " + names.joined(separator: ", ")
-            return ListRow(id: profile.id, title: profile.name, detail: detail)
+            var parts = [profile.kind.displayTitle]
+            if profile.isBuiltIn { parts.append("Built-in") }
+            parts.append(names.isEmpty ? "Unused" : "Used by: " + names.joined(separator: ", "))
+            return ListRow(id: profile.id, title: profile.name, detail: parts.joined(separator: " · "))
         }
     }
     private func renderStatus() {
@@ -296,7 +298,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
             outputSettingsPin(form, to: detailHost)
         case .empty:
             discardForms()
-            let label = outputSettingsLabel(profilesMode ? "No native appearance profiles." : "Add an output to get started.", secondary: true)
+            let label = outputSettingsLabel(profilesMode ? "Select a profile." : "Add an output to get started.", secondary: true)
             detailNotice = label
             label.translatesAutoresizingMaskIntoConstraints = false
             detailHost.addSubview(label)
