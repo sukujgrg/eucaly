@@ -1165,7 +1165,7 @@ final class OutputSettingsTests: XCTestCase {
                         XCTAssertGreaterThan(button.visibleRect.height, 15)
                     }
                     XCTAssertGreaterThanOrEqual(fixture.controller.removeOutput.frame.minX - fixture.controller.addOutputMenu.frame.maxX, 7)
-                    XCTAssertEqual(fixture.controller.table.focusRingType, .none)
+                    XCTAssertEqual(fixture.controller.table.focusRingType, .default)
                     let destination = try XCTUnwrap(fixture.store.document.destinations.first { $0.id == id })
                     XCTAssertNotNil(fixture.controller.destinationEditor?.profilePicker)
                 }

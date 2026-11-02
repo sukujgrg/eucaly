@@ -562,6 +562,50 @@ final class SidebarOutlineKeyboardTests: XCTestCase {
         }
     }
 
+    func testOutlineFocusRingAndAccessoryExposeKeyboardAndAccessibilityActions() async throws {
+        let id = SidebarOutlineItemID.playlist(UUID())
+        let leaf = SidebarOutlineItem(id: id, title: "Song", accessoryAction: .remove, contextActions: [.remove])
+        let group = SidebarOutlineItem(id: .group("accessory-ax"), title: "Playlist", children: [leaf])
+        let fixture = SidebarKeyboardFixture(roots: [group])
+        defer { fixture.close() }
+        try await fixture.settle()
+        let outline = fixture.controller.outlineView
+        XCTAssertEqual(outline.focusRingType, .default)
+        outline.expandItem(group)
+        try fixture.click(row: 1)
+        let cell = try XCTUnwrap(outline.view(atColumn: 0, row: 1, makeIfNecessary: true) as? NSTableCellView)
+        let button = try XCTUnwrap(fixture.firstButton(in: cell))
+        XCTAssertTrue(button.acceptsFirstResponder)
+        XCTAssertEqual(button.accessibilityLabel(), "Remove Song")
+        XCTAssertEqual(cell.accessibilityCustomActions()?.map(\.name), ["Remove"])
+        XCTAssertTrue(fixture.window.makeFirstResponder(outline))
+        try fixture.sendKey(code: 48, characters: "\t")
+        XCTAssertTrue(fixture.window.firstResponder === button)
+        let space = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+            timestamp: 0, windowNumber: fixture.window.windowNumber, context: nil, characters: " ",
+            charactersIgnoringModifiers: " ", isARepeat: false, keyCode: 49))
+        button.keyDown(with: space)
+        XCTAssertEqual(fixture.recorder.actions, [id])
+        XCTAssertEqual(fixture.recorder.performedActions, [.remove])
+    }
+
+    func testMissingRowAndGroupCellsExposeAvailabilityInAccessibility() async throws {
+        let missingID = SidebarOutlineItemID.playlist(UUID())
+        let leaf = SidebarOutlineItem(id: missingID, title: "Missing", isMissing: true, accessoryAction: .remove)
+        let group = SidebarOutlineItem(id: .group("missing-group"), title: "Songs", children: [leaf])
+        let fixture = SidebarKeyboardFixture(roots: [group])
+        defer { fixture.close() }
+        try await fixture.settle()
+        let outline = fixture.controller.outlineView
+        let groupCell = try XCTUnwrap(outline.view(atColumn: 0, row: 0, makeIfNecessary: true))
+        XCTAssertEqual(groupCell.accessibilityLabel(), "Songs, 1 item")
+        outline.expandItem(group)
+        let rowCell = try XCTUnwrap(outline.view(atColumn: 0, row: 1, makeIfNecessary: true))
+        XCTAssertEqual(rowCell.accessibilityLabel(), "Missing")
+        XCTAssertEqual(rowCell.accessibilityValue() as? String, "Unavailable")
+        XCTAssertEqual(rowCell.accessibilityHelp(), "File missing")
+    }
+
     func testRetainedNativeAccessoryPressRevalidatesCurrentRowAndVisibility() async throws {
         enum Change: CaseIterable { case removed, collapsed, hidden, removedFromWindow, detached }
         for change in Change.allCases {

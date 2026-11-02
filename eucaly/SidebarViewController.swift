@@ -22,6 +22,8 @@ final class SidebarViewController: NSViewController {
     private var grouping: LibraryGrouping
 
     let scrollView = NSScrollView()
+    /// Workspace detail host that receives Tab after the last sidebar control.
+    weak var keyViewSuccessor: NSView?
     private let document = SidebarDocumentStackView()
     private var sections: [SidebarSection: SidebarSectionView] = [:]
     private lazy var libraryOutline = makeOutline(section: .library)
@@ -104,6 +106,7 @@ final class SidebarViewController: NSViewController {
         buildAudio()
         buildWindows()
         configureSectionNavigation()
+        repairKeyViewLoop()
     }
 
     override func viewDidLayout() {
@@ -147,6 +150,53 @@ final class SidebarViewController: NSViewController {
         refreshAudioState()
         updateOutlines()
         prepareLibraryIfNeeded()
+        repairKeyViewLoop()
+    }
+
+    /// Chains visible section headers and controls, then connects to the detail
+    /// host so Tab leaves and returns to the sidebar predictably.
+    func repairKeyViewLoop() {
+        guard !isDetached else { return }
+        var keys: [NSView] = []
+        if !failureNotice.isHidden {
+            keys.append(retryLibrary)
+        }
+        for section in SidebarSection.allCases {
+            guard let sectionView = sections[section], !sectionView.isHidden else { continue }
+            keys.append(sectionView.header)
+            guard sectionView.isExpanded else { continue }
+            keys.append(contentsOf: keyableControls(in: section))
+        }
+        guard let first = keys.first else { return }
+        for (current, next) in zip(keys, keys.dropFirst()) {
+            current.nextKeyView = next
+        }
+        if let successor = keyViewSuccessor {
+            keys.last?.nextKeyView = successor
+            successor.nextKeyView = first
+        } else {
+            keys.last?.nextKeyView = first
+        }
+        // Keep the explicit chain; AppKit's geometry rebuild would discard it.
+        view.window?.autorecalculatesKeyViewLoop = false
+    }
+
+    private func keyableControls(in section: SidebarSection) -> [NSView] {
+        switch section {
+        case .library:
+            return [libraryImport, groupingPopup, toggleGroups, libraryOutline.outlineView]
+                .filter { !$0.isHiddenOrHasHiddenAncestor }
+        case .playlist:
+            return [removePlaylist, movePlaylistUp, movePlaylistDown, playlistOutline.outlineView]
+                .filter { !$0.isHiddenOrHasHiddenAncestor }
+        case .audio:
+            return [audioImport, playAudio, stopAudio, clearAudio, loopAudio,
+                    audioOutline.outlineView, volumeSlider, positionSlider]
+                .filter { !$0.isHiddenOrHasHiddenAncestor }
+        case .windows:
+            return [pickWindow, clearWindow, windowSettingsButton, windowOutline.outlineView]
+                .filter { !$0.isHiddenOrHasHiddenAncestor }
+        }
     }
 
 #if DEBUG
@@ -362,6 +412,9 @@ final class SidebarViewController: NSViewController {
         failureNotice.orientation = .vertical
         failureNotice.alignment = .leading
         failureNotice.spacing = 6
+        failureNotice.setAccessibilityElement(true)
+        failureNotice.setAccessibilityRole(.group)
+        failureNotice.setAccessibilityLabel("Library refresh error")
         let title = NSTextField(wrappingLabelWithString: "Library couldn’t be refreshed")
         title.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
         failurePath.maximumNumberOfLines = 2
@@ -380,12 +433,20 @@ final class SidebarViewController: NSViewController {
 
     private func updateFailureNotice() {
         guard let configuration else { return }
+        let wasHidden = failureNotice.isHidden
         failureNotice.isHidden = configuration.libraryLoadFailure == nil
         if let failure = configuration.libraryLoadFailure {
             failurePath.stringValue = failure.url.path
             failurePath.toolTip = failure.url.path
             failureMessage.stringValue = failure.message
             retainedLibraryNotice.isHidden = configuration.libraryFiles.isEmpty && configuration.audioFiles.isEmpty
+            failureNotice.setAccessibilityValue([failure.url.path, failure.message]
+                .filter { !$0.isEmpty }.joined(separator: ". "))
+        } else {
+            failureNotice.setAccessibilityValue(nil)
+        }
+        if wasHidden != failureNotice.isHidden {
+            repairKeyViewLoop()
         }
     }
 
@@ -402,17 +463,19 @@ final class SidebarViewController: NSViewController {
     private func applySectionExpansion(_ expanded: Bool, section: SidebarSection) {
         guard !isDetached else { return }
         sections[section]?.setExpanded(expanded)
-        guard expanded else { return }
-        switch section {
-        case .library:
-            groupingPopup.selectItem(at: LibraryGrouping.allCases.firstIndex(of: grouping) ?? 0)
-        case .audio:
-            refreshAudioState()
-        case .windows:
-            updateWindowSettings()
-        case .playlist:
-            break
+        if expanded {
+            switch section {
+            case .library:
+                groupingPopup.selectItem(at: LibraryGrouping.allCases.firstIndex(of: grouping) ?? 0)
+            case .audio:
+                refreshAudioState()
+            case .windows:
+                updateWindowSettings()
+            case .playlist:
+                break
+            }
         }
+        repairKeyViewLoop()
     }
 
     private func restorePreferences() {
@@ -532,6 +595,8 @@ final class SidebarViewController: NSViewController {
         playAudio.isEnabled = configuration.selectedAudioURL != nil || activeAudioURL != nil
         for control in [stopAudio, clearAudio, loopAudio] { control?.isEnabled = activeAudioURL != nil }
         loopAudio.state = configuration.backgroundAudioLoop ? .on : .off
+        loopAudio.sidebarAccessibilityElement.setAccessibilityValueDescription(
+            configuration.backgroundAudioLoop ? "Loop on" : "Loop off")
         volumeSlider.isEnabled = activeAudioURL != nil
         if !volumeSlider.isTracking { volumeSlider.doubleValue = configuration.backgroundAudioVolumeDraft }
         updateVolumeValue()
@@ -638,6 +703,7 @@ final class SidebarViewController: NSViewController {
             _ = focusHeader(section)
         }
         outline.scrollView.isHidden = hidden
+        repairKeyViewLoop()
     }
 
     private func configureSectionNavigation() {

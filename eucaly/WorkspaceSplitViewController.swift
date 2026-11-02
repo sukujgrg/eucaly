@@ -1,6 +1,22 @@
 import AppKit
 import SwiftUI
 
+/// Zero-size key-view landing inside the detail host. SwiftUI hosting views do
+/// not always advertise `canBecomeKeyView`, so Tab from the sidebar needs an
+/// AppKit-owned entry that still lives in the detail region.
+private final class WorkspaceDetailKeyPortal: NSView {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setAccessibilityElement(false)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override var canBecomeKeyView: Bool { window != nil && !isHiddenOrHasHiddenAncestor }
+    override var acceptsFirstResponder: Bool { true }
+}
+
 /// One native split belongs to each retained workspace's controls. Parking or
 /// collapsing it does not dismantle sidebar observers, detail state or output.
 @MainActor
@@ -12,6 +28,7 @@ final class WorkspaceSplitViewController: NSSplitViewController {
     let sidebarItem: NSSplitViewItem
     let detailItem: NSSplitViewItem
     weak var toolbarController: PresentationToolbarController?
+    private let detailKeyPortal = WorkspaceDetailKeyPortal()
     private var initialSidebarWidthPending = true
 
     init(configuration: SidebarConfiguration, workspaceMenu: OutputWorkspaceMenuController,
@@ -36,6 +53,8 @@ final class WorkspaceSplitViewController: NSSplitViewController {
         super.init(nibName: nil, bundle: nil)
         addSplitViewItem(sidebarItem)
         addSplitViewItem(detailItem)
+        installDetailKeyPortal()
+        repairWorkspaceKeyViewLoop()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -51,11 +70,34 @@ final class WorkspaceSplitViewController: NSSplitViewController {
     override func viewDidAppear() {
         super.viewDidAppear()
         toolbarController?.install(in: view.window)
+        repairWorkspaceKeyViewLoop()
     }
 
     func update(configuration: SidebarConfiguration, detail: AnyView) {
         sidebarController.update(configuration)
         detailController.rootView = detail
+        installDetailKeyPortal()
+        repairWorkspaceKeyViewLoop()
+    }
+
+    private func installDetailKeyPortal() {
+        let host = detailController.view
+        if detailKeyPortal.superview !== host {
+            detailKeyPortal.removeFromSuperview()
+            detailKeyPortal.translatesAutoresizingMaskIntoConstraints = false
+            host.addSubview(detailKeyPortal)
+            NSLayoutConstraint.activate([
+                detailKeyPortal.widthAnchor.constraint(equalToConstant: 0),
+                detailKeyPortal.heightAnchor.constraint(equalToConstant: 0),
+                detailKeyPortal.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+                detailKeyPortal.topAnchor.constraint(equalTo: host.topAnchor)
+            ])
+        }
+    }
+
+    private func repairWorkspaceKeyViewLoop() {
+        sidebarController.keyViewSuccessor = detailKeyPortal
+        sidebarController.repairKeyViewLoop()
     }
 
     func detach() {

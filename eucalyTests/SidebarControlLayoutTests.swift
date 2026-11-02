@@ -210,6 +210,11 @@ final class SidebarControlLayoutTests: XCTestCase {
         failed.libraryLoadFailure = LibraryLoadFailure(url: URL(fileURLWithPath: "/sidebar-control-fixture"), error: CocoaError(.fileReadNoPermission))
         fixture.controller.update(failed)
         try await settle(fixture.window)
+        let failureNotice = try XCTUnwrap(nativeViews(NSStackView.self, in: fixture.controller.view).first {
+            $0.accessibilityLabel() == "Library refresh error"
+        })
+        XCTAssertEqual(failureNotice.accessibilityRole(), .group)
+        XCTAssertFalse((failureNotice.accessibilityValue() as? String)?.isEmpty ?? true)
         let retry = try XCTUnwrap(nativeViews(NSButton.self, in: fixture.controller.view).first { $0.identifier?.rawValue == "sidebar.library.retry" })
         XCTAssertFalse(retry.isHiddenOrHasHiddenAncestor)
         XCTAssertTrue(retry.isEnabled)
@@ -489,7 +494,9 @@ final class SidebarControlLayoutTests: XCTestCase {
         for audioCollapsed in [false, true] {
             if audioCollapsed { _ = audioHeader.sidebarAccessibilityElement.accessibilityPerformPress() }
             fixture.window.contentView?.layoutSubtreeIfNeeded()
-            fixture.window.recalculateKeyViewLoop()
+            // Expansion already repairs the explicit sidebar key-view chain.
+            // Geometry recalculation would discard that owned loop.
+            fixture.controller.repairKeyViewLoop()
             for reverse in [false, true] {
                 XCTAssertTrue(fixture.window.makeFirstResponder(library))
                 var visitedOutlines: Set<String> = []

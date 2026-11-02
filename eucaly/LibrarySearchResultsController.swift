@@ -402,7 +402,7 @@ final class LibrarySearchResultsController: NSViewController {
             let point = tableView.convert(event.locationInWindow, from: nil)
             var hitView = tableView.hitTest(point)
             while let view = hitView, view !== tableView {
-                if view is LibrarySearchEmbeddedButton {
+                if view is EmbeddedAccessoryButton {
                     return true
                 }
                 hitView = view.superview
@@ -858,33 +858,13 @@ private final class LibrarySearchSectionCellView: NSTableCellView {
     }
 }
 
-private final class LibrarySearchEmbeddedButton: NSButton {
-    var onBackTab: (() -> Void)?
-    override var acceptsFirstResponder: Bool { isEnabled && !isHiddenOrHasHiddenAncestor }
-    override func keyDown(with event: NSEvent) {
-        if event.keyCode == 49, event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
-           isEnabled, window?.firstResponder === self {
-            // A focused embedded action has the same Space semantics as a
-            // momentary native button, without depending on key-window tracking.
-            if !event.isARepeat { performClick(nil) }
-            return
-        }
-        if event.keyCode == 48, event.modifierFlags.intersection([.command, .control, .option, .shift]) == .shift,
-           let onBackTab {
-            onBackTab()
-            return
-        }
-        super.keyDown(with: event)
-    }
-}
-
 private final class LibrarySearchItemCellView: NSTableCellView {
     private let symbolView = NSImageView()
     private let titleField = NSTextField(labelWithString: "")
     private let locationField = NSTextField(labelWithString: "")
     private let subtitleField = NSTextField(wrappingLabelWithString: "")
     private let textStack = NSStackView()
-    private let playlistButton = LibrarySearchEmbeddedButton()
+    private let playlistButton = EmbeddedAccessoryButton()
     private var onAddToPlaylist: (() -> Bool)?
     private var onActivate: (() -> Bool)?
     private var showsPlaylistButton = false
