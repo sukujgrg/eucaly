@@ -275,6 +275,9 @@ final class OutputProfileStore: ObservableObject {
         let names = document.destinations.filter { conflicts.contains($0.id) }.map(\.name).joined(separator: ", ")
         return "\(names) share a destination. Choose a different monitor or source name for each enabled output of the same protocol."
     }
+    /// Preference-mirror helper for the first destination when it still uses an
+    /// audience-kind appearance (including exclusive customizations). New network
+    /// outputs must seed from `profile(OutputProfile.audienceID)`, not this value.
     var audience: OutputProfile {
         if let destination = document.destinations.first, let profile = profile(destination.profileID), profile.kind == .audience { return profile }
         return profile(OutputProfile.audienceID) ?? document.profiles[0]
