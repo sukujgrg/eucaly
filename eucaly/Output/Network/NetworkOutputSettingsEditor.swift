@@ -33,11 +33,14 @@ final class NetworkOutputSettingsEditor: NSViewController, NSTextFieldDelegate {
     init(coordinator: OutputCoordinator, destinationID: UUID) {
         self.coordinator = coordinator; self.destinationID = destinationID
         super.init(nibName: nil, bundle: nil)
+        // Live helper status must refresh transport labels only. Rewriting
+        // configuration controls on every statistics tick fights colour-panel
+        // and popup interaction; document edits still call render().
         if let router = coordinator.network as? NetworkOutputRouter {
             subscription = router.objectWillChange.sink { [weak self] _ in
                 DispatchQueue.main.async {
                     guard let self, self.isViewLoaded, self.view.window?.isVisible == true, !self.view.isHiddenOrHasHiddenAncestor else { return }
-                    self.render()
+                    self.renderStatus()
                 }
             }
         }
@@ -97,12 +100,21 @@ final class NetworkOutputSettingsEditor: NSViewController, NSTextFieldDelegate {
         render()
     }
     func render() {
+        renderConfiguration()
+        renderStatus()
+    }
+    private func renderConfiguration() {
         guard isViewLoaded, let destination, let settings = destination.networkSettings else { return }
         if sourceName.currentEditor() == nil { sourceName.stringValue = sourceNameDraft ?? settings.sourceName }
-        keyMode.selectItem(at: settings.keyMode == .alpha ? 0 : 1)
-        chromaColourRow?.isHidden = settings.keyMode != .chroma
-        if settings.keyMode != .chroma { chromaColour.deactivate() }
-        if let profile = store.profile(destination.profileID) { chromaColour.color = profile.background.colour.nativeColor }
+        let keyIndex = settings.keyMode == .alpha ? 0 : 1
+        if keyMode.indexOfSelectedItem != keyIndex { keyMode.selectItem(at: keyIndex) }
+        let showChroma = settings.keyMode == .chroma
+        chromaColourRow?.isHidden = !showChroma
+        if !showChroma { chromaColour.deactivate() }
+        // Never push into an active colour panel; the well owns the draft until commit.
+        if showChroma, !chromaColour.isActive, let profile = store.profile(destination.profileID) {
+            chromaColour.color = profile.background.colour.nativeColor
+        }
         chromaColour.isEnabled = store.canCustomizeProfile(for: destinationID)
         chromaColour.toolTip = chromaColour.isEnabled ? "Change the key colour for this output only. The saved colour is retained when using Alpha." : "The appearance limit has been reached. Remove an unused profile to customize this colour."
         transparencyNotice.stringValue = settings.keyMode == .alpha
@@ -117,7 +129,11 @@ final class NetworkOutputSettingsEditor: NSViewController, NSTextFieldDelegate {
             audioRoute.removeAllItems(); audioRoute.addItems(withTitles: names)
             for (index, output) in outputs.enumerated() { audioRoute.item(at: index + 1)?.representedObject = output.id }
         }
-        audioRoute.selectItem(at: store.document.backgroundAudioDestinationID.flatMap { id in outputs.firstIndex { $0.id == id }.map { $0 + 1 } } ?? 0)
+        let routeIndex = store.document.backgroundAudioDestinationID.flatMap { id in outputs.firstIndex { $0.id == id }.map { $0 + 1 } } ?? 0
+        if audioRoute.indexOfSelectedItem != routeIndex { audioRoute.selectItem(at: routeIndex) }
+    }
+    private func renderStatus() {
+        guard isViewLoaded, let destination else { return }
         let state = coordinator.network.state(destinationID)
         switch state {
         case .stopping: startButton.title = "Stopping…"
