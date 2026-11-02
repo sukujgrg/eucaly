@@ -205,7 +205,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         let canAdd = !profilesMode && store.document.destinations.count < 16 && store.recoveryNotice == nil
         addOutputMenu.toolTip = canAdd ? "Add a disabled, unassigned output." : "The 16 output limit has been reached. Remove an unused output before adding another."
         addNative.isEnabled = canAdd && store.profile(OutputProfile.audienceID) != nil
-        addNDI.isEnabled = canAdd && store.document.profiles.count < 128
+        addNDI.isEnabled = canAdd && store.profile(OutputProfile.audienceID) != nil && store.document.profiles.count < 128
         addOMT.isEnabled = addNDI.isEnabled
         addOutputMenu.isEnabled = canAdd
         removeOutput.isEnabled = !profilesMode && selectedID != nil && store.recoveryNotice == nil
@@ -384,7 +384,10 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         }) {
             sourceName = "eucaly \(number)"; number += 1
         }
-        var profile = store.audience; profile.id = UUID(); profile.name = sourceName + " Appearance"
+        // Seed from the reusable Audience template — never destinations.first’s
+        // private/customized audience-kind look (store.audience mirrors that row).
+        guard var profile = store.profile(OutputProfile.audienceID) else { return }
+        profile.id = UUID(); profile.name = sourceName + " Appearance"
         profile.usesLegacySizing = false; profile.background = OutputBackground(); profile.background.colour = .chromaGreen
         var output = OutputDestinationConfiguration(name: technology.title + " Output", profileID: profile.id, monitor: nil,
             enabled: false, workspaceID: coordinator.focusedWorkspaceID)

@@ -283,6 +283,41 @@ final class OutputSettingsTests: XCTestCase {
                        "Network feeds keep Current-only readability and composition")
     }
 
+    func testAddNetworkOutputSeedsReusableAudienceNotFirstRowCustomization() throws {
+        let fixture = OutputSettingsFixture(); defer { fixture.close() }
+        let native = fixture.store.document.destinations[0]
+        let customID = try XCTUnwrap(fixture.store.customizeProfile(for: native.id))
+        fixture.store.editDestinationProfile(native.id) {
+            $0.typography.size = 144
+            $0.layout = "columns"
+            $0.padding = 0.4
+            $0.roles = [.primary, .meaning]
+        }
+        let privateLook = try XCTUnwrap(fixture.store.profile(customID))
+        XCTAssertEqual(fixture.store.audience.id, customID)
+        XCTAssertEqual(privateLook.typography.size, 144)
+        let reusable = try XCTUnwrap(fixture.store.profile(OutputProfile.audienceID))
+        XCTAssertEqual(reusable.typography.size, 84)
+        NSApp.sendAction(try XCTUnwrap(fixture.controller.addNDI.action), to: fixture.controller.addNDI.target, from: fixture.controller.addNDI)
+        let network = try XCTUnwrap(fixture.controller.destinationEditor?.destination)
+        let seeded = try XCTUnwrap(fixture.store.profile(network.profileID))
+        XCTAssertEqual(seeded.customizedForDestinationID, network.id)
+        XCTAssertEqual(seeded.typography.size, reusable.typography.size)
+        XCTAssertEqual(seeded.layout, reusable.layout)
+        XCTAssertEqual(seeded.padding, reusable.padding)
+        XCTAssertEqual(seeded.roles, reusable.roles)
+        XCTAssertNotEqual(seeded.typography.size, privateLook.typography.size)
+        XCTAssertEqual(seeded.background.colour, .chromaGreen)
+        XCTAssertNil(seeded.background.bookmark)
+        XCTAssertFalse(seeded.usesLegacySizing)
+        NSApp.sendAction(try XCTUnwrap(fixture.controller.addOMT.action), to: fixture.controller.addOMT.target, from: fixture.controller.addOMT)
+        let omt = try XCTUnwrap(fixture.controller.destinationEditor?.destination)
+        let omtSeed = try XCTUnwrap(fixture.store.profile(omt.profileID))
+        XCTAssertEqual(omtSeed.typography.size, reusable.typography.size)
+        XCTAssertEqual(omtSeed.layout, reusable.layout)
+        XCTAssertEqual(fixture.store.profile(customID)?.typography.size, 144)
+    }
+
     func testAddOMTUsesControlledWorkspaceWithoutChangingNDIOrStartingOutputs() throws {
         let fixture = OutputSettingsFixture(); defer { fixture.close() }
         let workspace = try XCTUnwrap(fixture.store.addWorkspace(name: "Online"))
