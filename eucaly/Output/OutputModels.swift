@@ -166,6 +166,8 @@ nonisolated extension OutputProfileDocument {
                   profile.padding.isFinite, (0...2).contains(profile.padding), profile.background.dimming.isFinite,
                   (0...1).contains(profile.background.dimming), ["fit", "fill"].contains(profile.background.fit),
                   (profile.background.bookmark?.utf8.count ?? 0) <= 65_536,
+                  (profile.background.displayName?.utf8.count ?? 0) <= 256,
+                  profile.background.displayName == nil || profile.background.bookmark != nil,
                   Set(profile.roles).count == profile.roles.count else { return false }
             guard profile.componentTypography.values.allSatisfy({ $0.relativeSize.map { $0.isFinite && (0.01...4).contains($0) } ?? true }) else { return false }
             return ([profile.typography] + profile.componentTypography.values.map { $0.resolve(inheriting: profile.typography) }).allSatisfy { type in

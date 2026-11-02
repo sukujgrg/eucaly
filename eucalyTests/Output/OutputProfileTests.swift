@@ -258,7 +258,7 @@ final class OutputProfileTests: XCTestCase {
         XCTAssertEqual(store.profile(lowerThird.id)?.background.colour, lowerThird.background.colour)
         XCTAssertNil(store.profile(OutputProfile.lowerThirdID)?.background.bookmark)
         XCTAssertNil(store.profile(lowerThird.id)?.background.bookmark)
-        XCTAssertEqual(store.audience.background.colour, .black)
+        XCTAssertEqual(store.audience.background.colour, .white, "Clear Visual keeps solid colour")
         XCTAssertNil(store.audience.background.bookmark)
         XCTAssertEqual(store.profile(OutputProfile.confidenceID)?.background, disabledBackground)
         store.flush()

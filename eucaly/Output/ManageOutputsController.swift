@@ -504,11 +504,12 @@ private struct OutputSettingsReadabilityInput: Equatable {
         let visible: Bool
         let hasMedia: Bool
         let isNetworkDestination: Bool
+        let destinationName: String
     }
     let assignments: [Assignment]
     @MainActor init(coordinator: OutputCoordinator) {
         assignments = coordinator.profiles.document.destinations.compactMap { destination in
-            guard let profile = coordinator.profile(for: destination.id) else { return nil }
+            guard destination.enabled, let profile = coordinator.profile(for: destination.id) else { return nil }
             let size: CGSize
             if let settings = destination.networkSettings { size = .init(width: settings.width, height: settings.height) }
             else if let target = destination.monitor, let monitor = coordinator.displays.resolve(target) { size = monitor.frame.size }
@@ -517,7 +518,8 @@ private struct OutputSettingsReadabilityInput: Equatable {
             return .init(id: destination.id, profile: profile, size: size, current: snapshot.current,
                 next: snapshot.next, visible: snapshot.visible,
                 hasMedia: snapshot.localMedia.map { OutputContentClassifier.mode(for: $0) == .media } ?? false,
-                isNetworkDestination: destination.isNetworkDestination)
+                isNetworkDestination: destination.isNetworkDestination,
+                destinationName: destination.name)
         }
     }
 }
@@ -534,10 +536,12 @@ private struct OutputSettingsReadabilityView: View {
                     ) {
                         OutputConfidenceReadabilityProbe(
                             snapshot: .init(current: assignment.current, next: assignment.next, visible: assignment.visible),
-                            profile: assignment.profile, size: assignment.size
+                            profile: assignment.profile, size: assignment.size,
+                            labelPrefix: assignment.destinationName
                         )
                     } else {
-                        OutputReadabilityProbe(content: assignment.current, profile: assignment.profile, size: assignment.size)
+                        OutputReadabilityProbe(content: assignment.current, profile: assignment.profile, size: assignment.size,
+                                               labelPrefix: assignment.destinationName)
                     }
                 }
             }

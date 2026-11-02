@@ -103,12 +103,12 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
         form.add(backgroundColourNotice)
         let visuals = visualControls; form.add(visuals)
         let backgroundLabel = outputSettingsLabel(secondary: true)
-        renders.append { profile in
-            backgroundLabel.stringValue = profile.background.bookmark == nil ? "Solid colour" : "Selected image or video"
+        renders.append { [weak self] profile in
+            self?.renderBackgroundLabel(backgroundLabel, profile: profile)
         }
         visuals.add(outputSettingsFieldGroup("Visual", backgroundLabel, actions: [
             button("Choose Visual…") { [weak self] in self?.chooseBackground() },
-            button("Clear Visual") { [weak self] in self?.edit { $0.background.bookmark = nil } }
+            button("Clear Visual") { [weak self] in self?.edit { $0.clearBackground() } }
         ]))
         visuals.add(choice("Fit", titles: ["Fill", "Fit"], values: ["fill", "fit"], key: \.background.fit))
         visuals.add(number("Dimming", range: 0...100, scale: 100, unit: "%", get: { $0.background.dimming }, set: { $0.background.dimming = $1 }))
@@ -131,9 +131,16 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
         let names = store.document.destinations.filter { $0.profileID == profileID }.map(\.name)
         affectedOutputs.stringValue = names.isEmpty ? "No outputs currently use this profile." : "Used by: " + names.joined(separator: ", ")
         let consumers = store.document.destinations.filter { $0.profileID == profileID }
-        let hasNative = consumers.isEmpty || consumers.contains { $0.isMonitorDestination }
+        let hasNative = consumers.contains { $0.isMonitorDestination }
         let hasNetwork = consumers.contains { $0.isNetworkDestination }
-        let technologies = Set(consumers.compactMap(\.networkTechnology))
+        let exclusiveOwner = profile.customizedForDestinationID.flatMap { id in
+            store.document.destinations.first { $0.id == id }
+        }
+        // Unused exclusive network appearances must not get native colour copy.
+        let networkOnly = (hasNetwork && !hasNative)
+            || (consumers.isEmpty && exclusiveOwner?.isNetworkDestination == true)
+        var technologies = Set(consumers.compactMap(\.networkTechnology))
+        if let technology = exclusiveOwner?.networkTechnology { technologies.insert(technology) }
         let networkName = technologies.count == 1 ? technologies.first!.title : "Network"
         appearanceHeading.stringValue = profile.isReusable ? "Reusable Profile" : "Output Appearance"
         nameField.setAccessibilityLabel(profile.isReusable ? "Profile name" : "Appearance name")
@@ -144,14 +151,13 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
         } else {
             scopeNotice.stringValue = "Independent appearance: future reusable-profile changes no longer apply. Changes apply immediately to the outputs listed above. Use + to save a reusable copy."
         }
-        usageNotice.stringValue = hasNetwork ? networkName + " outputs use the owning workspace’s lyrics, images, PDFs and video, with independent backgrounds." : ""
+        usageNotice.stringValue = (hasNetwork || networkOnly) ? networkName + " outputs use the owning workspace’s lyrics, images, PDFs and video, with independent backgrounds." : ""
         usageNotice.isHidden = usageNotice.stringValue.isEmpty
-        let hideBackgroundColour = hasNetwork && !hasNative
-        backgroundColourRow?.isHidden = hideBackgroundColour
+        backgroundColourRow?.isHidden = networkOnly
         // Hiding the well must retire an open colour panel; otherwise a late
         // panel callback still writes the shared profile in place.
-        if hideBackgroundColour { for well in colors.keys { well.deactivate() } }
-        if hideBackgroundColour {
+        if networkOnly { for well in colors.keys { well.deactivate() } }
+        if networkOnly {
             backgroundColourNotice.stringValue = "Set transparency and chroma colour on each " + networkName + " output. Visual backgrounds below apply in either mode."
         } else if hasNetwork {
             backgroundColourNotice.stringValue = "Native outputs use Colour as their solid background. " + networkName + " outputs use it only in Chroma Colour mode; Alpha leaves solid surroundings transparent. Image and video backgrounds remain independent."
@@ -159,8 +165,9 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
             backgroundColourNotice.stringValue = "Colour sets the solid background. Background images and videos use the controls below."
         }
         textControls.isHidden = false; visualControls.isHidden = false
-        legacyControl?.isHidden = !hasNative
-        confidenceNotice.isHidden = profile.kind != .confidence || !hasNative
+        legacyControl?.isHidden = networkOnly || (!hasNative && !consumers.isEmpty)
+        // Keep the Current-only network warning visible for Confidence on network feeds.
+        confidenceNotice.isHidden = profile.kind != .confidence
         // Output status changes do not require font lookup or control updates.
         guard force || profile != renderedProfile else { return }
         renderedProfile = profile
@@ -412,6 +419,7 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
                 }
                 var candidate = profile
                 candidate.background.bookmark = bookmark
+                candidate.background.displayName = url.lastPathComponent
                 var probe = store.document
                 guard let index = probe.profiles.firstIndex(where: { $0.id == selectedProfileID }) else { return }
                 probe.profiles[index] = candidate
@@ -428,6 +436,35 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
                     self.validationLabel.isHidden = true
                     self.render(force: true)
                 }
+            }
+        }
+    }
+
+    private var backgroundResolveGeneration = UUID()
+    private func renderBackgroundLabel(_ label: NSTextField, profile: OutputProfile) {
+        guard let bookmark = profile.background.bookmark, !bookmark.isEmpty else {
+            label.stringValue = "Solid colour"
+            label.toolTip = nil
+            return
+        }
+        let name = profile.background.displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = (name?.isEmpty == false ? name! : "Selected image or video")
+        label.stringValue = title
+        label.toolTip = title
+        let generation = UUID()
+        backgroundResolveGeneration = generation
+        let profileID = profile.id
+        Task { @MainActor [weak self] in
+            let url = await Task.detached { SecurityScopedBookmarks.resolve(bookmark)?.url }.value
+            guard let self, self.backgroundResolveGeneration == generation,
+                  self.profileID == profileID,
+                  self.store.profile(profileID)?.background.bookmark == bookmark else { return }
+            if let url {
+                label.stringValue = url.lastPathComponent
+                label.toolTip = url.path
+            } else {
+                label.stringValue = title + " · Unavailable"
+                label.toolTip = "The saved background file could not be opened. Choose Visual again to replace it."
             }
         }
     }

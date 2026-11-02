@@ -21,7 +21,7 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
     let identifyButton = NSButton(title: "Identify", target: nil, action: nil)
     let nameMonitorButton = NSButton(title: "Name Monitor…", target: nil, action: nil)
     let customizeButton = NSButton(title: "Customize Appearance…", target: nil, action: nil)
-    let clearBackgroundButton = NSButton(title: "Clear Background", target: nil, action: nil)
+    let clearBackgroundButton = NSButton(title: "Clear Visual…", target: nil, action: nil)
     var onEditProfile: (UUID) -> Void = { _ in }
     private struct MonitorEntry: Equatable { let target: ProjectionMonitorTarget?; let title: String; let enabled: Bool }
     private struct ProfileEntry: Equatable { let id: UUID; let title: String }
@@ -124,7 +124,7 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
         clearBackgroundButton.isHidden = false
         let help = customizeButton.isEnabled ? nil : "The profile limit has been reached. Edit reusable profiles in Profiles."
         customizeButton.toolTip = help ?? "Edit an independent appearance for this output. Reusable profiles remain available in Profiles."
-        clearBackgroundButton.toolTip = help ?? "Clear the background for this output only."
+        clearBackgroundButton.toolTip = help ?? "Clear this output’s background image or video only. Solid and chroma colours are unchanged."
         var offered = store.reusableAppearanceChoices(for: destinationID)
         if profile.isReusable, !offered.contains(where: { $0.id == profile.id }) {
             offered.insert(profile, at: 0)
