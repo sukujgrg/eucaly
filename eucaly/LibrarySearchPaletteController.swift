@@ -474,13 +474,32 @@ private final class LibrarySearchPaletteButton: NSButton {
     override var acceptsFirstResponder: Bool { true }
 }
 
+#if DEBUG
+extension LibrarySearchPaletteController {
+    static var testingScrimColor: NSColor { LibrarySearchPaletteBackdrop.scrimColor }
+}
+#endif
+
 private final class LibrarySearchPaletteBackdrop: NSView {
     weak var card: NSView?
     var onClickOutside: (() -> Void)?
+
+    /// Dims the workspace behind the palette using an appearance-aware scrim.
+    static let scrimColor = NSColor(name: "LibrarySearchPaletteScrim") { appearance in
+        let dark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        return NSColor.black.withAlphaComponent(dark ? 0.48 : 0.22)
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.black.withAlphaComponent(0.22).setFill()
+        Self.scrimColor.setFill()
         NSBezierPath(rect: dirtyRect).fill()
     }
+
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         guard card?.frame.contains(point) != true else { return }

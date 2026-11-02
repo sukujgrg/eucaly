@@ -101,6 +101,9 @@ final class CacheManagerTests: XCTestCase {
         )
         XCTAssertEqual(metadata.count, 1)
         XCTAssertEqual(diskCache.getCacheStats().diskThumbnails, 2, "The persisted thumbnail and revision metadata must both exist")
+        let asyncStats = await diskCache.cacheStats()
+        XCTAssertEqual(asyncStats.diskThumbnails, 2)
+        XCTAssertEqual(asyncStats.memoryThumbnails, diskCache.getCacheStats().memoryThumbnails)
 
         let replacementPNG = try makePNGData(color: .blue)
         try replacementPNG.write(to: fileURL)

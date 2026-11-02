@@ -4,6 +4,23 @@ import XCTest
 
 @MainActor
 final class LibrarySearchPaletteTests: XCTestCase {
+    func testPaletteScrimAdaptsToLightAndDarkAppearance() throws {
+        let light = try XCTUnwrap(NSAppearance(named: .aqua))
+        let dark = try XCTUnwrap(NSAppearance(named: .darkAqua))
+        func alpha(under appearance: NSAppearance) -> CGFloat {
+            var value: CGFloat = 0
+            appearance.performAsCurrentDrawingAppearance {
+                value = LibrarySearchPaletteController.testingScrimColor.alphaComponent
+            }
+            return value
+        }
+        let lightAlpha = alpha(under: light)
+        let darkAlpha = alpha(under: dark)
+        XCTAssertEqual(lightAlpha, 0.22, accuracy: 0.001)
+        XCTAssertEqual(darkAlpha, 0.48, accuracy: 0.001)
+        XCTAssertGreaterThan(darkAlpha, lightAlpha)
+    }
+
     func testRowAddShowsCommittedFeedbackWithoutChangingSearchOrCurrent() async throws {
         let fixture = try Fixture(); defer { fixture.close() }
         try await fixture.prepareResults()
