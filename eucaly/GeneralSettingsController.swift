@@ -13,17 +13,21 @@ final class GeneralSettingsController: NSViewController {
     let automaticUpdates = NSButton(checkboxWithTitle: "Automatically Check for Updates", target: nil, action: nil)
     let checkUpdatesButton = NSButton(title: "Check for Updates…", target: nil, action: nil)
     let cacheLabel = outputSettingsLabel(secondary: true)
-    private let readCacheStats: @MainActor () -> CacheManager.CacheStats
+    private let readCacheStats: @MainActor () async -> CacheManager.CacheStats
     private let clearCache: @MainActor () -> Void
     private var subscriptions = Set<AnyCancellable>()
     private var renderTask: Task<Void, Never>?
+    private var cacheStatsTask: Task<Void, Never>?
+    private var cacheStatsGeneration = UUID()
     private var resolvedLibraryRoot: URL?
     private var securityScopedLibraryRoot: URL?
     private var loadedBookmark: String?
     private var isPresented = false
 
     init(updates: AppUpdateViewModel, defaults: UserDefaults = .standard,
-         readCacheStats: @escaping @MainActor () -> CacheManager.CacheStats = { CacheManager.shared.getCacheStats() },
+         readCacheStats: @escaping @MainActor () async -> CacheManager.CacheStats = {
+             await CacheManager.shared.cacheStats()
+         },
          clearCache: @escaping @MainActor () -> Void = { CacheManager.shared.clearAllCaches() }) {
         self.updates = updates; self.defaults = defaults
         self.readCacheStats = readCacheStats; self.clearCache = clearCache
@@ -34,7 +38,11 @@ final class GeneralSettingsController: NSViewController {
             .sink { [weak self] _ in self?.scheduleRender() }.store(in: &subscriptions)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    deinit { renderTask?.cancel(); securityScopedLibraryRoot?.stopAccessingSecurityScopedResource() }
+    deinit {
+        renderTask?.cancel()
+        cacheStatsTask?.cancel()
+        securityScopedLibraryRoot?.stopAccessingSecurityScopedResource()
+    }
 
     override func loadView() {
         let form = OutputSettingsForm(frame: .zero); view = NSView()
@@ -55,9 +63,9 @@ final class GeneralSettingsController: NSViewController {
         form.add(outputSettingsActionRow([checkUpdatesButton]))
         form.add(outputSettingsLabel("Checks in the background. You choose when to download and install.", secondary: true))
         form.section("Cache")
-        form.add(outputSettingsFieldGroup("Storage", cacheLabel, actions: [
-            NSButton(title: "Clear Cache", target: self, action: #selector(clearCachePressed(_:)))
-        ]))
+        let clearCacheButton = NSButton(title: "Clear Cache", target: self, action: #selector(clearCachePressed(_:)))
+        clearCacheButton.setAccessibilityLabel("Clear thumbnail cache")
+        form.add(outputSettingsFieldGroup("Storage", cacheLabel, actions: [clearCacheButton]))
         form.add(outputSettingsLabel("Thumbnails are recreated as needed.", secondary: true))
         renderPreferences(); renderUpdates(updates.state); refreshCacheStats()
     }
@@ -68,6 +76,7 @@ final class GeneralSettingsController: NSViewController {
             renderPreferences(); refreshCacheStats()
         } else {
             renderTask?.cancel(); renderTask = nil
+            cacheStatsTask?.cancel(); cacheStatsTask = nil
             finishEditing(); updateSecurityScopedLibraryRoot(nil); loadedBookmark = nil
         }
     }
@@ -107,9 +116,26 @@ final class GeneralSettingsController: NSViewController {
         checkUpdatesButton.isEnabled = state.canCheckForUpdates
     }
     private func refreshCacheStats() {
-        let stats = readCacheStats()
-        cacheLabel.stringValue = "\(String(format: "%.1f", stats.diskSizeMB)) MB on disk · \(stats.diskThumbnails) thumbnails\n\(stats.memoryThumbnails) thumbnails in memory"
+        guard isViewLoaded else { return }
+        cacheStatsTask?.cancel()
+        let generation = UUID()
+        cacheStatsGeneration = generation
+        cacheLabel.stringValue = "Measuring cache…"
+        cacheLabel.setAccessibilityValue(cacheLabel.stringValue)
+        cacheStatsTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let stats = await self.readCacheStats()
+            guard !Task.isCancelled, self.cacheStatsGeneration == generation else { return }
+            self.applyCacheStats(stats)
+            self.cacheStatsTask = nil
+        }
     }
+
+    private func applyCacheStats(_ stats: CacheManager.CacheStats) {
+        cacheLabel.stringValue = "\(String(format: "%.1f", stats.diskSizeMB)) MB on disk · \(stats.diskThumbnails) thumbnails\n\(stats.memoryThumbnails) thumbnails in memory"
+        cacheLabel.setAccessibilityValue(cacheLabel.stringValue)
+    }
+
     @objc private func automaticUpdatesChanged(_ sender: NSButton) { updates.setAutomaticChecks(sender.state == .on) }
     @objc private func checkUpdates(_ sender: Any?) { updates.checkForUpdates() }
     @objc private func clearCachePressed(_ sender: Any?) { clearCache(); refreshCacheStats() }

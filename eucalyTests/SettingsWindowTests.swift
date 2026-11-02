@@ -75,7 +75,7 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertFalse(descendants(NSButton.self, in: controller.settings.view).contains { $0.title == "Save" })
     }
 
-    func testGeneralControlsApplyPreferencesAndUseTheSharedUpdater() throws {
+    func testGeneralControlsApplyPreferencesAndUseTheSharedUpdater() async throws {
         let fixture = NativeSettingsFixture()
         defer { fixture.close() }
         fixture.controller.show(pane: .general)
@@ -88,6 +88,7 @@ final class SettingsWindowTests: XCTestCase {
         fixture.driver.state.canCheckForUpdates = true
         XCTAssertTrue(general.checkUpdatesButton.isEnabled)
         let clear = try XCTUnwrap(descendants(NSButton.self, in: general.view).first { $0.title == "Clear Cache" })
+        XCTAssertEqual(clear.accessibilityLabel(), "Clear thumbnail cache")
         for size in [NSSize(width: 780, height: 580), .init(width: 1020, height: 760)] {
             fixture.controller.window?.setContentSize(size)
             fixture.controller.window?.layoutIfNeeded(); general.view.layoutSubtreeIfNeeded()
@@ -101,7 +102,12 @@ final class SettingsWindowTests: XCTestCase {
         }
         clear.performClick(nil)
         XCTAssertEqual(fixture.cache.clears, 1)
+        for _ in 0..<40 {
+            if general.cacheLabel.stringValue.contains("0 thumbnails") { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
         XCTAssertTrue(general.cacheLabel.stringValue.contains("0 thumbnails"))
+        XCTAssertEqual(general.cacheLabel.accessibilityValue() as? String, general.cacheLabel.stringValue)
     }
 
     func testLibraryPreferencesRetainBookmarkAndPathAndShowRestorationNotice() throws {

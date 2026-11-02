@@ -413,23 +413,52 @@ class CacheManager: ObservableObject {
         }
     }
 
-    /// Get cache statistics
+    /// Compact the in-memory tracker and read disk totals. Prefer `cacheStats()`
+    /// from UI so directory enumeration stays off the main actor.
     func getCacheStats() -> CacheStats {
-        let fileManager = FileManager.default
-        let files = (try? fileManager.contentsOfDirectory(at: diskCacheURL, includingPropertiesForKeys: [.fileSizeKey])) ?? []
-        // NSCache doesn't expose an accurate count; compact our key tracker.
-        memoryCacheKeys = memoryCacheKeys.filter { memoryImageCache.object(forKey: $0 as NSString) != nil }
+        let memoryThumbnails = compactedMemoryThumbnailCount()
+        let disk = Self.diskThumbnailStats(at: diskCacheURL)
+        return CacheStats(
+            memoryThumbnails: memoryThumbnails,
+            diskThumbnails: disk.count,
+            diskSizeMB: disk.sizeMB
+        )
+    }
 
+    /// Memory compaction stays on the main actor; disk walk uses `diskIOQueue`.
+    func cacheStats() async -> CacheStats {
+        let memoryThumbnails = compactedMemoryThumbnailCount()
+        let diskURL = diskCacheURL
+        return await withCheckedContinuation { continuation in
+            diskIOQueue.addOperation {
+                let disk = Self.diskThumbnailStats(at: diskURL)
+                continuation.resume(returning: CacheStats(
+                    memoryThumbnails: memoryThumbnails,
+                    diskThumbnails: disk.count,
+                    diskSizeMB: disk.sizeMB
+                ))
+            }
+        }
+    }
+
+    private func compactedMemoryThumbnailCount() -> Int {
+        memoryCacheKeys = memoryCacheKeys.filter { memoryImageCache.object(forKey: $0 as NSString) != nil }
+        return memoryCacheKeys.count
+    }
+
+    nonisolated private static func diskThumbnailStats(at diskCacheURL: URL) -> (count: Int, sizeMB: Double) {
+        let fileManager = FileManager.default
+        let files = (try? fileManager.contentsOfDirectory(
+            at: diskCacheURL,
+            includingPropertiesForKeys: [.fileSizeKey]
+        )) ?? []
         let diskSize = files.reduce(Int64(0)) { total, file in
-            let size = (try? fileManager.attributesOfItem(atPath: file.path)[.size] as? Int64) ?? 0
+            let size = (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init)
+                ?? (try? fileManager.attributesOfItem(atPath: file.path)[.size] as? Int64)
+                ?? 0
             return total + size
         }
-
-        return CacheStats(
-            memoryThumbnails: memoryCacheKeys.count,
-            diskThumbnails: files.count,
-            diskSizeMB: Double(diskSize) / 1024.0 / 1024.0
-        )
+        return (files.count, Double(diskSize) / 1024.0 / 1024.0)
     }
 
     struct CacheStats {
