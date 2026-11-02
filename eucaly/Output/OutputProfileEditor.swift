@@ -142,8 +142,12 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
         }
         usageNotice.stringValue = hasNetwork ? networkName + " outputs use the owning workspace’s lyrics, images, PDFs and video, with independent backgrounds." : ""
         usageNotice.isHidden = usageNotice.stringValue.isEmpty
-        backgroundColourRow?.isHidden = hasNetwork && !hasNative
-        if hasNetwork && !hasNative {
+        let hideBackgroundColour = hasNetwork && !hasNative
+        backgroundColourRow?.isHidden = hideBackgroundColour
+        // Hiding the well must retire an open colour panel; otherwise a late
+        // panel callback still writes the shared profile in place.
+        if hideBackgroundColour { for well in colors.keys { well.deactivate() } }
+        if hideBackgroundColour {
             backgroundColourNotice.stringValue = "Set transparency and chroma colour on each " + networkName + " output. Visual backgrounds below apply in either mode."
         } else if hasNetwork {
             backgroundColourNotice.stringValue = "Native outputs use Colour as their solid background. " + networkName + " outputs use it only in Chroma Colour mode; Alpha leaves solid surroundings transparent. Image and video backgrounds remain independent."
@@ -180,19 +184,21 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
     }
     override func viewWillDisappear() { super.viewWillDisappear(); finishEditing() }
 
-    func edit(_ change: (inout OutputProfile) -> Void) {
-        guard var profile = store.profile(profileID) else { return }
+    @discardableResult
+    func edit(_ change: (inout OutputProfile) -> Void) -> Bool {
+        guard var profile = store.profile(profileID) else { return false }
         change(&profile)
         var document = store.document
-        guard let index = document.profiles.firstIndex(where: { $0.id == profileID }) else { return }
+        guard let index = document.profiles.firstIndex(where: { $0.id == profileID }) else { return false }
         document.profiles[index] = profile
         guard document.isValid else {
             validationLabel.stringValue = "Use valid font sizes between 1 and 800 points. Relative component sizes must also fit this range."
-            render(force: true); return
+            render(force: true); return false
         }
         validationLabel.stringValue = ""
         store.update(profile)
         render()
+        return true
     }
 
     func controlTextDidEndEditing(_ notification: Notification) {
@@ -211,8 +217,8 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
         let fontLabel = outputSettingsLabel()
         let choose = button("Choose Font…") { [weak self] in
             guard let self, let profile = self.store.profile(self.profileID) else { return }
-            self.fontChooser.choose(get(profile)) { [weak self] font in
-                self?.editTypography(role) { $0.fontName = font.fontName; $0.size = font.pointSize }
+            self.fontChooser.choose(get(profile), ownerWindow: self.view.window) { [weak self] font in
+                self?.editTypography(role) { $0.fontName = font.fontName; $0.size = font.pointSize } ?? false
             }
         }
         let system = button("System") { [weak self] in
@@ -298,7 +304,8 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
             override[keyPath: keyPath] = value; profile.componentTypography[role] = override
         } else { profile.typography[keyPath: key] = value }
     }
-    private func editTypography(_ role: OutputComponentRole?, _ change: (inout OutputTypography) -> Void) {
+    @discardableResult
+    private func editTypography(_ role: OutputComponentRole?, _ change: (inout OutputTypography) -> Void) -> Bool {
         edit { profile in
             var typography = role.map { profile.typography(for: $0) } ?? profile.typography
             change(&typography)
@@ -413,10 +420,12 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
 @MainActor
 private final class OutputSettingsFontChooser: NSObject {
     private var selected = NSFont.systemFont(ofSize: 84)
-    private var changed: ((NSFont) -> Void)?
-    func choose(_ typography: OutputTypography, changed: @escaping (NSFont) -> Void) {
+    private var changed: ((NSFont) -> Bool)?
+    private weak var ownerWindow: NSWindow?
+    func choose(_ typography: OutputTypography, ownerWindow: NSWindow?, changed: @escaping (NSFont) -> Bool) {
         selected = typography.fontName.flatMap { NSFont(name: $0, size: typography.size) }
             ?? NSFont.systemFont(ofSize: typography.size)
+        self.ownerWindow = ownerWindow
         self.changed = changed
         let manager = NSFontManager.shared
         manager.target = self; manager.action = #selector(changeFont(_:))
@@ -425,8 +434,27 @@ private final class OutputSettingsFontChooser: NSObject {
     }
     func cancel() {
         if NSFontManager.shared.target === self {
-            NSFontManager.shared.target = nil; changed = nil; NSFontPanel.shared.orderOut(nil)
+            NSFontManager.shared.target = nil; changed = nil; ownerWindow = nil
+            NSFontPanel.shared.orderOut(nil)
         }
     }
-    @objc private func changeFont(_ sender: NSFontManager) { selected = sender.convert(selected); changed?(selected) }
+    /// Accept Font panel edits only while Settings remains the owning surface.
+    /// An explicit NSFontManager target otherwise keeps rewriting appearance
+    /// after the operator moves to another app window (e.g. lyrics).
+    private var isAcceptingFontChanges: Bool {
+        guard changed != nil, NSFontManager.shared.target === self else { return false }
+        guard let owner = ownerWindow, owner.isVisible else { return false }
+        if let key = NSApp.keyWindow {
+            let panel = NSFontPanel.shared
+            if key !== owner, key !== panel, key.sheetParent !== owner { return false }
+        }
+        return true
+    }
+    @objc private func changeFont(_ sender: NSFontManager) {
+        guard isAcceptingFontChanges else { cancel(); return }
+        let next = sender.convert(selected)
+        // Keep the panel on the last accepted face when validation rejects size.
+        if changed?(next) == true { selected = next }
+        else { sender.setSelectedFont(selected, isMultiple: false) }
+    }
 }
