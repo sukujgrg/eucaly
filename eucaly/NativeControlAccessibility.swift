@@ -9,3 +9,27 @@ extension NSControl {
         if let help { setAccessibilityHelp(help); cell?.setAccessibilityHelp(help) }
     }
 }
+
+/// Icon-only accessory inside a list/outline row. Owns Space activation and
+/// Shift-Tab return without depending on key-window button tracking.
+final class EmbeddedAccessoryButton: NSButton {
+    var onBackTab: (() -> Void)?
+
+    override var acceptsFirstResponder: Bool {
+        isEnabled && !isHiddenOrHasHiddenAncestor
+    }
+
+    override func keyDown(with event: NSEvent) {
+        let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        if event.keyCode == 49, modifiers.isEmpty,
+           isEnabled, window?.firstResponder === self {
+            if !event.isARepeat { performClick(nil) }
+            return
+        }
+        if event.keyCode == 48, modifiers == .shift, let onBackTab {
+            onBackTab()
+            return
+        }
+        super.keyDown(with: event)
+    }
+}

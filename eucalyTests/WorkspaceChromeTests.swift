@@ -166,6 +166,32 @@ final class WorkspaceChromeTests: XCTestCase {
         XCTAssertFalse(split.sidebarItem.isCollapsed)
     }
 
+    func testWorkspaceKeyViewLoopConnectsSidebarToDetailAndBack() async throws {
+        let f = try Fixture(); defer { f.close() }
+        let window = try XCTUnwrap(f.windows.open(f.a)?.window)
+        f.focus.window = window
+        window.setContentSize(.init(width: 1280, height: 700))
+        let split = try await mountedSplit(in: window)
+        XCTAssertFalse(window.autorecalculatesKeyViewLoop)
+        let libraryHeader = try XCTUnwrap(sidebarHeaders(in: split.sidebarController.view).first { $0.section == .library })
+        XCTAssertTrue(window.makeFirstResponder(libraryHeader))
+        var sawDetail = false
+        var returnedToSidebar = false
+        for _ in 0..<120 {
+            window.selectNextKeyView(nil)
+            guard let focused = window.firstResponder as? NSView else { continue }
+            if focused.isDescendant(of: split.detailController.view) {
+                sawDetail = true
+            }
+            if sawDetail, focused.isDescendant(of: split.sidebarController.view) {
+                returnedToSidebar = true
+                break
+            }
+        }
+        XCTAssertTrue(sawDetail, "Tab must leave the sidebar into the detail host")
+        XCTAssertTrue(returnedToSidebar, "Tab must return from detail into the sidebar")
+    }
+
     func testSidebarScrollSurfaceFillsSectionAndAccessoryStaysPinnedAtNaturalWidth() async throws {
         let f = try Fixture(); defer { f.close() }
         let window = try XCTUnwrap(f.windows.open(f.a)?.window)
@@ -321,6 +347,16 @@ final class WorkspaceChromeTests: XCTestCase {
         try await until("closed controls release their complete native UI graph") { lifetime.isReleased }
         XCTAssertNil(f.windows.controllers[f.a])
         XCTAssertNotNil(f.outputs.preparedSession(workspace: f.a), "Closing UI must retain the app-owned workspace session")
+    }
+
+    private func sidebarHeaders(in root: NSView) -> [SidebarSectionHeaderButton] {
+        var result: [SidebarSectionHeaderButton] = []
+        func visit(_ view: NSView) {
+            if let header = view as? SidebarSectionHeaderButton { result.append(header) }
+            view.subviews.forEach(visit)
+        }
+        visit(root)
+        return result
     }
 
     private func mountedSplit(in window: NSWindow) async throws -> WorkspaceSplitViewController {

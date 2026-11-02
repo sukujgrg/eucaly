@@ -87,12 +87,12 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         section.selectedSegment = 0; section.target = self; section.action = #selector(changeSection(_:))
         table.addTableColumn(NSTableColumn(identifier: .init("outputs")))
         table.headerView = nil; table.style = .sourceList; table.rowHeight = 100
-        table.focusRingType = .none
+        table.focusRingType = .default
         table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         table.delegate = self; table.dataSource = self; table.allowsEmptySelection = false
         table.setAccessibilityLabel("Outputs and profiles")
         let list = NSScrollView(); list.hasVerticalScroller = true; list.autohidesScrollers = true
-        list.focusRingType = .none
+        list.focusRingType = .default
         list.borderType = .bezelBorder; list.documentView = table
         list.heightAnchor.constraint(greaterThanOrEqualToConstant: 190).isActive = true
         addNative.target = self; addNative.action = #selector(addNativeOutput(_:))

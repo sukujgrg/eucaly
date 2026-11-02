@@ -366,7 +366,7 @@ final class SidebarOutlineController {
         outlineView.indentationPerLevel = 8
         outlineView.allowsEmptySelection = configuration.allowsEmptySelection
         outlineView.allowsTypeSelect = true
-        outlineView.focusRingType = .none
+        outlineView.focusRingType = .default
         outlineView.backgroundColor = .clear
         outlineView.style = .sourceList
         outlineView.dataSource = coordinator
@@ -390,6 +390,9 @@ final class SidebarOutlineController {
         }
         outlineView.defaultActionHandler = { [weak coordinator = coordinator] in
             coordinator?.performKeyboardDefaultAction() ?? false
+        }
+        outlineView.accessoryFocusHandler = { [weak coordinator = coordinator] in
+            coordinator?.focusSelectedAccessory() ?? false
         }
         outlineView.menuProvider = { [weak coordinator = coordinator] row in
             coordinator?.contextMenu(forRow: row)
@@ -425,6 +428,7 @@ final class SidebarOutlineController {
         coordinator.outlineView?.dataSource = nil
         coordinator.outlineView?.spaceActionHandler = nil
         coordinator.outlineView?.defaultActionHandler = nil
+        coordinator.outlineView?.accessoryFocusHandler = nil
         coordinator.outlineView?.menuProvider = nil
         coordinator.outlineView?.verticalMoveHandler = nil
         coordinator.outlineView?.containerMoveHandler = nil
@@ -654,11 +658,27 @@ final class SidebarOutlineController {
             handleRowClick(sender, activatesDefaultAction: true)
         }
 
+        fileprivate func focusSelectedAccessory() -> Bool {
+            guard let outlineView, let window = outlineView.window,
+                  outlineView.window != nil, !outlineView.isHiddenOrHasHiddenAncestor,
+                  outlineView.selectedRowIndexes.count == 1,
+                  let item = outlineView.item(atRow: outlineView.selectedRow) as? SidebarOutlineItem,
+                  item.accessoryAction != nil else { return false }
+            outlineView.scrollRowToVisible(outlineView.selectedRow)
+            guard let cell = outlineView.view(atColumn: 0, row: outlineView.selectedRow, makeIfNecessary: true)
+                    as? SidebarOutlineRowCellView else { return false }
+            return cell.focusAccessory(in: window, nextKeyView: outlineView.nextKeyView) { [weak outlineView, weak window] in
+                guard let outlineView, let window else { return }
+                _ = window.makeFirstResponder(outlineView)
+            }
+        }
+
         private func handleRowClick(_ sender: ReusableSidebarNSOutlineView, activatesDefaultAction: Bool) {
             guard sender === outlineView, sender.window != nil, !sender.isHiddenOrHasHiddenAncestor,
                   !isSynchronizingSelection, !isProcessingExpansion, sender.clickedRow >= 0,
                   sender.clickedRow < sender.numberOfRows,
                   let item = sender.item(atRow: sender.clickedRow) as? SidebarOutlineItem else { return }
+            if clickIsInsideEmbeddedAccessory(in: sender) { return }
             let event = sender.pointerInteraction?.event
                 ?? NSApp.currentEvent.flatMap { $0.window === sender.window ? $0 : nil }
             let ordinaryClick = event?.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty ?? false
@@ -863,6 +883,17 @@ final class SidebarOutlineController {
         @objc private func performContextAction(_ sender: NSMenuItem) {
             guard let representedAction = sender.representedObject as? SidebarOutlineMenuAction else { return }
             performRowAction(itemID: representedAction.itemID, action: representedAction.action, origin: .contextMenu)
+        }
+
+        private func clickIsInsideEmbeddedAccessory(in outlineView: NSOutlineView) -> Bool {
+            guard let event = NSApp.currentEvent, event.window === outlineView.window else { return false }
+            let point = outlineView.convert(event.locationInWindow, from: nil)
+            var hitView = outlineView.hitTest(point)
+            while let view = hitView, view !== outlineView {
+                if view is EmbeddedAccessoryButton { return true }
+                hitView = view.superview
+            }
+            return false
         }
 
         private enum RowActionOrigin { case accessory, contextMenu }
@@ -1181,6 +1212,7 @@ final class SidebarOutlineScrollView: NSScrollView {
 private final class ReusableSidebarNSOutlineView: NSOutlineView, NSGestureRecognizerDelegate {
     var spaceActionHandler: (() -> Bool)?
     var defaultActionHandler: (() -> Bool)?
+    var accessoryFocusHandler: (() -> Bool)?
     var menuProvider: ((Int) -> NSMenu?)?
     var verticalMoveHandler: ((SidebarOutlineNavigationDirection) -> Bool)?
     var containerMoveHandler: (() -> Bool)?
@@ -1259,6 +1291,9 @@ private final class ReusableSidebarNSOutlineView: NSOutlineView, NSGestureRecogn
                 // responder selectors. Route plain arrows through AppKit's key
                 // bindings so hierarchy and section boundaries share commands.
                 interpretKeyEvents([event])
+                return
+            }
+            if event.keyCode == 48, accessoryFocusHandler?() == true {
                 return
             }
             if event.keyCode == 49, spaceActionHandler?() == true {
@@ -1379,9 +1414,12 @@ private final class SidebarOutlineLabelField: NSTextField {
 private final class SidebarOutlineRowCellView: NSTableCellView {
     private let titleField = SidebarOutlineLabelField(labelWithString: "")
     private let statusImageView = NSImageView()
-    private let accessoryButton = NSButton()
+    private let accessoryButton = EmbeddedAccessoryButton()
     private var accessoryAction: SidebarOutlineAction?
     private var onAccessoryAction: ((SidebarOutlineAction) -> Void)?
+    private var rowTitle = ""
+    private var rowStatus: SidebarOutlineItemStatus?
+    private var rowIsMissing = false
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -1395,10 +1433,16 @@ private final class SidebarOutlineRowCellView: NSTableCellView {
 
         statusImageView.translatesAutoresizingMaskIntoConstraints = false
         statusImageView.imageScaling = .scaleProportionallyDown
+        statusImageView.setAccessibilityElement(false)
 
         accessoryButton.translatesAutoresizingMaskIntoConstraints = false
         accessoryButton.imagePosition = .imageOnly
+        accessoryButton.imageScaling = .scaleProportionallyDown
         accessoryButton.isBordered = false
+        accessoryButton.setButtonType(.momentaryPushIn)
+        accessoryButton.ignoresMultiClick = true
+        accessoryButton.refusesFirstResponder = false
+        accessoryButton.focusRingType = .default
         accessoryButton.target = self
         accessoryButton.action = #selector(performAccessoryAction)
 
@@ -1434,15 +1478,20 @@ private final class SidebarOutlineRowCellView: NSTableCellView {
         accessoryAction: SidebarOutlineAction?,
         onAccessoryAction: @escaping (SidebarOutlineAction) -> Void
     ) {
+        rowTitle = title
+        rowIsMissing = isMissing
         titleField.stringValue = title
         titleField.toolTip = title
         titleField.textColor = isMissing ? .secondaryLabelColor : .labelColor
         self.accessoryAction = accessoryAction
         self.onAccessoryAction = onAccessoryAction
+        accessoryButton.onBackTab = nil
 
         configureStatus(status)
 
-        accessoryButton.isHidden = accessoryAction == nil
+        let showsAccessory = accessoryAction != nil
+        accessoryButton.isHidden = !showsAccessory
+        accessoryButton.setAccessibilityHidden(!showsAccessory)
         accessoryButton.image = accessoryAction.flatMap {
             NSImage(systemSymbolName: $0.systemImage, accessibilityDescription: $0.title)
         }
@@ -1450,16 +1499,54 @@ private final class SidebarOutlineRowCellView: NSTableCellView {
         accessoryButton.contentTintColor = accessoryAction == .addToPlaylist
             ? .controlAccentColor
             : .secondaryLabelColor
+        if let accessoryAction {
+            accessoryButton.setControlAccessibility(label: "\(accessoryAction.title) \(title)")
+        }
+
+        setAccessibilityLabel(title)
+        var valueParts: [String] = []
+        if isMissing { valueParts.append("Unavailable") }
+        if let status { valueParts.append(status.accessibilityLabel) }
+        setAccessibilityValue(valueParts.isEmpty ? nil : valueParts.joined(separator: ", "))
+        setAccessibilityHelp(isMissing ? "File missing" : nil)
+
+        var accessibilityActions: [NSAccessibilityCustomAction] = []
+        if let accessoryAction {
+            accessibilityActions.append(NSAccessibilityCustomAction(
+                name: accessoryAction.title,
+                target: self,
+                selector: #selector(performAccessibleAccessoryAction)
+            ))
+        }
+        setAccessibilityCustomActions(accessibilityActions.isEmpty ? nil : accessibilityActions)
     }
 
     func configureStatus(_ status: SidebarOutlineItemStatus?) {
+        rowStatus = status
         statusImageView.isHidden = status == nil
         statusImageView.image = status.flatMap {
-            NSImage(systemSymbolName: $0.systemImage, accessibilityDescription: $0.accessibilityLabel)
+            NSImage(systemSymbolName: $0.systemImage, accessibilityDescription: nil)
         }
         statusImageView.contentTintColor = status == .playingAudio
             ? .controlAccentColor
             : .secondaryLabelColor
+        var valueParts: [String] = []
+        if rowIsMissing { valueParts.append("Unavailable") }
+        if let status { valueParts.append(status.accessibilityLabel) }
+        setAccessibilityValue(valueParts.isEmpty ? nil : valueParts.joined(separator: ", "))
+    }
+
+    func focusAccessory(in window: NSWindow, nextKeyView: NSView?, onBackTab: @escaping () -> Void) -> Bool {
+        guard accessoryAction != nil, accessoryButton.isEnabled, !accessoryButton.isHidden else { return false }
+        accessoryButton.onBackTab = onBackTab
+        accessoryButton.nextKeyView = nextKeyView
+        return window.makeFirstResponder(accessoryButton)
+    }
+
+    @objc private func performAccessibleAccessoryAction() -> Bool {
+        guard let accessoryAction else { return false }
+        onAccessoryAction?(accessoryAction)
+        return true
     }
 
     @objc private func performAccessoryAction() {
@@ -1486,6 +1573,7 @@ private final class SidebarOutlineGroupCellView: NSTableCellView {
         countField.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
         countField.textColor = .secondaryLabelColor
         countField.setContentHuggingPriority(.required, for: .horizontal)
+        countField.setAccessibilityElement(false)
         addSubview(countField)
 
         NSLayoutConstraint.activate([
@@ -1505,5 +1593,7 @@ private final class SidebarOutlineGroupCellView: NSTableCellView {
     func configure(title: String, count: Int) {
         titleField.stringValue = title
         countField.stringValue = "\(count)"
+        let itemWord = count == 1 ? "item" : "items"
+        setAccessibilityLabel("\(title), \(count) \(itemWord)")
     }
 }
