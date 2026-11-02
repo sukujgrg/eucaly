@@ -120,14 +120,15 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         let profile = destination.flatMap { store.profile($0.profileID) }
         let target = store.quickEditTarget
         let displays = outputs.displays
-        let reason = store.recoveryNotice ?? (destination == nil ? "Choose an appearance editing target to use quick controls."
-            : destination?.enabled == false ? "Appearance editing target is disabled."
+        let profileName = destination.flatMap { store.profile($0.profileID)?.name } ?? "None"
+        let reason = store.recoveryNotice ?? (destination == nil ? "Choose a profile editing target to use quick controls."
+            : destination?.enabled == false ? "Profile editing target is disabled."
             : nil)
         let name = destination?.name ?? "None"
         let scope = destination.map { outputs.managementDestinationLabel($0) + " · " + outputs.managementWorkspaceName($0.workspaceID) } ?? "None"
-        outputButton.toolTip = "Edit output appearance: \(scope). \(reason ?? "Quick edits affect only this output.")"
-        outputButton.setControlAccessibility(label: "Output appearance editing target: \(scope)",
-            help: reason ?? "Choose the appearance editing target or edit its monitor assignment.")
+        outputButton.toolTip = "Edit profile: \(profileName) via \(scope). \(reason ?? "Quick edits apply to every output using this profile.")"
+        outputButton.setControlAccessibility(label: "Profile editing target: \(scope)",
+            help: reason ?? "Choose the profile editing target or edit its monitor assignment.")
         let selection = SelectionState(rows: store.document.destinations.map { DefaultEntry(id: $0.id, name: outputs.managementDestinationLabel($0) + " · " + outputs.managementWorkspaceName($0.workspaceID)) }, defaultID: store.document.defaultDestinationID,
             target: target, kind: profile?.kind, network: destination?.networkSettings, technology: destination?.networkTechnology, monitors: displays.displays,
             labels: displays.displays.map { displays.label(for: $0.target) },
@@ -145,7 +146,7 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
                     self?.store.setDefaultDestination(row.id)
                 })
             }
-            submenu("Edit Output Appearance: \(name)", defaults, in: menu)
+            submenu("Edit Profile: \(profileName)", defaults, in: menu)
             let assignments = NSMenu(); assignments.autoenablesItems = false
             for row in store.document.destinations {
                 let owner = outputs.managementWorkspaceName(row.workspaceID)
@@ -194,21 +195,18 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
             addManagementFooter(to: menu)
             outputButton.menu = menu
         }
-        let canEdit = target.map { store.canCustomizeProfile(for: $0.destinationID) } ?? false
+        let canEdit = target != nil
         let appearance = AppearanceState(target: target, profile: profile, canEdit: canEdit)
         let help: String
         if let recovery = store.recoveryNotice { help = recovery }
-        else if destination == nil { help = "Choose an appearance editing target from the Output menu to use these controls." }
-        else if destination?.enabled == false { help = "Appearance editing target is disabled. Enable it in Manage Outputs or choose another target from the Output menu." }
-        else { help = reason ?? (canEdit ? "Quick edits affect only \(name)." : "The profile limit has been reached. Manage Outputs to edit profiles.") }
-        let connection = " Customizing any property makes the whole appearance independent; future reusable-profile changes no longer apply."
-        let appearanceHelp = help + connection
-        let backgroundHelp = help + connection
+        else if destination == nil { help = "Choose a profile editing target from the Output menu to use these controls." }
+        else if destination?.enabled == false { help = "Profile editing target is disabled. Enable it in Manage Outputs or choose another target from the Output menu." }
+        else { help = reason ?? "Quick edits change profile “\(profileName)” for every output using it. Duplicate the profile in Manage Outputs first if you need an independent look." }
         appearanceButton.isEnabled = canEdit; backgroundButton.isEnabled = canEdit
-        appearanceButton.toolTip = "Appearance for \(name)\n\(appearanceHelp)"
-        backgroundButton.toolTip = "Background for \(name)\n\(backgroundHelp)"
-        appearanceButton.setControlAccessibility(label: "Appearance for output: \(scope)", help: appearanceHelp)
-        backgroundButton.setControlAccessibility(label: "Background for output: \(scope)", help: backgroundHelp)
+        appearanceButton.toolTip = "Profile for \(name)\n\(help)"
+        backgroundButton.toolTip = "Background for \(name)\n\(help)"
+        appearanceButton.setControlAccessibility(label: "Profile for output: \(scope)", help: help)
+        backgroundButton.setControlAccessibility(label: "Background for output: \(scope)", help: help)
         if appearance != appearanceState {
             appearanceState = appearance
             appearanceButton.menu = appearanceMenu(profile, target: target)
@@ -392,10 +390,6 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         let createBackgroundBookmark = createBackgroundBookmark
         guard let requestingWorkspaceID = workspaceID ?? destination.workspaceID,
               store.document.workspaces.contains(where: { $0.id == requestingWorkspaceID }) else { return }
-        if let problem = store.profileCustomizationProblem(for: destination.id) {
-            outputs.reportAppearanceEditIssue(problem, workspace: requestingWorkspaceID)
-            return
-        }
         let panel = makeBackgroundPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [.image, .movie]
         // Creating an AppKit panel may run a nested event loop. The controls,

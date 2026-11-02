@@ -133,25 +133,13 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
         let consumers = store.document.destinations.filter { $0.profileID == profileID }
         let hasNative = consumers.contains { $0.isMonitorDestination }
         let hasNetwork = consumers.contains { $0.isNetworkDestination }
-        let exclusiveOwner = profile.customizedForDestinationID.flatMap { id in
-            store.document.destinations.first { $0.id == id }
-        }
-        // Unused exclusive network appearances must not get native colour copy.
-        let networkOnly = (hasNetwork && !hasNative)
-            || (consumers.isEmpty && exclusiveOwner?.isNetworkDestination == true)
-        var technologies = Set(consumers.compactMap(\.networkTechnology))
-        if let technology = exclusiveOwner?.networkTechnology { technologies.insert(technology) }
+        let networkOnly = hasNetwork && !hasNative && !consumers.isEmpty
+        let technologies = Set(consumers.compactMap(\.networkTechnology))
         let networkName = technologies.count == 1 ? technologies.first!.title : "Network"
-        appearanceHeading.stringValue = profile.isReusable ? "Reusable Profile" : "Output Appearance"
-        nameField.setAccessibilityLabel(profile.isReusable ? "Profile name" : "Appearance name")
-        if profile.isReusable {
-            scopeNotice.stringValue = "Changes apply immediately to every output using this reusable profile."
-        } else if consumers.isEmpty {
-            scopeNotice.stringValue = "This saved output appearance is unused. Restore it from its output’s Appearance picker, remove it with −, or use + to save a reusable copy."
-        } else {
-            scopeNotice.stringValue = "Independent appearance: future reusable-profile changes no longer apply. Changes apply immediately to the outputs listed above. Use + to save a reusable copy."
-        }
-        usageNotice.stringValue = (hasNetwork || networkOnly) ? networkName + " outputs use the owning workspace’s lyrics, images, PDFs and video, with independent backgrounds." : ""
+        appearanceHeading.stringValue = "Profile"
+        nameField.setAccessibilityLabel("Profile name")
+        scopeNotice.stringValue = "Changes apply immediately to every output using this profile. Duplicate with + before editing if you need an independent look."
+        usageNotice.stringValue = hasNetwork ? networkName + " outputs use the owning workspace’s lyrics, images, PDFs and video, with independent backgrounds. Transparency and chroma colour are set on each " + networkName + " output." : ""
         usageNotice.isHidden = usageNotice.stringValue.isEmpty
         backgroundColourRow?.isHidden = networkOnly
         // Hiding the well must retire an open colour panel; otherwise a late
@@ -160,7 +148,7 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
         if networkOnly {
             backgroundColourNotice.stringValue = "Set transparency and chroma colour on each " + networkName + " output. Visual backgrounds below apply in either mode."
         } else if hasNetwork {
-            backgroundColourNotice.stringValue = "Native outputs use Colour as their solid background. " + networkName + " outputs use it only in Chroma Colour mode; Alpha leaves solid surroundings transparent. Image and video backgrounds remain independent."
+            backgroundColourNotice.stringValue = "Native outputs use Colour as their solid background. " + networkName + " transparency and chroma colour are set on each output. Image and video backgrounds remain independent."
         } else {
             backgroundColourNotice.stringValue = "Colour sets the solid background. Background images and videos use the controls below."
         }

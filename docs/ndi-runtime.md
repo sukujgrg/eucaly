@@ -90,22 +90,19 @@ uses a separate programme-gain snapshot. The local level is set before playback
 starts, so asynchronous programme-audio preparation cannot produce a local startup burst.
 Monitoring edits neither replace the shared player nor restart the NDI helper.
 
-The output's **Appearance** picker lists reusable profiles and its current custom
-appearance. Profiles style text/backgrounds for every supported media type; choosing
-Lower Third does not make a source lyrics-only. The Profiles list groups reusable
-profiles, output appearances and unused saved appearances separately. Use + on an
-output appearance to save a reusable copy. Use − to remove an unused custom profile;
-built-ins and profiles used by any output, including disabled rows, are protected.
-Existing legacy appearance names/settings are retained until explicitly removed.
+The output's **Profile** picker lists reusable Profiles. Profiles style
+text/backgrounds for every supported media type; choosing Lower Third does not make
+a source lyrics-only. The Profiles list is flat. Use + to duplicate a Profile without
+reassigning outputs. Use − to remove an unused custom profile; built-ins and profiles
+used by any output, including disabled rows, are protected. Edit Profiles in the
+Profiles list or via toolbar Edit Profile; changes apply to every consumer.
 
 **Transparency → Transparent Alpha** requires alpha compositing at the receiver.
-The saved chroma colour is inactive and retained, while enabled image/video
-backgrounds remain visible. **Chroma Colour** shows a colour well on the output;
-configure the receiver to remove that colour. Editing the well customizes that
-output's appearance without changing other outputs or its source identity. NDI-only
-appearance editors direct transparency/key-colour changes back to these controls.
-Visual dimming does not alter the key colour, including empty frames and the gutters
-around a fitted image or video.
+The saved chroma colour is inactive and retained on the destination, while enabled
+image/video backgrounds remain visible. **Chroma Colour** shows a colour well on the
+output and writes that destination’s `keyColour` without changing the shared Profile
+or its source identity. Visual dimming does not alter the key colour, including empty
+frames and the gutters around a fitted image or video.
 
 The toolbar's **NDI: workspace** menu shows the source's saved owner. Choose
 **Move to Online** to use Online's Current, then **Move to Worship** to share

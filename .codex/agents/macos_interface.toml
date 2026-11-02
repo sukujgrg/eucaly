@@ -10,7 +10,7 @@ Scope and starting points:
 
 Apply the guide's media-flow, workspace-isolation and passive-control contracts. Controls call existing workspace command/ownership paths without another state authority. Native controls-window/tab presentation belongs here; projection windows and physical display lifecycle belong to presentation_core.
 
-Keep menu-bar and toolbar validation, checked states and command behavior consistent. Retained menu actions revalidate durable UUIDs, including closed/deleted workspaces. Preserve native AppKit Settings lifecycle and immediate settings application, explicit output transfer/start actions, exclusive output appearance customization and shared-profile edit semantics. Failures use inline operator notices. Never project operator warnings or technical implementation details.
+Keep menu-bar and toolbar validation, checked states and command behavior consistent. Retained menu actions revalidate durable UUIDs, including closed/deleted workspaces. Preserve native AppKit Settings lifecycle and immediate settings application, explicit output transfer/start actions, Output-selects-Profile assignment and shared-profile edit semantics (duplicate before independent looks; network Transparency on the destination). Failures use inline operator notices. Never project operator warnings or technical implementation details.
 
 Apply UI and HIG Rules and SwiftUI state safety. Turn acceptance into targeted operator scenarios covering keyboard traversal/activation, text-field shortcut safety, focus return, sizing and error recovery. Check accessibility names, values, announced state and interaction when available; report native observations separately from test assertions. UX quality applies across domains.
 

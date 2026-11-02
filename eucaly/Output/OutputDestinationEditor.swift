@@ -20,8 +20,6 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
     let confidenceButton = NSButton(title: "Open Confidence", target: nil, action: nil)
     let identifyButton = NSButton(title: "Identify", target: nil, action: nil)
     let nameMonitorButton = NSButton(title: "Name Monitor…", target: nil, action: nil)
-    let customizeButton = NSButton(title: "Customize Appearance…", target: nil, action: nil)
-    let clearBackgroundButton = NSButton(title: "Clear Visual…", target: nil, action: nil)
     var onEditProfile: (UUID) -> Void = { _ in }
     private struct MonitorEntry: Equatable { let target: ProjectionMonitorTarget?; let title: String; let enabled: Bool }
     private struct ProfileEntry: Equatable { let id: UUID; let title: String }
@@ -49,12 +47,7 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
         moveWorkspaceButton.target = self; moveWorkspaceButton.action = #selector(moveWorkspace(_:))
         form.add(ownerLabel); form.add(outputSettingsActionRow([moveWorkspaceButton])); form.add(moveNotice)
         validationLabel.textColor = .systemOrange; validationLabel.isHidden = true; form.add(validationLabel)
-        customizeButton.target = self; customizeButton.action = #selector(editProfile(_:))
-        clearBackgroundButton.target = self; clearBackgroundButton.action = #selector(clearBackground(_:))
-        form.add(outputSettingsFieldGroup("Appearance", profilePicker, actions: [
-            customizeButton,
-            clearBackgroundButton
-        ]))
+        form.add(outputSettingsFieldGroup("Profile", profilePicker, actions: []))
         form.add(appearanceNotice)
         form.add(standbyNotice)
         if destination?.isNetworkDestination == true {
@@ -94,17 +87,15 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
             : coordinator.isOpen(destinationID) ? "Window open" : "Window closed"
         let visibility = coordinator.isOpen(destinationID) && coordinator.snapshot(for: destinationID).visible ? "Slides visible" : "Slides hidden"
         ownerLabel.stringValue = "Workspace: " + coordinator.managementWorkspaceName(destination.workspaceID) + "\nOutput: " + destination.name
-            + " · " + target + "\nAppearance: " + profile.name + " · " + (destination.enabled ? "Enabled" : "Disabled") + " · " + state + " · " + visibility
+            + " · " + target + "\nProfile: " + profile.name + " · " + (destination.enabled ? "Enabled" : "Disabled") + " · " + state + " · " + visibility
         let targetWorkspace = coordinator.managementWorkspaceName(coordinator.focusedWorkspaceID)
         moveNotice.stringValue = coordinator.isOpen(destinationID)
             ? "Moves this live output to " + targetWorkspace + "’s Current immediately." + (coordinator.focusedWorkspaceID.flatMap { coordinator.preparedSession(workspace: $0) }?.isEmpty == false ? "" : " The target Current is empty.")
             : "Changes assignment to " + targetWorkspace + "; this output remains stopped."
         if destination.isNetworkDestination && profile.kind == .confidence {
-            appearanceNotice.stringValue = "This network feed publishes accepted Current with this appearance’s styling. Confidence Next, clock and standby belong to native Confidence monitors only."
+            appearanceNotice.stringValue = "Uses profile “" + profile.name + "”. This network feed publishes accepted Current with that profile’s styling. Confidence Next, clock and standby belong to native Confidence monitors only. Edit or duplicate profiles in Profiles."
         } else {
-            appearanceNotice.stringValue = profile.isReusable
-                ? "Uses reusable profile “" + profile.name + "”. Customizing any property creates an independent appearance for this output; future changes to the reusable profile no longer apply."
-                : "Independent appearance: future changes to reusable profiles no longer apply. Editing affects this output only."
+            appearanceNotice.stringValue = "Uses profile “" + profile.name + "”. Edit or duplicate profiles in Profiles."
         }
         standbyNotice.stringValue = "Confidence is a native stage monitor: Current above Next when present, with a centered 24-hour clock behind lyrics (full strength when empty or hidden). It opens automatically on its assigned monitor. Changing an idle standby to another appearance closes that standby window."
         standbyNotice.isHidden = !destination.isMonitorDestination || profile.kind != .confidence
@@ -118,23 +109,11 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
         }
         validationLabel.isHidden = validationLabel.stringValue.isEmpty
         enabledButton.state = destination.enabled ? .on : .off
-        customizeButton.isEnabled = store.canCustomizeProfile(for: destinationID)
-        customizeButton.title = profile.isReusable ? "Customize Appearance…" : "Edit Appearance…"
-        clearBackgroundButton.isEnabled = customizeButton.isEnabled
-        clearBackgroundButton.isHidden = false
-        let help = customizeButton.isEnabled ? nil : "The profile limit has been reached. Edit reusable profiles in Profiles."
-        customizeButton.toolTip = help ?? "Edit an independent appearance for this output. Reusable profiles remain available in Profiles."
-        clearBackgroundButton.toolTip = help ?? "Clear this output’s background image or video only. Solid and chroma colours are unchanged."
         var offered = store.reusableAppearanceChoices(for: destinationID)
-        if profile.isReusable, !offered.contains(where: { $0.id == profile.id }) {
+        if !offered.contains(where: { $0.id == profile.id }) {
             offered.insert(profile, at: 0)
         }
-        var choices = offered.map { ProfileEntry(id: $0.id, title: $0.name) }
-        if !profile.isReusable {
-            choices.insert(.init(id: profile.id, title: "Custom Appearance (" + profile.name + ")"), at: 0)
-        }
-        let unused = store.unusedAppearances(for: destinationID)
-        choices += unused.map { .init(id: $0.id, title: "Restore Saved Appearance (" + $0.name + ")") }
+        let choices = offered.map { ProfileEntry(id: $0.id, title: $0.name) }
         if profiles != choices {
             profiles = choices
             let menu = NSMenu(); menu.autoenablesItems = false
@@ -142,10 +121,9 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
                 let item = NSMenuItem(title: profile.title, action: nil, keyEquivalent: "")
                 item.representedObject = profile.id; menu.addItem(item)
             }
-            if !profile.isReusable { menu.insertItem(.separator(), at: 1) }
             profilePicker.menu = menu
         }
-        profilePicker.toolTip = "Choose a reusable profile, or keep this output’s custom appearance. Customize Appearance edits this output only."
+        profilePicker.toolTip = "Choose a profile for this output. Edit profiles in the Profiles list."
         profilePicker.select(profilePicker.itemArray.first { $0.representedObject as? UUID == destination.profileID })
         if let networkEditor { networkEditor.render(); return }
         let displays = coordinator.displays
@@ -213,9 +191,7 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
     @objc private func profileChanged(_ sender: Any?) {
         guard let id = profilePicker.selectedItem?.representedObject as? UUID,
               store.profile(id) != nil else { return }
-        if store.unusedAppearances(for: destinationID).contains(where: { $0.id == id }) {
-            validationLabel.stringValue = store.applyUnusedAppearance(id, to: destinationID) ?? ""
-        } else { store.selectProfile(id, for: destinationID) }
+        store.selectProfile(id, for: destinationID)
         render()
     }
     @objc private func monitorChanged(_ sender: Any?) {
@@ -227,26 +203,6 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
     @objc private func identifyMonitor(_ sender: Any?) { if let target = destination?.monitor { coordinator.displays.identify(target) } }
     @objc private func nameMonitor(_ sender: Any?) {
         if let target = destination?.monitor { OutputMonitorSettingsController.present(displays: coordinator.displays, target: target, from: view.window) }
-    }
-    @objc private func editProfile(_ sender: Any?) {
-        finishOutputSettingsFieldEditing(in: view)
-        if let problem = store.profileCustomizationProblem(for: destinationID) {
-            validationLabel.stringValue = problem
-            validationLabel.isHidden = false
-            render()
-            return
-        }
-        if let id = store.customizeProfile(for: destinationID) {
-            validationLabel.stringValue = ""
-            validationLabel.isHidden = true
-            onEditProfile(id)
-        }
-    }
-    @objc private func clearBackground(_ sender: Any?) {
-        finishOutputSettingsFieldEditing(in: view)
-        validationLabel.stringValue = store.clearDestinationBackground(destinationID) ?? ""
-        validationLabel.isHidden = validationLabel.stringValue.isEmpty
-        render()
     }
     @objc private func toggleConfidence(_ sender: Any?) {
         if coordinator.isOpen(destinationID) { coordinator.closeOutput(destinationID) }

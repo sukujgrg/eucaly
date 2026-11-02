@@ -44,32 +44,6 @@ extension OutputProfileStore {
         return document.destinations.contains(where: { $0.id == saved.id }) ? nil : "The output could not be restored. Its saved configuration is still available to Undo Remove."
     }
 
-    /// Former private appearances stay recoverable after comparing presets.
-    /// An unused appearance can be rebound exclusively; a shared/reusable one
-    /// goes through the normal output-customization transaction instead.
-    func unusedAppearances(for destinationID: UUID) -> [OutputProfile] {
-        document.profiles.filter { profile in
-            profile.customizedForDestinationID == destinationID
-                && !document.destinations.contains { $0.profileID == profile.id }
-        }
-    }
-
-    func applyUnusedAppearance(_ profileID: UUID, to destinationID: UUID) -> String? {
-        guard recoveryNotice == nil else { return recoveryNotice }
-        guard let profile = profile(profileID), !profile.isReusable,
-              document.destinations.contains(where: { $0.id == destinationID }),
-              !document.destinations.contains(where: { $0.profileID == profileID }) else {
-            return "This saved appearance is no longer unused. Choose it again in Manage Outputs."
-        }
-        edit { next in
-            guard let appearance = next.profiles.firstIndex(where: { $0.id == profileID }),
-                  let output = next.destinations.firstIndex(where: { $0.id == destinationID }) else { return }
-            next.profiles[appearance].customizedForDestinationID = destinationID
-            next.destinations[output].profileID = profileID
-        }
-        return document.destinations.first(where: { $0.id == destinationID })?.profileID == profileID
-            ? nil : "The saved appearance could not be applied."
-    }
 }
 
 extension OutputCoordinator {

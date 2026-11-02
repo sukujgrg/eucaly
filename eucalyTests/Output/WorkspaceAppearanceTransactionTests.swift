@@ -4,69 +4,73 @@ import XCTest
 
 @MainActor
 final class WorkspaceAppearanceTransactionTests: XCTestCase {
-    func testClearingTwoSharedOutputsWithOnlyOneProfileSlotRejectsWithoutPartialChanges() throws {
+    func testClearingTwoSharedOutputsAppliesOneInPlaceProfileEdit() throws {
         let fixture = Fixture(profileCount: 127)
         defer { fixture.outputs.stopAllOutputs() }
-        let before = fixture.store.document
         let selected = URL(fileURLWithPath: "/tmp/workspace-appearance-original.png")
         XCTAssertTrue(fixture.session.setBackgroundVisual(selected))
 
         fixture.outputs.clearBackgrounds(for: fixture.session)
 
-        XCTAssertTrue(fixture.store.document == before, "Clear must preflight every required private copy before changing any output.")
-        XCTAssertEqual(fixture.session.backgroundVisualURL, selected)
-        XCTAssertTrue(fixture.session.projectionDisplayIssue?.localizedCaseInsensitiveContains("limit") == true)
+        XCTAssertNil(fixture.session.backgroundVisualURL)
+        XCTAssertNil(fixture.outputs.profile(for: fixture.first)?.background.bookmark)
+        XCTAssertNil(fixture.outputs.profile(for: fixture.second)?.background.bookmark)
+        XCTAssertEqual(fixture.outputs.destination(fixture.first)?.profileID, fixture.outputs.destination(fixture.second)?.profileID)
     }
 
-    func testVisibilityAtCapacityRejectsTheWholeExclusiveAndSharedOutputGroup() throws {
-        let fixture = Fixture(profileCount: 128, exclusiveFirst: true)
+    func testVisibilityEditAtCapacityUpdatesSharedProfileInPlace() throws {
+        let fixture = Fixture(profileCount: 128)
         defer { fixture.outputs.stopAllOutputs() }
-        let before = fixture.store.document
+        let countBefore = fixture.store.document.profiles.count
 
         fixture.outputs.setAudienceBackgroundVisibility(false, for: fixture.session)
 
-        XCTAssertTrue(fixture.store.document == before, "An editable first output must not hide while its shared companion rejects the same command.")
-        XCTAssertTrue(fixture.session.projectionDisplayIssue?.localizedCaseInsensitiveContains("limit") == true)
+        XCTAssertEqual(fixture.store.document.profiles.count, countBefore)
+        XCTAssertFalse(try XCTUnwrap(fixture.outputs.profile(for: fixture.first)).background.visible)
+        XCTAssertFalse(try XCTUnwrap(fixture.outputs.profile(for: fixture.second)).background.visible)
     }
 
-    func testReplacingTwoSharedBackgroundsWithOnlyOneSlotRetainsBothAcceptedAppearances() throws {
-        let fixture = Fixture(profileCount: 127)
+    func testReplacingTwoSharedBackgroundsEditsEachDistinctProfileOnce() throws {
+        let fixture = Fixture(profileCount: 127, splitProfiles: true)
         defer { fixture.outputs.stopAllOutputs() }
-        let before = fixture.store.document
+        let countBefore = fixture.store.document.profiles.count
 
         let problem = fixture.store.editDestinationProfiles([fixture.first, fixture.second]) { profile, _ in
             profile.background.bookmark = "replacement visual"
         }
 
-        XCTAssertTrue(fixture.store.document == before, "A rejected replacement must preserve both accepted appearances.")
-        XCTAssertTrue(problem?.localizedCaseInsensitiveContains("limit") == true)
+        XCTAssertNil(problem)
+        XCTAssertEqual(fixture.store.document.profiles.count, countBefore)
+        XCTAssertEqual(fixture.outputs.profile(for: fixture.first)?.background.bookmark, "replacement visual")
+        XCTAssertEqual(fixture.outputs.profile(for: fixture.second)?.background.bookmark, "replacement visual")
     }
 
-    func testAcceptedBatchUsesExactlyItsAvailableSlotsAndPreservesDisabledSharers() throws {
-        let fixture = Fixture(profileCount: 126)
+    func testAcceptedBatchEditsDistinctProfilesWithoutGrowingTheLibrary() throws {
+        let fixture = Fixture(profileCount: 126, splitProfiles: true)
         defer { fixture.outputs.stopAllOutputs() }
         let disabled = try XCTUnwrap(fixture.outputs.destination(fixture.disabled))
         let reusable = try XCTUnwrap(fixture.store.profile(disabled.profileID))
         var publications = 0
         let observation = fixture.store.observe { publications += 1 }
         defer { fixture.store.removeObserver(observation) }
+        let countBefore = fixture.store.document.profiles.count
 
         let problem = fixture.store.editDestinationProfiles([fixture.first, fixture.second]) { profile, _ in
             profile.background.bookmark = "accepted replacement"
         }
 
         XCTAssertNil(problem)
-        XCTAssertEqual(fixture.store.document.profiles.count, 128)
+        XCTAssertEqual(fixture.store.document.profiles.count, countBefore)
         XCTAssertEqual(publications, 1, "Consumers must observe one completed multi-output appearance transaction.")
         XCTAssertEqual(fixture.outputs.profile(for: fixture.first)?.background.bookmark, "accepted replacement")
         XCTAssertEqual(fixture.outputs.profile(for: fixture.second)?.background.bookmark, "accepted replacement")
         XCTAssertNotEqual(fixture.outputs.destination(fixture.first)?.profileID, fixture.outputs.destination(fixture.second)?.profileID)
         XCTAssertEqual(fixture.outputs.destination(fixture.disabled), disabled)
-        XCTAssertEqual(fixture.store.profile(reusable.id), reusable)
+        XCTAssertEqual(fixture.store.profile(reusable.id)?.background.bookmark, "accepted replacement")
     }
 
     func testBatchRejectsStaleDestinationsAndInvalidSettingsBeforeAnyCommit() throws {
-        let fixture = Fixture(profileCount: 126)
+        let fixture = Fixture(profileCount: 126, splitProfiles: true)
         defer { fixture.outputs.stopAllOutputs() }
         let before = fixture.store.document
 
@@ -81,20 +85,18 @@ final class WorkspaceAppearanceTransactionTests: XCTestCase {
         XCTAssertTrue(fixture.store.document == before)
     }
 
-    func testNoOpAndExclusiveEditsRemainAcceptedAtCapacity() throws {
-        let fixture = Fixture(profileCount: 128, exclusiveFirst: true)
+    func testNoOpAndInPlaceEditsRemainAcceptedAtCapacity() throws {
+        let fixture = Fixture(profileCount: 128, splitProfiles: true)
         defer { fixture.outputs.stopAllOutputs() }
         let before = fixture.store.document
-        XCTAssertNotNil(fixture.store.profileCustomizationProblem(for: fixture.second))
-        XCTAssertNil(fixture.store.profileCustomizationProblem(for: fixture.first))
-        XCTAssertNotNil(fixture.store.profileCustomizationProblem(for: UUID()))
+        let countBefore = fixture.store.document.profiles.count
 
         XCTAssertNil(fixture.store.editDestinationProfiles([fixture.second, fixture.second]) { profile, _ in
             profile.background.visible = true
         })
         XCTAssertTrue(fixture.store.document == before, "An unchanged shared appearance does not require a new profile slot.")
         XCTAssertNil(fixture.store.editDestinationProfile(fixture.first) { $0.background.visible = false })
-        XCTAssertEqual(fixture.store.document.profiles.count, 128)
+        XCTAssertEqual(fixture.store.document.profiles.count, countBefore)
         XCTAssertFalse(try XCTUnwrap(fixture.outputs.profile(for: fixture.first)).background.visible)
         XCTAssertTrue(try XCTUnwrap(fixture.outputs.profile(for: fixture.second)).background.visible)
     }
@@ -108,26 +110,26 @@ final class WorkspaceAppearanceTransactionTests: XCTestCase {
         let second: UUID
         let disabled: UUID
 
-        init(profileCount: Int, exclusiveFirst: Bool = false) {
+        init(profileCount: Int, splitProfiles: Bool = false) {
             store = OutputProfileStore()
             var shared = OutputProfile(id: UUID(), name: "Reusable visual", kind: .audience)
             shared.background.bookmark = "original visual"
             shared.background.visible = true
+            var secondProfile = shared
+            if splitProfiles {
+                secondProfile = OutputProfile(id: UUID(), name: "Second visual", kind: .audience)
+                secondProfile.background.bookmark = "original visual"
+                secondProfile.background.visible = true
+            }
             let firstRow = OutputDestinationConfiguration(name: "First", profileID: shared.id, monitor: nil)
-            let secondRow = OutputDestinationConfiguration(name: "Second", profileID: shared.id, monitor: nil)
+            let secondRow = OutputDestinationConfiguration(name: "Second", profileID: splitProfiles ? secondProfile.id : shared.id, monitor: nil)
             let disabledRow = OutputDestinationConfiguration(name: "Disabled sharer", profileID: shared.id, monitor: nil, enabled: false)
             first = firstRow.id; second = secondRow.id; disabled = disabledRow.id
             store.edit { document in
                 document.profiles.append(shared)
+                if splitProfiles { document.profiles.append(secondProfile) }
                 document.destinations = [firstRow, secondRow, disabledRow]
                 document.defaultDestinationID = firstRow.id
-                if exclusiveFirst {
-                    var exclusive = shared
-                    exclusive.id = UUID(); exclusive.name = "First private visual"
-                    exclusive.customizedForDestinationID = firstRow.id
-                    document.profiles.append(exclusive)
-                    document.destinations[0].profileID = exclusive.id
-                }
                 while document.profiles.count < profileCount {
                     document.profiles.append(OutputProfile(id: UUID(), name: "Saved appearance \(document.profiles.count)", kind: .audience))
                 }

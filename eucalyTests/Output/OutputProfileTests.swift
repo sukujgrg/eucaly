@@ -9,7 +9,6 @@ final class OutputProfileTests: XCTestCase {
         for index in document.profiles.count..<128 {
             var copy = document.profiles[0]
             copy.id = UUID(); copy.name = "Saved appearance \(index)"
-            if index.isMultiple(of: 2) { copy.customizedForDestinationID = document.destinations[0].id }
             document.profiles.append(copy)
         }
         XCTAssertTrue(document.isValid)
@@ -31,8 +30,6 @@ final class OutputProfileTests: XCTestCase {
                 document.profiles.append(copy)
             }
         }
-        let destinationID = try XCTUnwrap(store.document.destinations.first?.id)
-        XCTAssertNotNil(store.customizeProfile(for: destinationID))
         store.flush()
         let saved = try XCTUnwrap(defaults.data(forKey: OutputProfileStore.key))
         XCTAssertGreaterThan(saved.count, 1_048_576)
@@ -87,14 +84,17 @@ final class OutputProfileTests: XCTestCase {
         omt.omt = .init(sourceName: "OMT key")
         store.edit { $0.destinations.append(omt); $0.backgroundAudioDestinationID = omt.id }
         let colour = OutputColour(red: 0.1, green: 0.6, blue: 0.2)
-        store.editDestinationProfile(omt.id) { $0.background.bookmark = "selected visual"; $0.background.colour = colour }
-        store.clearDestinationBackground(omt.id)
+        var settings = try XCTUnwrap(omt.omt)
+        settings.keyColour = colour
+        XCTAssertNil(store.setNetworkSettings(settings, for: omt.id))
+        store.editDestinationProfile(omt.id) { $0.background.bookmark = "selected visual" }
+        store.editDestinationProfile(omt.id) { $0.clearBackground() }
         let profile = try XCTUnwrap(store.document.destinations.first { $0.id == omt.id }.flatMap { store.profile($0.profileID) })
         XCTAssertNil(profile.background.bookmark)
-        XCTAssertEqual(profile.background.colour, colour)
+        XCTAssertEqual(store.document.destinations.first { $0.id == omt.id }?.omt?.keyColour, colour)
         XCTAssertEqual(store.document.backgroundAudioDestinationID, omt.id)
         store.clearBackgrounds()
-        XCTAssertEqual(store.profile(profile.id)?.background.colour, colour)
+        XCTAssertEqual(store.document.destinations.first { $0.id == omt.id }?.omt?.keyColour, colour)
         XCTAssertEqual(store.document.backgroundAudioDestinationID, omt.id)
         store.edit { $0.destinations.removeAll { $0.id == omt.id } }
         XCTAssertNil(store.document.backgroundAudioDestinationID)
@@ -113,7 +113,7 @@ final class OutputProfileTests: XCTestCase {
         store.flush()
         XCTAssertEqual(store.document.destinations.count, 1)
         XCTAssertEqual(store.document.destinations.first?.monitor, target)
-        XCTAssertEqual(store.document.version, 7)
+        XCTAssertEqual(store.document.version, 8)
         XCTAssertEqual(store.audience.typography.size, 126)
         XCTAssertEqual(store.audience.typography(for: .meaning).size, 63)
         XCTAssertEqual(store.audience.background.bookmark, "bookmark")
@@ -288,8 +288,7 @@ final class OutputProfileTests: XCTestCase {
         XCTAssertEqual(store.audience.layout, "columns")
         XCTAssertEqual(store.audience.typography(for: .meaning).size, 72)
         XCTAssertEqual(store.audience.background.bookmark, "sidebar visual")
-        XCTAssertNil(store.profile(OutputProfile.audienceID)?.background.bookmark,
-                     "A workspace selection customizes its output without editing the reusable profile")
+        XCTAssertEqual(store.profile(OutputProfile.audienceID)?.background.bookmark, "sidebar visual")
         store.flush()
     }
     func testCorruptOrFutureDataIsRetainedUntilExplicitRecovery() throws {
@@ -340,7 +339,7 @@ final class OutputProfileRecoveryTests: XCTestCase {
         XCTAssertEqual(store.document.destinations.map(\.monitor), doc.destinations.map(\.monitor))
         XCTAssertEqual(store.document.destinations.map(\.id), doc.destinations.map(\.id))
         XCTAssertTrue(store.document.destinations.allSatisfy { !$0.enabled })
-        XCTAssertEqual(store.document.version, 7)
+        XCTAssertEqual(store.document.version, 8)
         store.flush(); XCTAssertEqual(defaults.data(forKey: OutputProfileStore.key), original)
     }
 }

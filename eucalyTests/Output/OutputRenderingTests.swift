@@ -233,8 +233,8 @@ final class OutputRenderingTests: XCTestCase {
         try await settleUntil { (try? self.hasRedBackground(view)) == true }
         let currentID = session.currentSlide?.id
         outputs.profiles.editDefaultProfile(try XCTUnwrap(outputs.profiles.quickEditTarget)) { $0.position = "middle" }
-        XCTAssertNotEqual(outputs.profiles.audience.id, original.id, "Output editing must still isolate the reusable profile")
-        XCTAssertEqual(outputs.profiles.profile(original.id), original)
+        XCTAssertEqual(outputs.profiles.audience.id, original.id)
+        XCTAssertEqual(outputs.profiles.audience.position, "middle")
         XCTAssertEqual(outputs.media.backgroundURL(for: outputs.profiles.audience), url, "Changing typography must retain the same background resource")
         // Give SwiftUI time to apply the profile change while any redundant
         // bookmark resolution is held. The existing image must never disappear.

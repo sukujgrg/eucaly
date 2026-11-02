@@ -29,7 +29,7 @@ nonisolated enum OutputLegacyMigration {
     static func decode(_ data: Data) throws -> OutputProfileDocument {
         guard data.count <= maximumDocumentBytes,
               var root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let version = root["version"] as? Int, (1...7).contains(version) else { throw Failure.invalid }
+              let version = root["version"] as? Int, (1...8).contains(version) else { throw Failure.invalid }
         if version < 5 {
             guard let profiles = root["profiles"] as? [[String: Any]], (1...128).contains(profiles.count),
                   let destinations = root["destinations"] as? [[String: Any]], destinations.count <= 16 else { throw Failure.invalid }
@@ -105,7 +105,7 @@ nonisolated enum OutputLegacyMigration {
         }
         // Version 7 adds OMT as an explicit destination kind. Existing rows,
         // sender identities, appearances and the single music route are intact.
-        root["version"] = 7
+        if version < 8 { root["version"] = 7 }
         // Retain the historical Home rename without treating the retired launch
         // preference as live state. Existing operator names remain unchanged.
         // Current records encode their listening preference, distinguishing an
@@ -119,6 +119,40 @@ nonisolated enum OutputLegacyMigration {
             root["workspaces"] = records
         }
         root.removeValue(forKey: "defaultWorkspaceID")
+        if version < 8 {
+            // Outputs select reusable profiles only. Promote exclusive copies and
+            // move network chroma colour onto each destination's settings.
+            let profiles = root["profiles"] as? [[String: Any]] ?? []
+            let colourByProfile = Dictionary(uniqueKeysWithValues: profiles.compactMap { profile -> (String, [String: Any])? in
+                guard let id = profile["id"] as? String,
+                      let background = profile["background"] as? [String: Any],
+                      let colour = background["colour"] as? [String: Any] else { return nil }
+                return (id, colour)
+            })
+            root["destinations"] = (root["destinations"] as? [[String: Any]] ?? []).map { original in
+                var row = original
+                guard var destination = row["destination"] as? [String: Any] else { return row }
+                func attachKeyColour(_ technology: String) {
+                    guard var payload = destination[technology] as? [String: Any],
+                          var settings = payload["_0"] as? [String: Any] else { return }
+                    if settings["keyColour"] == nil {
+                        let profileID = row["profileID"] as? String
+                        settings["keyColour"] = profileID.flatMap { colourByProfile[$0] }
+                            ?? ["red": 0, "green": 1, "blue": 0, "alpha": 1]
+                    }
+                    payload["_0"] = settings; destination[technology] = payload
+                }
+                attachKeyColour("ndi"); attachKeyColour("omt")
+                row["destination"] = destination
+                return row
+            }
+            root["profiles"] = profiles.map { original in
+                var profile = original
+                profile.removeValue(forKey: "customizedForDestinationID")
+                return profile
+            }
+            root["version"] = 8
+        }
         let document = try JSONDecoder().decode(OutputProfileDocument.self, from: JSONSerialization.data(withJSONObject: root))
         guard document.isValid else { throw Failure.invalid }
         return document

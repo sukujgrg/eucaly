@@ -107,7 +107,8 @@ nonisolated struct OutputProfile: Codable, Equatable, Sendable, Identifiable {
     var background = OutputBackground()
     // Migrated Audience matches the old geometry-dependent requested font size.
     var usesLegacySizing = false
-    // Quick controls customize a destination without editing its reusable source.
+    /// Retired exclusive-output ownership. Decoded from older documents during
+    /// migration, then cleared; never encoded again.
     var customizedForDestinationID: UUID? = nil
 
     func typography(for role: OutputComponentRole) -> OutputTypography {
@@ -117,8 +118,8 @@ nonisolated struct OutputProfile: Codable, Equatable, Sendable, Identifiable {
         OutputComponentRole.lyricRoles + (kind == .confidence ? [.footer] : [])
     }
     mutating func clearBackground(preservingKeyColour: Bool = false) {
-        // Clear Visual removes the asset only. Solid/chroma colour is independent
-        // appearance configuration (including NDI key colour while Alpha is selected).
+        // Clear Visual removes the asset only. Solid colour stays on the profile;
+        // network key colour lives on the destination.
         background.bookmark = nil
         background.displayName = nil
         _ = preservingKeyColour
@@ -130,7 +131,8 @@ nonisolated struct OutputProfile: Codable, Equatable, Sendable, Identifiable {
     static let confidenceID = UUID(uuidString: "00000000-0000-4000-8000-000000000002")!
     static let lowerThirdID = UUID(uuidString: "00000000-0000-4000-8000-000000000005")!
     var isBuiltIn: Bool { [Self.audienceID, Self.confidenceID, Self.lowerThirdID].contains(id) }
-    var isReusable: Bool { isBuiltIn || customizedForDestinationID == nil }
+    /// Every saved profile is reusable. Outputs select a profile; they do not own one.
+    var isReusable: Bool { true }
     static var builtIns: [Self] {
         let identities: [(Kind, UUID)] = [(.audience, audienceID), (.confidence, confidenceID), (.lowerThird, lowerThirdID)]
         return identities.map { kind, identity in
@@ -178,6 +180,27 @@ nonisolated extension OutputProfile {
         background = try c.decode(OutputBackground.self, forKey: .background)
         usesLegacySizing = try c.decode(Bool.self, forKey: .usesLegacySizing)
         customizedForDestinationID = try c.decodeIfPresent(UUID.self, forKey: .customizedForDestinationID)
+    }
+    func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(kind, forKey: .kind)
+        try c.encode(roles.map(\.rawValue), forKey: .roles)
+        try c.encode(layout, forKey: .layout)
+        try c.encode(alignment, forKey: .alignment)
+        try c.encode(position, forKey: .position)
+        try c.encode(padding, forKey: .padding)
+        try c.encode(typography, forKey: .typography)
+        // Match historical alternating key/value encoding for role overrides.
+        var overrides = c.nestedUnkeyedContainer(forKey: .componentTypography)
+        for (role, value) in componentTypography {
+            try overrides.encode(role.rawValue)
+            try overrides.encode(value)
+        }
+        try c.encode(background, forKey: .background)
+        try c.encode(usesLegacySizing, forKey: .usesLegacySizing)
+        // Omit retired exclusive ownership from new writes.
     }
     private static func persistedRole(_ value: String, decoder: any Decoder) throws -> OutputComponentRole? {
         if ["secondary", "heading", "reference"].contains(value) { return nil } // Retired scripture components.

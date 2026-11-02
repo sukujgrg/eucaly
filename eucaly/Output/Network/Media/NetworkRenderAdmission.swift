@@ -6,7 +6,8 @@ import Foundation
 nonisolated enum NetworkRenderAdmission {
     static func request(generation: UUID, content: OutputTextContent, profile: OutputProfile,
                         visible: Bool = true, foregroundFill: Bool = false,
-                        keyMode: NetworkOutputSettings.KeyMode = .alpha) -> NetworkMediaRenderRequest {
+                        keyMode: NetworkOutputSettings.KeyMode = .alpha,
+                        keyColour: OutputColour = .chromaGreen) -> NetworkMediaRenderRequest {
         var textProfile = profile
         textProfile.background.bookmark = nil
         textProfile.usesLegacySizing = false
@@ -16,7 +17,7 @@ nonisolated enum NetworkRenderAdmission {
         return NetworkMediaRenderRequest(generation: generation, revision: 0, text: text,
             foregroundFill: foregroundFill, backgroundFill: profile.background.fit == "fill",
             dimming: profile.background.dimming,
-            colour: keyMode == .chroma ? profile.background.colour : .init(alpha: 0))
+            colour: keyMode == .chroma ? keyColour : .init(alpha: 0))
     }
 
     static func problem(content: OutputTextContent, profile: OutputProfile) -> String? {
@@ -76,7 +77,6 @@ nonisolated enum NetworkRenderAdmission {
         var profile = OutputProfile(id: UUID(), name: String(repeating: "\0", count: 160), kind: .confidence)
         profile.roles = OutputComponentRole.allCases
         profile.layout = "columns"; profile.alignment = "center"; profile.position = "middle"
-        profile.customizedForDestinationID = UUID()
         profile.typography = .init(fontName: fontName, size: 84, weight: 0.4, italic: false,
                                    colour: colour, lineSpacing: 1)
         for role in OutputComponentRole.allCases {
