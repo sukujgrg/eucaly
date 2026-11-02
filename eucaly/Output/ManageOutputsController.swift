@@ -35,7 +35,6 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     let removeOutput = NSButton(title: "Remove Output…", target: nil, action: nil)
     let undoRemoveOutput = NSButton(title: "Undo Remove", target: nil, action: nil)
     let removalNotice = outputSettingsLabel(secondary: true)
-    let makeDefault = NSButton(title: "Edit Appearance", target: nil, action: nil)
     let addProfile = NSButton()
     let removeProfile = NSButton(title: "−", target: nil, action: nil)
     let statusLabel = outputSettingsLabel(secondary: true)
@@ -109,7 +108,6 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         removeOutput.target = self; removeOutput.action = #selector(removeSelectedOutput(_:))
         removeOutput.setAccessibilityLabel("Remove Output")
         undoRemoveOutput.target = self; undoRemoveOutput.action = #selector(undoOutputRemoval(_:))
-        makeDefault.target = self; makeDefault.action = #selector(makeSelectedDefault(_:))
         addProfile.image = NSImage(named: NSImage.addTemplateName)
         addProfile.imagePosition = .imageOnly
         addProfile.target = self; addProfile.action = #selector(addSelectedProfile(_:))
@@ -117,7 +115,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         addProfile.toolTip = "Add a profile by copying the selected profile."
         removeProfile.target = self; removeProfile.action = #selector(removeSelectedProfile(_:))
         removeProfile.setAccessibilityLabel("Remove Unused Profile")
-        for button in [addOutputMenu, removeOutput, undoRemoveOutput, makeDefault, addProfile, removeProfile] {
+        for button in [addOutputMenu, removeOutput, undoRemoveOutput, addProfile, removeProfile] {
             button.bezelStyle = .rounded; button.controlSize = .small
             button.setContentHuggingPriority(.required, for: .horizontal)
             button.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -127,7 +125,9 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         profileActions.orientation = .horizontal; profileActions.alignment = .centerY
         profileActions.spacing = 8
         for action in [addProfile, removeProfile, NSView()] { profileActions.addArrangedSubview(action) }
-        let recoveryActions = outputSettingsActionRow([undoRemoveOutput, makeDefault])
+        // Appearance edits live on Customize/Edit Appearance… → Profiles.
+        // Toolbar Output menu owns the quick-controls editing target.
+        let recoveryActions = outputSettingsActionRow([undoRemoveOutput])
         let sidebar = NSStackView(views: [section, list, outputActions, recoveryActions, removalNotice, profileActions])
         sidebar.orientation = .vertical; sidebar.alignment = .leading; sidebar.spacing = 8
         for item in sidebar.arrangedSubviews { item.widthAnchor.constraint(equalTo: sidebar.widthAnchor).isActive = true }
@@ -191,8 +191,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
             ListRow(id: output.id, title: coordinator.managementDestinationLabel(output),
                 detail: coordinator.managementWorkspaceName(output.workspaceID) + " · " + (store.profile(output.profileID)?.name ?? "Missing appearance")
                     + "\n" + (output.enabled ? "Enabled" : "Disabled") + " · " + (statuses[output.id] ?? "Stopped")
-                    + " · " + (coordinator.isOpen(output.id) && coordinator.snapshot(for: output.id).visible ? "Slides visible" : "Slides hidden")
-                    + (output.id == store.document.defaultDestinationID ? "\nAppearance editing target" : ""))
+                    + " · " + (coordinator.isOpen(output.id) && coordinator.snapshot(for: output.id).visible ? "Slides visible" : "Slides hidden"))
         }
         if selectedID == nil || !fresh.contains(where: { $0.id == selectedID }) {
             finishEditing(); selectedID = fresh.compactMap(\.id).first
@@ -221,9 +220,6 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         addOMT.isEnabled = addNDI.isEnabled
         addOutputMenu.isEnabled = canAdd
         removeOutput.isEnabled = !profilesMode && selectedID != nil && store.recoveryNotice == nil
-        let isDefault = !profilesMode && selectedID != nil && selectedID == store.document.defaultDestinationID
-        makeDefault.title = isDefault ? "Editing Target" : "Edit Appearance Here"
-        makeDefault.isEnabled = !profilesMode && selectedID != nil && !isDefault && store.recoveryNotice == nil
         undoRemoveOutput.isHidden = profilesMode || removedConfiguration == nil
         undoRemoveOutput.isEnabled = store.recoveryNotice == nil
         removalNotice.isHidden = profilesMode || removedConfiguration == nil
@@ -463,10 +459,6 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         let remaining = ids.filter { $0 != id }
         selectedID = index < remaining.count ? remaining[index] : remaining.last
         reload()
-    }
-    @objc private func makeSelectedDefault(_ sender: Any?) {
-        guard !profilesMode, let id = selectedID else { return }
-        finishEditing(); store.setDefaultDestination(id); reload()
     }
     @objc private func recoverSettings(_ sender: Any?) { store.recover(); reload() }
 

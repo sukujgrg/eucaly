@@ -1048,8 +1048,7 @@ final class OutputSettingsTests: XCTestCase {
         let creationMenu = controller.addOutputMenu.menu
         XCTAssertNotNil(creationMenu?.items.first?.image, "The pull-down's first item owns the + glyph")
         XCTAssertEqual(creationMenu?.items.map(\.title), ["+", "Native Monitor Output", "NDI Output", "OMT Output"])
-        XCTAssertEqual(controller.makeDefault.title, "Editing Target")
-        XCTAssertFalse(controller.makeDefault.isEnabled)
+        XCTAssertEqual(first.customizeButton.title, "Customize Appearance…")
         XCTAssertTrue(fixture.window.makeFirstResponder(first.nameField))
         try XCTUnwrap(first.nameField.currentEditor()).string = "Original draft"
         NSApp.sendAction(try XCTUnwrap(controller.addNative.action), to: controller.addNative.target, from: controller.addNative)
@@ -1059,19 +1058,16 @@ final class OutputSettingsTests: XCTestCase {
         let second = try XCTUnwrap(controller.destinationEditor)
         XCTAssertTrue(fixture.window.makeFirstResponder(second.nameField))
         try XCTUnwrap(second.nameField.currentEditor()).string = "Second draft"
-        controller.makeDefault.performClick(nil)
+        controller.finishEditing()
+        // Toolbar Output menu owns the quick-controls target; Settings does not.
+        fixture.store.setDefaultDestination(secondID)
         XCTAssertEqual(fixture.store.defaultDestination?.id, secondID)
         XCTAssertEqual(fixture.store.defaultDestination?.name, "Second draft")
         XCTAssertFalse(try XCTUnwrap(fixture.store.defaultDestination).enabled)
-        XCTAssertEqual(controller.makeDefault.title, "Editing Target")
-        XCTAssertFalse(controller.makeDefault.isEnabled)
         controller.selectDestination(original.id)
         XCTAssertEqual(fixture.store.defaultDestination?.id, secondID)
-        XCTAssertEqual(controller.makeDefault.title, "Edit Appearance Here")
         let row = try XCTUnwrap(controller.tableView(controller.table, viewFor: controller.table.tableColumns[0], row: 1))
-        XCTAssertTrue(try XCTUnwrap(row.accessibilityLabel()).contains("Appearance editing target"))
-        let selectedRow = try XCTUnwrap(controller.tableView(controller.table, viewFor: controller.table.tableColumns[0], row: 0))
-        XCTAssertFalse(try XCTUnwrap(selectedRow.accessibilityLabel()).contains("Appearance editing target"))
+        XCTAssertFalse(try XCTUnwrap(row.accessibilityLabel()).contains("Appearance editing target"))
         controller.reload()
         XCTAssertTrue(controller.addOutputMenu.menu === creationMenu)
         controller.selectDestination(secondID)
@@ -1100,7 +1096,6 @@ final class OutputSettingsTests: XCTestCase {
         XCTAssertEqual(controller.profileEditor?.nameField.stringValue, "Profile draft Copy")
         let outputCount = fixture.store.document.destinations.count
         NSApp.sendAction(try XCTUnwrap(controller.addNative.action), to: controller.addNative.target, from: controller.addNative)
-        NSApp.sendAction(try XCTUnwrap(controller.makeDefault.action), to: controller.makeDefault.target, from: controller.makeDefault)
         NSApp.sendAction(try XCTUnwrap(controller.removeOutput.action), to: controller.removeOutput.target, from: controller.removeOutput)
         XCTAssertEqual(fixture.store.document.destinations.count, outputCount)
         XCTAssertEqual(fixture.store.defaultDestination, original)
@@ -1134,17 +1129,17 @@ final class OutputSettingsTests: XCTestCase {
                 for id in [original.id, other.id] {
                     fixture.controller.selectDestination(id)
                     fixture.window.layoutIfNeeded(); fixture.controller.view.layoutSubtreeIfNeeded()
-                    let footer = try XCTUnwrap(fixture.controller.makeDefault.superview)
-                    for button in [fixture.controller.addOutputMenu, fixture.controller.removeOutput, fixture.controller.makeDefault] {
+                    for button in [fixture.controller.addOutputMenu, fixture.controller.removeOutput] {
                         XCTAssertEqual(button.bezelStyle, .rounded)
                         XCTAssertGreaterThanOrEqual(button.frame.width, button.intrinsicContentSize.width - 1)
                         XCTAssertGreaterThan(button.visibleRect.height, 15)
                     }
                     XCTAssertGreaterThanOrEqual(fixture.controller.removeOutput.frame.minX - fixture.controller.addOutputMenu.frame.maxX, 7)
-                    XCTAssertFalse(fixture.controller.makeDefault.superview === fixture.controller.removeOutput.superview)
-                    XCTAssertLessThanOrEqual(fixture.controller.makeDefault.frame.maxX, footer.bounds.maxX + 1)
                     XCTAssertEqual(fixture.controller.table.focusRingType, .none)
-                    XCTAssertEqual(fixture.controller.makeDefault.title, id == original.id ? "Editing Target" : "Edit Appearance Here")
+                    let destination = try XCTUnwrap(fixture.store.document.destinations.first { $0.id == id })
+                    let reusable = fixture.store.profile(destination.profileID)?.isReusable != false
+                    XCTAssertEqual(fixture.controller.destinationEditor?.customizeButton.title,
+                                   reusable ? "Customize Appearance…" : "Edit Appearance…")
                 }
             }
         }
