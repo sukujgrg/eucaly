@@ -120,10 +120,14 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
         render()
     }
 
+    private static let invalidNameMessage = "Use a short, non-empty profile name on one line."
     func render(force: Bool = false) {
         guard isViewLoaded, let profile = store.profile(profileID) else { return }
+        if nameField.currentEditor() == nil {
+            nameField.stringValue = profile.name
+            if validationLabel.stringValue == Self.invalidNameMessage { validationLabel.stringValue = "" }
+        }
         validationLabel.isHidden = validationLabel.stringValue.isEmpty
-        if nameField.currentEditor() == nil { nameField.stringValue = profile.name }
         let names = store.document.destinations.filter { $0.profileID == profileID }.map(\.name)
         affectedOutputs.stringValue = names.isEmpty ? "No outputs currently use this profile." : "Used by: " + names.joined(separator: ", ")
         let consumers = store.document.destinations.filter { $0.profileID == profileID }
@@ -205,7 +209,7 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
         guard notification.object as? NSTextField === nameField, let profile = store.profile(profileID) else { return }
         let name = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, name.utf8.count <= 160, !name.contains(where: \.isNewline) else {
-            validationLabel.stringValue = "Use a short, non-empty profile name on one line."
+            validationLabel.stringValue = Self.invalidNameMessage
             validationLabel.isHidden = false
             nameField.stringValue = profile.name; return
         }
@@ -406,11 +410,23 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
                     }
                     return
                 }
-                profile.background.bookmark = bookmark
-                store.update(profile)
+                var candidate = profile
+                candidate.background.bookmark = bookmark
+                var probe = store.document
+                guard let index = probe.profiles.firstIndex(where: { $0.id == selectedProfileID }) else { return }
+                probe.profiles[index] = candidate
+                guard probe.isValid else {
+                    if let self, self.profileID == selectedProfileID {
+                        self.validationLabel.stringValue = "The selected background could not be saved. Choose Visual again to retry; the existing background is unchanged."
+                        self.validationLabel.isHidden = false
+                    }
+                    return
+                }
+                store.update(candidate)
                 if let self, self.profileID == selectedProfileID {
                     self.validationLabel.stringValue = ""
                     self.validationLabel.isHidden = true
+                    self.render(force: true)
                 }
             }
         }

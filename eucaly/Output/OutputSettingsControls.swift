@@ -278,11 +278,23 @@ final class OutputSettingsNumberRow: NSView, NSTextFieldDelegate {
         // Display rounding is presentation only. Focus changes must not write
         // the rounded readout back over the exact saved preference.
         guard didEditText || field.stringValue != displayedReadout else { return }
-        guard let value = Double(field.stringValue), value.isFinite, range.contains(value) else {
+        guard let value = Self.parseDecimal(field.stringValue), value.isFinite, range.contains(value) else {
             invalid(); return
         }
         pending = value / scale
         flush()
+    }
+    /// Match String(format:) locale display so comma decimals commit correctly.
+    private static let decimalParser: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.locale = .current
+        formatter.numberStyle = .decimal
+        return formatter
+    }()
+    private static func parseDecimal(_ string: String) -> Double? {
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let value = Double(trimmed) { return value }
+        return decimalParser.number(from: trimmed)?.doubleValue
     }
 }
 

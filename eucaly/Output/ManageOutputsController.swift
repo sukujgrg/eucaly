@@ -418,8 +418,9 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     }
     @objc private func removeSelectedOutput(_ sender: Any?) {
         guard !profilesMode, store.recoveryNotice == nil, let id = selectedID else { return }
-        guard let destination = coordinator.destination(id) else { return }
+        // Commit a pending rename before reading the name shown in the alert.
         finishEditing()
+        guard let destination = coordinator.destination(id) else { return }
         guard confirmOutputRemoval(destination) else { return }
         removedConfiguration = store.removeOutputConfiguration(id)
         managementProblem = removedConfiguration == nil ? "The output could not be removed. Its configuration was retained." : nil

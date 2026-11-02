@@ -85,6 +85,7 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
             ? "" : session.projectionDisplayIssue ?? "Unable to move output."
         render()
     }
+    private static let invalidNameMessage = "Use a short, non-empty output name on one line."
     func render() {
         guard isViewLoaded, let destination, let profile = store.profile(destination.profileID) else { return }
         let target = destination.networkSettings.map { (destination.networkTechnology?.title ?? "Network") + " source: " + $0.sourceName }
@@ -109,8 +110,13 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
         standbyNotice.isHidden = !destination.isMonitorDestination || profile.kind != .confidence
         moveWorkspaceButton.title = "Move to This Workspace (" + coordinator.managementWorkspaceName(coordinator.focusedWorkspaceID) + ")"
         moveWorkspaceButton.isEnabled = coordinator.focusedWorkspaceID != nil && destination.workspaceID != coordinator.focusedWorkspaceID
+        if nameField.currentEditor() == nil {
+            nameField.stringValue = destination.name
+            // Restored saved names are valid again; do not keep a stale name error
+            // across profile/monitor edits.
+            if validationLabel.stringValue == Self.invalidNameMessage { validationLabel.stringValue = "" }
+        }
         validationLabel.isHidden = validationLabel.stringValue.isEmpty
-        if nameField.currentEditor() == nil { nameField.stringValue = destination.name }
         enabledButton.state = destination.enabled ? .on : .off
         customizeButton.isEnabled = store.canCustomizeProfile(for: destinationID)
         customizeButton.title = profile.isReusable ? "Customize Appearance…" : "Edit Appearance…"
@@ -183,7 +189,7 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
         guard notification.object as? NSTextField === nameField, let destination else { return }
         let name = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, name.utf8.count <= 160, !name.contains(where: \.isNewline) else {
-            validationLabel.stringValue = "Use a short, non-empty output name on one line."
+            validationLabel.stringValue = Self.invalidNameMessage
             validationLabel.isHidden = false
             nameField.stringValue = destination.name; return
         }
