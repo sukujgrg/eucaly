@@ -794,6 +794,8 @@ final class OutputSettingsTests: XCTestCase {
         fixture.store.edit { document in
             document.destinations.append(disabled)
             document.profiles[0].background.colour = .white
+            document.profiles[0].background.bookmark = "selected visual"
+            document.profiles[0].background.displayName = "stage.png"
         }
         let reusable = try XCTUnwrap(fixture.store.profile(first.profileID))
         let session = PresentationSession(projectionDisplays: fixture.displays, outputCoordinator: fixture.outputs)
@@ -801,13 +803,16 @@ final class OutputSettingsTests: XCTestCase {
         let owner = fixture.outputs.ownership.source, current = session.currentSlideID
         fixture.controller.reload()
         let editor = try XCTUnwrap(fixture.controller.destinationEditor)
+        XCTAssertEqual(editor.clearBackgroundButton.title, "Clear Visual…")
         XCTAssertTrue(fixture.window.makeFirstResponder(editor.nameField))
         try XCTUnwrap(editor.nameField.currentEditor()).string = "Front screen"
         NSApp.sendAction(try XCTUnwrap(editor.clearBackgroundButton.action), to: editor.clearBackgroundButton.target, from: editor.clearBackgroundButton)
         let customized = try XCTUnwrap(fixture.outputs.profile(for: first.id))
         XCTAssertEqual(fixture.store.document.destinations[0].name, "Front screen")
         XCTAssertEqual(customized.name, "Front screen Customized")
-        XCTAssertEqual(customized.background.colour, .black)
+        XCTAssertNil(customized.background.bookmark)
+        XCTAssertNil(customized.background.displayName)
+        XCTAssertEqual(customized.background.colour, .white, "Clear Visual must not reset solid colour")
         XCTAssertNotEqual(customized.id, reusable.id)
         XCTAssertEqual(fixture.store.profile(reusable.id), reusable)
         XCTAssertEqual(fixture.store.document.destinations[1], disabled)

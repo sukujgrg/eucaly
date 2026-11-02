@@ -362,8 +362,16 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         defer { addManagementFooter(to: menu) }
         guard let profile, let target else { return menu }
         menu.addItem(info("Edits this output’s complete independent appearance; future reusable-profile changes no longer apply."))
+        if let name = profile.background.displayName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty,
+           profile.background.bookmark != nil {
+            menu.addItem(info("Visual: " + name))
+        } else if profile.background.bookmark != nil {
+            menu.addItem(info("Visual: Selected image or video"))
+        } else {
+            menu.addItem(info("Visual: Solid colour"))
+        }
         menu.addItem(command("Choose Visual…") { [weak self] in self?.chooseBackground(target) })
-        menu.addItem(edit("Clear Visual", target) { $0.background.bookmark = nil })
+        menu.addItem(edit("Clear Visual", target) { $0.clearBackground() })
         menu.addItem(edit("Visual Enabled", target, selected: profile.background.visible) { $0.background.visible.toggle() })
         for (title, key) in [("Show Behind Text", \OutputBackground.whenTextShown), ("Show When Slides Hidden", \OutputBackground.whenHidden), ("Show Behind Media", \OutputBackground.whenMediaShown)] {
             menu.addItem(edit(title, target, selected: profile.background[keyPath: key]) { $0.background[keyPath: key].toggle() })
@@ -413,7 +421,10 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
                     outputs.reportAppearanceEditIssue("The selected background could not be saved. Choose Visual again to retry; the existing background is unchanged.", workspace: requestingWorkspaceID)
                     return
                 }
-                let problem = store.editDefaultProfile(target) { $0.background.bookmark = bookmark }
+                let problem = store.editDefaultProfile(target) {
+                    $0.background.bookmark = bookmark
+                    $0.background.displayName = url.lastPathComponent
+                }
                 outputs.reportAppearanceEditIssue(problem, workspace: requestingWorkspaceID)
             }
         }

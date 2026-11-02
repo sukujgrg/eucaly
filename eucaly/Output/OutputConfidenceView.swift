@@ -182,14 +182,17 @@ struct OutputConfidenceReadabilityProbe: View {
     let snapshot: OutputContentSnapshot
     let profile: OutputProfile
     let size: CGSize
+    var labelPrefix: String? = nil
     var body: some View {
         let content = OutputConfidenceContent(snapshot: snapshot, profile: profile)
         let geometry = OutputConfidenceGeometry(size: size, hasNext: content.next != nil)
         if !content.isIdle && content.media == nil {
-            OutputReadabilityProbe(content: OutputConfidenceContent.labeled(content.current, profile: profile), profile: profile, size: geometry.currentSize)
+            OutputReadabilityProbe(content: OutputConfidenceContent.labeled(content.current, profile: profile),
+                                  profile: profile, size: geometry.currentSize, labelPrefix: labelPrefix)
             if let next = content.next {
                 let nextProfile = OutputConfidenceContent.nextProfile(profile)
-                OutputReadabilityProbe(content: OutputConfidenceContent.labeled(next, profile: nextProfile), profile: nextProfile, size: geometry.nextSize)
+                OutputReadabilityProbe(content: OutputConfidenceContent.labeled(next, profile: nextProfile),
+                                      profile: nextProfile, size: geometry.nextSize, labelPrefix: labelPrefix)
             }
         }
     }

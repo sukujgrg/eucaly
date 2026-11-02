@@ -71,6 +71,9 @@ nonisolated struct OutputTypographyOverride: Codable, Equatable, Sendable {
 nonisolated struct OutputBackground: Codable, Equatable, Sendable {
     var colour = OutputColour.black
     var bookmark: String? = nil
+    /// Last chosen file name, saved only with a successful bookmark. Used for
+    /// Settings/toolbar identity without resolving security-scoped bookmarks on render.
+    var displayName: String? = nil
     var fit: String = "fill"
     var dimming: Double = 0.35
     var visible = true
@@ -114,10 +117,11 @@ nonisolated struct OutputProfile: Codable, Equatable, Sendable, Identifiable {
         OutputComponentRole.lyricRoles + (kind == .confidence ? [.footer] : [])
     }
     mutating func clearBackground(preservingKeyColour: Bool = false) {
+        // Clear Visual removes the asset only. Solid/chroma colour is independent
+        // appearance configuration (including NDI key colour while Alpha is selected).
         background.bookmark = nil
-        // A key colour is output configuration, not a program visual. NDI
-        // also remembers its key while transparent mode is selected.
-        if kind != .lowerThird && !preservingKeyColour { background.colour = .black }
+        background.displayName = nil
+        _ = preservingKeyColour
     }
     func components(in content: OutputTextContent) -> [OutputTextComponent] {
         content.components.filter { roles.contains($0.role) && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
