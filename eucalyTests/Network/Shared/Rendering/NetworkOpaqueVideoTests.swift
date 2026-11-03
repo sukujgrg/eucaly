@@ -52,6 +52,8 @@ final class NetworkOpaqueVideoTests: XCTestCase {
         }
         XCTAssertTrue(opaque([try format(kCMVideoCodecType_H264,
             [kCMFormatDescriptionExtension_ContainsAlphaChannel as String: false])]))
+        XCTAssertTrue(opaque([try format(kCMVideoCodecType_AV1,
+            [kCMFormatDescriptionExtension_ContainsAlphaChannel as String: false])]))
         // Apple's alpha HEVC interoperability profile uses ordinary hvc1;
         // absence of the muxa encoder identifier does not prove opacity.
         XCTAssertFalse(opaque([try format(kCMVideoCodecType_HEVC,
@@ -65,12 +67,7 @@ final class NetworkOpaqueVideoTests: XCTestCase {
         // Exercise real AVFoundation BGRA decoding independently of any
         // automatically supplied colour tags on the generated movie.
         let source = NetworkVideoFrameSource(player: player, makeOutput: { _ in
-            AVPlayerItemVideoOutput(outputSettings: [
-                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-                kCVPixelBufferIOSurfacePropertiesKey as String: [String: Int](),
-                kCVPixelBufferMetalCompatibilityKey as String: true,
-                AVVideoAllowWideColorKey: false
-            ])
+            NetworkVideoFrameSource.makeOutput(pixelFormat: kCVPixelFormatType_32BGRA)
         })
         defer { source.stop(); player.pause() }
         player.play()

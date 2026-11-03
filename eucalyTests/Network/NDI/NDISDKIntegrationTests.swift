@@ -558,7 +558,7 @@ final class NDISDKIntegrationTests: XCTestCase {
         try await until("second destination shares the same video") { (router.statistics[companion.id]?.submittedFrames ?? 0) > 3 || !router.state(companion.id).active }
         XCTAssertTrue(router.state(companion.id).active, router.state(companion.id).title)
         XCTAssertEqual(outputs.media.networkVideoFrames.sourceCount, 1)
-        XCTAssertEqual(player.currentItem?.outputs.filter { $0 is AVPlayerItemVideoOutput }.count, 1)
+        XCTAssertTrue(player.videoOutput is AVPlayerVideoOutput)
         XCTAssertEqual(router.statistics[destination.id]?.videoFormat, .uyvy)
         XCTAssertEqual(opened, 0)
         let probeLog = NDIEventLog(), probeID = UUID(), probe = NetworkHelperSupervisor(event: probeLog.record)
@@ -601,7 +601,7 @@ final class NDISDKIntegrationTests: XCTestCase {
             try requireRunningSources()
             XCTAssertEqual(outputs.media(for: companion.id)?.networkVideoFrames.sourceCount, 1)
             XCTAssertTrue(outputs.media(for: companion.id)?.program === player)
-            XCTAssertEqual(player.currentItem?.outputs.filter { $0 is AVPlayerItemVideoOutput }.count, 1)
+            XCTAssertTrue(player.videoOutput is AVPlayerVideoOutput)
             boundary = Int64(DispatchTime.now().uptimeNanoseconds / 100)
             XCTAssertTrue(outputs.moveOutput(destination.id, to: session))
             try await receive(after: boundary) {
@@ -616,7 +616,7 @@ final class NDISDKIntegrationTests: XCTestCase {
         outputs.closeOutput(companion.id)
         try await until("companion retires independently") { router.state(companion.id) == .stopped }
         XCTAssertEqual(outputs.media.networkVideoFrames.sourceCount, 1)
-        XCTAssertEqual(player.currentItem?.outputs.filter { $0 is AVPlayerItemVideoOutput }.count, 1)
+        XCTAssertTrue(player.videoOutput is AVPlayerVideoOutput)
         let survivingCount = router.statistics[destination.id]?.submittedFrames ?? 0
         try await until("remaining destination keeps sending") { (router.statistics[destination.id]?.submittedFrames ?? 0) >= survivingCount + 10 }
         store.setEnabled(true, for: native); session.showSlides()

@@ -1,6 +1,7 @@
 import XCTest
 import AVFoundation
 import IOSurface
+import VideoToolbox
 @testable import eucaly
 
 @MainActor
@@ -159,9 +160,12 @@ final class NetworkVideoInputTests: XCTestCase {
             kCMFormatDescriptionExtension_YCbCrMatrix as String: kCVImageBufferYCbCrMatrix_ITU_R_709_2]
         XCTAssertTrue(NetworkVideoInputPolicy.prefersNV12([try format(kCMVideoCodecType_H264, colour)], composed: false))
         XCTAssertTrue(NetworkVideoInputPolicy.prefersNV12([try format(kCMVideoCodecType_HEVC, colour)], composed: false))
+        XCTAssertTrue(NetworkVideoInputPolicy.prefersNV12([try format(kCMVideoCodecType_AV1, colour)], composed: false))
         XCTAssertFalse(NetworkVideoInputPolicy.prefersNV12([try format(kCMVideoCodecType_H264)], composed: false), "Untagged SD video must keep AVFoundation's guessed-colour conversion")
+        XCTAssertFalse(NetworkVideoInputPolicy.prefersNV12([try format(kCMVideoCodecType_AV1)], composed: false), "Untagged AV1 must keep AVFoundation's colour conversion")
         XCTAssertFalse(NetworkVideoInputPolicy.prefersNV12([], composed: false))
         XCTAssertFalse(NetworkVideoInputPolicy.prefersNV12([try format(kCMVideoCodecType_H264, colour)], composed: true))
+        XCTAssertFalse(NetworkVideoInputPolicy.prefersNV12([try format(kCMVideoCodecType_AV1, colour)], composed: true))
         for codec in [kCMVideoCodecType_AppleProRes4444, kCMVideoCodecType_HEVCWithAlpha] {
             XCTAssertFalse(NetworkVideoInputPolicy.prefersNV12([try format(codec, colour)], composed: false))
         }
@@ -175,6 +179,9 @@ final class NetworkVideoInputTests: XCTestCase {
         ] {
             XCTAssertFalse(NetworkVideoInputPolicy.prefersNV12([try format(kCMVideoCodecType_HEVC, colour.merging(extensions) { _, new in new })], composed: false))
         }
+        XCTAssertTrue(NetworkVideoInputPolicy.supportsHardwareDecode([try format(kCMVideoCodecType_H264, colour)]))
+        XCTAssertEqual(NetworkVideoInputPolicy.supportsHardwareDecode([try format(kCMVideoCodecType_AV1, colour)]),
+                       VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1))
     }
 
     func testSharedSamplerSurvivesOneConsumerReleaseAndFencesStoppedLeases() async throws {
@@ -188,7 +195,7 @@ final class NetworkVideoInputTests: XCTestCase {
         var frame: NetworkFrameResource?
         try await until { frame = try b.latest(); return frame != nil }
         XCTAssertEqual(frame?.input.format, .nv12VideoRange)
-        XCTAssertEqual(player.currentItem?.outputs.filter { $0 is AVPlayerItemVideoOutput }.count, 1)
+        XCTAssertTrue(player.videoOutput is AVPlayerVideoOutput)
         a.release()
         XCTAssertEqual(pool.sourceCount, 1)
         XCTAssertNotNil(try b.latest())
@@ -200,21 +207,21 @@ final class NetworkVideoInputTests: XCTestCase {
         }
         pool.stop()
         XCTAssertNil(try b.latest())
-        try await until { player.currentItem?.outputs.filter { $0 is AVPlayerItemVideoOutput }.count == 0 }
-        XCTAssertEqual(player.currentItem?.outputs.filter { $0 is AVPlayerItemVideoOutput }.count, 0)
+        try await until { player.videoOutput == nil }
+        XCTAssertNil(player.videoOutput)
         XCTAssertTrue(retained.input.matches(retained.surface), "A retained decoded picture remains valid after output detachment")
         let replacement = pool.acquire(player)
         b.release() // A late release from the retired pool must not remove this source.
         XCTAssertEqual(pool.sourceCount, 1)
         try await until { try replacement.latest() != nil }
-        XCTAssertEqual(player.currentItem?.outputs.filter { $0 is AVPlayerItemVideoOutput }.count, 1)
+        XCTAssertTrue(player.videoOutput is AVPlayerVideoOutput)
         replacement.release()
         XCTAssertEqual(pool.sourceCount, 0)
-        try await until { player.currentItem?.outputs.filter { $0 is AVPlayerItemVideoOutput }.count == 0 }
-        XCTAssertEqual(player.currentItem?.outputs.filter { $0 is AVPlayerItemVideoOutput }.count, 0)
+        try await until { player.videoOutput == nil }
+        XCTAssertNil(player.videoOutput)
         let cancelled = pool.acquire(player); cancelled.release()
         try await Task.sleep(for: .milliseconds(80))
-        XCTAssertEqual(player.currentItem?.outputs.filter { $0 is AVPlayerItemVideoOutput }.count, 0, "Cancelled metadata preparation cannot install a late output")
+        XCTAssertNil(player.videoOutput, "Cancelled metadata preparation cannot install a late output")
     }
 
     func testStoppingSamplerDoesNotWaitForAnInFlightFrameRead() async throws {
@@ -222,10 +229,13 @@ final class NetworkVideoInputTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: url) }
         let player = AVPlayer(url: url), entered = expectation(description: "Frame read entered")
         let finished = expectation(description: "Frame read released")
-        let output = GatedVideoOutput(entered: { entered.fulfill() })
-        let source = NetworkVideoFrameSource(player: player, makeOutput: { _ in output })
-        defer { output.resume.signal(); source.stop(); player.pause() }
-        try await until { player.currentItem?.outputs.contains { $0 === output } == true }
+        let resume = DispatchSemaphore(value: 0)
+        let source = NetworkVideoFrameSource(player: player, sampleHook: {
+            entered.fulfill()
+            _ = resume.wait(timeout: .now() + 2)
+        })
+        defer { resume.signal(); source.stop(); player.pause() }
+        try await until { player.videoOutput is AVPlayerVideoOutput }
         DispatchQueue.global(qos: .userInitiated).async {
             defer { finished.fulfill() }
             _ = try? source.latest()
@@ -233,13 +243,13 @@ final class NetworkVideoInputTests: XCTestCase {
         await fulfillment(of: [entered], timeout: 2)
         // Bound the regression itself even when the old stop implementation
         // waits on the decoder while holding the main thread.
-        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(400)) { output.resume.signal() }
+        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(400)) { resume.signal() }
         let started = ProcessInfo.processInfo.systemUptime
         source.stop()
         XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - started, 0.1, "Output shutdown must not wait for AVFoundation frame acquisition")
-        output.resume.signal()
+        resume.signal()
         await fulfillment(of: [finished], timeout: 2)
-        try await until { player.currentItem?.outputs.contains { $0 === output } == false }
+        try await until { player.videoOutput == nil }
         XCTAssertNil(try source.latest(), "A frame completing after shutdown must be rejected")
     }
 
@@ -273,20 +283,6 @@ final class NetworkVideoInputTests: XCTestCase {
         let end = ProcessInfo.processInfo.systemUptime + 8
         while try !check(), ProcessInfo.processInfo.systemUptime < end { try await Task.sleep(for: .milliseconds(20)) }
         guard try check() else { XCTFail("Timed out waiting for video input"); throw NetworkHelperWire.Failure.unavailable }
-    }
-}
-
-nonisolated private final class GatedVideoOutput: AVPlayerItemVideoOutput, @unchecked Sendable {
-    let resume = DispatchSemaphore(value: 0)
-    private let entered: @Sendable () -> Void
-    init(entered: @escaping @Sendable () -> Void) {
-        self.entered = entered
-        super.init(outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
-    }
-    override func itemTime(forHostTime hostTimeInSeconds: CFTimeInterval) -> CMTime {
-        entered()
-        _ = resume.wait(timeout: .now() + 2)
-        return .invalid
     }
 }
 

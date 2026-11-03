@@ -687,7 +687,7 @@ private final class OMTProductionRun {
                 "playerTime": Self.number(media?.program?.currentTime().seconds ?? 0),
                 "playerIdentity": media?.program.map { String(describing: ObjectIdentifier($0)) } ?? "",
                 "playerItemIdentity": media?.program?.currentItem.map { String(describing: ObjectIdentifier($0)) } ?? "",
-                "videoOutputCount": media?.program?.currentItem?.outputs.filter { $0 is AVPlayerItemVideoOutput }.count ?? 0,
+                "videoOutputCount": media?.program?.videoOutput == nil ? 0 : 1,
                 "frameSamplerSources": media?.networkVideoFrames.sourceCount ?? 0,
                 "playerError": media?.program?.currentItem?.error?.localizedDescription ?? ""]
             if let error = media?.program?.currentItem?.error { violations.insert("Program player failed: \(row.name): \(error.localizedDescription)") }
@@ -794,7 +794,7 @@ nonisolated enum OMTProductionNativeSelection {
 }
 
 /// Observes the actual native driver. No capture, alternate renderer or extra
-/// AVPlayerItemVideoOutput is introduced. AVKit readiness proves only that its
+/// AVPlayerVideoOutput is introduced. AVKit readiness proves only that its
 /// first picture is prepared; it is not a scanout or presented-frame counter.
 @MainActor
 private final class OMTProductionNativeEvidence {

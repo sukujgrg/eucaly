@@ -272,7 +272,7 @@ final class NDISustainedStressTests: XCTestCase {
                 XCTAssertEqual(player.volume, outputs.monitorAudioLocally(workspace: home.outputSourceID) ? 1 : 0)
                 XCTAssertEqual(outputs.media(for: anchor.id)?.programAudioGain.value, 1)
                 XCTAssertEqual(outputs.media(for: anchor.id)?.networkVideoFrames.sourceCount, 1)
-                XCTAssertEqual(player.currentItem?.outputs.filter { $0 is AVPlayerItemVideoOutput }.count, 1)
+                XCTAssertTrue(player.videoOutput is AVPlayerVideoOutput)
                 XCTAssertEqual(b.audioGaps, 0, "The stationary receiver must retain its audio sample clock")
                 XCTAssertEqual(b.audio?.droppedFrames, 0, "The audio pump must keep up with the stationary source")
                 XCTAssertEqual(b.silentFrames, anchorStartupSilence,
@@ -379,7 +379,7 @@ final class NDISustainedStressTests: XCTestCase {
         outputs.stopAllOutputs(); await router.shutdown()
         XCTAssertTrue(senderLogs.allSatisfy { $0.state.exited })
         XCTAssertTrue(router.activeIDs.isEmpty)
-        XCTAssertEqual(player.currentItem?.outputs.filter { $0 is AVPlayerItemVideoOutput }.count, 0)
+        XCTAssertNil(player.videoOutput)
         try checkpoint("complete")
         completed = true
     }
