@@ -1,4 +1,5 @@
 @preconcurrency import AVFoundation
+import VideoToolbox
 import XCTest
 @testable import eucaly
 
@@ -6,7 +7,7 @@ import XCTest
 /// It exercises the shared sampler without starting a helper or network output.
 @MainActor
 final class NetworkProductionInputTests: XCTestCase {
-    func testSuppliedAV1FailsThroughSamplerAndH264ProducesAdvancingFrames() async throws {
+    func testSuppliedAV1AndH264ThroughSampler() async throws {
         guard ProcessInfo.processInfo.environment["EUCALY_OMT_PRODUCTION_INPUTS"] == "1" else {
             throw XCTSkip("Set EUCALY_OMT_PRODUCTION_INPUTS=1 to check the supplied AV1/H264 files on this Mac.")
         }
@@ -19,7 +20,9 @@ final class NetworkProductionInputTests: XCTestCase {
                 throw ProbeFailure.missingInput
             }
         }
-        try await probe(av1, expectsDecoderFailure: true)
+        // Native AV1 is hardware-only. Unsupported hosts must fail immediately;
+        // M3+ must advance frames through the shared AVPlayerVideoOutput sampler.
+        try await probe(av1, expectsDecoderFailure: !VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1))
         try await probe(h264, expectsDecoderFailure: false)
     }
 
@@ -69,29 +72,28 @@ final class NetworkProductionInputTests: XCTestCase {
 
         XCTAssertTrue(player.isMuted)
         XCTAssertEqual(player.volume, 0)
-        XCTAssertEqual(item.status, .readyToPlay)
-        XCTAssertGreaterThan(lastMediaTime, 0.1, "The native player must actually advance before interpreting sampler results")
         if expectsDecoderFailure {
-            XCTAssertTrue(decoderFailed, "AV1 must report the existing exact decoder failure within eight seconds")
-            XCTAssertEqual(decodedFrames, 0, "The supplied unsupported AV1 must not masquerade as a decoded picture")
+            XCTAssertTrue(decoderFailed, "Unsupported AV1 must report decoder failure promptly")
+            XCTAssertEqual(decodedFrames, 0, "Unsupported AV1 must not masquerade as a decoded picture")
         } else {
+            XCTAssertEqual(item.status, .readyToPlay)
+            XCTAssertGreaterThan(lastMediaTime, 0.1, "The native player must actually advance before interpreting sampler results")
             XCTAssertFalse(decoderFailed)
-            XCTAssertGreaterThanOrEqual(decodedFrames, 8, "H264 must acquire new decoded resources, beyond the cached first picture")
+            XCTAssertGreaterThanOrEqual(decodedFrames, 8, "Supported video must acquire new decoded resources, beyond the cached first picture")
             XCTAssertGreaterThan(lastMediaTime, (firstMediaTime ?? lastMediaTime) + 0.1)
         }
-        print("OMT input \(url.lastPathComponent): frames=\(decodedFrames), decoderFailure=\(decoderFailed), mediaSeconds=\(lastMediaTime), elapsed=\(ProcessInfo.processInfo.systemUptime - started), muted=\(player.isMuted)")
+        print("OMT input \(url.lastPathComponent): frames=\(decodedFrames), decoderFailure=\(decoderFailed), mediaSeconds=\(lastMediaTime), elapsed=\(ProcessInfo.processInfo.systemUptime - started), muted=\(player.isMuted), av1HW=\(VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1))")
 
         // Release the exact lease and verify asynchronous output detachment.
         player.pause()
         lease.release()
         pool.stop()
         let cleanupDeadline = ProcessInfo.processInfo.systemUptime + 2
-        while item.outputs.contains(where: { $0 is AVPlayerItemVideoOutput }),
-              ProcessInfo.processInfo.systemUptime < cleanupDeadline {
+        while player.videoOutput != nil, ProcessInfo.processInfo.systemUptime < cleanupDeadline {
             try await Task.sleep(for: .milliseconds(10))
         }
         XCTAssertEqual(pool.sourceCount, 0)
-        XCTAssertFalse(item.outputs.contains { $0 is AVPlayerItemVideoOutput })
+        XCTAssertNil(player.videoOutput)
         XCTAssertNil(try lease.latest(), "A retired lease must reject late sampling without rethrowing its prior decoder failure")
     }
 
