@@ -29,8 +29,8 @@ final class OutputDefaultTests: XCTestCase {
                 }, beginBackgroundSheet: { _, _, completed in completion = completed })
             let retained = try XCTUnwrap(controls)
             fixture.host(retained.backgroundButton)
-            let choose = try item("Choose Visual…", in: retained.backgroundButton.menu)
-            let change = try item("Visual Enabled", in: retained.backgroundButton.menu)
+            let choose = try item("Choose…", in: retained.backgroundButton.menu)
+            let change = try item("Enabled", in: retained.backgroundButton.menu)
             let manage = try item("Manage Outputs…", in: retained.backgroundButton.menu)
             let original = fixture.hub.outputs.profiles.document
             let current = fixture.hub.outputs.snapshot(for: fixture.hub.nativeRow).current
@@ -83,7 +83,7 @@ final class OutputDefaultTests: XCTestCase {
             }
         }
         defer { observation.cancel() }
-        invoke(try item("Choose Visual…", in: controls.backgroundButton.menu))
+        invoke(try item("Choose…", in: controls.backgroundButton.menu))
         try XCTUnwrap(completion)(.OK)
         await fulfillment(of: [started], timeout: 3)
         controls.retire()
@@ -156,10 +156,10 @@ final class OutputDefaultTests: XCTestCase {
         let outputs = OutputCoordinator(profiles: restored, displays: ProjectionDisplayManager(displays: { [] }), driverFactory: { FakeOutputDriver() })
         defer { outputs.stop() }
         let controls = OutputQuickControlsController(outputs: outputs, manageOutputs: {})
-        invoke(try item("Clear Visual", in: controls.backgroundButton.menu))
+        invoke(try item("Clear", in: controls.backgroundButton.menu))
         let background = try XCTUnwrap(restored.defaultDestination.flatMap { restored.profile($0.profileID) }).background
         XCTAssertNil(background.bookmark)
-        XCTAssertEqual(background.colour, .chromaGreen, "Clear Visual has the same asset-only meaning as the profile editor")
+        XCTAssertEqual(background.colour, .chromaGreen, "Clear has the same asset-only meaning as the profile editor")
     }
 
     func testNativeQuickMenusRevalidateOldActionsAndRetainUnchangedMenus() throws {
@@ -176,7 +176,7 @@ final class OutputDefaultTests: XCTestCase {
         let second = OutputDestinationConfiguration(name: "Other", profileID: OutputProfile.audienceID, monitor: nil)
         store.edit { $0.destinations.append(second) }; controls.render()
         let oldColumns = try item("Columns", in: controls.appearanceButton.menu)
-        let oldVisual = try item("Visual Enabled", in: controls.backgroundButton.menu)
+        let oldVisual = try item("Enabled", in: controls.backgroundButton.menu)
         let oldMonitor = try item("None", in: item("Monitor: None", in: controls.outputButton.menu).submenu)
         let defaultMenu = try item("Edit Profile: " + first.name, in: controls.outputButton.menu)
         XCTAssertNotNil(defaultMenu.submenu)

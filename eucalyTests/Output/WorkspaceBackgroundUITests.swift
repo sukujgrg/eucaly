@@ -17,8 +17,8 @@ final class WorkspaceBackgroundUITests: XCTestCase {
         let original = fixture.store.document
         let failed = expectation(description: "Quick picker reports failed bookmark")
         let observation = fixture.home.$projectionDisplayIssue.compactMap { $0 }
-            .filter { $0.contains("Choose Visual again") }.first().sink { _ in failed.fulfill() }
-        try invoke(menuItem("Choose Visual…", in: controls.backgroundButton.menu))
+            .filter { $0.contains("Choose again") }.first().sink { _ in failed.fulfill() }
+        try invoke(menuItem("Choose…", in: controls.backgroundButton.menu))
         try XCTUnwrap(completeQuick)(.OK)
         await fulfillment(of: [failed], timeout: 3)
         withExtendedLifetime(observation) {}
@@ -65,7 +65,7 @@ final class WorkspaceBackgroundUITests: XCTestCase {
         defer { fixture.close() }
         let controls = OutputQuickControlsController(outputs: fixture.outputs,
             workspaceID: fixture.home.outputSourceID, manageOutputs: {})
-        let clear = try menuItem("Clear Visual", in: controls.backgroundButton.menu)
+        let clear = try menuItem("Clear", in: controls.backgroundButton.menu)
         fixture.fillProfiles(to: 128)
         let countBefore = fixture.store.document.profiles.count
 
@@ -75,7 +75,7 @@ final class WorkspaceBackgroundUITests: XCTestCase {
         XCTAssertNil(fixture.home.projectionDisplayIssue)
         XCTAssertNil(fixture.outputs.profile(for: fixture.homeRows[0])?.background.bookmark)
         XCTAssertNil(fixture.outputs.profile(for: fixture.peerRow)?.background.bookmark,
-                     "Clear Visual edits the shared profile for every consumer.")
+                     "Clear edits the shared profile for every consumer.")
         XCTAssertEqual(fixture.outputs.destination(fixture.homeRows[0])?.profileID, fixture.sharedProfileID)
         XCTAssertFalse(fixture.outputs.isRunning)
     }
@@ -121,7 +121,7 @@ final class WorkspaceBackgroundUITests: XCTestCase {
                 completion = completed
             })
         _ = fixture.hostButton(controls.backgroundButton)
-        try invoke(menuItem("Choose Visual…", in: controls.backgroundButton.menu))
+        try invoke(menuItem("Choose…", in: controls.backgroundButton.menu))
         let complete = try XCTUnwrap(completion)
         fixture.fillProfiles(to: 128)
         let countBefore = fixture.store.document.profiles.count

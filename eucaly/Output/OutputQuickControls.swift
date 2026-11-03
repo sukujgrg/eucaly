@@ -204,9 +204,11 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         else { help = reason ?? "Quick edits change profile “\(profileName)” for every output using it. Duplicate the profile in Manage Outputs first if you need an independent look." }
         appearanceButton.isEnabled = canEdit; backgroundButton.isEnabled = canEdit
         appearanceButton.toolTip = "Profile for \(name)\n\(help)"
-        backgroundButton.toolTip = "Background for \(name)\n\(help)"
+        let backgroundSummary = backgroundSummary(for: profile)
+        let backgroundHelp = backgroundSummary + "\n" + help
+        backgroundButton.toolTip = "Background for \(name)\n\(backgroundHelp)"
         appearanceButton.setControlAccessibility(label: "Profile for output: \(scope)", help: help)
-        backgroundButton.setControlAccessibility(label: "Background for output: \(scope)", help: help)
+        backgroundButton.setControlAccessibility(label: "Background for output: \(scope)", help: backgroundHelp)
         if appearance != appearanceState {
             appearanceState = appearance
             appearanceButton.menu = appearanceMenu(profile, target: target)
@@ -354,21 +356,23 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         submenu("Lyrics Padding", padding, in: menu)
         return menu
     }
+    private func backgroundSummary(for profile: OutputProfile?) -> String {
+        guard let profile else { return "Solid colour" }
+        if let name = profile.background.displayName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty,
+           profile.background.bookmark != nil {
+            return name
+        }
+        if profile.background.bookmark != nil { return "Selected image or video" }
+        return "Solid colour"
+    }
     private func backgroundMenu(_ profile: OutputProfile?, target: OutputProfileStore.QuickEditTarget?) -> NSMenu {
         let menu = menu(caption: "Background", symbol: "photo.on.rectangle")
         defer { addManagementFooter(to: menu) }
         guard let profile, let target else { return menu }
-        if let name = profile.background.displayName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty,
-           profile.background.bookmark != nil {
-            menu.addItem(info("Visual: " + name))
-        } else if profile.background.bookmark != nil {
-            menu.addItem(info("Visual: Selected image or video"))
-        } else {
-            menu.addItem(info("Visual: Solid colour"))
-        }
-        menu.addItem(command("Choose Visual…") { [weak self] in self?.chooseBackground(target) })
-        menu.addItem(edit("Clear Visual", target) { $0.clearBackground() })
-        menu.addItem(edit("Visual Enabled", target, selected: profile.background.visible) { $0.background.visible.toggle() })
+        let hasVisual = profile.background.bookmark != nil
+        menu.addItem(command("Choose…") { [weak self] in self?.chooseBackground(target) })
+        menu.addItem(edit("Clear", target, enabled: hasVisual) { $0.clearBackground() })
+        menu.addItem(edit("Enabled", target, selected: profile.background.visible) { $0.background.visible.toggle() })
         for (title, key) in [("Show Behind Text", \OutputBackground.whenTextShown), ("Show When Slides Hidden", \OutputBackground.whenHidden), ("Show Behind Media", \OutputBackground.whenMediaShown)] {
             menu.addItem(edit(title, target, selected: profile.background[keyPath: key]) { $0.background[keyPath: key].toggle() })
         }
@@ -410,7 +414,7 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
                     return
                 }
                 guard let bookmark else {
-                    outputs.reportAppearanceEditIssue("The selected background could not be saved. Choose Visual again to retry; the existing background is unchanged.", workspace: requestingWorkspaceID)
+                    outputs.reportAppearanceEditIssue("The selected background could not be saved. Choose again to retry; the existing background is unchanged.", workspace: requestingWorkspaceID)
                     return
                 }
                 let problem = store.editDefaultProfile(target) {
