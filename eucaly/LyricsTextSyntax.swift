@@ -43,13 +43,26 @@ nonisolated enum LyricsTextSyntax {
         // Keep that suffix intact, including any ignored text after the credits.
         let footerStart = LyricsCopyrightParser.footer(in: sourceLines)?.startIndex
         let body = sourceLines.prefix(footerStart ?? sourceLines.count).joined(separator: "\n")
-        let lines = LyricsTextSanitizer.clean(body).components(separatedBy: "\n")
+        let cleanedBody = LyricsTextSanitizer.clean(body)
+        let spaced = normalizeSectionSpacing(cleanedBody)
+        guard let footerStart else { return spaced }
+        if spaced.isEmpty { return sourceLines[footerStart...].joined(separator: "\n") }
+        return spaced + "\n\n" + sourceLines[footerStart...].joined(separator: "\n")
+    }
+
+    /// One blank between sections/separators; no blank under a heading.
+    /// Does not sanitize characters. Cleanup uses this so proposals match
+    /// SKILLS spacing without re-cleaning protected title/credit lines.
+    static func normalizeSectionSpacing(_ text: String) -> String {
+        let sourceLines = LyricsTextSanitizer.normalizeLineEndings(text).components(separatedBy: "\n")
+        let footerStart = LyricsCopyrightParser.footer(in: sourceLines)?.startIndex
+        let bodyLines = Array(sourceLines.prefix(footerStart ?? sourceLines.count))
         // A blank after a companion heading can separate unheaded slides.
         // Reuse the parser's source spans rather than guessing those boundaries.
-        let stanzaStarts = Set(LyricsParser.stanzaRangesForCleanup(lines, protected: []).map(\.lowerBound))
+        let stanzaStarts = Set(LyricsParser.stanzaRangesForCleanup(bodyLines, protected: []).map(\.lowerBound))
         var output: [String] = []
         var pendingBlank = false
-        for (index, source) in lines.enumerated() {
+        for (index, source) in bodyLines.enumerated() {
             let line = source.trimmingCharacters(in: .whitespaces)
             if isBlank(line) { pendingBlank = !output.isEmpty; continue }
 

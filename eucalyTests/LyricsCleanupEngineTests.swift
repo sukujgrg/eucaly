@@ -207,7 +207,7 @@ final class LyricsCleanupEngineTests: XCTestCase {
     func testLocalCasingPreservesIntegratedTitleCompanionsCreditsAndLayout() {
         let source = "#title: KEEP exact title\nVerse 1\n  (we sing)\n\t‘and we pray’\niPhone gathers us\nMcDonald sings\nMeaning\nmeaning stays lowercase\n\n© 2026 PUBLISHER"
         let result = LyricsCleanupEngine.clean(source, options: options(casing: true))
-        XCTAssertEqual(result.proposed, "#title: KEEP exact title\nVerse 1\n  (We sing)\n\t‘And we pray’\niPhone gathers us\nMcDonald sings\nMeaning\nmeaning stays lowercase\n\n© 2026 PUBLISHER")
+        XCTAssertEqual(result.proposed, "#title: KEEP exact title\n\nVerse 1\n(We sing)\n‘And we pray’\niPhone gathers us\nMcDonald sings\n\nMeaning\nmeaning stays lowercase\n\n© 2026 PUBLISHER")
         XCTAssertEqual(LyricsParser.parseDocument(result.proposed).metadata, LyricsParser.parseDocument(source).metadata)
     }
 
@@ -289,9 +289,40 @@ final class LyricsCleanupEngineTests: XCTestCase {
     func testLargeAuthoredVerseOrdinalCannotOverflowSectionSuggestions() {
         let source = "Verse \(Int.max)\nFirst lyric\n---\nSecond lyric"
         let proposed = LyricsCleanupEngine.clean(source, options: options(sections: true)).proposed
-        XCTAssertEqual(proposed, "Verse \(Int.max)\nFirst lyric\n---\nVerse 1\nSecond lyric")
+        XCTAssertEqual(proposed, "Verse \(Int.max)\nFirst lyric\n\n---\n\nVerse 1\nSecond lyric")
         XCTAssertEqual(LyricsParser.parseDocument(proposed).slides.count, 2)
         XCTAssertEqual(LyricsCleanupEngine.nextVerseNumber(used: [1, .max]), 2)
+    }
+
+    func testCleanupInsertsBlankBetweenAdjacentSectionsAndRemovesBlankUnderHeading() {
+        let source = "[Verse 1:]\n\nWe sing with joy\nChorus\nWe praise His name"
+        let result = LyricsCleanupEngine.clean(source, options: options(sections: true))
+        XCTAssertEqual(result.proposed, "Verse 1\nWe sing with joy\n\nChorus\nWe praise His name")
+        XCTAssertTrue(result.changes.contains { $0.category == .spacing })
+        XCTAssertTrue(result.notes.contains { $0.contains("Blank lines under headings") })
+        XCTAssertEqual(
+            content(LyricsParser.parseDocument(source)),
+            content(LyricsParser.parseDocument(result.proposed))
+        )
+        XCTAssertEqual(
+            LyricsCleanupEngine.clean(result.proposed, options: options(sections: true)).proposed,
+            result.proposed
+        )
+    }
+
+    func testCleanupSpacingPreservesProtectedTitleEntities() {
+        let source = "#title: WE&#39;RE HERE\nVerse 1\nOne\nChorus\nTwo"
+        let result = LyricsCleanupEngine.clean(source, options: options(sections: true))
+        XCTAssertTrue(result.proposed.hasPrefix("#title: WE&#39;RE HERE\n"))
+        XCTAssertEqual(result.proposed, "#title: WE&#39;RE HERE\n\nVerse 1\nOne\n\nChorus\nTwo")
+        XCTAssertEqual(
+            LyricsParser.parseDocument(result.proposed).metadata["title"],
+            LyricsParser.parseDocument(source).metadata["title"]
+        )
+    }
+
+    private func content(_ document: LyricsDocument) -> [[String]] {
+        document.slides.map { $0.lines.map(\.text) }
     }
 
     func testVerseViewCreditsStayExactAndAreNotLabelledAsAnotherVerse() {
