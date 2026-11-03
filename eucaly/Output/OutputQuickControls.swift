@@ -301,7 +301,6 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         let menu = menu(caption: "Appearance", symbol: "textformat")
         defer { addManagementFooter(to: menu) }
         guard let profile, let target else { return menu }
-        menu.addItem(info("Edits this output’s complete independent appearance; future reusable-profile changes no longer apply."))
         for (title, key, values) in [
             ("Layout", \OutputProfile.layout, [("Stacked", "stacked"), ("Columns", "columns")]),
             ("Alignment", \OutputProfile.alignment, [("Left", "left"), ("Centre", "center"), ("Right", "right")]),
@@ -359,7 +358,6 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         let menu = menu(caption: "Background", symbol: "photo.on.rectangle")
         defer { addManagementFooter(to: menu) }
         guard let profile, let target else { return menu }
-        menu.addItem(info("Edits this output’s complete independent appearance; future reusable-profile changes no longer apply."))
         if let name = profile.background.displayName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty,
            profile.background.bookmark != nil {
             menu.addItem(info("Visual: " + name))
