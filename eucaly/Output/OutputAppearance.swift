@@ -126,7 +126,7 @@ nonisolated struct OutputProfile: Codable, Equatable, Sendable, Identifiable {
         OutputComponentRole.lyricRoles + (kind == .confidence ? [.footer] : [])
     }
     mutating func clearBackground(preservingKeyColour: Bool = false) {
-        // Clear Visual removes the asset only. Solid colour stays on the profile;
+        // Clear removes the asset only. Solid colour stays on the profile;
         // network key colour lives on the destination.
         background.bookmark = nil
         background.displayName = nil
