@@ -12,7 +12,7 @@ nonisolated struct LyricsCleanupOptions: Equatable, Sendable {
 }
 
 nonisolated enum LyricsCleanupCategory: String, CaseIterable, Identifiable, Sendable {
-    case characters, sections, casing, lineBreaks, annotations
+    case characters, sections, casing, lineBreaks, spacing, annotations
 
     var id: String { rawValue }
     var title: String {
@@ -21,6 +21,7 @@ nonisolated enum LyricsCleanupCategory: String, CaseIterable, Identifiable, Send
         case .sections: "Section suggestions"
         case .casing: "Natural lyric casing"
         case .lineBreaks: "PDF line breaks"
+        case .spacing: "Section spacing"
         case .annotations: "Remove non-lyric annotations"
         }
     }
@@ -93,6 +94,12 @@ nonisolated enum LyricsCleanupEngine {
             text = casing.proposed
             changes += casing.changes
             notes += casing.notes
+        }
+        apply(.spacing, "Normalize blank lines between sections and under headings.") {
+            LyricsTextSyntax.normalizeSectionSpacing($0)
+        }
+        if changes.contains(where: { $0.category == .spacing }) {
+            notes.append("Blank lines under headings were removed and one blank line was kept between sections.")
         }
         if source.contains("�") {
             notes.append("The replacement character � marks text already lost during decoding. It was retained so you can repair the original word.")

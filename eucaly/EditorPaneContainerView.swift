@@ -126,7 +126,7 @@ struct EditorPaneContainerView: View {
             .buttonStyle(.bordered)
             .fixedSize(horizontal: true, vertical: false)
             .disabled(!hasUsableText)
-            .help("Review cleanup suggestions before applying them to this draft. Saving and updating Preview are separate.")
+            .help("Review cleanup suggestions before applying them to this draft, including normalized section spacing. Saving and updating Preview are separate.")
             .accessibilityIdentifier("LyricsEditor.CleanUp")
     }
 
