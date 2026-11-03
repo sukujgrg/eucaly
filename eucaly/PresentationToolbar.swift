@@ -53,8 +53,11 @@ final class PresentationToolbarController: NSObject, NSToolbarDelegate, NSToolba
         ])
         .receive(on: RunLoop.main)
         .sink { [weak self] _ in self?.scheduleRender() }.store(in: &observations)
+        // Update chrome (label, tooltip, reminder insert/remove) must stay aligned
+        // with validateToolbarItem in the same main turn. Coalescing here lets AX
+        // disable the reminder before renderUpdate rewrites its help text.
         updates.$state.receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.scheduleRender() }.store(in: &observations)
+            .sink { [weak self] _ in self?.render() }.store(in: &observations)
         NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.thumbnailControls.refresh() }.store(in: &observations)
