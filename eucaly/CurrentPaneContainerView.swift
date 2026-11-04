@@ -20,14 +20,9 @@ struct CurrentPaneContainerView: View {
     @State private var isSeekingVideo: Bool = false
 
     var body: some View {
-        let slides = session.slides
+        let document = session.presentationDocument
         let isCollapsed = flow.isCurrentCollapsed
-        let allowsPDFThumbnailRendering: Bool = {
-            if let pdfSource = session.pdfSlideSource {
-                return PDFSlideCatalog.shouldRenderThumbnails(pageCount: pdfSource.pageCount)
-            }
-            return PDFSlideCatalog.shouldRenderThumbnails(for: slides)
-        }()
+        let multiSource = document?.containsMultipleSources == true
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 let statusText: String = {
@@ -130,30 +125,16 @@ struct CurrentPaneContainerView: View {
                         ScrollViewReader { scrollProxy in
                             ScrollView {
                                 LazyVGrid(columns: layout.columns, spacing: layout.spacing) {
-                                    if let pdfSource = session.pdfSlideSource {
-                                        ForEach(0..<pdfSource.pageCount, id: \.self) { pageIndex in
-                                            let slide = PDFSlideCatalog.slide(url: pdfSource.url, pageIndex: pageIndex)
+                                    if let document, document.slideCount > 0 {
+                                        ForEach(0..<document.slideCount, id: \.self) { index in
+                                            let slide = document.slide(at: index)
                                             SlideGridCellView(
                                                 slide: slide,
                                                 itemWidth: layout.itemWidth,
                                                 itemHeight: layout.itemHeight,
                                                 isSelected: slide.id == session.currentSlideID,
-                                                allowsPDFThumbnailRendering: allowsPDFThumbnailRendering,
-                                                onTap: {
-                                                    focusCurrentThumbnails()
-                                                    flow.selectCurrentSlide(slide.id, in: session)
-                                                }
-                                            )
-                                            .id(slide.id)
-                                        }
-                                    } else {
-                                        ForEach(slides) { slide in
-                                            SlideGridCellView(
-                                                slide: slide,
-                                                itemWidth: layout.itemWidth,
-                                                itemHeight: layout.itemHeight,
-                                                isSelected: slide.id == session.currentSlideID,
-                                                allowsPDFThumbnailRendering: allowsPDFThumbnailRendering,
+                                                allowsPDFThumbnailRendering: document.allowsPDFThumbnailRendering(for: slide),
+                                                accessibilityTitleIncludesSource: multiSource,
                                                 onTap: {
                                                     focusCurrentThumbnails()
                                                     flow.selectCurrentSlide(slide.id, in: session)

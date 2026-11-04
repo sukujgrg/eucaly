@@ -25,7 +25,9 @@ struct SidebarConfiguration {
     let libraryRootURL: URL?
     var captureWindows: [ScreenCaptureManager.CapturedWindow]
     let libraryScrollRequest: LibraryScrollRequest?
-    let selectedPlaylistEntryIDs: Set<UUID>
+    let selectedLibraryURLs: [URL]
+    /// Playlist multi-select in the order the operator built the deck.
+    let selectedPlaylistEntryIDs: [UUID]
     let sidebarSelection: SidebarSelection?
     var selectedAudioURL: URL?
     var backgroundAudioLoop: Bool
@@ -48,7 +50,7 @@ struct SidebarConfiguration {
     let onClearBackgroundAudio: () -> Bool
     let onApplyBackgroundAudioVolume: (Double) -> Void
     let onSeekBackgroundAudio: (Double) -> Void
-    let onSelectionRequest: (SidebarSelection?, Set<UUID>) -> Bool
+    let onSelectionRequest: (SidebarSelectionChange) -> Bool
     let onPickWindow: () -> Void
     let onClearSelectedWindow: () -> Void
 

@@ -163,7 +163,7 @@ nonisolated struct SlideLine: Identifiable, Hashable {
     }
 }
 
-nonisolated struct Slide: Identifiable {
+nonisolated struct Slide: Identifiable, Equatable {
     let id: UUID
     let index: Int
     let lines: [SlideLine]

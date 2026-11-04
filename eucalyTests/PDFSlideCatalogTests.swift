@@ -25,4 +25,14 @@ final class PDFSlideCatalogTests: XCTestCase {
         XCTAssertEqual(slide.id, PDFSlideCatalog.stableSlideID(url: url, pageIndex: 3))
         XCTAssertEqual(slide.label, "Page 4")
     }
+
+    func testMaterializedSlidesReuseStableIDsAcrossPages() {
+        let url = URL(fileURLWithPath: "/tmp/sample.pdf")
+        let slides = PDFSlideCatalog.slides(url: url, pageCount: 5)
+        XCTAssertEqual(slides.count, 5)
+        for (index, slide) in slides.enumerated() {
+            XCTAssertEqual(slide.id, PDFSlideCatalog.stableSlideID(url: url, pageIndex: index))
+            XCTAssertEqual(PDFSlideCatalog.pageIndex(fromStableSlideID: slide.id, url: url), index)
+        }
+    }
 }

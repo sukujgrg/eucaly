@@ -461,9 +461,9 @@ final class SidebarControlLayoutTests: XCTestCase {
         let down = try XCTUnwrap(buttons.first { $0.identifier?.rawValue == "sidebar.playlist.down" })
         let ids = (0..<4).map { _ in UUID() }
         let items = ids.enumerated().map { PlaylistSidebarItem(id: $0.element, title: "Item \($0.offset)", exists: true) }
-        let cases: [(Set<UUID>, Bool, Bool, Bool)] = [
+        let cases: [([UUID], Bool, Bool, Bool)] = [
             ([ids[0]], true, false, true), ([ids[3]], true, true, false),
-            (Set(ids), true, false, false), ([ids[1], ids[2]], true, true, true),
+            (ids, true, false, false), ([ids[1], ids[2]], true, true, true),
             ([UUID()], false, false, false), ([], false, false, false)
         ]
         for (selectedIDs, canRemove, canMoveUp, canMoveDown) in cases {
@@ -737,7 +737,7 @@ private final class SidebarControlsFixture {
     let calls: SidebarControlCalls
     let frameRateSelection: SidebarFrameRateSelection
     let configuration: SidebarConfiguration
-    private let configurationBuilder: (Int, URL, [URL], [PlaylistSidebarItem], [URL], Set<UUID>) -> SidebarConfiguration
+    private let configurationBuilder: (Int, URL, [URL], [PlaylistSidebarItem], [URL], [UUID]) -> SidebarConfiguration
     private let sidebarWidth: NSLayoutConstraint
     private let defaults: UserDefaults
     private let suite: String
@@ -762,7 +762,7 @@ private final class SidebarControlsFixture {
         let root = URL(fileURLWithPath: "/sidebar-control-fixture")
         let audio = root.appendingPathComponent("Audio/Fixture audio.mp3")
         let playlistID = UUID()
-        let makeConfiguration: (Int, URL, [URL], [PlaylistSidebarItem], [URL], Set<UUID>) -> SidebarConfiguration = { libraryRevision, libraryRoot, libraryFiles, playlistItems, audioFiles, selectedPlaylistEntryIDs in
+        let makeConfiguration: (Int, URL, [URL], [PlaylistSidebarItem], [URL], [UUID]) -> SidebarConfiguration = { libraryRevision, libraryRoot, libraryFiles, playlistItems, audioFiles, selectedPlaylistEntryIDs in
             SidebarConfiguration(
                 session: session,
                 isWindowCaptureSupported: true,
@@ -775,6 +775,7 @@ private final class SidebarControlsFixture {
                 libraryRootURL: libraryRoot,
                 captureWindows: [.init(id: 42, windowID: 42, title: "Fixture window", appName: "Fixture", appBundleIdentifier: nil, frame: .init(x: 0, y: 0, width: 640, height: 480))],
                 libraryScrollRequest: nil,
+                selectedLibraryURLs: selectsLibraryItem ? [root.appendingPathComponent("Song.txt")] : [],
                 selectedPlaylistEntryIDs: selectedPlaylistEntryIDs,
                 sidebarSelection: selectsLibraryItem ? .library(root.appendingPathComponent("Song.txt")) : nil,
                 selectedAudioURL: audio,
@@ -797,7 +798,7 @@ private final class SidebarControlsFixture {
                 onClearBackgroundAudio: { calls.count += 1; calls.playbackActions.append("clear"); return true },
                 onApplyBackgroundAudioVolume: { _ in calls.count += 1 },
                 onSeekBackgroundAudio: { _ in calls.count += 1 },
-                onSelectionRequest: { selection, _ in calls.selections.append(selection); return calls.acceptsSelection },
+                onSelectionRequest: { change in calls.selections.append(change.primary); return calls.acceptsSelection },
                 onPickWindow: { calls.count += 1 },
                 onClearSelectedWindow: { calls.count += 1 },
                 setSelectedAudioURL: { _ in calls.count += 1 },
@@ -848,7 +849,7 @@ private final class SidebarControlsFixture {
 
     func configuration(libraryRevision: Int, libraryRootURL: URL? = nil, libraryFiles: [URL]? = nil,
                        playlistItems: [PlaylistSidebarItem]? = nil, audioFiles: [URL]? = nil,
-                       selectedPlaylistEntryIDs: Set<UUID>? = nil) -> SidebarConfiguration {
+                       selectedPlaylistEntryIDs: [UUID]? = nil) -> SidebarConfiguration {
         configurationBuilder(libraryRevision, libraryRootURL ?? configuration.libraryRootURL!, libraryFiles ?? configuration.libraryFiles,
             playlistItems ?? configuration.playlistItems, audioFiles ?? configuration.audioFiles,
             selectedPlaylistEntryIDs ?? configuration.selectedPlaylistEntryIDs)

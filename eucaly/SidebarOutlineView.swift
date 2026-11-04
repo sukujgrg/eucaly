@@ -115,6 +115,10 @@ nonisolated struct SidebarOutlineModel: Sendable {
     let itemsByID: [SidebarOutlineItemID: SidebarOutlineItem]
     let parentGroupByItemID: [SidebarOutlineItemID: SidebarOutlineItem]
     let groupItemsByID: [String: SidebarOutlineItem]
+    /// Depth-first leaf library URLs in the order the outline presents them.
+    let leafLibraryURLs: [URL]
+    /// Depth-first leaf playlist IDs in outline order.
+    let leafPlaylistIDs: [UUID]
 
     init(roots: [SidebarOutlineItem]) {
         self.roots = roots
@@ -122,6 +126,8 @@ nonisolated struct SidebarOutlineModel: Sendable {
         var itemsByID: [SidebarOutlineItemID: SidebarOutlineItem] = [:]
         var parentGroupByItemID: [SidebarOutlineItemID: SidebarOutlineItem] = [:]
         var groupItemsByID: [String: SidebarOutlineItem] = [:]
+        var leafLibraryURLs: [URL] = []
+        var leafPlaylistIDs: [UUID] = []
 
         func index(_ item: SidebarOutlineItem, parent: SidebarOutlineItem?) {
             itemsByID[item.id] = item
@@ -130,6 +136,14 @@ nonisolated struct SidebarOutlineModel: Sendable {
             }
             if let groupID = item.groupID {
                 groupItemsByID[groupID] = item
+            }
+            switch item.id {
+            case .library(let url):
+                leafLibraryURLs.append(url.standardizedFileURL)
+            case .playlist(let id):
+                leafPlaylistIDs.append(id)
+            default:
+                break
             }
             for child in item.children {
                 index(child, parent: item)
@@ -143,6 +157,8 @@ nonisolated struct SidebarOutlineModel: Sendable {
         self.itemsByID = itemsByID
         self.parentGroupByItemID = parentGroupByItemID
         self.groupItemsByID = groupItemsByID
+        self.leafLibraryURLs = leafLibraryURLs
+        self.leafPlaylistIDs = leafPlaylistIDs
     }
 
     static let empty = SidebarOutlineModel(roots: [])

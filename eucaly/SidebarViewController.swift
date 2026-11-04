@@ -159,7 +159,7 @@ final class SidebarViewController: NSViewController {
         audioImport.isEnabled = configuration.libraryRootURL != nil
         retryLibrary.isEnabled = !configuration.isLibraryLoading
         let playlistMoves = PlaylistMoveAvailability(
-            selectedIDs: configuration.selectedPlaylistEntryIDs,
+            selectedIDs: Set(configuration.selectedPlaylistEntryIDs),
             orderedIDs: configuration.playlistItems.map(\.id))
         removePlaylist.isEnabled = !playlistMoves.selectedIDs.isEmpty
         movePlaylistUp.isEnabled = playlistMoves.canMoveUp
@@ -808,18 +808,37 @@ final class SidebarViewController: NSViewController {
         }
         let model = configuration.libraryFiles.isEmpty ? .empty : presentation!.model
         let selected: SidebarOutlineItemID? = if case .library(let url) = configuration.sidebarSelection { .library(url.standardizedFileURL) } else { nil }
+        let selectedIDs = Set(configuration.selectedLibraryURLs.map { SidebarOutlineItemID.library($0.standardizedFileURL) })
         libraryOutline.update(SidebarOutlineConfiguration(
             contentRevision: AnyHashable(revision),
-            expansionKey: libraryExpansionKey, modelBuilder: { model }, selectedItemIDs: selected.map { [$0] } ?? [], primarySelectedItemID: selected,
+            expansionKey: libraryExpansionKey, modelBuilder: { model },
+            selectedItemIDs: selectedIDs.isEmpty ? (selected.map { [$0] } ?? []) : selectedIDs,
+            primarySelectedItemID: selected,
             scrollRequest: configuration.libraryScrollRequest.map { .init(id: $0.id, itemID: .library($0.url.standardizedFileURL)) },
             expansionCommand: libraryExpansionCommand, expansionStore: expansionStore,
-            navigationSection: libraryOutline.scrollView.isHidden ? nil : navigationSection(.library), navigationCoordinator: navigation, allowsEmptySelection: true,
-            onSelectionChange: { [weak self] _, primary in
+            navigationSection: libraryOutline.scrollView.isHidden ? nil : navigationSection(.library), navigationCoordinator: navigation,
+            allowsMultipleSelection: true, allowsEmptySelection: true,
+            onSelectionChange: { [weak self] ids, primary in
                 guard let self, let configuration = self.configuration, !isApplyingSnapshot else { return false }
-                guard let primary else { return configuration.onSelectionRequest(nil, []) }
-                guard case .library(let url) = primary,
-                      configuration.libraryFiles.contains(where: { $0.standardizedFileURL == url }) else { return false }
-                return configuration.onSelectionRequest(.library(url), [])
+                guard let primary else {
+                    return configuration.onSelectionRequest(.cleared)
+                }
+                guard case .library(let primaryURL) = primary,
+                      configuration.libraryFiles.contains(where: { $0.standardizedFileURL == primaryURL }) else { return false }
+                let selectedSet = Set(ids.compactMap { id -> URL? in
+                    guard case .library(let url) = id else { return nil }
+                    return url.standardizedFileURL
+                })
+                // Visible outline order (Kind/Folder/None), not inventory scan order.
+                let visualOrder = model.leafLibraryURLs
+                let urls = SidebarSelectionOrdering.updatingOrder(
+                    previous: configuration.selectedLibraryURLs.map(\.standardizedFileURL),
+                    newSet: selectedSet.isEmpty ? [primaryURL.standardizedFileURL] : selectedSet,
+                    visualOrder: visualOrder
+                )
+                return configuration.onSelectionRequest(
+                    SidebarSelectionChange(primary: .library(primaryURL), libraryURLs: urls)
+                )
             }, onAction: { [weak self] item, action in
                 guard let self, let configuration = self.configuration, !isApplyingSnapshot, case .library(let url) = item,
                       configuration.libraryFiles.contains(where: { $0.standardizedFileURL == url }) else { return }
@@ -855,17 +874,29 @@ final class SidebarViewController: NSViewController {
         setOutlineHidden(items.isEmpty, section: .playlist)
         playlistCaption.superview?.isHidden = !items.isEmpty
         let selected: SidebarOutlineItemID? = if case .playlist(let id) = configuration.sidebarSelection { .playlist(id) } else { nil }
+        let model = SidebarOutlineModel(roots: items.map {
+            SidebarOutlineItem(id: .playlist($0.id), title: $0.title, isMissing: !$0.exists, accessoryAction: .remove, contextActions: [.remove])
+        })
         playlistOutline.update(SidebarOutlineConfiguration(
-            contentRevision: AnyHashable(items), modelBuilder: {
-                SidebarOutlineModel(roots: items.map { SidebarOutlineItem(id: .playlist($0.id), title: $0.title, isMissing: !$0.exists, accessoryAction: .remove, contextActions: [.remove]) })
-            }, selectedItemIDs: Set(configuration.selectedPlaylistEntryIDs.map { .playlist($0) }), primarySelectedItemID: selected,
+            contentRevision: AnyHashable(items), modelBuilder: { model },
+            selectedItemIDs: Set(configuration.selectedPlaylistEntryIDs.map { .playlist($0) }), primarySelectedItemID: selected,
             expansionStore: expansionStore, navigationSection: items.isEmpty ? nil : navigationSection(.playlist), navigationCoordinator: navigation,
             allowsMultipleSelection: true, allowsEmptySelection: true,
             onSelectionChange: { [weak self] ids, primary in
                 guard let self, let configuration = self.configuration, !isApplyingSnapshot else { return false }
-                let ids = Set(ids.compactMap { if case .playlist(let id) = $0 { id } else { nil } })
-                let primaryID: UUID? = if case .playlist(let id) = primary { id } else { ids.first }
-                return configuration.onSelectionRequest(primaryID.map(SidebarSelection.playlist), ids)
+                let selected = Set(ids.compactMap { if case .playlist(let id) = $0 { id } else { nil } })
+                let primaryID: UUID? = if case .playlist(let id) = primary { id } else { selected.first }
+                guard let primaryID else {
+                    return configuration.onSelectionRequest(.cleared)
+                }
+                let playlistIDs = SidebarSelectionOrdering.updatingOrder(
+                    previous: configuration.selectedPlaylistEntryIDs,
+                    newSet: selected.isEmpty ? [primaryID] : selected,
+                    visualOrder: model.leafPlaylistIDs
+                )
+                return configuration.onSelectionRequest(
+                    SidebarSelectionChange(primary: .playlist(primaryID), playlistEntryIDs: playlistIDs)
+                )
             }, onAction: { [weak self] item, action in
                 guard let self, let configuration = self.configuration, !isApplyingSnapshot, case .playlist(let id) = item, action == .remove else { return }
                 configuration.onRemovePlaylistItem(id)
@@ -943,9 +974,9 @@ final class SidebarViewController: NSViewController {
             expansionStore: expansionStore, navigationSection: windows.isEmpty ? nil : navigationSection(.windows), navigationCoordinator: navigation,
             allowsEmptySelection: true, onSelectionChange: { [weak self] _, primary in
                 guard let self, let configuration = self.configuration, !isApplyingSnapshot else { return false }
-                guard let primary else { return configuration.onSelectionRequest(nil, []) }
+                guard let primary else { return configuration.onSelectionRequest(.cleared) }
                 guard case .window(let id) = primary else { return false }
-                return configuration.onSelectionRequest(.window(id), [])
+                return configuration.onSelectionRequest(SidebarSelectionChange(primary: .window(id)))
             }
         ))
     }

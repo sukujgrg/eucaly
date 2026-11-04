@@ -9,6 +9,7 @@ struct SlideGridCellView: View {
     let itemHeight: CGFloat
     let isSelected: Bool
     let allowsPDFThumbnailRendering: Bool
+    var accessibilityTitleIncludesSource: Bool = false
     let onTap: () -> Void
 
     var body: some View {
@@ -40,6 +41,7 @@ struct SlideGridCellView: View {
             )
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityLabelText)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityValue(readability.message)
         .background {
@@ -54,6 +56,19 @@ struct SlideGridCellView: View {
                 if readability != report { readability = report }
             }
         }
+    }
+
+    private var accessibilityLabelText: String {
+        // Multi-source decks already bake the filename into PDF/lyrics labels;
+        // keep a fallback for media slides whose title is only the filename.
+        guard accessibilityTitleIncludesSource else { return slide.title }
+        if let name = slide.pdfURL?.lastPathComponent
+            ?? slide.imageURL?.lastPathComponent
+            ?? slide.videoURL?.lastPathComponent {
+            if slide.title.contains(name) { return slide.title }
+            return "\(name), \(slide.title)"
+        }
+        return slide.title
     }
 
     @ViewBuilder

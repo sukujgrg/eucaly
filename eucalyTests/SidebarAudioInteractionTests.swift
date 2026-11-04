@@ -225,7 +225,8 @@ private final class SidebarRecoveryAudioFixture {
         let configuration = SidebarConfiguration(
             session: session, isWindowCaptureSupported: false, libraryFiles: [], audioFiles: [activeURL, highlightedURL],
             isLibraryLoading: false, libraryLoadFailure: nil, libraryRevision: 1, playlistItems: [],
-            libraryRootURL: nil, captureWindows: [], libraryScrollRequest: nil, selectedPlaylistEntryIDs: [],
+            libraryRootURL: nil, captureWindows: [], libraryScrollRequest: nil,
+            selectedLibraryURLs: [], selectedPlaylistEntryIDs: [],
             sidebarSelection: nil, selectedAudioURL: highlightedURL, backgroundAudioLoop: session.backgroundAudioLoop,
             backgroundAudioVolumeDraft: session.backgroundAudioVolume, windowCaptureFrameRate: 30,
             displayName: { $0.lastPathComponent }, onImportToLibrary: {}, onRetryLibraryLoad: {}, onImportToAudio: {},
@@ -234,7 +235,7 @@ private final class SidebarRecoveryAudioFixture {
             onSelectBackgroundAudio: { _ in }, onPlayPauseBackgroundAudio: {}, onStopBackgroundAudio: {},
             onClearBackgroundAudio: { state.clearAttempts += 1; return session.clearBackgroundAudio() },
             onApplyBackgroundAudioVolume: { _ in }, onSeekBackgroundAudio: { _ in },
-            onSelectionRequest: { _, _ in true }, onPickWindow: {}, onClearSelectedWindow: {},
+            onSelectionRequest: { _ in true }, onPickWindow: {}, onClearSelectedWindow: {},
             setSelectedAudioURL: { state.selectedAudioURL = $0; state.selectionChanges.append($0) },
             setBackgroundAudioLoop: { state.loopAttempts.append($0); return session.setBackgroundAudioLoop($0) },
             setBackgroundAudioVolumeDraft: { _ in }, setWindowCaptureFrameRate: { _ in })

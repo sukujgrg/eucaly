@@ -211,19 +211,26 @@ final class PDFDocumentReloadTests: XCTestCase {
         }
     }
 
-    func testAcceptedSourceCacheEvictsTheLeastRecentlyUsedOfThreeSources() throws {
+    func testAcceptedSourceCacheRetainsEveryDocumentOwnedPDF() throws {
         try withTemporaryDirectory { directory in
             let urls = (0..<4).map { directory.appendingPathComponent("source-\($0).pdf") }
             for url in urls { try writePDF(to: url, pageCount: 1) }
             let cache = AcceptedPDFSourceCache()
-            let first = try XCTUnwrap(cache.prepareAcceptedSource(for: urls[0]))
-            let second = try XCTUnwrap(cache.prepareAcceptedSource(for: urls[1]))
-            XCTAssertNotNil(cache.prepareAcceptedSource(for: urls[2]))
+            let prepared = try XCTUnwrap(cache.replaceDocumentSources(urls))
+            XCTAssertEqual(prepared.count, 4)
+            let first = try XCTUnwrap(cache.acceptedSource(for: urls[0]))
+            let second = try XCTUnwrap(cache.acceptedSource(for: urls[1]))
             XCTAssertTrue(cache.prepareAcceptedSource(for: urls[0]) === first)
-            XCTAssertNotNil(cache.prepareAcceptedSource(for: urls[3]))
-            XCTAssertTrue(cache.prepareAcceptedSource(for: urls[0]) === first)
-            XCTAssertNil(cache.acceptedSource(for: urls[1]), "Eviction removes only the cache's reference")
-            XCTAssertFalse(cache.prepareAcceptedSource(for: urls[1]) === second, "A fourth source must evict the least-recently-used entry")
+            XCTAssertTrue(cache.acceptedSource(for: urls[1]) === second)
+            XCTAssertNotNil(cache.acceptedSource(for: urls[3]))
+
+            let replacement = try XCTUnwrap(cache.replaceDocumentSources([urls[0], urls[2]]))
+            XCTAssertEqual(replacement.count, 2)
+            XCTAssertFalse(cache.acceptedSource(for: urls[0]) === first,
+                           "Explicit document replace must re-read same-URL bytes")
+            XCTAssertNil(cache.acceptedSource(for: urls[1]),
+                         "URLs outside the Current document must not remain cached")
+            XCTAssertNotNil(cache.acceptedSource(for: urls[2]))
         }
     }
 

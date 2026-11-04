@@ -24,21 +24,59 @@ nonisolated enum PDFSlideCatalog {
         pageCount <= thumbnailRenderPageLimit
     }
 
+    /// Legacy helper for a single-file materialized PDF slide array.
+    /// Multi-source decks must gate per PDF via `PresentationDocument`.
     static func shouldRenderThumbnails(for slides: [Slide]) -> Bool {
-        shouldRenderThumbnails(pageCount: slides.filter { $0.pdfURL != nil }.count)
+        let pdfURLs = Set(slides.compactMap { $0.pdfURL?.standardizedFileURL })
+        guard pdfURLs.count <= 1 else {
+            // Mixed or multi-PDF materialized decks only contain small catalogs.
+            return true
+        }
+        return shouldRenderThumbnails(pageCount: slides.filter { $0.pdfURL != nil }.count)
     }
 
-    static func pageLabel(pageIndex: Int) -> String {
-        "Page \(pageIndex + 1)"
+    static func pageLabel(pageIndex: Int, filename: String? = nil) -> String {
+        let page = "Page \(pageIndex + 1)"
+        guard let filename, !filename.isEmpty else { return page }
+        return "\(filename) · \(page)"
     }
 
     static func stableSlideID(url: URL, pageIndex: Int) -> UUID {
+        stableSlideID(urlDigest: urlDigest(for: url), pageIndex: pageIndex)
+    }
+
+    static func pageIndex(fromStableSlideID id: UUID, url: URL) -> Int? {
+        let uuidBytes = id.uuid
+        let encodedIndex = (Int(uuidBytes.0) << 24)
+            | (Int(uuidBytes.1) << 16)
+            | (Int(uuidBytes.2) << 8)
+            | Int(uuidBytes.3)
+        guard encodedIndex >= 0 else { return nil }
+        guard stableSlideID(url: url, pageIndex: encodedIndex) == id else { return nil }
+        return encodedIndex
+    }
+
+    static func slide(url: URL, pageIndex: Int, includeFilename: Bool = false) -> Slide {
+        slide(url: url, pageIndex: pageIndex, includeFilename: includeFilename, urlDigest: urlDigest(for: url))
+    }
+
+    static func slides(url: URL, pageCount: Int, includeFilename: Bool = false) -> [Slide] {
+        guard pageCount > 0 else { return [] }
+        let digest = urlDigest(for: url)
+        return (0..<pageCount).map {
+            slide(url: url, pageIndex: $0, includeFilename: includeFilename, urlDigest: digest)
+        }
+    }
+
+    private static func urlDigest(for url: URL) -> [UInt8] {
         let normalizedURL = url.standardizedFileURL.absoluteString
         var hasher = SHA256()
         hasher.update(data: Data(normalizedURL.utf8))
-        let digest = hasher.finalize()
+        return Array(hasher.finalize().prefix(16))
+    }
 
-        var bytes = Array(digest.prefix(16))
+    private static func stableSlideID(urlDigest: [UInt8], pageIndex: Int) -> UUID {
+        var bytes = urlDigest
         bytes[0] = UInt8((pageIndex >> 24) & 0xFF)
         bytes[1] = UInt8((pageIndex >> 16) & 0xFF)
         bytes[2] = UInt8((pageIndex >> 8) & 0xFF)
@@ -54,33 +92,23 @@ nonisolated enum PDFSlideCatalog {
         ))
     }
 
-    static func pageIndex(fromStableSlideID id: UUID, url: URL) -> Int? {
-        let uuidBytes = id.uuid
-        let encodedIndex = (Int(uuidBytes.0) << 24)
-            | (Int(uuidBytes.1) << 16)
-            | (Int(uuidBytes.2) << 8)
-            | Int(uuidBytes.3)
-        guard encodedIndex >= 0 else { return nil }
-        guard stableSlideID(url: url, pageIndex: encodedIndex) == id else { return nil }
-        return encodedIndex
-    }
-
-    static func slide(url: URL, pageIndex: Int) -> Slide {
-        Slide(
-            id: stableSlideID(url: url, pageIndex: pageIndex),
+    private static func slide(
+        url: URL,
+        pageIndex: Int,
+        includeFilename: Bool,
+        urlDigest: [UInt8]
+    ) -> Slide {
+        let filename = includeFilename ? url.lastPathComponent : nil
+        return Slide(
+            id: stableSlideID(urlDigest: urlDigest, pageIndex: pageIndex),
             index: pageIndex + 1,
             lines: [],
-            label: pageLabel(pageIndex: pageIndex),
+            label: pageLabel(pageIndex: pageIndex, filename: filename),
             videoURL: nil,
             pdfURL: url,
             pdfPageIndex: pageIndex,
             imageURL: nil,
             captureWindowID: nil
         )
-    }
-
-    static func slides(url: URL, pageCount: Int) -> [Slide] {
-        guard pageCount > 0 else { return [] }
-        return (0..<pageCount).map { slide(url: url, pageIndex: $0) }
     }
 }

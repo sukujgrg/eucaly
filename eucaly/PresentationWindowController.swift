@@ -83,7 +83,22 @@ final class PresentationSession: NSObject, ObservableObject {
         case playing
     }
 
-    @Published var slides: [Slide] = [] { didSet { scheduleOutputChange() } }
+    private var isApplyingPresentationDocument = false
+    @Published private(set) var presentationDocument: PresentationDocument? { didSet { scheduleOutputChange() } }
+    /// Prefer `setSlides` / `setPresentationDocument`. Direct assignment syncs the
+    /// presentation document for tests and legacy call sites.
+    @Published var slides: [Slide] = [] {
+        didSet {
+            if !isApplyingPresentationDocument {
+                isApplyingPresentationDocument = true
+                presentationDocument = slides.isEmpty ? nil : .slides(slides)
+                pdfSlideSource = nil
+                currentDocumentRevision &+= 1
+                isApplyingPresentationDocument = false
+            }
+            scheduleOutputChange()
+        }
+    }
     @Published private(set) var currentLyricsSourceURL: URL?
     @Published private(set) var pdfSlideSource: PDFSlideSource? { didSet { scheduleOutputChange() } }
     @Published var currentSlideID: Slide.ID? { didSet { scheduleOutputChange() } }
@@ -110,17 +125,18 @@ final class PresentationSession: NSObject, ObservableObject {
         outputCoordinator.profiles.backgroundPreferences.settings(for: outputSourceID)
     }
     var referencedFileURLs: Set<URL> {
-        var urls = Set(Self.sourceFileURLs(in: slides, lyricsSourceURL: currentLyricsSourceURL).map(\.standardizedFileURL))
-        for url in [pdfSlideSource?.url, backgroundVisualURL, backgroundAudioURL, currentResourceScope, audioResourceScope,
+        var urls = Set((presentationDocument?.sourceURLs ?? []).map(\.standardizedFileURL))
+        if let currentLyricsSourceURL { urls.insert(currentLyricsSourceURL.standardizedFileURL) }
+        for url in [backgroundVisualURL, backgroundAudioURL, currentResourceScope, audioResourceScope,
                     (backgroundAudioPlayer?.currentItem?.asset as? AVURLAsset)?.url].compactMap({ $0 }) {
             urls.insert(url.standardizedFileURL)
         }
         return urls
     }
 
-    private static func sourceFileURLs(in slides: [Slide], lyricsSourceURL: URL?) -> [URL] {
-        var urls = slides.flatMap { [$0.videoURL, $0.pdfURL, $0.imageURL].compactMap { $0 } }
-        if !slides.isEmpty, let lyricsSourceURL { urls.append(lyricsSourceURL) }
+    private static func sourceFileURLs(in document: PresentationDocument, lyricsSourceURL: URL?) -> [URL] {
+        var urls = document.sourceURLs
+        if !document.isEmpty, let lyricsSourceURL { urls.append(lyricsSourceURL) }
         return urls
     }
 
@@ -236,51 +252,35 @@ final class PresentationSession: NSObject, ObservableObject {
     }
 
     var currentSlide: Slide? {
-        guard let currentSlideID else { return nil }
-        if let pdfSlideSource {
-            guard let pageIndex = PDFSlideCatalog.pageIndex(fromStableSlideID: currentSlideID, url: pdfSlideSource.url) else {
-                return nil
-            }
-            return PDFSlideCatalog.slide(url: pdfSlideSource.url, pageIndex: pageIndex)
-        }
-        return slides.first { $0.id == currentSlideID }
+        guard let currentSlideID, let presentationDocument else { return nil }
+        guard presentationDocument.containsSlide(id: currentSlideID) else { return nil }
+        guard let index = presentationDocument.index(of: currentSlideID) else { return nil }
+        return presentationDocument.slide(at: index)
     }
 
     var isEmpty: Bool {
-        slides.isEmpty && pdfSlideSource == nil
+        presentationDocument?.isEmpty ?? true
     }
 
     var slideCount: Int {
-        pdfSlideSource?.pageCount ?? slides.count
+        presentationDocument?.slideCount ?? 0
     }
 
     var firstSlideID: Slide.ID? {
-        if let pdfSlideSource {
-            return PDFSlideCatalog.slide(url: pdfSlideSource.url, pageIndex: 0).id
-        }
-        return slides.first?.id
+        presentationDocument?.firstSlideID
     }
 
     func containsSlide(id: Slide.ID) -> Bool {
-        if let pdfSlideSource {
-            return PDFSlideCatalog.pageIndex(fromStableSlideID: id, url: pdfSlideSource.url) != nil
-        }
-        return slides.contains { $0.id == id }
+        presentationDocument?.containsSlide(id: id) ?? false
     }
 
     func slide(at index: Int) -> Slide? {
-        guard index >= 0, index < slideCount else { return nil }
-        if let pdfSlideSource {
-            return PDFSlideCatalog.slide(url: pdfSlideSource.url, pageIndex: index)
-        }
-        return slides[index]
+        guard let presentationDocument, index >= 0, index < presentationDocument.slideCount else { return nil }
+        return presentationDocument.slide(at: index)
     }
 
     func slideIndex(for slideID: Slide.ID) -> Int? {
-        if let pdfSlideSource {
-            return PDFSlideCatalog.pageIndex(fromStableSlideID: slideID, url: pdfSlideSource.url)
-        }
-        return slides.firstIndex { $0.id == slideID }
+        presentationDocument?.index(of: slideID)
     }
 
     var hasAvailableBackgroundVisual: Bool {
@@ -290,31 +290,62 @@ final class PresentationSession: NSObject, ObservableObject {
     }
 
     @discardableResult
+    func setPresentationDocument(
+        _ document: PresentationDocument,
+        lyricsSourceURL: URL? = nil,
+        preferredSelection: Slide.ID? = nil,
+        preferredSelectionIndex: Int? = nil
+    ) -> Bool {
+        guard Self.sourceFileURLs(in: document, lyricsSourceURL: lyricsSourceURL).allSatisfy({ canAcquireFile($0) }) else {
+            return false
+        }
+        // Accept PDF bytes before publishing Current so a failed Load leaves
+        // the previous document and its accepted sources intact.
+        if document.pdfURLs.isEmpty {
+            pdfDocumentCache.clear()
+        } else {
+            guard pdfDocumentCache.replaceDocumentSources(document.pdfURLs) != nil else { return false }
+        }
+
+        currentDocumentRevision &+= 1
+        let previousSelection = currentSlideID
+        isApplyingPresentationDocument = true
+        presentationDocument = document.isEmpty ? nil : document
+        pdfSlideSource = document.soleVirtualPDFSource
+        slides = document.materializedSlides
+        isApplyingPresentationDocument = false
+        currentLyricsSourceURL = document.isEmpty ? nil : lyricsSourceURL
+
+        // Explicit preferredSelection / preferredSelectionIndex win over a
+        // surviving prior Current ID (same-URL reload can keep old page IDs).
+        if let preferredSelection, document.containsSlide(id: preferredSelection) {
+            currentSlideID = preferredSelection
+        } else if let preferredSelectionIndex,
+                  (0..<document.slideCount).contains(preferredSelectionIndex) {
+            currentSlideID = document.slide(at: preferredSelectionIndex).id
+        } else if let previousSelection, document.containsSlide(id: previousSelection) {
+            currentSlideID = previousSelection
+        } else {
+            currentSlideID = document.firstSlideID
+        }
+
+        resetVideoPlaybackProgress()
+        return true
+    }
+
+    @discardableResult
     func setSlides(
         _ slides: [Slide],
         lyricsSourceURL: URL? = nil,
         preferredSelection: Slide.ID? = nil,
         preferredSelectionIndex: Int? = nil
     ) -> Bool {
-        guard Self.sourceFileURLs(in: slides, lyricsSourceURL: lyricsSourceURL).allSatisfy({ canAcquireFile($0) }) else { return false }
-        currentDocumentRevision &+= 1
-        pdfDocumentCache.clear()
-        let preservedSelection = preferredSelection ?? currentSlideID
-        pdfSlideSource = nil
-        currentLyricsSourceURL = slides.isEmpty ? nil : lyricsSourceURL
-        self.slides = slides
-        if let preservedSelection,
-           slides.contains(where: { $0.id == preservedSelection }) {
-            currentSlideID = preservedSelection
-        } else if let preferredSelectionIndex,
-                  slides.indices.contains(preferredSelectionIndex) {
-            currentSlideID = slides[preferredSelectionIndex].id
-        } else {
-            currentSlideID = slides.first?.id
-        }
-        if let url = currentSlide?.pdfURL { pdfDocumentCache.prepareAcceptedSource(for: url) }
-        resetVideoPlaybackProgress()
-        return true
+        setPresentationDocument(
+            .slides(slides),
+            lyricsSourceURL: lyricsSourceURL,
+            preferredSelection: preferredSelection,
+            preferredSelectionIndex: preferredSelectionIndex
+        )
     }
 
     @discardableResult
@@ -323,25 +354,11 @@ final class PresentationSession: NSObject, ObservableObject {
         preferredSelection: Slide.ID? = nil,
         preferredSelectionIndex: Int? = nil
     ) -> Bool {
-        guard canAcquireFile(source.url) else { return false }
-        currentDocumentRevision &+= 1
-        pdfDocumentCache.clear()
-        slides = []
-        currentLyricsSourceURL = nil
-        pdfSlideSource = source
-
-        if let preferredSelection,
-           PDFSlideCatalog.pageIndex(fromStableSlideID: preferredSelection, url: source.url) != nil {
-            currentSlideID = preferredSelection
-        } else if let preferredSelectionIndex,
-                  (0..<source.pageCount).contains(preferredSelectionIndex) {
-            currentSlideID = PDFSlideCatalog.slide(url: source.url, pageIndex: preferredSelectionIndex).id
-        } else {
-            currentSlideID = PDFSlideCatalog.slide(url: source.url, pageIndex: 0).id
-        }
-        pdfDocumentCache.prepareAcceptedSource(for: source.url)
-        resetVideoPlaybackProgress()
-        return true
+        setPresentationDocument(
+            .virtualPDF(source),
+            preferredSelection: preferredSelection,
+            preferredSelectionIndex: preferredSelectionIndex
+        )
     }
 
     func clearSlides() {
@@ -349,9 +366,12 @@ final class PresentationSession: NSObject, ObservableObject {
         outputCoordinator.clear(for: self)
         currentDocumentRevision &+= 1
         pdfDocumentCache.clear()
+        isApplyingPresentationDocument = true
+        presentationDocument = nil
         slides = []
-        currentLyricsSourceURL = nil
         pdfSlideSource = nil
+        isApplyingPresentationDocument = false
+        currentLyricsSourceURL = nil
         currentSlideID = nil
         setCurrentResourceScope(nil)
         resetVideoPlaybackProgress()
@@ -798,32 +818,46 @@ final class PDFSlideNSView: PDFView {
     }
 }
 
-/// Explicit Load validates and retains at most three immutable sources per
-/// workspace. Accepted output snapshots keep their own source after this clears.
+/// Explicit Load validates and retains immutable PDF bytes for every URL in the
+/// Current document. Accepted output snapshots keep their own source after clear.
 @MainActor
 final class AcceptedPDFSourceCache {
-    private let maxCachedSources = 3
     private var sources: [URL: AcceptedPDFSource] = [:]
-    private var accessOrder: [URL] = []
+    /// URLs owned by the live Current document; never LRU-evicted while current.
+    private var documentURLs: Set<URL> = []
 
     init() {}
+
+    /// Replace the document-owned set. Always re-reads bytes so an explicit
+    /// same-URL Load replaces the previously accepted document. Prepare the
+    /// full set before dropping the previous cache so a mid-flight failure
+    /// cannot leave Current without any accepted PDF bytes.
+    @discardableResult
+    func replaceDocumentSources(_ urls: [URL]) -> [AcceptedPDFSource]? {
+        let keys = urls.map(\.standardizedFileURL)
+        var preparedSources: [URL: AcceptedPDFSource] = [:]
+        var prepared: [AcceptedPDFSource] = []
+        for key in keys {
+            guard let source = AcceptedPDFSource(url: key), PDFDocument(data: source.data) != nil else {
+                return nil
+            }
+            preparedSources[key] = source
+            prepared.append(source)
+        }
+        sources = preparedSources
+        documentURLs = Set(keys)
+        return prepared
+    }
 
     @discardableResult
     func prepareAcceptedSource(for url: URL) -> AcceptedPDFSource? {
         let key = url.standardizedFileURL
         if let cached = sources[key] {
-            touch(key)
             return cached
         }
 
         guard let source = AcceptedPDFSource(url: key), PDFDocument(data: source.data) != nil else { return nil }
-        while sources.count >= maxCachedSources, let oldest = accessOrder.first {
-            sources.removeValue(forKey: oldest)
-            accessOrder.removeAll { $0 == oldest }
-        }
-
         sources[key] = source
-        touch(key)
         return source
     }
 
@@ -835,12 +869,7 @@ final class AcceptedPDFSourceCache {
 
     func clear() {
         sources.removeAll()
-        accessOrder.removeAll()
-    }
-
-    private func touch(_ url: URL) {
-        accessOrder.removeAll { $0 == url }
-        accessOrder.append(url)
+        documentURLs.removeAll()
     }
 }
 
