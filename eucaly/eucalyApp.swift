@@ -31,7 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         manageWorkspaces: { [weak self] in self?.showSettings(pane: .workspaces) })
     private(set) var settings: SettingsWindowController?
     private let settingsDefaults: UserDefaults
-    private var settingsRequest: AnyCancellable?
+    private var settingsRequests = Set<AnyCancellable>()
     private var restorationFinished: AnyCancellable?
     private var menus: AppMenuController?
     private var finishedLaunching = false
@@ -42,11 +42,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         super.init()
     }
 
-    func showSettings(pane: NativeSettingsController.Pane? = nil) {
+    func showSettings(pane: NativeSettingsController.Pane? = nil, profileID: UUID? = nil) {
         if settings == nil {
             settings = SettingsWindowController(outputs: outputs, workspaces: workspaceWindows, updates: updates, defaults: settingsDefaults)
         }
-        settings?.show(pane: pane)
+        settings?.show(pane: pane, profileID: profileID)
     }
 
     private var isTerminatingAfterCaptureCleanup = false
@@ -64,8 +64,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        settingsRequest = NotificationCenter.default.publisher(for: .showManageOutputsSettings)
+        NotificationCenter.default.publisher(for: .showManageOutputsSettings)
             .sink { [weak self] _ in self?.showSettings(pane: .outputs) }
+            .store(in: &settingsRequests)
+        NotificationCenter.default.publisher(for: .showManageProfilesSettings)
+            .sink { [weak self] note in
+                let profileID = note.userInfo?[Self.manageProfilesIDKey] as? UUID
+                self?.showSettings(pane: .profiles, profileID: profileID)
+            }
+            .store(in: &settingsRequests)
         // Hosted unit tests use an injected driver and never contact the feed.
         if !AppLaunchContext.isRunningTests {
             updates.start()
@@ -149,8 +156,19 @@ enum EucalyApp {
 
 extension Notification.Name {
     static let showManageOutputsSettings = Notification.Name("showManageOutputsSettings")
+    static let showManageProfilesSettings = Notification.Name("showManageProfilesSettings")
     static let newLyrics = Notification.Name("newLyrics")
     static let saveLyrics = Notification.Name("saveLyrics")
     static let showLibrarySearch = Notification.Name("showLibrarySearch")
     static let refreshLibrary = Notification.Name("refreshLibrary")
+}
+
+extension AppDelegate {
+    static let manageProfilesIDKey = "profileID"
+
+    static func postShowManageProfiles(profileID: UUID? = nil) {
+        var userInfo: [AnyHashable: Any]?
+        if let profileID { userInfo = [manageProfilesIDKey: profileID] }
+        NotificationCenter.default.post(name: .showManageProfilesSettings, object: nil, userInfo: userInfo)
+    }
 }

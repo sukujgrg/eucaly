@@ -29,16 +29,22 @@ final class PresentationToolbarController: NSObject, NSToolbarDelegate, NSToolba
 
     init(session: PresentationSession, updates: AppUpdateViewModel,
          thumbnailDefaults: UserDefaults, toggleSlides: @escaping () -> Void,
-         searchLibrary: @escaping () -> Void, manageOutputs: @escaping () -> Void) {
+         searchLibrary: @escaping () -> Void, manageOutputs: @escaping () -> Void,
+         manageProfiles: @escaping () -> Void = {}) {
         self.session = session; self.updates = updates
         // AppKit synchronizes item insertions/removals among toolbars sharing
         // an identifier. Each retained controls lifetime is its own family:
         // tracking associations and reminder layout must never cross owners.
         toolbar = NSToolbar(identifier: "eucaly.workspace.\(session.outputSourceID).\(UUID())")
-        let actions = Actions(toggleSlides: toggleSlides, searchLibrary: searchLibrary, manageOutputs: manageOutputs)
+        let actions = Actions(toggleSlides: toggleSlides, searchLibrary: searchLibrary,
+                              manageOutputs: manageOutputs, manageProfiles: manageProfiles)
         self.actions = actions
-        quickControls = OutputQuickControlsController(outputs: session.outputCoordinator,
-            workspaceID: session.outputSourceID, manageOutputs: { actions.handlers?.manageOutputs() })
+        quickControls = OutputQuickControlsController(
+            outputs: session.outputCoordinator,
+            workspaceID: session.outputSourceID,
+            manageOutputs: { actions.handlers?.manageOutputs() },
+            manageProfiles: { actions.handlers?.manageProfiles() }
+        )
         thumbnailControls = ThumbnailSettingsMenuController(defaults: thumbnailDefaults)
         super.init()
         toolbar.delegate = self
@@ -76,9 +82,10 @@ final class PresentationToolbarController: NSObject, NSToolbarDelegate, NSToolba
     }
 
     func updateActions(toggleSlides: @escaping () -> Void, searchLibrary: @escaping () -> Void,
-                       manageOutputs: @escaping () -> Void) {
+                       manageOutputs: @escaping () -> Void, manageProfiles: @escaping () -> Void = {}) {
         guard actions.handlers != nil else { return }
-        actions.handlers = .init(toggleSlides: toggleSlides, searchLibrary: searchLibrary, manageOutputs: manageOutputs)
+        actions.handlers = .init(toggleSlides: toggleSlides, searchLibrary: searchLibrary,
+                                 manageOutputs: manageOutputs, manageProfiles: manageProfiles)
     }
 
     /// Native toolbar viewers can outlive their window under accessibility or
@@ -262,10 +269,13 @@ final class PresentationToolbarController: NSObject, NSToolbarDelegate, NSToolba
             let toggleSlides: () -> Void
             let searchLibrary: () -> Void
             let manageOutputs: () -> Void
+            let manageProfiles: () -> Void
         }
         var handlers: Handlers?
-        init(toggleSlides: @escaping () -> Void, searchLibrary: @escaping () -> Void, manageOutputs: @escaping () -> Void) {
-            handlers = Handlers(toggleSlides: toggleSlides, searchLibrary: searchLibrary, manageOutputs: manageOutputs)
+        init(toggleSlides: @escaping () -> Void, searchLibrary: @escaping () -> Void,
+             manageOutputs: @escaping () -> Void, manageProfiles: @escaping () -> Void) {
+            handlers = Handlers(toggleSlides: toggleSlides, searchLibrary: searchLibrary,
+                                manageOutputs: manageOutputs, manageProfiles: manageProfiles)
         }
     }
 }

@@ -22,8 +22,8 @@ Browsing never silently replaces **Current**.
 ## Features
 
 - Lyrics presentation from `.txt`
-- Stacked or side-by-side lyric components, with Top / Middle / Bottom positioning and adjustable padding in Manage Outputs
-- Manage Outputs holds per-profile layout, fonts and backgrounds; App Settings includes the same editor. A separate Thumbnails toolbar menu controls thumbnail size and font size. A “Small projected text” label flags affected lyrics cards; hover for adjustments tailored to the cause. The card's accessibility value includes the full explanation.
+- Stacked or side-by-side lyric components, with Top / Middle / Bottom positioning and adjustable padding in Manage Profiles
+- Manage Profiles holds per-profile layout, fonts and backgrounds; App Settings includes the same Profiles toolbar tab. A separate Thumbnails toolbar menu controls thumbnail size and font size. A “Small projected text” label flags affected lyrics cards; hover for adjustments tailored to the cause. The card's accessibility value includes the full explanation.
 - PDF slides
 - Images
 - Videos

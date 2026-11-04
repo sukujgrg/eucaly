@@ -171,6 +171,11 @@ final class AppMenuTests: XCTestCase {
         menus.outputMenu.performActionForItem(at: menus.outputMenu.index(of: manageOutputs))
         XCTAssertTrue(app.settings?.window === window)
         XCTAssertEqual(app.settings?.settings.selectedPane, .outputs)
+        let manageProfiles = try XCTUnwrap(menus.outputMenu.item(withTitle: "Manage Profiles…"))
+        menus.outputMenu.performActionForItem(at: menus.outputMenu.index(of: manageProfiles))
+        XCTAssertTrue(app.settings?.window === window)
+        XCTAssertEqual(app.settings?.settings.selectedPane, .profiles)
+        XCTAssertTrue(app.settings?.settings.profiles.isPresented == true)
         XCTAssertFalse(hub.outputs.isRunning)
     }
 

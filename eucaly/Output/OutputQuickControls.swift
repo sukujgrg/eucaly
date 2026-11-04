@@ -47,6 +47,7 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
     let workspaceID: UUID?
     var store: OutputProfileStore { outputs.profiles }
     let manageOutputs: () -> Void
+    let manageProfiles: () -> Void
     private let createBackgroundBookmark: @Sendable (URL) -> String?
     private let makeBackgroundPanel: @MainActor () -> NSOpenPanel
     private let beginBackgroundSheet: @MainActor (NSOpenPanel, NSWindow, @escaping (NSApplication.ModalResponse) -> Void) -> Void
@@ -95,14 +96,19 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
     private var isRetired = false
 
     init(outputs: OutputCoordinator, workspaceID: UUID? = nil, manageOutputs: @escaping () -> Void,
+         manageProfiles: @escaping () -> Void = {},
          makeBackgroundPanel: @escaping @MainActor () -> NSOpenPanel = { NSOpenPanel() },
          createBackgroundBookmark: @escaping @Sendable (URL) -> String? = { SecurityScopedBookmarks.createBookmark(for: $0) },
          beginBackgroundSheet: @escaping @MainActor (NSOpenPanel, NSWindow, @escaping (NSApplication.ModalResponse) -> Void) -> Void = {
              $0.beginSheetModal(for: $1, completionHandler: $2)
          }) {
-        self.outputs = outputs; self.workspaceID = workspaceID ?? outputs.focusedWorkspaceID; self.manageOutputs = manageOutputs
+        self.outputs = outputs
+        self.workspaceID = workspaceID ?? outputs.focusedWorkspaceID
+        self.manageOutputs = manageOutputs
+        self.manageProfiles = manageProfiles
         self.createBackgroundBookmark = createBackgroundBookmark
-        self.makeBackgroundPanel = makeBackgroundPanel; self.beginBackgroundSheet = beginBackgroundSheet
+        self.makeBackgroundPanel = makeBackgroundPanel
+        self.beginBackgroundSheet = beginBackgroundSheet
         super.init()
         for button in [outputButton, networkButton, backgroundButton, appearanceButton] {
             button.bezelStyle = .toolbar
@@ -192,7 +198,7 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
                 menu.addItem(item)
                 menu.addItem(info(listening.detail))
             }
-            addManagementFooter(to: menu)
+            addManagementFooter(to: menu, target: .outputs)
             outputButton.menu = menu
         }
         let canEdit = target != nil
@@ -201,7 +207,7 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         if let recovery = store.recoveryNotice { help = recovery }
         else if destination == nil { help = "Choose a profile editing target from the Output menu to use these controls." }
         else if destination?.enabled == false { help = "Profile editing target is disabled. Enable it in Manage Outputs or choose another target from the Output menu." }
-        else { help = reason ?? "Quick edits change profile “\(profileName)” for every output using it. Duplicate the profile in Manage Outputs first if you need an independent look." }
+        else { help = reason ?? "Quick edits change profile “\(profileName)” for every output using it. Duplicate the profile in Manage Profiles first if you need an independent look." }
         appearanceButton.isEnabled = canEdit; backgroundButton.isEnabled = canEdit
         appearanceButton.toolTip = "Profile for \(name)\n\(help)"
         let backgroundSummary = backgroundSummary(for: profile)
@@ -273,7 +279,7 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
             }
         }
         if let notice = state.recoveryNotice { menu.addItem(info(notice)) }
-        addManagementFooter(to: menu)
+        addManagementFooter(to: menu, target: .outputs)
         networkButton.menu = menu
         refreshNetworkMoveDescriptions()
     }
@@ -301,7 +307,7 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
     }
     private func appearanceMenu(_ profile: OutputProfile?, target: OutputProfileStore.QuickEditTarget?) -> NSMenu {
         let menu = menu(caption: "Appearance", symbol: "textformat")
-        defer { addManagementFooter(to: menu) }
+        defer { addManagementFooter(to: menu, target: .profiles) }
         guard let profile, let target else { return menu }
         for (title, key, values) in [
             ("Layout", \OutputProfile.layout, [("Stacked", "stacked"), ("Columns", "columns")]),
@@ -367,7 +373,7 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
     }
     private func backgroundMenu(_ profile: OutputProfile?, target: OutputProfileStore.QuickEditTarget?) -> NSMenu {
         let menu = menu(caption: "Background", symbol: "photo.on.rectangle")
-        defer { addManagementFooter(to: menu) }
+        defer { addManagementFooter(to: menu, target: .profiles) }
         guard let profile, let target else { return menu }
         let hasVisual = profile.background.bookmark != nil
         menu.addItem(command("Choose…") { [weak self] in self?.chooseBackground(target) })
@@ -425,9 +431,16 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
             }
         }
     }
-    private func addManagementFooter(to menu: NSMenu) {
+    private enum ManagementTarget { case outputs, profiles }
+
+    private func addManagementFooter(to menu: NSMenu, target: ManagementTarget) {
         if menu.items.last?.isSeparatorItem != true { menu.addItem(.separator()) }
-        menu.addItem(command("Manage Outputs…") { [weak self] in self?.manageOutputs() })
+        switch target {
+        case .outputs:
+            menu.addItem(command("Manage Outputs…") { [weak self] in self?.manageOutputs() })
+        case .profiles:
+            menu.addItem(command("Manage Profiles…") { [weak self] in self?.manageProfiles() })
+        }
     }
     private func menu(caption: String, symbol: String, showsTitle: Bool = false) -> NSMenu {
         let menu = NSMenu(); menu.autoenablesItems = false

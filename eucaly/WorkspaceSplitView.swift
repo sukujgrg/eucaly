@@ -11,13 +11,14 @@ struct WorkspaceSplitView<Detail: View>: View {
     let toggleSlides: () -> Void
     let searchLibrary: () -> Void
     let manageOutputs: () -> Void
+    var manageProfiles: () -> Void = {}
     let detail: Detail
 
     var body: some View {
         WorkspaceSplitViewBridge(sidebarConfiguration: sidebarConfiguration,
             workspaceMenu: workspaceMenu, defaults: defaults, session: session,
             updates: updates, toggleSlides: toggleSlides, searchLibrary: searchLibrary,
-            manageOutputs: manageOutputs, detail: detail)
+            manageOutputs: manageOutputs, manageProfiles: manageProfiles, detail: detail)
             // The native split and its accessories own titlebar avoidance.
             // An outer SwiftUI inset would truncate the full-section scroll
             // surface and place AppKit's toolbar edge effect over detail content.
@@ -34,12 +35,14 @@ private struct WorkspaceSplitViewBridge<Detail: View>: NSViewControllerRepresent
     let toggleSlides: () -> Void
     let searchLibrary: () -> Void
     let manageOutputs: () -> Void
+    var manageProfiles: () -> Void = {}
     let detail: Detail
 
     func makeCoordinator() -> PresentationToolbarController {
         PresentationToolbarController(session: session, updates: updates,
             thumbnailDefaults: defaults, toggleSlides: toggleSlides,
-            searchLibrary: searchLibrary, manageOutputs: manageOutputs)
+            searchLibrary: searchLibrary, manageOutputs: manageOutputs,
+            manageProfiles: manageProfiles)
     }
 
     func makeNSViewController(context: Context) -> WorkspaceSplitViewController {
@@ -53,7 +56,8 @@ private struct WorkspaceSplitViewBridge<Detail: View>: NSViewControllerRepresent
 
     func updateNSViewController(_ controller: WorkspaceSplitViewController, context: Context) {
         context.coordinator.updateActions(toggleSlides: toggleSlides,
-            searchLibrary: searchLibrary, manageOutputs: manageOutputs)
+            searchLibrary: searchLibrary, manageOutputs: manageOutputs,
+            manageProfiles: manageProfiles)
         controller.update(configuration: sidebarConfiguration,
             detail: AnyView(detail.environment(\.self, context.environment)))
     }

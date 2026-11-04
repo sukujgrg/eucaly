@@ -1,6 +1,6 @@
 # Optional NDI® runtime
 
-The implementation is available in Manage Outputs for engineering qualification.
+The implementation is available in Manage Outputs (destinations) and Manage Profiles (appearance) for engineering qualification.
 Native presentation remains independent of the runtime. The physical receiver,
 minimum-OS and two-hour sustained-operation gates remain open; see the
 [implementation plan](ndi-output-plan.md#equipment-and-sustained-operation).

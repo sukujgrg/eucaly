@@ -20,7 +20,7 @@ final class OutputSettingsTests: XCTestCase {
             editor.controlTextDidEndEditing(.init(name: NSControl.textDidEndEditingNotification, object: editor.sourceName))
             XCTAssertFalse(editor.validationLabel.isHidden)
             XCTAssertEqual(fixture.outputs.destination(row.id)?.networkSettings?.sourceName, settings.sourceName)
-            fixture.controller.selectProfile(OutputProfile.audienceID)
+            fixture.selectProfile(OutputProfile.audienceID)
             fixture.controller.selectDestination(row.id)
             XCTAssertEqual(editor.sourceName.stringValue, settings.sourceName)
             XCTAssertTrue(editor.validationLabel.isHidden)
@@ -123,18 +123,16 @@ final class OutputSettingsTests: XCTestCase {
         var unused = legacy; unused.id = UUID(); unused.name = "Saved spare look"
         fixture.store.edit { $0.profiles += [legacy, unused] }
         let saved = fixture.store.document
-        fixture.controller.section.selectedSegment = 1
-        fixture.controller.reload()
-        XCTAssertFalse((0..<fixture.controller.table.numberOfRows).contains {
-            fixture.controller.tableView(fixture.controller.table, isGroupRow: $0)
+        fixture.showProfiles()
+        XCTAssertFalse((0..<fixture.profiles.table.numberOfRows).contains {
+            fixture.profiles.tableView(fixture.profiles.table, isGroupRow: $0)
         })
         try fixture.capture("appearance-groups")
-        XCTAssertEqual(fixture.controller.profileEditor?.appearanceHeading.stringValue, "Profile")
-        fixture.controller.selectProfile(unused.id)
-        XCTAssertTrue(fixture.controller.removeProfile.isEnabled)
-        XCTAssertTrue(fixture.controller.profileEditor?.affectedOutputs.stringValue.contains("No outputs") == true)
-        fixture.controller.section.selectedSegment = 0
-        fixture.controller.reload()
+        XCTAssertEqual(fixture.profiles.profileEditor?.appearanceHeading.stringValue, "Profile")
+        fixture.selectProfile(unused.id)
+        XCTAssertTrue(fixture.profiles.removeProfile.isEnabled)
+        XCTAssertTrue(fixture.profiles.profileEditor?.affectedOutputs.stringValue.contains("No outputs") == true)
+        fixture.showOutputs()
         fixture.controller.selectDestination(first.id)
         let picker = try XCTUnwrap(fixture.controller.destinationEditor).profilePicker
         let offered = picker.itemArray.compactMap { $0.representedObject as? UUID }
@@ -168,16 +166,15 @@ final class OutputSettingsTests: XCTestCase {
         XCTAssertEqual(restored.profile(OutputProfile.confidenceID)?.name, "Confidence")
 
         let fixture = OutputSettingsFixture(); defer { fixture.close() }
-        fixture.controller.section.selectedSegment = 1
-        fixture.controller.reload()
-        let audienceRow = try XCTUnwrap((0..<fixture.controller.table.numberOfRows).compactMap { row -> NSTableCellView? in
-            fixture.controller.tableView(fixture.controller.table, viewFor: nil, row: row) as? NSTableCellView
+        fixture.showProfiles()
+        let audienceRow = try XCTUnwrap((0..<fixture.profiles.table.numberOfRows).compactMap { row -> NSTableCellView? in
+            fixture.profiles.tableView(fixture.profiles.table, viewFor: nil, row: row) as? NSTableCellView
         }.first { $0.accessibilityLabel()?.hasPrefix("Audience,") == true })
         XCTAssertTrue(audienceRow.accessibilityLabel()?.contains("Audience · Built-in") == true)
         XCTAssertTrue(audienceRow.accessibilityLabel()?.contains("Used by:") == true)
 
-        fixture.controller.selectProfile(OutputProfile.audienceID)
-        let audience = try XCTUnwrap(fixture.controller.profileEditor)
+        fixture.selectProfile(OutputProfile.audienceID)
+        let audience = try XCTUnwrap(fixture.profiles.profileEditor)
         XCTAssertFalse(audience.nameField.isEditable)
         XCTAssertFalse(audience.kindNotice.isHidden)
         XCTAssertTrue(audience.kindNotice.stringValue.contains("built-in"))
@@ -186,25 +183,24 @@ final class OutputSettingsTests: XCTestCase {
         let legacy = try button("Scale fonts for short displays", in: audience.view)
         XCTAssertFalse(legacy.isHidden)
 
-        fixture.controller.selectProfile(OutputProfile.confidenceID)
-        XCTAssertTrue(fixture.controller.profileEditor === audience)
+        fixture.selectProfile(OutputProfile.confidenceID)
+        XCTAssertTrue(fixture.profiles.profileEditor === audience)
         XCTAssertFalse(audience.confidenceNotice.isHidden)
         XCTAssertTrue(audience.lowerThirdNotice.isHidden)
         XCTAssertTrue(legacy.isHidden)
 
-        fixture.controller.selectProfile(OutputProfile.lowerThirdID)
+        fixture.selectProfile(OutputProfile.lowerThirdID)
         XCTAssertTrue(audience.confidenceNotice.isHidden)
         XCTAssertFalse(audience.lowerThirdNotice.isHidden)
         XCTAssertTrue(legacy.isHidden)
 
-        fixture.controller.section.selectedSegment = 0
-        fixture.controller.reload()
+        fixture.showOutputs()
         fixture.controller.selectDestination(fixture.store.document.destinations[0].id)
         let destinationEditor = try XCTUnwrap(fixture.controller.destinationEditor)
         destinationEditor.editProfileButton.performClick(nil)
-        XCTAssertEqual(fixture.controller.section.selectedSegment, 1)
-        XCTAssertEqual(fixture.controller.selectedID, OutputProfile.audienceID)
-        XCTAssertEqual(fixture.controller.profileEditor?.profileID, OutputProfile.audienceID)
+        XCTAssertTrue(fixture.window.contentViewController === fixture.profiles)
+        XCTAssertEqual(fixture.profiles.selectedID, OutputProfile.audienceID)
+        XCTAssertEqual(fixture.profiles.profileEditor?.profileID, OutputProfile.audienceID)
     }
 
     func testUnusedProfileRemovalProtectsBuiltInsAndDisabledConsumersAndPersists() throws {
@@ -221,14 +217,14 @@ final class OutputSettingsTests: XCTestCase {
         XCTAssertEqual(fixture.store.document, saved)
         fixture.store.selectProfile(OutputProfile.lowerThirdID, for: disabled.id)
         let destinations = fixture.store.document.destinations
-        fixture.controller.selectProfile(appearance)
-        XCTAssertTrue(fixture.controller.removeProfile.isEnabled)
-        fixture.controller.removeProfile.performClick(nil)
+        fixture.selectProfile(appearance)
+        XCTAssertTrue(fixture.profiles.removeProfile.isEnabled)
+        fixture.profiles.removeProfile.performClick(nil)
         XCTAssertNil(fixture.store.profile(appearance))
         XCTAssertEqual(fixture.store.document.destinations, destinations)
-        XCTAssertEqual(fixture.controller.selectedID, OutputProfile.lowerThirdID,
+        XCTAssertEqual(fixture.profiles.selectedID, OutputProfile.lowerThirdID,
                        "Removing an unused appearance keeps selection on the adjacent Profiles row")
-        XCTAssertFalse(fixture.controller.removeProfile.isEnabled)
+        XCTAssertFalse(fixture.profiles.removeProfile.isEnabled)
         fixture.store.flush()
         XCTAssertEqual(OutputProfileStore(defaults: fixture.defaults).document, fixture.store.document)
         XCTAssertFalse(fixture.outputs.isRunning)
@@ -243,18 +239,18 @@ final class OutputSettingsTests: XCTestCase {
         let fixture = OutputSettingsFixture(); defer { fixture.close() }
         let appearance = fixture.store.document.destinations[0].profileID
         let original = fixture.store.profile(appearance), destinations = fixture.store.document.destinations
-        fixture.controller.section.selectedSegment = 1
-        fixture.controller.selectProfile(appearance)
-        XCTAssertEqual(fixture.controller.addProfile.accessibilityLabel(), "Duplicate Profile")
-        fixture.controller.addProfile.performClick(nil)
-        let copy = try XCTUnwrap(fixture.store.profile(try XCTUnwrap(fixture.controller.selectedID)))
+        fixture.showProfiles()
+        fixture.profiles.selectProfile(appearance)
+        XCTAssertEqual(fixture.profiles.addProfile.accessibilityLabel(), "Duplicate Profile")
+        fixture.profiles.addProfile.performClick(nil)
+        let copy = try XCTUnwrap(fixture.store.profile(try XCTUnwrap(fixture.profiles.selectedID)))
         XCTAssertTrue(copy.isReusable)
         XCTAssertNotEqual(copy.id, appearance)
         XCTAssertEqual(copy.background, original?.background)
         XCTAssertEqual(fixture.store.document.destinations, destinations)
         XCTAssertEqual(fixture.store.profile(appearance), original)
-        XCTAssertEqual(fixture.controller.profileEditor?.appearanceHeading.stringValue, "Profile")
-        XCTAssertTrue(fixture.controller.removeProfile.isEnabled)
+        XCTAssertEqual(fixture.profiles.profileEditor?.appearanceHeading.stringValue, "Profile")
+        XCTAssertTrue(fixture.profiles.removeProfile.isEnabled)
     }
 
     func testNetworkTransparencyAndColourEditsPreserveSourceAndOtherOutputs() throws {
@@ -403,9 +399,9 @@ final class OutputSettingsTests: XCTestCase {
         XCTAssertFalse(fixture.outputs.isRunning)
         NSApp.sendAction(try XCTUnwrap(fixture.controller.addOMT.action), to: fixture.controller.addOMT.target, from: fixture.controller.addOMT)
         XCTAssertEqual(fixture.controller.destinationEditor?.destination?.omt?.sourceName, "eucaly 2")
-        fixture.controller.section.selectedSegment = 1
-        fixture.controller.selectProfile(OutputProfile.audienceID)
-        XCTAssertTrue(fixture.controller.profileEditor?.usageNotice.stringValue.contains("Network outputs") == true)
+        fixture.showProfiles()
+        fixture.profiles.selectProfile(OutputProfile.audienceID)
+        XCTAssertTrue(fixture.profiles.profileEditor?.usageNotice.stringValue.contains("Network outputs") == true)
         let saved = fixture.store.document
         fixture.controller.setPresented(false); fixture.controller.setPresented(true)
         XCTAssertEqual(fixture.store.document, saved)
@@ -590,7 +586,7 @@ final class OutputSettingsTests: XCTestCase {
         measure {
             for _ in 0..<5 {
                 for profile in [OutputProfile.audienceID, OutputProfile.confidenceID, OutputProfile.lowerThirdID] {
-                    fixture.controller.selectProfile(profile)
+                    fixture.selectProfile(profile)
                     fixture.window.layoutIfNeeded()
                     fixture.controller.view.layoutSubtreeIfNeeded()
                 }
@@ -604,14 +600,14 @@ final class OutputSettingsTests: XCTestCase {
     func testProfileNavigationCommitsDraftBeforeReusingControls() throws {
         let fixture = OutputSettingsFixture()
         defer { fixture.close() }
-        fixture.controller.selectProfile(OutputProfile.audienceID)
-        let editor = try XCTUnwrap(fixture.controller.profileEditor)
+        fixture.selectProfile(OutputProfile.audienceID)
+        let editor = try XCTUnwrap(fixture.profiles.profileEditor)
         let size = try XCTUnwrap(editor.numberRows.first { $0.slider.accessibilityLabel() == "Font size" })
         XCTAssertTrue(fixture.window.makeFirstResponder(size.field))
         try XCTUnwrap(size.field.currentEditor()).string = "112"
         size.controlTextDidChange(.init(name: NSControl.textDidChangeNotification, object: size.field))
-        fixture.controller.selectProfile(OutputProfile.confidenceID)
-        XCTAssertTrue(fixture.controller.profileEditor === editor)
+        fixture.selectProfile(OutputProfile.confidenceID)
+        XCTAssertTrue(fixture.profiles.profileEditor === editor)
         XCTAssertEqual(fixture.store.profile(OutputProfile.audienceID)?.typography.size, 112)
         XCTAssertEqual(editor.profileID, OutputProfile.confidenceID)
         XCTAssertEqual(editor.nameField.stringValue, "Confidence")
@@ -622,8 +618,8 @@ final class OutputSettingsTests: XCTestCase {
         XCTAssertEqual(fixture.store.profile(OutputProfile.audienceID)?.typography.size, 112)
         let playback = try XCTUnwrap(controls(OutputSettingsDisclosure.self, in: editor.view).first { $0.header.accessibilityLabel() == "Playback status Overrides" })
         XCTAssertFalse(playback.isHidden)
-        fixture.controller.selectProfile(OutputProfile.lowerThirdID)
-        XCTAssertTrue(fixture.controller.profileEditor === editor)
+        fixture.selectProfile(OutputProfile.lowerThirdID)
+        XCTAssertTrue(fixture.profiles.profileEditor === editor)
         XCTAssertTrue(playback.isHidden)
         XCTAssertEqual(editor.nameField.stringValue, "Lower Third")
     }
@@ -631,8 +627,8 @@ final class OutputSettingsTests: XCTestCase {
     func testLazyOverridesUseLatestProfileAndCommitBeforeNavigation() throws {
         let fixture = OutputSettingsFixture()
         defer { fixture.close() }
-        fixture.controller.selectProfile(OutputProfile.audienceID)
-        let editor = try XCTUnwrap(fixture.controller.profileEditor)
+        fixture.selectProfile(OutputProfile.audienceID)
+        let editor = try XCTUnwrap(fixture.profiles.profileEditor)
         let meaning = try XCTUnwrap(controls(OutputSettingsDisclosure.self, in: editor.view).first { $0.header.accessibilityLabel() == "Meaning Overrides" })
         XCTAssertTrue(meaning.content.arrangedSubviews.isEmpty)
         fixture.store.edit { $0.profiles[0].typography.size = 120 }
@@ -644,7 +640,7 @@ final class OutputSettingsTests: XCTestCase {
         XCTAssertTrue(fixture.window.makeFirstResponder(size.field))
         try XCTUnwrap(size.field.currentEditor()).string = "72"
         size.controlTextDidChange(.init(name: NSControl.textDidChangeNotification, object: size.field))
-        fixture.controller.selectProfile(OutputProfile.confidenceID)
+        fixture.selectProfile(OutputProfile.confidenceID)
         XCTAssertEqual(fixture.store.profile(OutputProfile.audienceID)?.componentTypography[.meaning]?.size, 72)
         XCTAssertNil(fixture.store.profile(OutputProfile.confidenceID)?.componentTypography[.meaning]?.size)
         XCTAssertTrue(meaning.content.isHidden)
@@ -657,24 +653,26 @@ final class OutputSettingsTests: XCTestCase {
         XCTAssertEqual(fixture.store.profile(OutputProfile.audienceID)?.componentTypography[.meaning]?.size, 72)
     }
 
-    func testSectionSwitchesKeepEditorsAndRefreshChangedProfile() throws {
+    func testPaneSwitchesKeepEditorsAndRefreshChangedProfile() throws {
         let fixture = OutputSettingsFixture()
         defer { fixture.close() }
         let id = fixture.store.document.destinations[0].id
         let destination = try XCTUnwrap(fixture.controller.destinationEditor)
-        fixture.controller.selectProfile(OutputProfile.audienceID)
-        let profile = try XCTUnwrap(fixture.controller.profileEditor)
+        fixture.showProfiles()
+        fixture.profiles.selectProfile(OutputProfile.audienceID)
+        let profile = try XCTUnwrap(fixture.profiles.profileEditor)
         let meaning = try XCTUnwrap(controls(OutputSettingsDisclosure.self, in: profile.view).first { $0.header.accessibilityLabel() == "Meaning Overrides" })
         meaning.header.performClick(nil)
+        fixture.showOutputs()
         fixture.controller.selectDestination(id)
         XCTAssertTrue(fixture.controller.destinationEditor === destination)
-        XCTAssertTrue(profile.view.isHidden)
         XCTAssertFalse(destination.view.isHidden)
-        fixture.controller.selectProfile(OutputProfile.audienceID)
-        XCTAssertTrue(fixture.controller.profileEditor === profile)
+        fixture.showProfiles()
+        fixture.profiles.selectProfile(OutputProfile.audienceID)
+        XCTAssertTrue(fixture.profiles.profileEditor === profile)
         XCTAssertFalse(meaning.content.isHidden)
-        XCTAssertTrue(destination.view.isHidden)
         fixture.store.selectProfile(OutputProfile.lowerThirdID, for: id)
+        fixture.showOutputs()
         fixture.controller.selectDestination(id)
         XCTAssertTrue(fixture.controller.destinationEditor === destination)
         XCTAssertEqual(destination.destination?.profileID, OutputProfile.lowerThirdID)
@@ -687,8 +685,8 @@ final class OutputSettingsTests: XCTestCase {
             $0.profiles[0].typography.size = 1
             $0.profiles[0].componentTypography[.meaning] = .init(size: 2, relativeSize: 0.5)
         }
-        fixture.controller.selectProfile(OutputProfile.audienceID)
-        let editor = try XCTUnwrap(fixture.controller.profileEditor)
+        fixture.selectProfile(OutputProfile.audienceID)
+        let editor = try XCTUnwrap(fixture.profiles.profileEditor)
         let meaning = try XCTUnwrap(controls(OutputSettingsDisclosure.self, in: editor.view).first { $0.header.accessibilityLabel() == "Meaning Overrides" })
         meaning.header.performClick(nil)
         let custom = try button("Custom size", in: meaning)
@@ -706,7 +704,10 @@ final class OutputSettingsTests: XCTestCase {
         defer { fixture.close() }
         let session = PresentationSession(projectionDisplays: fixture.displays, outputCoordinator: fixture.outputs)
         session.setSlides(LyricsParser.parseDocument("Verse\nCurrent lyrics").slides); session.showSlides()
-        fixture.controller.selectProfile(OutputProfile.lowerThirdID)
+        // Readability probes live on the Outputs pane; keep it presented while
+        // profile store edits and destination selection refresh notices.
+        fixture.showOutputs()
+        fixture.controller.setPresented(true)
         fixture.store.edit { $0.profiles[0].typography.size = 20; $0.profiles[0].usesLegacySizing = false }
         fixture.controller.reload()
         for _ in 0..<40 {
@@ -714,7 +715,7 @@ final class OutputSettingsTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(25))
         }
         XCTAssertTrue(fixture.controller.issueLabel.stringValue.contains("too small"))
-        fixture.controller.selectProfile(OutputProfile.confidenceID)
+        fixture.profiles.selectProfile(OutputProfile.confidenceID)
         fixture.controller.selectDestination(fixture.store.document.destinations[0].id)
         XCTAssertTrue(fixture.controller.issueLabel.stringValue.contains("too small"))
         fixture.store.edit { $0.profiles[0].typography.size = 84 }
@@ -740,8 +741,8 @@ final class OutputSettingsTests: XCTestCase {
         let original = fixture.store.document.destinations[0]
         var companion = original; companion.id = UUID(); companion.name = "Companion"; companion.monitor = nil
         fixture.store.edit { $0.destinations.append(companion) }
-        fixture.controller.selectProfile(original.profileID)
-        let editor = try XCTUnwrap(fixture.controller.profileEditor)
+        fixture.selectProfile(original.profileID)
+        let editor = try XCTUnwrap(fixture.profiles.profileEditor)
         let meaning = try button("Meaning", in: editor.view)
         meaning.performClick(nil)
         XCTAssertFalse(try XCTUnwrap(fixture.store.profile(original.profileID)).roles.contains(.meaning))
@@ -751,7 +752,7 @@ final class OutputSettingsTests: XCTestCase {
         size.slider.doubleValue = 96
         size.sliderChanged(size.slider)
         XCTAssertEqual(fixture.store.audience.typography.size, 96)
-        XCTAssertEqual(fixture.controller.selectedID, original.profileID)
+        XCTAssertEqual(fixture.profiles.selectedID, original.profileID)
         XCTAssertNil(fixture.outputs.ownership.source)
         XCTAssertFalse(fixture.outputs.isRunning)
         fixture.store.flush()
@@ -769,9 +770,9 @@ final class OutputSettingsTests: XCTestCase {
         let companion = OutputDestinationConfiguration(name: "Disabled companion", profileID: profileID, monitor: nil, enabled: false)
         fixture.store.edit { $0.destinations.append(companion) }
         let countBefore = fixture.store.document.profiles.count
-        fixture.controller.section.selectedSegment = 1
-        fixture.controller.selectProfile(profileID)
-        let editor = try XCTUnwrap(fixture.controller.profileEditor)
+        fixture.showProfiles()
+        fixture.profiles.selectProfile(profileID)
+        let editor = try XCTUnwrap(fixture.profiles.profileEditor)
         let layout = try XCTUnwrap(controls(NSPopUpButton.self, in: editor.view).first { $0.accessibilityLabel() == "Layout" })
         layout.selectItem(at: 1)
         NSApp.sendAction(try XCTUnwrap(layout.action), to: layout.target, from: layout)
@@ -826,9 +827,9 @@ final class OutputSettingsTests: XCTestCase {
         XCTAssertTrue(fixture.window.makeFirstResponder(destinationEditor.nameField))
         try XCTUnwrap(destinationEditor.nameField.currentEditor()).string = "Front screen"
         destinationEditor.controlTextDidEndEditing(.init(name: NSControl.textDidEndEditingNotification, object: destinationEditor.nameField))
-        fixture.controller.section.selectedSegment = 1
-        fixture.controller.selectProfile(first.profileID)
-        let profileEditor = try XCTUnwrap(fixture.controller.profileEditor)
+        fixture.showProfiles()
+        fixture.profiles.selectProfile(first.profileID)
+        let profileEditor = try XCTUnwrap(fixture.profiles.profileEditor)
         try button("Clear Visual", in: profileEditor.view).performClick(nil)
         let profile = try XCTUnwrap(fixture.outputs.profile(for: first.id))
         XCTAssertEqual(fixture.store.document.destinations[0].name, "Front screen")
@@ -851,12 +852,12 @@ final class OutputSettingsTests: XCTestCase {
         let source = fixture.outputs.ownership.source
         let current = session.currentSlideID
         let revision = fixture.outputs.revision
-        fixture.controller.selectProfile(OutputProfile.lowerThirdID)
+        fixture.selectProfile(OutputProfile.lowerThirdID)
         fixture.controller.selectDestination(fixture.store.document.destinations[0].id)
         XCTAssertEqual(fixture.outputs.ownership.source, source)
         XCTAssertEqual(session.currentSlideID, current)
-        fixture.controller.selectProfile(OutputProfile.audienceID)
-        let editor = try XCTUnwrap(fixture.controller.profileEditor)
+        fixture.selectProfile(OutputProfile.audienceID)
+        let editor = try XCTUnwrap(fixture.profiles.profileEditor)
         let picker = try XCTUnwrap(controls(NSPopUpButton.self, in: editor.view).first { $0.accessibilityLabel() == "Alignment" })
         picker.selectItem(at: 0)
         NSApp.sendAction(try XCTUnwrap(picker.action), to: picker.target, from: picker)
@@ -878,7 +879,8 @@ final class OutputSettingsTests: XCTestCase {
         XCTAssertTrue(fixture.controller.destinationEditor === editor)
         XCTAssertTrue(editor.nameField.currentEditor() === fieldEditor)
         XCTAssertEqual(fieldEditor.string, "New audience name")
-        fixture.controller.selectProfile(OutputProfile.confidenceID)
+        fixture.showProfiles()
+        fixture.profiles.selectProfile(OutputProfile.confidenceID)
         XCTAssertEqual(fixture.store.document.destinations[0].name, "New audience name")
         XCTAssertEqual(fixture.store.profile(OutputProfile.confidenceID)?.name, "Confidence")
     }
@@ -909,8 +911,9 @@ final class OutputSettingsTests: XCTestCase {
         editor.controlTextDidEndEditing(.init(name: NSControl.textDidEndEditingNotification, object: editor.nameField))
         XCTAssertEqual(editor.nameField.stringValue, "Choir screen")
         XCTAssertFalse(editor.validationLabel.stringValue.isEmpty)
-        fixture.controller.selectProfile(OutputProfile.audienceID)
-        let builtIn = try XCTUnwrap(fixture.controller.profileEditor)
+        fixture.showProfiles()
+        fixture.profiles.selectProfile(OutputProfile.audienceID)
+        let builtIn = try XCTUnwrap(fixture.profiles.profileEditor)
         XCTAssertFalse(builtIn.nameField.isEditable)
         builtIn.nameField.stringValue = "Renamed Audience"
         builtIn.controlTextDidEndEditing(.init(name: NSControl.textDidEndEditingNotification, object: builtIn.nameField))
@@ -919,8 +922,8 @@ final class OutputSettingsTests: XCTestCase {
         var copy = try XCTUnwrap(fixture.store.profile(OutputProfile.audienceID))
         copy.id = UUID(); copy.name = "Choir look"
         fixture.store.edit { $0.profiles.append(copy) }
-        fixture.controller.selectProfile(copy.id)
-        let profile = try XCTUnwrap(fixture.controller.profileEditor)
+        fixture.selectProfile(copy.id)
+        let profile = try XCTUnwrap(fixture.profiles.profileEditor)
         XCTAssertTrue(profile.nameField.isEditable)
         profile.nameField.stringValue = String(repeating: "ക", count: 60)
         profile.controlTextDidEndEditing(.init(name: NSControl.textDidEndEditingNotification, object: profile.nameField))
@@ -932,8 +935,8 @@ final class OutputSettingsTests: XCTestCase {
     func testNumericEditsValidateAndComponentOverridesRetainRelativeSizing() throws {
         let fixture = OutputSettingsFixture()
         defer { fixture.close() }
-        fixture.controller.selectProfile(OutputProfile.audienceID)
-        let editor = try XCTUnwrap(fixture.controller.profileEditor)
+        fixture.selectProfile(OutputProfile.audienceID)
+        let editor = try XCTUnwrap(fixture.profiles.profileEditor)
         let size = try XCTUnwrap(editor.numberRows.first { $0.slider.accessibilityLabel() == "Font size" })
         size.field.stringValue = "112"
         size.controlTextDidEndEditing(.init(name: NSControl.textDidEndEditingNotification, object: size.field))
@@ -957,25 +960,25 @@ final class OutputSettingsTests: XCTestCase {
     func testProfileListAddSelectsCopyAndKeepsTheSource() throws {
         let fixture = OutputSettingsFixture()
         defer { fixture.close() }
-        fixture.controller.selectProfile(OutputProfile.lowerThirdID)
+        fixture.selectProfile(OutputProfile.lowerThirdID)
         let source = try XCTUnwrap(fixture.store.profile(OutputProfile.lowerThirdID))
-        let editor = try XCTUnwrap(fixture.controller.profileEditor)
+        let editor = try XCTUnwrap(fixture.profiles.profileEditor)
         XCTAssertFalse(controls(NSButton.self, in: editor.view).contains { $0.title == "Duplicate Profile" })
-        fixture.controller.addProfile.performClick(nil)
-        let copy = try XCTUnwrap(fixture.store.profile(try XCTUnwrap(fixture.controller.selectedID)))
+        fixture.profiles.addProfile.performClick(nil)
+        let copy = try XCTUnwrap(fixture.store.profile(try XCTUnwrap(fixture.profiles.selectedID)))
         XCTAssertNotEqual(copy.id, source.id)
         XCTAssertEqual(copy.background, source.background)
         XCTAssertEqual(copy.name, "Lower Third Copy")
         XCTAssertEqual(fixture.store.profile(source.id), source)
-        XCTAssertEqual(fixture.controller.profileEditor?.profileID, copy.id)
+        XCTAssertEqual(fixture.profiles.profileEditor?.profileID, copy.id)
     }
 
     func testColourAppliesImmediatelyAndFontFallbackPreservesRequestedIdentifier() throws {
         let fixture = OutputSettingsFixture()
         defer { fixture.close() }
         fixture.store.edit { $0.profiles[0].typography.fontName = "MissingEucalyReviewFont" }
-        fixture.controller.selectProfile(OutputProfile.audienceID)
-        let editor = try XCTUnwrap(fixture.controller.profileEditor)
+        fixture.selectProfile(OutputProfile.audienceID)
+        let editor = try XCTUnwrap(fixture.profiles.profileEditor)
         XCTAssertTrue(controls(NSTextField.self, in: editor.view).contains { $0.stringValue.contains("saved font is unavailable") && !$0.isHidden })
         XCTAssertEqual(fixture.store.audience.typography.fontName, "MissingEucalyReviewFont")
         let well = try XCTUnwrap(controls(NSColorWell.self, in: editor.view).first { $0.accessibilityLabel() == "Colour" })
@@ -1045,11 +1048,11 @@ final class OutputSettingsTests: XCTestCase {
         XCTAssertEqual(fixture.store.document.destinations[0], original)
         XCTAssertNil(fixture.outputs.ownership.source)
         XCTAssertFalse(fixture.outputs.isRunning)
-        fixture.controller.selectProfile(OutputProfile.confidenceID)
-        XCTAssertTrue(fixture.controller.addOutputMenu.isHiddenOrHasHiddenAncestor)
-        XCTAssertFalse(fixture.controller.addNative.isEnabled)
-        let selectable = (0..<fixture.controller.table.numberOfRows).filter {
-            fixture.controller.tableView(fixture.controller.table, shouldSelectRow: $0)
+        fixture.showProfiles()
+        fixture.profiles.selectProfile(OutputProfile.confidenceID)
+        XCTAssertFalse(fixture.profiles.addProfile.isHiddenOrHasHiddenAncestor)
+        let selectable = (0..<fixture.profiles.table.numberOfRows).filter {
+            fixture.profiles.tableView(fixture.profiles.table, shouldSelectRow: $0)
         }
         XCTAssertEqual(selectable.count, 3)
     }
@@ -1112,39 +1115,42 @@ final class OutputSettingsTests: XCTestCase {
         XCTAssertNil(fixture.outputs.ownership.source); XCTAssertFalse(fixture.outputs.isRunning)
     }
 
-    func testFooterActionsRemainScopedAfterSectionChangesAndReopening() throws {
+    func testFooterActionsRemainScopedAfterPaneChangesAndReopening() throws {
         let fixture = OutputSettingsFixture()
         defer { fixture.close() }
-        let controller = fixture.controller
+        let outputs = fixture.controller
+        let profiles = fixture.profiles
         let original = try XCTUnwrap(fixture.store.defaultDestination)
-        controller.selectProfile(OutputProfile.audienceID)
-        controller.addProfile.performClick(nil)
-        let copyID = try XCTUnwrap(controller.selectedID)
+        fixture.showProfiles()
+        profiles.selectProfile(OutputProfile.audienceID)
+        profiles.addProfile.performClick(nil)
+        let copyID = try XCTUnwrap(profiles.selectedID)
         XCTAssertNotEqual(copyID, OutputProfile.audienceID)
-        let profile = try XCTUnwrap(controller.profileEditor)
+        let profile = try XCTUnwrap(profiles.profileEditor)
         XCTAssertTrue(profile.nameField.isEditable, "Only custom profile copies accept rename drafts")
         XCTAssertTrue(fixture.window.makeFirstResponder(profile.nameField))
         try XCTUnwrap(profile.nameField.currentEditor()).string = "Profile draft"
-        controller.addProfile.performClick(nil)
+        profiles.addProfile.performClick(nil)
         XCTAssertEqual(fixture.store.profile(copyID)?.name, "Profile draft")
-        XCTAssertEqual(controller.profileEditor?.nameField.stringValue, "Profile draft Copy")
+        XCTAssertEqual(profiles.profileEditor?.nameField.stringValue, "Profile draft Copy")
         let outputCount = fixture.store.document.destinations.count
-        NSApp.sendAction(try XCTUnwrap(controller.addNative.action), to: controller.addNative.target, from: controller.addNative)
-        NSApp.sendAction(try XCTUnwrap(controller.removeOutput.action), to: controller.removeOutput.target, from: controller.removeOutput)
+        // Output inventory actions remain on the Outputs pane; Profiles cannot invoke them.
+        NSApp.sendAction(try XCTUnwrap(outputs.addNative.action), to: outputs.addNative.target, from: outputs.addNative)
+        NSApp.sendAction(try XCTUnwrap(outputs.removeOutput.action), to: outputs.removeOutput.target, from: outputs.removeOutput)
         XCTAssertEqual(fixture.store.document.destinations.count, outputCount)
         XCTAssertEqual(fixture.store.defaultDestination, original)
-        controller.setPresented(false); controller.setPresented(true)
-        XCTAssertTrue(controller.addOutputMenu.isHiddenOrHasHiddenAncestor)
-        XCTAssertFalse(controller.addProfile.isHiddenOrHasHiddenAncestor)
-        controller.selectDestination(original.id)
-        XCTAssertFalse(controller.addOutputMenu.isHiddenOrHasHiddenAncestor)
-        XCTAssertTrue(controller.addProfile.isHiddenOrHasHiddenAncestor)
-        XCTAssertEqual(controller.addOutputMenu.menu?.numberOfItems, 4)
+        profiles.setPresented(false); profiles.setPresented(true)
+        XCTAssertTrue(fixture.window.contentViewController === profiles)
+        XCTAssertFalse(profiles.addProfile.isHiddenOrHasHiddenAncestor)
+        fixture.showOutputs()
+        outputs.selectDestination(original.id)
+        XCTAssertFalse(outputs.addOutputMenu.isHiddenOrHasHiddenAncestor)
+        XCTAssertEqual(outputs.addOutputMenu.menu?.numberOfItems, 4)
         // Removing the old compatibility row must not turn inventory updates
         // into an assignment on the new first output.
-        NSApp.sendAction(try XCTUnwrap(controller.addNative.action), to: controller.addNative.target, from: controller.addNative)
-        controller.selectDestination(original.id)
-        controller.removeOutput.performClick(nil)
+        NSApp.sendAction(try XCTUnwrap(outputs.addNative.action), to: outputs.addNative.target, from: outputs.addNative)
+        outputs.selectDestination(original.id)
+        outputs.removeOutput.performClick(nil)
         fixture.displays.refresh()
         XCTAssertNil(fixture.store.document.destinations.first?.monitor)
         XCTAssertNil(fixture.store.defaultDestination)
@@ -1181,8 +1187,8 @@ final class OutputSettingsTests: XCTestCase {
     func testChoosingComponentFontKeepsRelativeSizeInheritance() throws {
         let fixture = OutputSettingsFixture()
         defer { fixture.close() }
-        fixture.controller.selectProfile(OutputProfile.audienceID)
-        let editor = try XCTUnwrap(fixture.controller.profileEditor)
+        fixture.selectProfile(OutputProfile.audienceID)
+        let editor = try XCTUnwrap(fixture.profiles.profileEditor)
         let meaning = try XCTUnwrap(controls(OutputSettingsDisclosure.self, in: editor.view).first { $0.header.accessibilityLabel() == "Meaning Overrides" })
         meaning.header.performClick(nil)
         try button("Custom font", in: meaning).performClick(nil)
@@ -1273,8 +1279,8 @@ final class OutputSettingsTests: XCTestCase {
     func testNativeDisclosureRespondsAcrossFullHeaderWidth() throws {
         let fixture = OutputSettingsFixture()
         defer { fixture.close() }
-        fixture.controller.selectProfile(OutputProfile.audienceID)
-        let editor = try XCTUnwrap(fixture.controller.profileEditor)
+        fixture.selectProfile(OutputProfile.audienceID)
+        let editor = try XCTUnwrap(fixture.profiles.profileEditor)
         let disclosure = try XCTUnwrap(controls(OutputSettingsDisclosure.self, in: editor.view).first)
         fixture.window.layoutIfNeeded()
         XCTAssertEqual(disclosure.header.frame.width, disclosure.frame.width, accuracy: 1)
@@ -1302,9 +1308,9 @@ final class OutputSettingsTests: XCTestCase {
                 XCTAssertEqual(alignmentFrame(editor.identifyButton, in: editor.view).minX, monitorX, accuracy: 1)
                 XCTAssertGreaterThan(alignmentFrame(editor.profilePicker, in: editor.view).width, 100)
                 try fixture.capture("outputs-\(Int(size.width))-\(appearance.rawValue)")
-                fixture.controller.selectProfile(OutputProfile.audienceID)
+                fixture.selectProfile(OutputProfile.audienceID)
                 fixture.window.layoutIfNeeded(); fixture.controller.view.layoutSubtreeIfNeeded()
-                let profile = try XCTUnwrap(fixture.controller.profileEditor)
+                let profile = try XCTUnwrap(fixture.profiles.profileEditor)
                 let fit = try XCTUnwrap(controls(NSPopUpButton.self, in: profile.view).first { $0.accessibilityLabel() == "Fit" })
                 let chooseVisual = try button("Choose Visual…", in: profile.view)
                 let clearVisual = try button("Clear Visual", in: profile.view)
@@ -1376,8 +1382,8 @@ final class OutputSettingsTests: XCTestCase {
     func testRejectedNativeNumericEditRestoresSavedValue() throws {
         let fixture = OutputSettingsFixture()
         defer { fixture.close() }
-        fixture.controller.selectProfile(OutputProfile.audienceID)
-        let editor = try XCTUnwrap(fixture.controller.profileEditor)
+        fixture.selectProfile(OutputProfile.audienceID)
+        let editor = try XCTUnwrap(fixture.profiles.profileEditor)
         let row = try XCTUnwrap(editor.numberRows.first { $0.slider.accessibilityLabel() == "Font size" })
         XCTAssertTrue(fixture.window.makeFirstResponder(row.field))
         try XCTUnwrap(row.field.currentEditor()).string = "1"
@@ -1403,8 +1409,8 @@ final class OutputSettingsTests: XCTestCase {
         let fixture = OutputSettingsFixture()
         defer { fixture.close() }
         fixture.store.edit { $0.profiles[0].typography.size = 84.45 }
-        fixture.controller.selectProfile(OutputProfile.audienceID)
-        let row = try XCTUnwrap(fixture.controller.profileEditor?.numberRows.first { $0.slider.accessibilityLabel() == "Font size" })
+        fixture.selectProfile(OutputProfile.audienceID)
+        let row = try XCTUnwrap(fixture.profiles.profileEditor?.numberRows.first { $0.slider.accessibilityLabel() == "Font size" })
         XCTAssertTrue(fixture.window.makeFirstResponder(row.field))
         XCTAssertTrue(fixture.window.makeFirstResponder(nil))
         XCTAssertEqual(fixture.store.audience.typography.size, 84.45, accuracy: 0.001, "Merely focusing the control must not change saved typography")
@@ -1479,8 +1485,8 @@ final class OutputSettingsTests: XCTestCase {
         session.setSlides(LyricsParser.parseDocument("Verse\nLive Current").slides); session.showSlides()
         let current = session.currentSlideID, owner = fixture.outputs.ownership.source
         let generation = fixture.outputs.audienceIdentity.1, snapshot = fixture.outputs.snapshot.current
-        fixture.controller.selectProfile(OutputProfile.audienceID)
-        let editor = try XCTUnwrap(fixture.controller.profileEditor)
+        fixture.selectProfile(OutputProfile.audienceID)
+        let editor = try XCTUnwrap(fixture.profiles.profileEditor)
         let disclosure = try XCTUnwrap(controls(OutputSettingsDisclosure.self, in: editor.view).first { $0.header.accessibilityLabel() == "Meaning Overrides" })
         disclosure.header.performClick(nil)
         let toggle = try button("Custom size", in: disclosure)
@@ -1545,7 +1551,9 @@ private final class OutputSettingsFixture {
     let store: OutputProfileStore
     let displays: ProjectionDisplayManager
     let outputs: OutputCoordinator
+    /// Destination management pane (former dual-mode Outputs segment).
     let controller: ManageOutputsController
+    let profiles: ManageProfilesController
     let window: NSWindow
 
     init(monitors: Bool = false, network: (any NetworkOutputDriving)? = nil) {
@@ -1556,8 +1564,9 @@ private final class OutputSettingsFixture {
         store = OutputProfileStore(defaults: defaults, monitor: monitors ? monitor.target : nil)
         outputs = OutputCoordinator(profiles: store, displays: displays, network: network ?? NetworkOutputRouter(), driverFactory: { FakeOutputDriver() })
         controller = ManageOutputsController(coordinator: outputs)
+        profiles = ManageProfilesController(coordinator: outputs)
         controller.confirmOutputRemoval = { _ in true }
-        controller.confirmProfileRemoval = { _ in true }
+        profiles.confirmProfileRemoval = { _ in true }
         window = NSWindow(contentRect: .init(x: -10000, y: -10000, width: 820, height: 650),
             styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         // This offscreen host checks native controls, not window transforms.
@@ -1566,14 +1575,41 @@ private final class OutputSettingsFixture {
         window.contentViewController = controller
         window.orderBack(nil); window.layoutIfNeeded()
         controller.reload()
+        // Keep the Profiles pane loaded so selectProfile/editor tests can run
+        // without an extra showProfiles hop when Outputs remain the presented host.
+        _ = profiles.view
+        profiles.reload()
+        controller.onEditProfile = { [weak self] id in
+            self?.showProfiles()
+            self?.profiles.selectProfile(id)
+        }
+    }
+    func showProfiles() {
+        controller.setPresented(false)
+        window.contentViewController = profiles
+        window.layoutIfNeeded()
+        profiles.setPresented(true)
+        profiles.reload()
+    }
+    func showOutputs() {
+        profiles.setPresented(false)
+        window.contentViewController = controller
+        window.layoutIfNeeded()
+        controller.setPresented(true)
+        controller.reload()
+    }
+    /// Present the Profiles pane in the host window and select a profile for UI work.
+    func selectProfile(_ id: UUID) {
+        showProfiles()
+        profiles.selectProfile(id)
     }
     func close() {
-        controller.finishEditing(); window.close(); outputs.stop()
+        controller.finishEditing(); profiles.finishEditing(); window.close(); outputs.stop()
         store.flush(); defaults.removePersistentDomain(forName: suite)
     }
     func capture(_ name: String) throws {
         window.layoutIfNeeded()
-        let view = controller.view
+        let view = (window.contentViewController ?? controller).view
         view.layoutSubtreeIfNeeded()
         let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
         view.cacheDisplay(in: view.bounds, to: bitmap)
