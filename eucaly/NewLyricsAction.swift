@@ -77,7 +77,7 @@ final class NewLyricsSavePanelDelegate: NSObject, NSOpenSavePanelDelegate {
 
 struct NewLyricsState {
     var editor: LyricsEditorSession
-    var selectedPlaylistEntryIDs: Set<UUID>
+    var selectedPlaylistEntryIDs: [UUID]
     var sidebarSelection: SidebarSelection?
 }
 

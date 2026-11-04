@@ -14,34 +14,22 @@ private struct PreviewThumbnailGrid: View {
                 for: proxy.size.width - (horizontalInset * 2),
                 thumbnailScale: thumbnailScale
             )
-            let allowsPDFThumbnailRendering = thumbnailRenderingIsAllowed
+            let document = flow.previewDocument
+            let multiSource = document?.containsMultipleSources == true
 
             ScrollViewReader { scrollProxy in
                 ScrollView {
                     LazyVGrid(columns: layout.columns, spacing: layout.spacing) {
-                        if let pdfSource = flow.previewPDFSource {
-                            ForEach(0..<pdfSource.pageCount, id: \.self) { pageIndex in
-                                let slide = PDFSlideCatalog.slide(url: pdfSource.url, pageIndex: pageIndex)
+                        if let document, document.slideCount > 0 {
+                            ForEach(0..<document.slideCount, id: \.self) { index in
+                                let slide = document.slide(at: index)
                                 SlideGridCellView(
                                     slide: slide,
                                     itemWidth: layout.itemWidth,
                                     itemHeight: layout.itemHeight,
                                     isSelected: slide.id == selection.selectedSlideID,
-                                    allowsPDFThumbnailRendering: allowsPDFThumbnailRendering,
-                                    onTap: {
-                                        flow.selectPreviewSlide(slide.id)
-                                    }
-                                )
-                                .id(slide.id)
-                            }
-                        } else {
-                            ForEach(flow.previewSlides) { slide in
-                                SlideGridCellView(
-                                    slide: slide,
-                                    itemWidth: layout.itemWidth,
-                                    itemHeight: layout.itemHeight,
-                                    isSelected: slide.id == selection.selectedSlideID,
-                                    allowsPDFThumbnailRendering: allowsPDFThumbnailRendering,
+                                    allowsPDFThumbnailRendering: document.allowsPDFThumbnailRendering(for: slide),
+                                    accessibilityTitleIncludesSource: multiSource,
                                     onTap: {
                                         flow.selectPreviewSlide(slide.id)
                                     }
@@ -78,13 +66,6 @@ private struct PreviewThumbnailGrid: View {
                 }
             }
         }
-    }
-
-    private var thumbnailRenderingIsAllowed: Bool {
-        if let pdfSource = flow.previewPDFSource {
-            return PDFSlideCatalog.shouldRenderThumbnails(pageCount: pdfSource.pageCount)
-        }
-        return PDFSlideCatalog.shouldRenderThumbnails(for: flow.previewSlides)
     }
 
     private func handleArrowKey(
@@ -130,12 +111,41 @@ struct PreviewPaneContainerView: View {
     let canLoadToCurrent: Bool
     let loadToCurrentHelp: String
     let loadError: String?
+    let loadNotice: String?
     let thumbnailScale: Double
     let onEdit: () -> Void
     let onLoadToCurrent: () -> Void
     let onToggleEditorPreviewArea: () -> Void
     @FocusState private var isFocused: Bool
     @FocusState private var isEditorPreviewAreaToggleFocused: Bool
+
+    init(
+        flow: PresentationFlowController,
+        isEditorPreviewAreaCollapsed: Bool,
+        hasEditorPane: Bool,
+        canEditSelection: Bool,
+        canLoadToCurrent: Bool,
+        loadToCurrentHelp: String,
+        loadError: String?,
+        loadNotice: String? = nil,
+        thumbnailScale: Double,
+        onEdit: @escaping () -> Void,
+        onLoadToCurrent: @escaping () -> Void,
+        onToggleEditorPreviewArea: @escaping () -> Void
+    ) {
+        self.flow = flow
+        self.isEditorPreviewAreaCollapsed = isEditorPreviewAreaCollapsed
+        self.hasEditorPane = hasEditorPane
+        self.canEditSelection = canEditSelection
+        self.canLoadToCurrent = canLoadToCurrent
+        self.loadToCurrentHelp = loadToCurrentHelp
+        self.loadError = loadError
+        self.loadNotice = loadNotice
+        self.thumbnailScale = thumbnailScale
+        self.onEdit = onEdit
+        self.onLoadToCurrent = onLoadToCurrent
+        self.onToggleEditorPreviewArea = onToggleEditorPreviewArea
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -195,6 +205,12 @@ struct PreviewPaneContainerView: View {
                 Label(loadError, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 8)
+            } else if let loadNotice {
+                Label(loadNotice, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 8)
             }
@@ -265,6 +281,14 @@ struct PreviewPaneContainerView: View {
 
     private var previewStatusText: String {
         if loadError != nil { return "(Load failed)" }
-        return "(Selected file)"
+        guard let document = flow.previewDocument, !document.isEmpty else {
+            return flow.isPreviewLoading ? "(Loading…)" : ""
+        }
+        let sources = document.sourceURLs.count
+        let slides = document.slideCount
+        if sources <= 1 {
+            return slides == 1 ? "(1 slide)" : "(\(slides) slides)"
+        }
+        return "(\(sources) items · \(slides) slides)"
     }
 }

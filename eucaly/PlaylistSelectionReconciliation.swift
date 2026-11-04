@@ -5,10 +5,18 @@ import Foundation
 /// its selection, editor, Preview or Current.
 nonisolated struct PlaylistSelectionReconciliation: Equatable, Sendable {
     let selectedIDs: Set<UUID>
+    /// Playlist-store order among the surviving selected IDs.
+    let orderedIDs: [UUID]
     let primaryID: UUID?
 
-    init(selectedIDs: Set<UUID>, primaryID: UUID?, availableIDs: Set<UUID>) {
-        self.selectedIDs = selectedIDs.intersection(availableIDs)
+    init(selectedIDs: Set<UUID>, primaryID: UUID?, availableIDs: Set<UUID>, orderedAvailableIDs: [UUID] = []) {
+        let surviving = selectedIDs.intersection(availableIDs)
+        self.selectedIDs = surviving
+        if orderedAvailableIDs.isEmpty {
+            self.orderedIDs = surviving.sorted { $0.uuidString < $1.uuidString }
+        } else {
+            self.orderedIDs = orderedAvailableIDs.filter { surviving.contains($0) }
+        }
         self.primaryID = primaryID.flatMap { availableIDs.contains($0) ? $0 : nil }
     }
 }

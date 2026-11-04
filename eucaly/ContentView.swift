@@ -28,7 +28,8 @@ public struct ContentView: View {
     @State private var markdownFiles: [URL] = []
     @State private var previewLibraryFiles: [URL] = []
     @State private var backgroundAudioLibraryFiles: [URL] = []
-    @State private var selectedPlaylistEntryIDs: Set<UUID> = []
+    @State private var selectedLibraryURLs: [URL] = []
+    @State private var selectedPlaylistEntryIDs: [UUID] = []
     @StateObject private var playlistStore: PlaylistStore
     @AppStorage("libraryRootPath") private var libraryRootPath: String = ""
     @AppStorage("libraryRootBookmark") private var libraryRootBookmark: String = ""
@@ -100,11 +101,13 @@ public struct ContentView: View {
     }
 
     private struct SidebarSelectionRequest: Equatable {
-        let selection: SidebarSelection?
-        let playlistEntryIDs: Set<UUID>
+        let change: SidebarSelectionChange
     }
 
+    /// Editor is only available for a single selected lyrics file.
     private var isCurrentSelectionMediaFile: Bool {
+        if selectedLibraryURLs.count > 1 { return true }
+        if selectedPlaylistEntryIDs.count > 1 { return true }
         guard let url = currentSelectedURL else { return false }
         let kind = LibraryFileKind(url: url)
         switch kind {
@@ -287,6 +290,7 @@ public struct ContentView: View {
             libraryRootURL: libraryRootURL,
             captureWindows: captureWindows,
             libraryScrollRequest: libraryScrollRequest,
+            selectedLibraryURLs: selectedLibraryURLs,
             selectedPlaylistEntryIDs: selectedPlaylistEntryIDs,
             sidebarSelection: sidebarSelection,
             selectedAudioURL: selectedAudioURL,
@@ -309,11 +313,8 @@ public struct ContentView: View {
             onClearBackgroundAudio: clearBackgroundAudio,
             onApplyBackgroundAudioVolume: handleBackgroundAudioVolumeDraftChange,
             onSeekBackgroundAudio: seekBackgroundAudio,
-            onSelectionRequest: { selection, playlistEntryIDs in
-                handleSidebarSelectionRequest(
-                    selection,
-                    playlistEntryIDs: playlistEntryIDs
-                )
+            onSelectionRequest: { change in
+                handleSidebarSelectionRequest(change)
             },
             onPickWindow: pickWindowForPreview,
             onClearSelectedWindow: clearSelectedWindowFromSidebar,
@@ -379,7 +380,7 @@ public struct ContentView: View {
               captureWindows.contains(where: { $0.windowID == windowID }) else {
             return
         }
-        handleSidebarSelectionRequest(selection)
+        handleSidebarSelectionRequest(SidebarSelectionChange(primary: selection))
     }
 
     private func handleNewLyricsNotification(_ notification: Notification) {
@@ -405,6 +406,7 @@ public struct ContentView: View {
         )
         NewLyricsAction.apply(state: &state, clearPreview: clearPreviewDocument)
         lyricsEditor = state.editor
+        selectedLibraryURLs = []
         setSidebarSelectionWithoutLoading(state.sidebarSelection)
         isEditorPreviewAreaCollapsed = false
         newFileWarning = nil
@@ -433,6 +435,7 @@ public struct ContentView: View {
                 canLoadToCurrent: canLoadPreviewToCurrent,
                 loadToCurrentHelp: loadToCurrentHelp,
                 loadError: previewLoadError,
+                loadNotice: flow.previewLoadNotice,
                 thumbnailScale: thumbnailScale,
                 onEdit: beginLyricsEditing,
                 onLoadToCurrent: handleLoadPreviewToCurrent,
@@ -576,14 +579,14 @@ public struct ContentView: View {
     }
 
     @discardableResult
-    private func commitCurrentSlides(
-        _ slides: [Slide],
+    private func commitCurrentDocument(
+        _ document: PresentationDocument,
         lyricsSourceURL: URL? = nil,
         preferredSelection: Slide.ID? = nil,
         preferredSelectionIndex: Int? = nil
     ) -> Bool {
-        flow.setCurrentSlides(
-            slides,
+        flow.setCurrentDocument(
+            document,
             in: session,
             lyricsSourceURL: lyricsSourceURL,
             preferredSelection: preferredSelection,
@@ -592,21 +595,24 @@ public struct ContentView: View {
     }
 
     @discardableResult
-    private func commitCurrentPDFSource(
-        _ source: PDFSlideSource,
+    private func commitCurrentSlides(
+        _ slides: [Slide],
+        lyricsSourceURL: URL? = nil,
         preferredSelection: Slide.ID? = nil,
         preferredSelectionIndex: Int? = nil
     ) -> Bool {
-        flow.setCurrentPDFSource(
-            source,
-            in: session,
+        commitCurrentDocument(
+            .slides(slides),
+            lyricsSourceURL: lyricsSourceURL,
             preferredSelection: preferredSelection,
             preferredSelectionIndex: preferredSelectionIndex
         )
     }
 
     private func clearPreviewDocument() {
-        let clearedWindowFromPreview = flow.previewSlides.contains { $0.captureWindowID != nil }
+        let clearedWindowFromPreview = (0..<flow.previewSlideCount).contains {
+            flow.previewSlide(at: $0)?.captureWindowID != nil
+        }
         flow.clearPreviewDocument()
         lyricsEditor.invalidatePreview()
         if clearedWindowFromPreview {
@@ -615,7 +621,9 @@ public struct ContentView: View {
     }
 
     private func clearCurrentDocument() {
-        let clearedWindowFromCurrent = session.slides.contains { $0.captureWindowID != nil }
+        let clearedWindowFromCurrent = (0..<session.slideCount).contains {
+            session.slide(at: $0)?.captureWindowID != nil
+        }
         flow.clearCurrentDocument(in: session)
         flow.isCurrentCollapsed = true
         if clearedWindowFromCurrent, case .window = sidebarSelection {
@@ -640,8 +648,9 @@ public struct ContentView: View {
               permitFileUse(lyricsEditor.isEditing ? lyricsEditor.sourceURL : nil) else { return }
 
         if lyricsEditor.isEditing {
-            guard commitCurrentSlides(
-                flow.previewSlides,
+            guard let document = flow.previewDocument else { return }
+            guard commitCurrentDocument(
+                document,
                 lyricsSourceURL: lyricsEditor.sourceURL,
                 preferredSelection: flow.previewSelectionID
             ) else { return }
@@ -652,18 +661,14 @@ public struct ContentView: View {
             return
         }
 
-        guard !flow.previewIsEmpty else { return }
-        if let pdfSource = flow.previewPDFSource {
-            guard commitCurrentPDFSource(
-                pdfSource,
-                preferredSelection: flow.previewSelectionID
-            ) else { return }
-        } else {
-            guard commitCurrentSlides(
-                flow.previewSlides,
-                lyricsSourceURL: previewLyricsSourceURL(),
-                preferredSelection: flow.previewSelectionID
-            ) else { return }
+        guard let document = flow.previewDocument, !document.isEmpty else { return }
+        guard commitCurrentDocument(
+            document,
+            lyricsSourceURL: previewLyricsSourceURL(),
+            preferredSelection: flow.previewSelectionID
+        ) else {
+            newFileWarning = "Couldn’t load Preview into Current. One or more files are unavailable."
+            return
         }
         session.setCurrentResourceScope(securityScopedRoot)
         clearPreviewDocument()
@@ -711,7 +716,9 @@ public struct ContentView: View {
     }
 
     private var canEditCurrentLyrics: Bool {
-        guard !session.slides.isEmpty, let currentLyricsSourceURL else { return false }
+        guard let document = session.presentationDocument, !document.isEmpty,
+              let currentLyricsSourceURL,
+              document.sourceURLs.count <= 1 else { return false }
         return isLyricsFile(currentLyricsSourceURL)
     }
 
@@ -840,7 +847,9 @@ public struct ContentView: View {
                     case .library:
                         if let first = result.importedURLs.first(where: { LibraryFileKind(url: $0).isPreviewLibraryItem }) {
                             libraryScrollRequest = LibraryScrollRequest(url: first)
-                            handleSidebarSelectionRequest(.library(first))
+                            handleSidebarSelectionRequest(
+                                SidebarSelectionChange(primary: .library(first), libraryURLs: [first])
+                            )
                         }
                     case .audio:
                         if let first = result.importedURLs.first(where: { LibraryFileKind(url: $0).isBackgroundAudioSource }) {
@@ -945,99 +954,87 @@ public struct ContentView: View {
         if !listsUnchanged || !titlesUnchanged {
             libraryRevision &+= 1
         }
+        reconcileLibrarySelection()
         return previewFiles
     }
 
 
     private func loadSelectedFile(url: URL) {
-        guard permitFileUse(url) else { return }
-        let source = PreviewSource.file(url)
+        loadSelectedFiles([url])
+    }
+
+    private func loadSelectedFiles(_ urls: [URL], preSkippedTitles: [String] = []) {
+        let ordered = urls.map(\.standardizedFileURL)
+        guard !ordered.isEmpty else {
+            lyricsEditor.endEditing()
+            if preSkippedTitles.isEmpty {
+                clearPreviewDocument()
+            } else if preSkippedTitles.count == 1 {
+                flow.showUnavailablePreview("Couldn’t load \(preSkippedTitles[0]).")
+            } else {
+                flow.showUnavailablePreview("Couldn’t load \(preSkippedTitles.count) selected items.")
+            }
+            return
+        }
+        guard ordered.allSatisfy({ permitFileUse($0) }) else { return }
+        let source = PreviewSource.files(ordered)
         let token = beginPreviewLoad(to: source)
         newFileWarning = nil
-        let kind = LibraryFileKind(url: url)
         DispatchQueue.global(qos: .userInitiated).async {
-            do {
-                try LibraryFileAdmission.requireReadableRegularFile(at: url)
-            } catch {
-                DispatchQueue.main.async {
-                    failPreviewLoad(token: token, source: source)
-                }
-                return
-            }
-            switch kind {
-            case .pdf:
-                guard let pageCount = PDFSlideCatalog.pageCount(for: url) else {
-                    DispatchQueue.main.async {
-                        failPreviewLoad(token: token, source: source)
+            let composed = PresentationDocumentComposer.compose(urls: ordered)
+            DispatchQueue.main.async {
+                guard completePreviewLoad(token: token, source: source) else { return }
+                var skipped = preSkippedTitles
+                skipped.append(contentsOf: composed.skippedTitles)
+                if composed.document.isEmpty {
+                    lyricsEditor.endEditing()
+                    let message: String
+                    if skipped.count == 1 {
+                        message = "Couldn’t load \(skipped[0])."
+                    } else if skipped.isEmpty {
+                        message = "Couldn’t load the selected items."
+                    } else {
+                        message = "Couldn’t load \(skipped.count) selected items."
                     }
+                    flow.showUnavailablePreview(message)
                     return
                 }
-                if PDFSlideCatalog.shouldUseVirtualCatalog(pageCount: pageCount) {
-                    let pdfSource = PDFSlideSource(url: url, pageCount: pageCount)
-                    DispatchQueue.main.async {
-                        guard completePreviewLoad(token: token, source: source) else { return }
-                        applyPreviewPDFLoad(source: pdfSource)
-                    }
+                let notice: String?
+                if skipped.isEmpty {
+                    notice = nil
+                } else if skipped.count == 1 {
+                    notice = "Couldn’t load \(skipped[0])."
                 } else {
-                    let slides = buildPDFSlides(pageCount: pageCount, url: url)
-                    DispatchQueue.main.async {
-                        guard completePreviewLoad(token: token, source: source) else { return }
-                        applyPreviewMediaLoad(slides: slides)
-                    }
+                    notice = "Couldn’t load \(skipped.count) selected items."
                 }
-            case .image:
-                let slides = buildImageSlides(from: url)
-                DispatchQueue.main.async {
-                    guard completePreviewLoad(token: token, source: source) else { return }
-                    applyPreviewMediaLoad(slides: slides)
-                }
-            case .video:
-                let slides = buildVideoSlides(from: url)
-                DispatchQueue.main.async {
-                    guard completePreviewLoad(token: token, source: source) else { return }
-                    applyPreviewMediaLoad(slides: slides)
-                }
-            case .audio:
-                DispatchQueue.main.async {
-                    failPreviewLoad(token: token, source: source)
-                }
-                return
-            case .txt:
-                guard let contents = try? String(contentsOf: url, encoding: .utf8) else {
-                    DispatchQueue.main.async {
-                        failPreviewLoad(token: token, source: source)
-                    }
-                    return
-                }
-                let doc = LyricsParser.parseDocument(contents, fileName: url.lastPathComponent)
-                DispatchQueue.main.async {
-                    guard completePreviewLoad(token: token, source: source) else { return }
-                    applyPreviewLyricsLoad(slides: doc.slides)
-                }
-            case .unsupported:
-                DispatchQueue.main.async {
-                    failPreviewLoad(token: token, source: source)
-                }
-                return
+                applyPreviewDocumentLoad(
+                    composed.document,
+                    notice: notice,
+                    soleLyricsURL: composed.soleLyricsURL
+                )
             }
         }
     }
 
+    private func applyPreviewDocumentLoad(
+        _ document: PresentationDocument,
+        notice: String? = nil,
+        soleLyricsURL: URL? = nil
+    ) {
+        lyricsEditor.endEditing()
+        if !document.isEmpty {
+            isEditorPreviewAreaCollapsed = false
+        }
+        if let soleLyricsURL {
+            // Partial multi-select that resolved to one lyrics file stays editable.
+            flow.setPreviewSource(.file(soleLyricsURL))
+        }
+        flow.setPreviewDocument(document)
+        flow.setPreviewLoadNotice(notice)
+    }
+
     private func applyPreviewMediaLoad(slides: [Slide]) {
-        lyricsEditor.endEditing()
-        setPreviewSlides(slides)
-    }
-
-    private func applyPreviewPDFLoad(source: PDFSlideSource) {
-        lyricsEditor.endEditing()
-        setPreviewPDFSource(source)
-    }
-
-    private func applyPreviewLyricsLoad(slides: [Slide]) {
-        lyricsEditor.endEditing()
-        setPreviewSlides(slides)
-        // Keep Current independent from browsing.
-        // User must explicitly load Preview into Current.
+        applyPreviewDocumentLoad(.slides(slides))
     }
 
     private func setPreviewSlides(_ slides: [Slide], preferredSelection: Slide.ID? = nil) {
@@ -1057,14 +1054,6 @@ public struct ContentView: View {
             preferredSelection: preferredSelection,
             preferredSelectionIndex: preferredSelectionIndex
         )
-    }
-
-    private func setPreviewPDFSource(
-        _ source: PDFSlideSource,
-        preferredSelectionIndex: Int? = nil
-    ) {
-        isEditorPreviewAreaCollapsed = false
-        flow.setPreviewPDFSource(source, preferredSelectionIndex: preferredSelectionIndex)
     }
 
     private var libraryRootURL: URL? {
@@ -1191,7 +1180,9 @@ public struct ContentView: View {
             loadMarkdownFiles(from: root)
         }
 
-        handleSidebarSelectionRequest(.library(url))
+        handleSidebarSelectionRequest(
+            SidebarSelectionChange(primary: .library(url), libraryURLs: [url])
+        )
         libraryScrollRequest = LibraryScrollRequest(url: url)
     }
 
@@ -1255,17 +1246,37 @@ public struct ContentView: View {
     }
 
     private func reconcilePlaylistSelection() {
+        let ordered = playlistStore.entries.map(\.id)
         let reconciled = PlaylistSelectionReconciliation(
-            selectedIDs: selectedPlaylistEntryIDs,
+            selectedIDs: Set(selectedPlaylistEntryIDs),
             primaryID: selectedPlaylistEntryID,
-            availableIDs: Set(playlistStore.entries.map(\.id))
+            availableIDs: Set(ordered),
+            orderedAvailableIDs: ordered
         )
-        if selectedPlaylistEntryIDs != reconciled.selectedIDs {
-            selectedPlaylistEntryIDs = reconciled.selectedIDs
+        // Preserve operator click order among survivors.
+        let nextOrder = selectedPlaylistEntryIDs.filter { reconciled.selectedIDs.contains($0) }
+        if selectedPlaylistEntryIDs != nextOrder {
+            selectedPlaylistEntryIDs = nextOrder
         }
         if case .playlist = sidebarSelection, reconciled.primaryID == nil {
             // Removing a saved row retires its sidebar identity, not its accepted
             // Preview or an editor draft. Surviving highlights remain selected.
+            sidebarSelection = nil
+        }
+    }
+
+    private func reconcileLibrarySelection() {
+        let available = Set(previewLibraryFiles.map(\.standardizedFileURL))
+        let primaryURL: URL? = if case .library(let url) = sidebarSelection { url } else { nil }
+        let reconciled = LibrarySelectionReconciliation(
+            selectedURLs: selectedLibraryURLs,
+            primaryURL: primaryURL,
+            availableURLs: available
+        )
+        if selectedLibraryURLs != reconciled.selectedURLs {
+            selectedLibraryURLs = reconciled.selectedURLs
+        }
+        if case .library = sidebarSelection, reconciled.primaryURL == nil {
             sidebarSelection = nil
         }
     }
@@ -1288,7 +1299,7 @@ public struct ContentView: View {
     private func removeSelectedFromPlaylist() {
         reconcilePlaylistSelection()
         guard !selectedPlaylistEntryIDs.isEmpty else { return }
-        guard playlistStore.remove(ids: selectedPlaylistEntryIDs) else {
+        guard playlistStore.remove(ids: Set(selectedPlaylistEntryIDs)) else {
             newFileWarning = playlistStore.lastError
             return
         }
@@ -1310,27 +1321,41 @@ public struct ContentView: View {
     private func moveSelectedPlaylistEntriesUp() {
         reconcilePlaylistSelection()
         let availability = PlaylistMoveAvailability(
-            selectedIDs: selectedPlaylistEntryIDs, orderedIDs: playlistStore.entries.map(\.id))
+            selectedIDs: Set(selectedPlaylistEntryIDs), orderedIDs: playlistStore.entries.map(\.id))
         guard availability.canMoveUp else { return }
-        guard playlistStore.moveUp(ids: selectedPlaylistEntryIDs) else {
+        guard playlistStore.moveUp(ids: Set(selectedPlaylistEntryIDs)) else {
             newFileWarning = playlistStore.lastError
             return
         }
         newFileWarning = nil
         loadPlaylists()
+        refreshPlaylistMultiPreviewIfNeeded()
     }
 
     private func moveSelectedPlaylistEntriesDown() {
         reconcilePlaylistSelection()
         let availability = PlaylistMoveAvailability(
-            selectedIDs: selectedPlaylistEntryIDs, orderedIDs: playlistStore.entries.map(\.id))
+            selectedIDs: Set(selectedPlaylistEntryIDs), orderedIDs: playlistStore.entries.map(\.id))
         guard availability.canMoveDown else { return }
-        guard playlistStore.moveDown(ids: selectedPlaylistEntryIDs) else {
+        guard playlistStore.moveDown(ids: Set(selectedPlaylistEntryIDs)) else {
             newFileWarning = playlistStore.lastError
             return
         }
         newFileWarning = nil
         loadPlaylists()
+        refreshPlaylistMultiPreviewIfNeeded()
+    }
+
+    /// Keep Preview deck order aligned with playlist store order after moves.
+    private func refreshPlaylistMultiPreviewIfNeeded() {
+        guard case .playlist(let primary) = sidebarSelection else { return }
+        guard selectedPlaylistEntryIDs.count > 1 else { return }
+        // After a store reorder, keep the operator's click order rather than
+        // rewriting Preview to playlist-store order.
+        guard !selectedPlaylistEntryIDs.isEmpty else { return }
+        applySidebarSelectionChange(
+            SidebarSelectionChange(primary: .playlist(primary), playlistEntryIDs: selectedPlaylistEntryIDs)
+        )
     }
 
     private func refreshLibrary() {
@@ -1383,22 +1408,19 @@ public struct ContentView: View {
     }
 
     @discardableResult
-    private func handleSidebarSelectionRequest(
-        _ selection: SidebarSelection?,
-        playlistEntryIDs: Set<UUID> = []
-    ) -> Bool {
-        guard permitSidebarSelection(selection) else { return false }
+    private func handleSidebarSelectionRequest(_ change: SidebarSelectionChange) -> Bool {
+        guard permitSidebarSelection(change) else { return false }
         // An explicit same-file selection also supersedes import auto-opening.
         importSelectionGeneration = UUID()
-        let request = SidebarSelectionRequest(
-            selection: selection,
-            playlistEntryIDs: playlistEntryIDs
-        )
+        let request = SidebarSelectionRequest(change: change)
+        let selection = change.primary
 
-        guard selection != sidebarSelection else {
-            selectedPlaylistEntryIDs = playlistEntryIDs
-            guard !lyricsEditor.isEditing, let selection else { return true }
-            applySidebarSelection(selection)
+        let samePrimary = selection == sidebarSelection
+        let sameLibrary = change.libraryURLs == selectedLibraryURLs
+        let samePlaylist = change.playlistEntryIDs == selectedPlaylistEntryIDs
+        if samePrimary, sameLibrary, samePlaylist {
+            guard !lyricsEditor.isEditing, selection != nil else { return true }
+            applySidebarSelectionChange(change)
             return true
         }
 
@@ -1417,37 +1439,87 @@ public struct ContentView: View {
     }
 
     private func commitSidebarSelection(_ request: SidebarSelectionRequest) {
-        guard permitSidebarSelection(request.selection) else { return }
-        sidebarSelection = request.selection
-        selectedPlaylistEntryIDs = request.playlistEntryIDs
-        guard let selection = request.selection else { return }
-        applySidebarSelection(selection)
+        guard permitSidebarSelection(request.change) else { return }
+        applySidebarSelectionState(request.change)
+        guard request.change.primary != nil else { return }
+        applySidebarSelectionChange(request.change)
     }
 
-    private func permitSidebarSelection(_ selection: SidebarSelection?) -> Bool {
-        switch selection {
-        case .library(let url): return permitFileUse(url)
-        case .playlist(let id): return permitFileUse(playlistStore.resolvedURL(for: id))
-        default: return true
+    private func applySidebarSelectionState(_ change: SidebarSelectionChange) {
+        sidebarSelection = change.primary
+        switch change.primary {
+        case .library:
+            selectedLibraryURLs = change.libraryURLs.isEmpty
+                ? change.primary.flatMap { if case .library(let url) = $0 { return [url] }; return nil } ?? []
+                : change.libraryURLs
+            selectedPlaylistEntryIDs = []
+        case .playlist:
+            selectedLibraryURLs = []
+            let ids = change.playlistEntryIDs
+            if ids.isEmpty, case .playlist(let id) = change.primary {
+                selectedPlaylistEntryIDs = [id]
+            } else {
+                selectedPlaylistEntryIDs = ids
+            }
+        case .window, .none:
+            selectedLibraryURLs = []
+            selectedPlaylistEntryIDs = []
         }
     }
 
-    private func applySidebarSelection(_ selection: SidebarSelection) {
-        switch selection {
-        case .library(let url):
-            selectedPlaylistEntryIDs = []
-            loadSelectedFile(url: url)
-        case .playlist(let id):
-            if selectedPlaylistEntryIDs.isEmpty {
-                selectedPlaylistEntryIDs = [id]
+    private func permitSidebarSelection(_ change: SidebarSelectionChange) -> Bool {
+        switch change.primary {
+        case .library:
+            let urls = change.libraryURLs.isEmpty
+                ? change.primary.flatMap { if case .library(let url) = $0 { return [url] }; return nil } ?? []
+                : change.libraryURLs
+            return urls.allSatisfy { permitFileUse($0) }
+        case .playlist:
+            let ids = change.playlistEntryIDs.isEmpty
+                ? change.primary.flatMap { if case .playlist(let id) = $0 { return [id] }; return nil } ?? []
+                : change.playlistEntryIDs
+            return ids.allSatisfy { permitFileUse(playlistStore.resolvedURL(for: $0)) }
+        default:
+            return true
+        }
+    }
+
+    private func applySidebarSelectionChange(_ change: SidebarSelectionChange) {
+        switch change.primary {
+        case .library:
+            let urls = change.libraryURLs.isEmpty
+                ? change.primary.flatMap { if case .library(let url) = $0 { return [url] }; return nil } ?? []
+                : change.libraryURLs
+            loadSelectedFiles(urls)
+        case .playlist:
+            let ids = change.playlistEntryIDs.isEmpty
+                ? change.primary.flatMap { if case .playlist(let id) = $0 { return [id] }; return nil } ?? []
+                : change.playlistEntryIDs
+            let hadWindowPreview = (0..<flow.previewSlideCount).contains {
+                flow.previewSlide(at: $0)?.captureWindowID != nil
             }
-            let hadWindowPreview = flow.previewSlides.contains { $0.captureWindowID != nil }
-            if !flow.previewPlaylistEntry(id, from: playlistStore, loadFile: loadSelectedFile) {
+            let resolved = flow.resolvedPlaylistURLs(ids, from: playlistStore)
+            if resolved.urls.isEmpty {
                 lyricsEditor.invalidatePreview()
+                if resolved.skippedTitles.count == 1 {
+                    flow.showUnavailablePreview(
+                        "Couldn’t load \(resolved.skippedTitles[0]). The file is missing or unavailable."
+                    )
+                } else if resolved.skippedTitles.isEmpty {
+                    flow.showUnavailablePreview("Couldn’t load the selected Playlist items.")
+                } else {
+                    flow.showUnavailablePreview(
+                        "Couldn’t load \(resolved.skippedTitles.count) selected Playlist items."
+                    )
+                }
                 if hadWindowPreview { releaseWindowCaptureSelectionIfUnused() }
+                return
             }
+            loadSelectedFiles(resolved.urls, preSkippedTitles: resolved.skippedTitles)
         case .window(let windowID):
             loadWindowPreview(for: windowID)
+        case .none:
+            break
         }
     }
 
@@ -1666,7 +1738,7 @@ public struct ContentView: View {
         if flow.previewSlides.contains(where: { $0.captureWindowID == windowID }) {
             clearPreviewDocument()
         }
-        if session.slides.contains(where: { $0.captureWindowID == windowID }) {
+        if (0..<session.slideCount).contains(where: { session.slide(at: $0)?.captureWindowID == windowID }) {
             clearCurrentDocument()
         }
         releaseWindowCaptureSelectionIfUnused()
@@ -1677,15 +1749,22 @@ public struct ContentView: View {
 
     private func setSidebarSelectionWithoutLoading(_ selection: SidebarSelection?) {
         sidebarSelection = selection
-        if case .playlist(let id) = selection {
+        switch selection {
+        case .playlist(let id):
             selectedPlaylistEntryIDs = [id]
-        } else {
+            selectedLibraryURLs = []
+        case .library(let url):
+            selectedLibraryURLs = [url.standardizedFileURL]
+            selectedPlaylistEntryIDs = []
+        case .window, .none:
+            selectedLibraryURLs = []
             selectedPlaylistEntryIDs = []
         }
     }
 
     private func loadWindowPreview(for windowID: CGWindowID) {
         setPreviewSource(.window(windowID))
+        selectedLibraryURLs = []
         selectedPlaylistEntryIDs = []
         lyricsEditor.endEditing()
 
@@ -1697,7 +1776,7 @@ public struct ContentView: View {
             clearPreviewDocument()
             return
         }
-        applyPreviewMediaLoad(slides: buildWindowSlides(from: window))
+        applyPreviewDocumentLoad(PresentationDocumentComposer.composeWindow(window))
     }
 
     @discardableResult
@@ -1707,7 +1786,7 @@ public struct ContentView: View {
 
     @discardableResult
     private func completePreviewLoad(token: UUID, source: PreviewSource) -> Bool {
-        if case .file(let url) = source, !permitFileUse(url) {
+        if !source.fileURLs.allSatisfy({ permitFileUse($0) }) {
             if flow.previewLoadToken == token { flow.cancelPreviewLoad() }
             return false
         }
@@ -1791,12 +1870,24 @@ public struct ContentView: View {
     }
 
     private func previewLyricsSourceURL() -> URL? {
-        guard case .file(let url) = previewSource,
-              LibraryFileKind(url: url).isEditableLyrics,
-              !flow.previewIsEmpty else {
-            return nil
+        guard !flow.previewIsEmpty else { return nil }
+        let urls = previewSource.fileURLs
+        if urls.count == 1, LibraryFileKind(url: urls[0]).isEditableLyrics {
+            return urls[0]
         }
-        return url
+        // After a partial multi-load that left only lyrics, previewSource may already
+        // be the sole file even when the sidebar highlight set is still multi.
+        if let document = flow.previewDocument,
+           document.sourceURLs.count == 1,
+           let url = document.sourceURLs.first,
+           LibraryFileKind(url: url).isEditableLyrics,
+           document.soleVirtualPDFSource == nil,
+           !document.materializedSlides.contains(where: {
+               $0.imageURL != nil || $0.videoURL != nil || $0.pdfURL != nil || $0.captureWindowID != nil
+           }) {
+            return url
+        }
+        return nil
     }
 
 }

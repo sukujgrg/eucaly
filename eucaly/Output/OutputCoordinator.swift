@@ -302,9 +302,8 @@ final class OutputCoordinator: ObservableObject {
         return true
     }
     private func currentFileURLs(in session: PresentationSession) -> Set<URL> {
-        var urls = Set(session.slides.flatMap { Self.fileURLs(in: $0) })
-        if let url = session.pdfSlideSource?.url { urls.insert(url) }
-        if let url = session.currentLyricsSourceURL { urls.insert(url) }
+        var urls = Set((session.presentationDocument?.sourceURLs ?? []).map(\.standardizedFileURL))
+        if let url = session.currentLyricsSourceURL { urls.insert(url.standardizedFileURL) }
         return urls
     }
     private func backgroundFileURLs(in session: PresentationSession) -> Set<URL> {
