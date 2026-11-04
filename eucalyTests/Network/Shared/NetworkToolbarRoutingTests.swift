@@ -8,9 +8,9 @@ final class NetworkToolbarRoutingTests: XCTestCase {
         for deleteWorkspace in [true, false] {
             let f = Fixture(); defer { f.outputs.stopAllOutputs() }
             let controls = OutputQuickControlsController(outputs: f.outputs, workspaceID: f.online, manageOutputs: {})
-            let assignments = try XCTUnwrap(try item("Workspace Assignments", in: controls.outputButton.menu).submenu)
-            let network = try XCTUnwrap(assignments.items.last?.submenu)
-            let action = try item("Move to This Workspace", in: network)
+            XCTAssertFalse(controls.networkButton.menu?.items.contains { $0.title == OutputAudioListeningState.title } == true,
+                           "Listen belongs on the menubar Output menu, not Network")
+            let action = try item("Move to Online", in: controls.networkButton.menu)
             XCTAssertTrue(action.isEnabled)
             XCTAssertNil(f.outputs.preparedSession(workspace: f.online))
             if deleteWorkspace { XCTAssertTrue(f.outputs.deleteWorkspace(f.online)) }
@@ -170,7 +170,7 @@ final class NetworkToolbarRoutingTests: XCTestCase {
         let menu = try XCTUnwrap(controls.networkButton.menu)
         XCTAssertNotNil(menu.items.first { $0.title.hasPrefix("NDI · ") })
         let omtMenu = try XCTUnwrap(menu.items.first { $0.title.hasPrefix("OMT · ") }?.submenu)
-        XCTAssertNotNil(try item("OMT source: eucaly · Disabled", in: omtMenu))
+        XCTAssertNotNil(try item("OMT · eucaly · Disabled", in: omtMenu))
         XCTAssertNil(f.outputs.preparedSession(workspace: f.online), "Constructing a routing menu must not prepare a closed workspace")
         invoke(try item("Move to House", in: omtMenu))
         XCTAssertEqual(f.outputs.destination(omt.id)?.workspaceID, f.house)

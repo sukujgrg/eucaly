@@ -121,11 +121,9 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
     }
     private func rebuildOutputMenu() {
         outputMenu.removeAllItems()
-        let listening = OutputAudioListeningState(outputs: app.outputs, workspaceID: app.outputs.commandWorkspaceID)
-        if let listening { outputMenu.addItem(NSMenuItem(title: listening.scope, action: nil, keyEquivalent: "")) }
+        outputMenu.addItem(.sectionHeader(title: OutputAudioListeningState.sectionTitle))
         let item = add(OutputAudioListeningState.title, to: outputMenu, command: .monitorAudioLocally)
         _ = validateMenuItem(item)
-        outputMenu.addItem(NSMenuItem(title: listening?.detail ?? "Open a workspace to change local listening.", action: nil, keyEquivalent: ""))
         outputMenu.addItem(.separator())
         add("Manage Outputs…", to: outputMenu, command: .manageOutputs)
         add("Manage Profiles…", to: outputMenu, command: .manageProfiles)
@@ -139,10 +137,12 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         case .monitorAudioLocally:
             guard let listening = OutputAudioListeningState(outputs: app.outputs, workspaceID: app.outputs.commandWorkspaceID) else {
                 menuItem.state = .off
+                menuItem.toolTip = "Open a workspace to change local listening."
+                menuItem.setAccessibilityHelp("Open a workspace to change local listening.")
                 return false
             }
             menuItem.state = listening.isListening ? .on : .off
-            menuItem.toolTip = listening.help
+            listening.applyHelp(to: menuItem)
             return listening.canChange
         case .newLyrics, .searchLibrary, .refresh: return app.workspaceWindows.activeWorkspaceID != nil
         case .save:

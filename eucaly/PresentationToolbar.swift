@@ -113,7 +113,7 @@ final class PresentationToolbarController: NSObject, NSToolbarDelegate, NSToolba
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         var result: [NSToolbarItem.Identifier] = [.flexibleSpace, Self.sidebarID, Self.sidebarSeparatorID,
-            .init("output.destination"), .init("output.network"), .space,
+            .init("output.network"), .space,
             .init("output.appearance"), .init("output.background"), .init("workspace.thumbnails"),
             .flexibleSpace, Self.searchID, .space, Self.slidesID]
         if updates.state.availableVersion != nil { result += [.space, Self.updateID] }
@@ -164,7 +164,6 @@ final class PresentationToolbarController: NSObject, NSToolbarDelegate, NSToolba
         let view: NSView
         let label: String
         switch identifier {
-        case .init("output.destination"): view = quickControls.outputButton; label = "Output"
         case .init("output.network"): view = quickControls.networkButton; label = "Network"
         case .init("output.appearance"): view = quickControls.appearanceButton; label = "Appearance"
         case .init("output.background"): view = quickControls.backgroundButton; label = "Background"
@@ -201,8 +200,7 @@ final class PresentationToolbarController: NSObject, NSToolbarDelegate, NSToolba
                 : "\(label) (\(WorkspacePresentationCommand.toggleSlides.shortcutDescription))"
         }
         quickControls.render(); renderSidebar()
-        for (identifier, button) in [("output.destination", quickControls.outputButton),
-                                     ("output.network", quickControls.networkButton),
+        for (identifier, button) in [("output.network", quickControls.networkButton),
                                      ("output.appearance", quickControls.appearanceButton),
                                      ("output.background", quickControls.backgroundButton),
                                      ("workspace.thumbnails", thumbnailControls.button)] {

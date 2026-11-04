@@ -69,7 +69,7 @@ remain native-only for both protocols.
    explicit local music owner and this route survive output moves. Video audio
    follows the owning workspace; transfer never substitutes another music selection.
    Stopping the selected destination leaves the route inactive without moving it.
-6. **Output → Listen on This Mac**, in both the toolbar and menu bar, controls
+6. **Output → Listen on This Mac** (menubar Output only) controls
    local listening for the named workspace's video and background music through
    the **default macOS audio output** selected in Sound settings. It defaults to
    **on** for new workspaces and unset preferences; an explicit saved off is retained.
@@ -95,7 +95,8 @@ text/backgrounds for every supported media type; choosing Lower Third does not m
 a source lyrics-only. The Profiles list is flat. Use + to duplicate a Profile without
 reassigning outputs. Use − to remove an unused custom profile; built-ins and profiles
 used by any output, including disabled rows, are protected. Edit Profiles in the
-Profiles list or via toolbar Edit Profile; changes apply to every consumer.
+Profiles list or via toolbar Appearance/Background (Appearance → Profile Target);
+changes apply to every consumer.
 
 **Transparency → Transparent Alpha** requires alpha compositing at the receiver.
 The saved chroma colour is inactive and retained on the destination, while enabled
@@ -113,7 +114,8 @@ submenu; the default output used for appearance edits does not select the source
 to move. Long names are shortened only on the button, with complete source and
 workspace names in its tooltip, accessibility label and menu.
 
-The general Output menu and Manage Outputs retain **Move to This Workspace**.
+Manage Outputs retains **Move to This Workspace** for destination ownership.
+The Network menu routes NDI/OMT sources between workspace Currents.
 A live move preflights supported Current, then changes accepted content/audio
 without restarting or renaming the app-owned sender. A stopped or disabled source
 stays stopped. Unsupported Current leaves the live owner unchanged and reports the

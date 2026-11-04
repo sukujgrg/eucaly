@@ -631,7 +631,7 @@ final class SidebarViewController: NSViewController {
         let value = "\(Int((volumeSlider.doubleValue * 100).rounded()))%"
         volumeLabel.stringValue = value
         volumeSlider.sidebarAccessibilityElement.setAccessibilityValueDescription(value)
-        volumeSlider.toolTip = "Background music volume for network outputs and local playback. For local listening, use Output → Listen on This Mac."
+        volumeSlider.toolTip = "Background music volume for network outputs and local playback. For local listening of network program audio, use the Output menu → Listen on This Mac."
     }
 
     private func refreshProgressControls() {
