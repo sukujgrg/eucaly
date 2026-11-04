@@ -1,6 +1,6 @@
 # Projection monitors
 
-Use **Settings → Outputs** or the toolbar’s **Manage Outputs…** action to assign, identify, and name monitors. Each native output has its own saved monitor assignment. Identify displays a monitor’s eucaly number and name for three seconds without loading Current or starting projection. It is unavailable on a monitor currently projecting. In the name editor, click anywhere on the **Monitor Details** row to show or hide the model name and macOS display UUID.
+Use **Settings → Outputs** or the toolbar’s **Manage Outputs…** action to assign, identify, and name monitors. Appearance lives under **Settings → Profiles** / **Manage Profiles…**. Each native output has its own saved monitor assignment. Identify displays a monitor’s eucaly number and name for three seconds without loading Current or starting projection. It is unavailable on a monitor currently projecting. In the name editor, click anywhere on the **Monitor Details** row to show or hide the model name and macOS display UUID.
 
 Monitors receive remembered numbers even when several share the same model name. Give each a useful name such as “Front Left TV” or “Main Projector”. An empty name restores the model name. Disconnected monitors remain listed and can still be renamed.
 

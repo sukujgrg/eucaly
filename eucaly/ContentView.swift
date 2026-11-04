@@ -170,6 +170,7 @@ public struct ContentView: View {
             session: session, updates: appUpdateViewModel,
             toggleSlides: toggleSlidesFromUI, searchLibrary: presentLibrarySearch,
             manageOutputs: showOutputSettings,
+            manageProfiles: showProfileSettings,
             detail: detailPane.safeAreaInset(edge: .top, spacing: 0) { workspaceNotices })
     }
 
@@ -333,6 +334,11 @@ public struct ContentView: View {
 
     private func showOutputSettings() {
         NotificationCenter.default.post(name: .showManageOutputsSettings, object: nil)
+    }
+
+    private func showProfileSettings() {
+        let profileID = session.outputCoordinator.profiles.defaultDestination?.profileID
+        AppDelegate.postShowManageProfiles(profileID: profileID)
     }
 
     private func handleRootOnAppear() {

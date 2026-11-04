@@ -14,7 +14,7 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         case settings, updates, notices, support, newWorkspace
         case newLyrics, searchLibrary, refresh, save, stop, stopAll, slides, background, audio
         case clearBackground, clearAudio, clearAll
-        case monitorAudioLocally, manageOutputs
+        case monitorAudioLocally, manageOutputs, manageProfiles
     }
 
     init(app: AppDelegate) {
@@ -128,6 +128,7 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         outputMenu.addItem(NSMenuItem(title: listening?.detail ?? "Open a workspace to change local listening.", action: nil, keyEquivalent: ""))
         outputMenu.addItem(.separator())
         add("Manage Outputs…", to: outputMenu, command: .manageOutputs)
+        add("Manage Profiles…", to: outputMenu, command: .manageProfiles)
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
@@ -153,7 +154,7 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         case .background, .clearBackground, .clearAudio, .clearAll:
             return app.outputs.commandSession != nil
         case .stopAll: return app.outputs.isRunning
-        case .settings, .notices, .support, .manageOutputs: return true
+        case .settings, .notices, .support, .manageOutputs, .manageProfiles: return true
         }
     }
 
@@ -167,6 +168,7 @@ final class AppMenuController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         case .support: NSWorkspace.shared.open(URL(string: "https://sukujgrg.github.io/eucaly/")!)
         case .newWorkspace: app.workspaceWindows.newWorkspace()
         case .manageOutputs: app.showSettings(pane: .outputs)
+        case .manageProfiles: app.showSettings(pane: .profiles)
         case .monitorAudioLocally:
             if let listening = OutputAudioListeningState(outputs: app.outputs, workspaceID: app.outputs.commandWorkspaceID), listening.canChange {
                 app.outputs.setMonitorAudioLocally(!listening.workspace.monitorAudioLocally, workspace: listening.workspace.id)

@@ -23,8 +23,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func show(pane: NativeSettingsController.Pane? = nil) {
+    func show(pane: NativeSettingsController.Pane? = nil, profileID: UUID? = nil) {
         if let pane { settings.select(pane) }
+        if let profileID { settings.selectProfile(profileID) }
         showWindow(nil)
     }
     override func showWindow(_ sender: Any?) {
@@ -48,9 +49,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
 @MainActor
 final class NativeSettingsController: NSTabViewController {
-    enum Pane: String { case general, outputs = "projection", workspaces }
+    enum Pane: String { case general, outputs = "projection", profiles, workspaces }
     let general: GeneralSettingsController
     let outputs: ManageOutputsController
+    let profiles: ManageProfilesController
     let workspaces: ManageWorkspacesController
     private let defaults: UserDefaults
     private var isPresented = false
@@ -58,7 +60,8 @@ final class NativeSettingsController: NSTabViewController {
     var selectedPane: Pane {
         switch selectedTabViewItemIndex {
         case 1: .outputs
-        case 2: .workspaces
+        case 2: .profiles
+        case 3: .workspaces
         default: .general
         }
     }
@@ -68,40 +71,66 @@ final class NativeSettingsController: NSTabViewController {
         self.defaults = defaults
         self.general = general ?? GeneralSettingsController(updates: updates, defaults: defaults)
         self.outputs = ManageOutputsController(coordinator: outputs)
+        self.profiles = ManageProfilesController(coordinator: outputs)
         self.workspaces = ManageWorkspacesController(outputs: outputs, workspaces: workspaces)
         let saved = defaults.string(forKey: "settingsTab") ?? "general"
         super.init(nibName: nil, bundle: nil)
         title = "Settings"; tabStyle = .toolbar; transitionOptions = []
-        for (controller, label, symbol) in [(self.general as NSViewController, "General", "gearshape"),
-                                          (self.outputs, "Outputs", "display"),
-                                          (self.workspaces, "Workspaces", "rectangle.stack")] {
+        self.outputs.onEditProfile = { [weak self] id in self?.selectProfile(id) }
+        for (controller, label, symbol) in [
+            (self.general as NSViewController, "General", "gearshape"),
+            (self.outputs, "Outputs", "display"),
+            (self.profiles, "Profiles", "paintpalette"),
+            (self.workspaces, "Workspaces", "rectangle.stack")
+        ] {
             let item = NSTabViewItem(viewController: controller)
-            item.label = label; item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+            item.label = label
+            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
             addTabViewItem(item)
         }
         select(["altView", "receiver"].contains(saved) ? .outputs : Pane(rawValue: saved) ?? .general)
         isConfigured = true
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
     func select(_ pane: Pane) {
         guard !isViewLoaded || view.window?.attachedSheet == nil else { return }
         switch pane {
         case .general: selectedTabViewItemIndex = 0
         case .outputs: selectedTabViewItemIndex = 1
-        case .workspaces: selectedTabViewItemIndex = 2
+        case .profiles: selectedTabViewItemIndex = 2
+        case .workspaces: selectedTabViewItemIndex = 3
         }
     }
+
+    func selectProfile(_ id: UUID) {
+        guard !isViewLoaded || view.window?.attachedSheet == nil else { return }
+        select(.profiles)
+        _ = profiles.view
+        profiles.selectProfile(id)
+    }
+
+    func selectDestination(_ id: UUID) {
+        guard !isViewLoaded || view.window?.attachedSheet == nil else { return }
+        select(.outputs)
+        _ = outputs.view
+        outputs.selectDestination(id)
+    }
+
     func setPresented(_ value: Bool) {
         isPresented = value
         general.setPresented(value && selectedPane == .general)
         outputs.setPresented(value && selectedPane == .outputs)
+        profiles.setPresented(value && selectedPane == .profiles)
         workspaces.setPresented(value && selectedPane == .workspaces)
     }
     override func tabView(_ tabView: NSTabView, shouldSelect tabViewItem: NSTabViewItem?) -> Bool {
         super.tabView(tabView, shouldSelect: tabViewItem) && (!isViewLoaded || view.window?.attachedSheet == nil)
     }
     override func tabView(_ tabView: NSTabView, willSelect tabViewItem: NSTabViewItem?) {
-        general.finishEditing(); outputs.finishEditing()
+        general.finishEditing()
+        outputs.finishEditing()
+        profiles.finishEditing()
         super.tabView(tabView, willSelect: tabViewItem)
     }
     override func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {

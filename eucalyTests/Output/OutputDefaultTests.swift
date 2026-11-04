@@ -31,7 +31,7 @@ final class OutputDefaultTests: XCTestCase {
             fixture.host(retained.backgroundButton)
             let choose = try item("Choose…", in: retained.backgroundButton.menu)
             let change = try item("Enabled", in: retained.backgroundButton.menu)
-            let manage = try item("Manage Outputs…", in: retained.backgroundButton.menu)
+            let manage = try item("Manage Profiles…", in: retained.backgroundButton.menu)
             let original = fixture.hub.outputs.profiles.document
             let current = fixture.hub.outputs.snapshot(for: fixture.hub.nativeRow).current
             invoke(choose)
@@ -169,8 +169,12 @@ final class OutputDefaultTests: XCTestCase {
         defer { outputs.stop() }
         let controls = OutputQuickControlsController(outputs: outputs, manageOutputs: {})
         let first = try XCTUnwrap(store.defaultDestination)
-        for button in [controls.outputButton, controls.networkButton, controls.appearanceButton, controls.backgroundButton] {
+        for button in [controls.outputButton, controls.networkButton] {
             XCTAssertEqual(button.menu?.items.last?.title, "Manage Outputs…")
+            XCTAssertEqual(button.menu?.items.dropLast().last?.isSeparatorItem, true)
+        }
+        for button in [controls.appearanceButton, controls.backgroundButton] {
+            XCTAssertEqual(button.menu?.items.last?.title, "Manage Profiles…")
             XCTAssertEqual(button.menu?.items.dropLast().last?.isSeparatorItem, true)
         }
         let second = OutputDestinationConfiguration(name: "Other", profileID: OutputProfile.audienceID, monitor: nil)

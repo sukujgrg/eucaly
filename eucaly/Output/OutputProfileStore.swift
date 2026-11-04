@@ -89,7 +89,7 @@ final class OutputProfileStore: ObservableObject {
         var editedProfileIDs = Set<UUID>()
         for destination in document.destinations where ids.contains(destination.id) {
             guard let profileIndex = next.profiles.firstIndex(where: { $0.id == destination.profileID }) else {
-                return "An output appearance no longer exists. Choose another appearance in Manage Outputs."
+                return "An output appearance no longer exists. Choose another appearance in Manage Profiles."
             }
             guard !editedProfileIDs.contains(destination.profileID) else { continue }
             let original = next.profiles[profileIndex]

@@ -2,7 +2,7 @@ import AppKit
 import Combine
 import SwiftUI
 
-/// ViewTheWord's list-and-detail pattern, backed by eucaly's local output model.
+/// Settings pane for output destinations. Appearance edits live under Profiles.
 @MainActor
 final class ManageOutputsController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
     var confirmOutputRemoval: (OutputDestinationConfiguration) -> Bool = { destination in
@@ -14,20 +14,22 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         } else {
             alert.informativeText = "This removes its saved configuration and stops this output if it is running. Its appearance editing target and music route are cleared when selected. Other outputs keep running. Undo Remove restores the configuration disabled."
         }
-        alert.addButton(withTitle: "Remove Output"); alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Remove Output")
+        alert.addButton(withTitle: "Cancel")
         return alert.runModal() == .alertFirstButtonReturn
     }
-    var confirmProfileRemoval: (OutputProfile) -> Bool = { profile in
-        let alert = NSAlert()
-        alert.messageText = "Remove “" + profile.name + "”?"
-        alert.informativeText = "This permanently deletes the unused appearance. Outputs are unchanged."
-        alert.addButton(withTitle: "Remove Appearance"); alert.addButton(withTitle: "Cancel")
-        return alert.runModal() == .alertFirstButtonReturn
-    }
+    /// Settings shell jumps to the Profiles pane when destination Edit Profile… is used.
+    var onEditProfile: ((UUID) -> Void)?
     let coordinator: OutputCoordinator
     var store: OutputProfileStore { coordinator.profiles }
-    let section = NSSegmentedControl(labels: ["Outputs", "Profiles"], trackingMode: .selectOne, target: nil, action: nil)
-    let table = NSTableView()
+    private let chrome = OutputSettingsListDetailChrome(
+        tableAccessibilityLabel: "Outputs",
+        tableColumnIdentifier: "outputs",
+        rowHeight: 100
+    )
+    var table: NSTableView { chrome.table }
+    var statusLabel: NSTextField { chrome.statusLabel }
+    var issueLabel: NSTextField { chrome.issueLabel }
     let addOutputMenu = NSPopUpButton(frame: .zero, pullsDown: true)
     let addNative = NSMenuItem(title: "Native Monitor Output", action: nil, keyEquivalent: "")
     let addNDI = NSMenuItem(title: "NDI Output", action: nil, keyEquivalent: "")
@@ -35,30 +37,16 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     let removeOutput = NSButton(title: "Remove Output…", target: nil, action: nil)
     let undoRemoveOutput = NSButton(title: "Undo Remove", target: nil, action: nil)
     let removalNotice = outputSettingsLabel(secondary: true)
-    let addProfile = NSButton()
-    let removeProfile = NSButton(title: "−", target: nil, action: nil)
-    let statusLabel = outputSettingsLabel(secondary: true)
-    let issueLabel = outputSettingsLabel(secondary: true)
-    private let detailHost = NSView()
-    private let profileActions = NSStackView()
     private let outputActions = NSStackView()
     private(set) var selectedID: UUID?
     private var removedConfiguration: OutputProfileStore.RemovedOutput?
     private var managementProblem: String?
-    private var outputSelection: UUID?
-    private var profileSelection: UUID?
-    private enum DetailKey: Hashable { case output(UUID), profile(UUID), recovery, empty }
+    private enum DetailKey: Hashable { case output(UUID), recovery, empty }
     private var detailKey: DetailKey?
     private var child: NSViewController?
-    // Keep the two navigation panes mounted. Profiles share one retargetable
-    // form rather than retaining a large control tree for every saved profile.
-    private var profileForm: OutputProfileEditor?
-    // The model bounds destinations to 16. Keep each editor tied to its UUID,
-    // rather than retargeting destination callbacks.
     private var destinationForms: [DetailKey: OutputDestinationEditor] = [:]
     private var detailNotice: NSView?
-    private struct ListRow: Equatable { let id: UUID?; let title: String; let detail: String }
-    private var rows: [ListRow] = []
+    private var rows: [OutputSettingsListDetailChrome.ListRow] = []
     private var reloadingTable = false
     private var reloadTask: Task<Void, Never>?
     private var subscriptions = Set<AnyCancellable>()
@@ -68,9 +56,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     private var readabilityTask: Task<Void, Never>?
     private(set) var isPresented = false
     private var isSuspended = false
-    var profileEditor: OutputProfileEditor? { child as? OutputProfileEditor }
     var destinationEditor: OutputDestinationEditor? { child as? OutputDestinationEditor }
-    var profilesMode: Bool { section.selectedSegment == 1 }
 
     init(coordinator: OutputCoordinator) {
         self.coordinator = coordinator
@@ -85,231 +71,190 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
 
     override func loadView() {
         view = NSView()
-        section.selectedSegment = 0; section.target = self; section.action = #selector(changeSection(_:))
-        table.addTableColumn(NSTableColumn(identifier: .init("outputs")))
-        table.headerView = nil; table.style = .sourceList; table.rowHeight = 100
-        table.focusRingType = .default
-        table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
-        table.delegate = self; table.dataSource = self; table.allowsEmptySelection = false
-        table.setAccessibilityLabel("Outputs and profiles")
-        let list = NSScrollView(); list.hasVerticalScroller = true; list.autohidesScrollers = true
-        list.focusRingType = .default
-        list.borderType = .bezelBorder; list.documentView = table
-        list.heightAnchor.constraint(greaterThanOrEqualToConstant: 190).isActive = true
-        addNative.target = self; addNative.action = #selector(addNativeOutput(_:))
-        addNDI.target = self; addNDI.action = #selector(addNDIOutput(_:))
-        addOMT.target = self; addOMT.action = #selector(addOMTOutput(_:))
-        let menu = NSMenu(); menu.autoenablesItems = false
+        chrome.table.delegate = self
+        chrome.table.dataSource = self
+        addNative.target = self
+        addNative.action = #selector(addNativeOutput(_:))
+        addNDI.target = self
+        addNDI.action = #selector(addNDIOutput(_:))
+        addOMT.target = self
+        addOMT.action = #selector(addOMTOutput(_:))
+        let menu = NSMenu()
+        menu.autoenablesItems = false
         let glyph = NSMenuItem(title: "+", action: nil, keyEquivalent: "")
         glyph.image = NSImage(named: NSImage.addTemplateName)
-        menu.addItem(glyph); menu.addItem(addNative); menu.addItem(addNDI); menu.addItem(addOMT)
-        addOutputMenu.menu = menu; addOutputMenu.imagePosition = .imageOnly
+        menu.addItem(glyph)
+        menu.addItem(addNative)
+        menu.addItem(addNDI)
+        menu.addItem(addOMT)
+        addOutputMenu.menu = menu
+        addOutputMenu.imagePosition = .imageOnly
         addOutputMenu.setAccessibilityLabel("Add Output")
         addOutputMenu.toolTip = "Add a disabled, unassigned output."
-        removeOutput.target = self; removeOutput.action = #selector(removeSelectedOutput(_:))
+        removeOutput.target = self
+        removeOutput.action = #selector(removeSelectedOutput(_:))
         removeOutput.setAccessibilityLabel("Remove Output")
-        undoRemoveOutput.target = self; undoRemoveOutput.action = #selector(undoOutputRemoval(_:))
-        addProfile.image = NSImage(named: NSImage.addTemplateName)
-        addProfile.imagePosition = .imageOnly
-        addProfile.target = self; addProfile.action = #selector(addSelectedProfile(_:))
-        addProfile.setAccessibilityLabel("Add Profile")
-        addProfile.toolTip = "Add a profile by copying the selected profile."
-        removeProfile.target = self; removeProfile.action = #selector(removeSelectedProfile(_:))
-        removeProfile.setAccessibilityLabel("Remove Unused Profile")
-        for button in [addOutputMenu, removeOutput, undoRemoveOutput, addProfile, removeProfile] {
-            button.bezelStyle = .rounded; button.controlSize = .small
+        undoRemoveOutput.target = self
+        undoRemoveOutput.action = #selector(undoOutputRemoval(_:))
+        for button in [addOutputMenu, removeOutput, undoRemoveOutput] {
+            button.bezelStyle = .rounded
+            button.controlSize = .small
             button.setContentHuggingPriority(.required, for: .horizontal)
             button.setContentCompressionResistancePriority(.required, for: .horizontal)
         }
-        outputActions.orientation = .horizontal; outputActions.alignment = .centerY; outputActions.spacing = 8
-        for action in [addOutputMenu, removeOutput, NSView()] { outputActions.addArrangedSubview(action) }
-        profileActions.orientation = .horizontal; profileActions.alignment = .centerY
-        profileActions.spacing = 8
-        for action in [addProfile, removeProfile, NSView()] { profileActions.addArrangedSubview(action) }
-        // Appearance edits live under Profiles. Toolbar Output menu owns the
-        // quick-controls profile editing target.
+        outputActions.orientation = .horizontal
+        outputActions.alignment = .centerY
+        outputActions.spacing = 8
+        for action in [addOutputMenu, removeOutput, NSView()] {
+            outputActions.addArrangedSubview(action)
+        }
         let recoveryActions = outputSettingsActionRow([undoRemoveOutput])
-        let sidebar = NSStackView(views: [section, list, outputActions, recoveryActions, removalNotice, profileActions])
-        sidebar.orientation = .vertical; sidebar.alignment = .leading; sidebar.spacing = 8
-        for item in sidebar.arrangedSubviews { item.widthAnchor.constraint(equalTo: sidebar.widthAnchor).isActive = true }
-        sidebar.translatesAutoresizingMaskIntoConstraints = false
-        let status = NSStackView(views: [statusLabel, issueLabel])
-        status.orientation = .vertical; status.alignment = .leading; status.spacing = 5
-        // Extra window height belongs to the list and detail panes, even when
-        // there is no editor contributing a minimum content height.
-        status.setHuggingPriority(.required, for: .vertical)
-        for item in status.arrangedSubviews { item.widthAnchor.constraint(equalTo: status.widthAnchor).isActive = true }
-        status.translatesAutoresizingMaskIntoConstraints = false
-        issueLabel.textColor = .systemOrange
-        view.addSubview(status); view.addSubview(sidebar)
-        detailHost.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(detailHost)
-        NSLayoutConstraint.activate([
-            status.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            status.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            status.topAnchor.constraint(equalTo: view.topAnchor, constant: 12),
-            sidebar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            sidebar.topAnchor.constraint(equalTo: status.bottomAnchor, constant: 14),
-            sidebar.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -16),
-            sidebar.widthAnchor.constraint(equalToConstant: 280),
-            detailHost.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: 16),
-            detailHost.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            detailHost.topAnchor.constraint(equalTo: sidebar.topAnchor),
-            detailHost.bottomAnchor.constraint(equalTo: sidebar.bottomAnchor)
-        ])
+        chrome.install(in: view, belowList: [outputActions, recoveryActions, removalNotice])
         reload()
     }
-    // The native Settings window owns visibility, including close and reopen.
+
     func setPresented(_ value: Bool) {
         isPresented = value
         isSuspended = !value
         if value {
-            coordinator.displays.refresh(); reload()
-            profileEditor?.render(force: true)
-        }
-        else {
-            reloadTask?.cancel(); reloadTask = nil
-            readabilityTask?.cancel(); readabilityTask = nil
-            if isViewLoaded { finishEditing(); destinationEditor?.networkEditor?.discardDraft() }
+            coordinator.displays.refresh()
+            reload()
+        } else {
+            reloadTask?.cancel()
+            reloadTask = nil
+            readabilityTask?.cancel()
+            readabilityTask = nil
+            if isViewLoaded {
+                finishEditing()
+                destinationEditor?.networkEditor?.discardDraft()
+            }
         }
     }
+
     func finishEditing() {
         guard isViewLoaded else { return }
         finishOutputSettingsFieldEditing(in: view)
-        profileEditor?.finishEditing()
         destinationEditor?.networkEditor?.finishEditing()
     }
+
     func scheduleReload() {
         guard !isSuspended, reloadTask == nil else { return }
         reloadTask = Task { @MainActor [weak self] in
             await Task.yield()
             guard let self, !Task.isCancelled else { return }
-            self.reloadTask = nil; self.reload()
+            self.reloadTask = nil
+            self.reload()
         }
     }
+
     func reload() {
         guard isViewLoaded else { return }
-        let statuses = profilesMode ? [:] : Dictionary(uniqueKeysWithValues: coordinator.destinationStatuses().map { ($0.id, $0.readiness.title) })
-        let fresh = profilesMode ? profileRows() : store.document.destinations.map { output in
-            ListRow(id: output.id, title: coordinator.managementDestinationLabel(output),
-                detail: coordinator.managementWorkspaceName(output.workspaceID) + " · " + (store.profile(output.profileID)?.name ?? "Missing appearance")
+        let statuses = Dictionary(uniqueKeysWithValues: coordinator.destinationStatuses().map { ($0.id, $0.readiness.title) })
+        let fresh = store.document.destinations.map { output in
+            OutputSettingsListDetailChrome.ListRow(
+                id: output.id,
+                title: coordinator.managementDestinationLabel(output),
+                detail: coordinator.managementWorkspaceName(output.workspaceID) + " · "
+                    + (store.profile(output.profileID)?.name ?? "Missing appearance")
                     + "\n" + (output.enabled ? "Enabled" : "Disabled") + " · " + (statuses[output.id] ?? "Stopped")
-                    + " · " + (coordinator.isOpen(output.id) && coordinator.snapshot(for: output.id).visible ? "Slides visible" : "Slides hidden"))
+                    + " · " + (coordinator.isOpen(output.id) && coordinator.snapshot(for: output.id).visible
+                        ? "Slides visible" : "Slides hidden")
+            )
         }
         if selectedID == nil || !fresh.contains(where: { $0.id == selectedID }) {
-            finishEditing(); selectedID = fresh.compactMap(\.id).first
+            finishEditing()
+            selectedID = fresh.compactMap(\.id).first
         }
-        if profilesMode { profileSelection = selectedID } else { outputSelection = selectedID }
         reloadingTable = true
-        if fresh != rows { rows = fresh; table.reloadData() }
-        if let index = rows.firstIndex(where: { $0.id == selectedID }), table.selectedRow != index {
-            table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
-        } else if selectedID == nil { table.deselectAll(nil) }
+        if fresh != rows {
+            rows = fresh
+            table.reloadData()
+        }
+        chrome.syncSelection(rows: rows, selectedID: selectedID)
         reloadingTable = false
-        outputActions.isHidden = profilesMode
-        profileActions.isHidden = !profilesMode
-        addProfile.isEnabled = profilesMode && selectedID.flatMap(store.profile) != nil
-            && store.document.profiles.count < 128 && store.recoveryNotice == nil
-        addProfile.setAccessibilityLabel("Duplicate Profile")
-        addProfile.toolTip = !addProfile.isEnabled && store.document.profiles.count >= 128
-            ? "The 128 profile limit has been reached. Remove an unused profile before creating another."
-            : "Create a reusable profile by copying the selected profile."
-        let removalProblem = selectedID.map(store.profileRemovalProblem) ?? "Select a profile to remove."
-        removeProfile.isEnabled = profilesMode && selectedID != nil && removalProblem == nil
-        removeProfile.toolTip = removalProblem ?? "Remove this unused profile. Output settings stay unchanged."
-        let canAdd = !profilesMode && store.document.destinations.count < 16 && store.recoveryNotice == nil
-        addOutputMenu.toolTip = canAdd ? "Add a disabled, unassigned output." : "The 16 output limit has been reached. Remove an unused output before adding another."
+
+        let canAdd = store.document.destinations.count < 16 && store.recoveryNotice == nil
+        addOutputMenu.toolTip = canAdd
+            ? "Add a disabled, unassigned output."
+            : "The 16 output limit has been reached. Remove an unused output before adding another."
         addNative.isEnabled = canAdd && store.profile(OutputProfile.audienceID) != nil
         addNDI.isEnabled = canAdd && store.profile(OutputProfile.audienceID) != nil
         addOMT.isEnabled = addNDI.isEnabled
         addOutputMenu.isEnabled = canAdd
-        removeOutput.isEnabled = !profilesMode && selectedID != nil && store.recoveryNotice == nil
-        undoRemoveOutput.isHidden = profilesMode || removedConfiguration == nil
+        removeOutput.isEnabled = selectedID != nil && store.recoveryNotice == nil
+        undoRemoveOutput.isHidden = removedConfiguration == nil
         undoRemoveOutput.isEnabled = store.recoveryNotice == nil
-        removalNotice.isHidden = profilesMode || removedConfiguration == nil
-        removalNotice.stringValue = removedConfiguration.map { "Removed “" + $0.destination.name + "”. Undo restores it disabled; enable and start it explicitly." } ?? ""
+        removalNotice.isHidden = removedConfiguration == nil
+        removalNotice.stringValue = removedConfiguration.map {
+            "Removed “" + $0.destination.name + "”. Undo restores it disabled; enable and start it explicitly."
+        } ?? ""
+
         let key: DetailKey
         if store.recoveryNotice != nil { key = .recovery }
-        else if let id = selectedID {
-            key = profilesMode ? .profile(id) : .output(id)
-        } else { key = .empty }
-        if detailKey != key { finishEditing(); buildDetail(key) }
+        else if let id = selectedID { key = .output(id) }
+        else { key = .empty }
+        if detailKey != key {
+            finishEditing()
+            buildDetail(key)
+        }
         pruneDestinationForms()
-        profileEditor?.render(); destinationEditor?.render()
+        destinationEditor?.render()
         renderStatus()
         scheduleReadabilityUpdate()
     }
-    private func profileRows() -> [ListRow] {
-        store.document.profiles.map { profile in
-            let names = store.document.destinations.filter { $0.profileID == profile.id }.map(\.name)
-            var parts = [profile.kind.displayTitle]
-            if profile.isBuiltIn { parts.append("Built-in") }
-            parts.append(names.isEmpty ? "Unused" : "Used by: " + names.joined(separator: ", "))
-            return ListRow(id: profile.id, title: profile.name, detail: parts.joined(separator: " · "))
-        }
-    }
+
     private func renderStatus() {
         let active = store.document.workspaces.filter { coordinator.isRunning(workspace: $0.id) }
-        statusLabel.stringValue = active.isEmpty ? "Workspace outputs stopped" : active.map {
-            $0.name + ": " + coordinator.tabStatus(workspace: $0.id)
-        }.joined(separator: " · ")
-        statusLabel.maximumNumberOfLines = 2; statusLabel.toolTip = statusLabel.stringValue
-        let owner = profilesMode ? nil : selectedID.flatMap { coordinator.destination($0)?.workspaceID }
+        statusLabel.stringValue = active.isEmpty
+            ? "Workspace outputs stopped"
+            : active.map { $0.name + ": " + coordinator.tabStatus(workspace: $0.id) }.joined(separator: " · ")
+        statusLabel.maximumNumberOfLines = 2
+        statusLabel.toolTip = statusLabel.stringValue
+        let owner = selectedID.flatMap { coordinator.destination($0)?.workspaceID }
         let outputIssue: String?
         if let owner {
             outputIssue = coordinator.outputIssue(workspace: owner).map {
                 "Workspace " + coordinator.managementWorkspaceName(owner) + ": " + $0
             }
-        } else { outputIssue = coordinator.issue }
-        issueLabel.stringValue = [managementProblem, outputIssue, report.isEmpty ? nil : report.message].compactMap { $0 }.joined(separator: "\n")
+        } else {
+            outputIssue = coordinator.issue
+        }
+        issueLabel.stringValue = [managementProblem, outputIssue, report.isEmpty ? nil : report.message]
+            .compactMap { $0 }.joined(separator: "\n")
         issueLabel.isHidden = issueLabel.stringValue.isEmpty
     }
+
     private func buildDetail(_ key: DetailKey) {
         detailKey = key
         let previous = child
         child = nil
-        detailNotice?.removeFromSuperview(); detailNotice = nil
+        detailNotice?.removeFromSuperview()
+        detailNotice = nil
         switch key {
-        case .profile(let id):
-            let editor: OutputProfileEditor
-            if let profileForm { editor = profileForm; editor.selectProfile(id) }
-            else {
-                editor = OutputProfileEditor(store: store, profileID: id,
-                    makeFileAcquisitionGuard: { [weak coordinator] url in
-                        coordinator?.makeFileAcquisitionGuard(for: url) ?? { _ in .removed }
-                    })
-                profileForm = editor
-                addChild(editor); outputSettingsPin(editor.view, to: detailHost)
-            }
-            child = editor
         case .output(let id):
             let editor: OutputDestinationEditor
-            if let cached = destinationForms[key] { editor = cached }
-            else {
+            if let cached = destinationForms[key] {
+                editor = cached
+            } else {
                 editor = OutputDestinationEditor(coordinator: coordinator, destinationID: id)
-                editor.onEditProfile = { [weak self] id in self?.selectProfile(id) }
+                editor.onEditProfile = { [weak self] profileID in self?.onEditProfile?(profileID) }
                 destinationForms[key] = editor
-                addChild(editor); outputSettingsPin(editor.view, to: detailHost)
+                addChild(editor)
+                outputSettingsPin(editor.view, to: chrome.detailHost)
             }
             child = editor
         case .recovery:
             discardForms()
             let form = OutputSettingsForm(frame: .zero)
             form.add(outputSettingsLabel(store.recoveryNotice ?? "", secondary: true))
-            form.add(outputSettingsActionRow([NSButton(title: "Recover Settings", target: self, action: #selector(recoverSettings(_:)))]))
+            form.add(outputSettingsActionRow([
+                NSButton(title: "Recover Settings", target: self, action: #selector(recoverSettings(_:)))
+            ]))
             detailNotice = form
-            outputSettingsPin(form, to: detailHost)
+            outputSettingsPin(form, to: chrome.detailHost)
         case .empty:
             discardForms()
-            let label = outputSettingsLabel(profilesMode ? "Select a profile." : "Add an output to get started.", secondary: true)
-            detailNotice = label
-            label.translatesAutoresizingMaskIntoConstraints = false
-            detailHost.addSubview(label)
-            NSLayoutConstraint.activate([
-                label.leadingAnchor.constraint(equalTo: detailHost.leadingAnchor, constant: 8),
-                label.trailingAnchor.constraint(equalTo: detailHost.trailingAnchor, constant: -8),
-                label.topAnchor.constraint(equalTo: detailHost.topAnchor, constant: 8),
-                label.bottomAnchor.constraint(lessThanOrEqualTo: detailHost.bottomAnchor, constant: -8)
-            ])
+            chrome.showEmptyNotice("Add an output to get started.", replacing: &detailNotice)
         }
         if previous !== child {
             (previous as? OutputDestinationEditor)?.networkEditor?.discardDraft()
@@ -317,59 +262,47 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         }
         child?.view.isHidden = false
     }
+
     private func pruneDestinationForms() {
-        let keys = Set(store.document.destinations.map { destination in
-            DetailKey.output(destination.id)
-        })
+        let keys = Set(store.document.destinations.map { DetailKey.output($0.id) })
         for key in Array(destinationForms.keys) where !keys.contains(key) {
             let form = destinationForms.removeValue(forKey: key)
-            form?.view.removeFromSuperview(); form?.removeFromParent()
+            form?.view.removeFromSuperview()
+            form?.removeFromParent()
         }
     }
+
     private func discardForms() {
-        profileForm?.view.removeFromSuperview(); profileForm?.removeFromParent()
         for form in destinationForms.values {
-            form.view.removeFromSuperview(); form.removeFromParent()
+            form.view.removeFromSuperview()
+            form.removeFromParent()
         }
-        profileForm = nil; destinationForms.removeAll()
+        destinationForms.removeAll()
     }
+
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
     func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool { rows[row].id == nil }
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { rows[row].id != nil }
-    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { rows[row].id == nil ? 28 : (profilesMode ? 52 : 100) }
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { rows[row].id == nil ? 28 : 100 }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let entry = rows[row]
-        if entry.id == nil {
-            let cell = NSTableCellView()
-            let label = outputSettingsLabel(entry.title, secondary: true, heading: true)
-            cell.textField = label; outputSettingsPin(label, to: cell, inset: 6)
-            return cell
-        }
-        let title = outputSettingsLabel(entry.title, heading: true); title.maximumNumberOfLines = 1
-        title.lineBreakMode = .byTruncatingTail
-        let detail = outputSettingsLabel(entry.detail, secondary: true); detail.maximumNumberOfLines = profilesMode ? 1 : 4
-        detail.lineBreakMode = .byTruncatingTail
-        let stack = NSStackView(views: [title, detail]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 3
-        for label in [title, detail] { label.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
-        let cell = NSTableCellView(); cell.textField = title
-        outputSettingsPin(stack, to: cell, inset: 6)
-        cell.setAccessibilityLabel(entry.title + ", " + entry.detail)
-        cell.toolTip = entry.title + " · " + entry.detail
-        return cell
+        chrome.makeCell(for: rows[row], detailLines: 4)
     }
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard !reloadingTable, rows.indices.contains(table.selectedRow) else { return }
         guard let id = rows[table.selectedRow].id else { return }
-        if selectedID != id { finishEditing(); selectedID = id; reload() }
+        if selectedID != id {
+            finishEditing()
+            selectedID = id
+            reload()
+        }
     }
-    func selectDestination(_ id: UUID) { select(id, segment: 0) }
-    func selectProfile(_ id: UUID) { select(id, segment: 1) }
-    private func select(_ id: UUID, segment: Int) {
-        finishEditing(); section.selectedSegment = segment; selectedID = id; reload()
+
+    func selectDestination(_ id: UUID) {
+        finishEditing()
+        selectedID = id
+        reload()
     }
-    @objc private func changeSection(_ sender: Any?) {
-        finishEditing(); selectedID = profilesMode ? profileSelection : outputSelection; reload()
-    }
+
     @objc private func addNativeOutput(_ sender: Any?) {
         var number = 1
         while store.document.destinations.contains(where: { $0.name == "Native Output \(number)" }) { number += 1 }
@@ -377,15 +310,18 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     }
     @objc private func addNDIOutput(_ sender: Any?) { addNetworkOutput(.ndi) }
     @objc private func addOMTOutput(_ sender: Any?) { addNetworkOutput(.omt) }
+
     private func addNetworkOutput(_ technology: NetworkOutputTechnology) {
-        guard !profilesMode, store.recoveryNotice == nil, store.document.destinations.count < 16,
+        guard store.recoveryNotice == nil, store.document.destinations.count < 16,
               store.profile(OutputProfile.audienceID) != nil else { return }
         finishEditing()
         var sourceName = "eucaly", number = 2
         while store.document.destinations.contains(where: {
-            $0.networkTechnology == technology && $0.networkSettings?.sourceName.caseInsensitiveCompare(sourceName) == .orderedSame
+            $0.networkTechnology == technology
+                && $0.networkSettings?.sourceName.caseInsensitiveCompare(sourceName) == .orderedSame
         }) {
-            sourceName = "eucaly \(number)"; number += 1
+            sourceName = "eucaly \(number)"
+            number += 1
         }
         var outputNumber = 1
         var outputName = technology.title + " Output"
@@ -395,41 +331,38 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         }
         var settings = NetworkOutputSettings(sourceName: sourceName)
         settings.keyColour = .chromaGreen
-        var output = OutputDestinationConfiguration(name: outputName, profileID: OutputProfile.audienceID, monitor: nil,
-            enabled: false, workspaceID: coordinator.focusedWorkspaceID)
+        var output = OutputDestinationConfiguration(
+            name: outputName, profileID: OutputProfile.audienceID, monitor: nil,
+            enabled: false, workspaceID: coordinator.focusedWorkspaceID
+        )
         output.destination = technology == .ndi ? .ndi(settings) : .omt(settings)
         store.edit { $0.destinations.append(output) }
         selectDestination(output.id)
     }
-    @objc private func addSelectedProfile(_ sender: Any?) {
-        guard profilesMode, store.recoveryNotice == nil, let id = selectedID else { return }
-        finishEditing()
-        guard var profile = store.profile(id), store.document.profiles.count < 128 else { return }
-        profile.id = UUID(); profile.customizedForDestinationID = nil
-        // Leave room for the suffix even when the source name fills the limit.
-        while (profile.name + " Copy").utf8.count > 160 { profile.name.removeLast() }
-        profile.name += " Copy"
-        store.edit { $0.profiles.append(profile) }
-        selectProfile(profile.id)
-        table.scrollRowToVisible(table.selectedRow)
-    }
-    private func addOutput(name: String, profileID: UUID) {
-        guard !profilesMode, store.recoveryNotice == nil, store.profile(profileID) != nil, store.document.destinations.count < 16 else { return }
-        finishEditing()
-        let output = OutputDestinationConfiguration(name: name, profileID: profileID, monitor: nil, enabled: false, workspaceID: coordinator.focusedWorkspaceID)
 
-        store.edit { $0.destinations.append(output) }; selectDestination(output.id)
+    private func addOutput(name: String, profileID: UUID) {
+        guard store.recoveryNotice == nil, store.profile(profileID) != nil,
+              store.document.destinations.count < 16 else { return }
+        finishEditing()
+        let output = OutputDestinationConfiguration(
+            name: name, profileID: profileID, monitor: nil, enabled: false,
+            workspaceID: coordinator.focusedWorkspaceID
+        )
+        store.edit { $0.destinations.append(output) }
+        selectDestination(output.id)
     }
+
     @objc private func removeSelectedOutput(_ sender: Any?) {
-        guard !profilesMode, store.recoveryNotice == nil, let id = selectedID else { return }
-        // Commit a pending rename before reading the name shown in the alert.
+        guard store.recoveryNotice == nil, let id = selectedID else { return }
         finishEditing()
         guard let destination = coordinator.destination(id) else { return }
         guard confirmOutputRemoval(destination) else { return }
         removedConfiguration = store.removeOutputConfiguration(id)
-        managementProblem = removedConfiguration == nil ? "The output could not be removed. Its configuration was retained." : nil
+        managementProblem = removedConfiguration == nil
+            ? "The output could not be removed. Its configuration was retained." : nil
         reload()
     }
+
     @objc private func undoOutputRemoval(_ sender: Any?) {
         guard let removedConfiguration else { return }
         managementProblem = store.restoreOutputConfiguration(removedConfiguration)
@@ -439,21 +372,12 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         }
         reload()
     }
-    @objc private func removeSelectedProfile(_ sender: Any?) {
-        guard profilesMode, let id = selectedID, let profile = store.profile(id) else { return }
-        finishEditing()
-        let ids = profileRows().compactMap(\.id)
-        guard let index = ids.firstIndex(of: id) else { return }
-        guard confirmProfileRemoval(profile) else { return }
-        guard store.removeProfile(id) else { reload(); return }
-        let remaining = ids.filter { $0 != id }
-        selectedID = index < remaining.count ? remaining[index] : remaining.last
+
+    @objc private func recoverSettings(_ sender: Any?) {
+        store.recover()
         reload()
     }
-    @objc private func recoverSettings(_ sender: Any?) { store.recover(); reload() }
 
-    /// Font-metric probes stay available for every assigned destination, but
-    /// coordinator ticks must not rebuild the hidden SwiftUI host on every reload.
     private func scheduleReadabilityUpdate() {
         guard isViewLoaded, !isSuspended else { return }
         readabilityTask?.cancel()
@@ -471,22 +395,28 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         readabilityInput = input
         let root = OutputSettingsReadabilityView(input: input) { [weak self] report in
             guard let self, self.readabilityInput == input, self.report != report else { return }
-            self.report = report; self.renderStatus()
+            self.report = report
+            self.renderStatus()
         }
-        if let readabilityHost { readabilityHost.rootView = root }
-        else {
+        if let readabilityHost {
+            readabilityHost.rootView = root
+        } else {
             let host = NSHostingView(rootView: root)
-            host.sizingOptions = []; host.translatesAutoresizingMaskIntoConstraints = false
-            host.setAccessibilityHidden(true); view.addSubview(host)
-            NSLayoutConstraint.activate([host.widthAnchor.constraint(equalToConstant: 0), host.heightAnchor.constraint(equalToConstant: 0),
-                host.leadingAnchor.constraint(equalTo: view.leadingAnchor), host.topAnchor.constraint(equalTo: view.topAnchor)])
+            host.sizingOptions = []
+            host.translatesAutoresizingMaskIntoConstraints = false
+            host.setAccessibilityHidden(true)
+            view.addSubview(host)
+            NSLayoutConstraint.activate([
+                host.widthAnchor.constraint(equalToConstant: 0),
+                host.heightAnchor.constraint(equalToConstant: 0),
+                host.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                host.topAnchor.constraint(equalTo: view.topAnchor)
+            ])
             readabilityHost = host
         }
     }
 }
 
-/// Selection and transport status are not measurement inputs. Resolve output
-/// geometry once, and only update the SwiftUI probes when their inputs change.
 private struct OutputSettingsReadabilityInput: Equatable {
     struct Assignment: Equatable, Identifiable {
         let id: UUID
@@ -504,15 +434,21 @@ private struct OutputSettingsReadabilityInput: Equatable {
         assignments = coordinator.profiles.document.destinations.compactMap { destination in
             guard destination.enabled, let profile = coordinator.profile(for: destination.id) else { return nil }
             let size: CGSize
-            if let settings = destination.networkSettings { size = .init(width: settings.width, height: settings.height) }
-            else if let target = destination.monitor, let monitor = coordinator.displays.resolve(target) { size = monitor.frame.size }
-            else { return nil }
+            if let settings = destination.networkSettings {
+                size = .init(width: settings.width, height: settings.height)
+            } else if let target = destination.monitor, let monitor = coordinator.displays.resolve(target) {
+                size = monitor.frame.size
+            } else {
+                return nil
+            }
             let snapshot = coordinator.snapshot(for: destination.id)
-            return .init(id: destination.id, profile: profile, size: size, current: snapshot.current,
+            return .init(
+                id: destination.id, profile: profile, size: size, current: snapshot.current,
                 next: snapshot.next, visible: snapshot.visible,
                 hasMedia: snapshot.localMedia.map { OutputContentClassifier.mode(for: $0) == .media } ?? false,
                 isNetworkDestination: destination.isNetworkDestination,
-                destinationName: destination.name)
+                destinationName: destination.name
+            )
         }
     }
 }
@@ -533,8 +469,10 @@ private struct OutputSettingsReadabilityView: View {
                             labelPrefix: assignment.destinationName
                         )
                     } else {
-                        OutputReadabilityProbe(content: assignment.current, profile: assignment.profile, size: assignment.size,
-                                               labelPrefix: assignment.destinationName)
+                        OutputReadabilityProbe(
+                            content: assignment.current, profile: assignment.profile, size: assignment.size,
+                            labelPrefix: assignment.destinationName
+                        )
                     }
                 }
             }

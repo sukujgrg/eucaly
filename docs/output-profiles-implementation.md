@@ -162,8 +162,10 @@ Names are trimmed, non-empty, single-line and at most 160 UTF-8 bytes. A Setting
 sheet blocks tab changes, and every rename requires explicit Rename. Closing its
 parent window or quitting cancels an unconfirmed workspace rename.
 
-Output, NDI, Appearance and Background quick menus all finish with a separated
-**Manage Outputs…** action. Workspace management uses the same footer convention.
+Output and Network quick menus finish with a separated **Manage Outputs…**
+action. Appearance and Background quick menus finish with **Manage Profiles…**,
+opening the Profiles Settings toolbar tab (selecting the current editing-target
+profile when known). Workspace management uses the same footer convention.
 
 **Output → Listen on This Mac** is available in both the toolbar and menu bar.
 It names the affected workspace and explains that listening uses the default
@@ -459,7 +461,7 @@ See [runtime setup](ndi-runtime.md).
 
 Profiles retain native font/colour controls, multilingual fitting, stacked/column
 layout, padding and relative component typography. Outputs select a Profile only;
-Profiles-list and toolbar Edit Profile edits affect every consumer of that Profile.
+Profiles Settings tab and toolbar Edit Profile edits affect every consumer of that Profile.
 Duplicate a Profile before editing when an independent look is required. The
 default-output picker remains an editing preference for quick Profile edits.
 Workspace background commands edit each distinct assigned Profile once before
