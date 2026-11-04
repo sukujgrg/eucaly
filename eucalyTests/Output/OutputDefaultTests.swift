@@ -167,41 +167,37 @@ final class OutputDefaultTests: XCTestCase {
         let displays = ProjectionDisplayManager(displays: { [] })
         let outputs = OutputCoordinator(profiles: store, displays: displays, driverFactory: { FakeOutputDriver() })
         defer { outputs.stop() }
-        let controls = OutputQuickControlsController(outputs: outputs, manageOutputs: {})
+        let controls = OutputQuickControlsController(outputs: outputs, workspaceID: OutputWorkspaceRecord.primaryID, manageOutputs: {})
         let first = try XCTUnwrap(store.defaultDestination)
-        for button in [controls.outputButton, controls.networkButton] {
-            XCTAssertEqual(button.menu?.items.last?.title, "Manage Outputs…")
-            XCTAssertEqual(button.menu?.items.dropLast().last?.isSeparatorItem, true)
-        }
+        XCTAssertEqual(controls.networkButton.menu?.items.last?.title, "Manage Outputs…")
+        XCTAssertEqual(controls.networkButton.menu?.items.dropLast().last?.isSeparatorItem, true)
         for button in [controls.appearanceButton, controls.backgroundButton] {
             XCTAssertEqual(button.menu?.items.last?.title, "Manage Profiles…")
             XCTAssertEqual(button.menu?.items.dropLast().last?.isSeparatorItem, true)
         }
         let second = OutputDestinationConfiguration(name: "Other", profileID: OutputProfile.audienceID, monitor: nil)
         store.edit { $0.destinations.append(second) }; controls.render()
+        XCTAssertFalse(controls.networkButton.menu?.items.contains { $0.title == OutputAudioListeningState.title } == true)
+        XCTAssertNotNil(try? item("Profile Target", in: controls.appearanceButton.menu))
+        let defaultMenu = try item(first.name, in: controls.appearanceButton.menu)
+        XCTAssertNotNil(defaultMenu.submenu)
+        XCTAssertEqual(try item(outputs.managementDestinationLabel(first), in: defaultMenu.submenu).state, .on)
         let oldColumns = try item("Columns", in: controls.appearanceButton.menu)
         let oldVisual = try item("Enabled", in: controls.backgroundButton.menu)
-        let oldMonitor = try item("None", in: item("Monitor: None", in: controls.outputButton.menu).submenu)
-        let defaultMenu = try item("Edit Profile: " + first.name, in: controls.outputButton.menu)
-        XCTAssertNotNil(defaultMenu.submenu)
-        XCTAssertEqual(try item(outputs.managementDestinationLabel(first) + " · " + store.workspaceName(first.workspaceID), in: defaultMenu.submenu).state, .on)
-        XCTAssertNil(try? item("Default Output", in: controls.outputButton.menu))
-        XCTAssertNil(try? item("Identify Monitor", in: controls.outputButton.menu), "Monitor identification belongs in Manage Outputs")
-        let selection = controls.outputButton.menu, appearance = controls.appearanceButton.menu, background = controls.backgroundButton.menu
+        let network = controls.networkButton.menu, appearance = controls.appearanceButton.menu, background = controls.backgroundButton.menu
         controls.render(); outputs.dismissIssue(); controls.render()
-        XCTAssertTrue(controls.outputButton.menu === selection)
+        XCTAssertTrue(controls.networkButton.menu === network)
         XCTAssertTrue(controls.appearanceButton.menu === appearance)
         XCTAssertTrue(controls.backgroundButton.menu === background)
-        // Changing another output's profile does not change default choices or
-        // this output's monitor actions; keep an open menu intact.
+        // Changing another output's profile does not change default choices; keep an open menu intact.
         store.selectProfile(OutputProfile.lowerThirdID, for: second.id)
         controls.render()
-        XCTAssertTrue(controls.outputButton.menu === selection)
+        XCTAssertTrue(controls.networkButton.menu === network)
         XCTAssertTrue(controls.appearanceButton.menu === appearance)
         XCTAssertTrue(controls.backgroundButton.menu === background)
         store.setDefaultDestination(second.id)
         let unchanged = store.document
-        invoke(oldColumns); invoke(oldVisual); invoke(oldMonitor)
+        invoke(oldColumns); invoke(oldVisual)
         XCTAssertEqual(store.document, unchanged)
         // Switching away and back still invalidates an old menu.
         store.setDefaultDestination(first.id)
@@ -211,20 +207,18 @@ final class OutputDefaultTests: XCTestCase {
         let disabledAction = try item("Columns", in: controls.appearanceButton.menu)
         XCTAssertNil(store.setEnabled(false, for: first.id)); controls.render()
         invoke(disabledAction)
-        XCTAssertFalse(controls.appearanceButton.isEnabled)
+        XCTAssertTrue(controls.appearanceButton.isEnabled, "Appearance stays openable to choose another Profile Target")
         XCTAssertFalse(controls.backgroundButton.isEnabled)
-        XCTAssertTrue(controls.outputButton.isEnabled)
-        XCTAssertNotNil(try? item("Profile editing target is disabled.", in: controls.outputButton.menu))
-        XCTAssertFalse(controls.outputButton.menu?.items.contains { $0.title.hasPrefix("Monitor:") } ?? false)
-        XCTAssertTrue(try item("Edit Profile: " + first.name, in: controls.outputButton.menu).isEnabled)
-        for button in [controls.appearanceButton, controls.backgroundButton] {
-            let tooltip = try XCTUnwrap(button.toolTip)
-            XCTAssertTrue(tooltip.contains(first.name))
-            XCTAssertTrue(tooltip.contains("Profile editing target is disabled."))
-            XCTAssertTrue(tooltip.contains("Enable it in Manage Outputs"))
-            XCTAssertTrue(try XCTUnwrap(button.accessibilityHelp()).contains("choose another target"))
-        }
-        XCTAssertNotNil(try? item("Manage Outputs…", in: controls.outputButton.menu))
+        XCTAssertTrue(controls.networkButton.isEnabled)
+        XCTAssertNotNil(try? item("Profile Target is disabled.", in: controls.appearanceButton.menu))
+        XCTAssertNil(try? item("Columns", in: controls.appearanceButton.menu))
+        let appearanceTooltip = try XCTUnwrap(controls.appearanceButton.toolTip)
+        XCTAssertTrue(appearanceTooltip.contains(first.name))
+        XCTAssertTrue(appearanceTooltip.contains("Profile Target is disabled."))
+        XCTAssertTrue(appearanceTooltip.contains("Enable it in Manage Outputs"))
+        XCTAssertTrue(try XCTUnwrap(controls.appearanceButton.accessibilityHelp()).contains("choose another target"))
+        XCTAssertTrue(try XCTUnwrap(controls.backgroundButton.toolTip).contains("Appearance menu"))
+        XCTAssertNotNil(try? item("Manage Outputs…", in: controls.networkButton.menu))
         XCTAssertEqual(store.defaultDestination?.id, first.id)
         XCTAssertNil(store.setEnabled(true, for: first.id))
         invoke(disabledAction)
@@ -234,11 +228,12 @@ final class OutputDefaultTests: XCTestCase {
         store.edit { $0.destinations.removeAll { $0.id == first.id } }; controls.render()
         invoke(removedAction)
         XCTAssertNil(store.defaultDestination)
-        XCTAssertFalse(controls.appearanceButton.isEnabled)
-        XCTAssertTrue(try XCTUnwrap(controls.appearanceButton.toolTip).contains("Choose a profile editing target from the Output menu"))
-        XCTAssertNotNil(try item("Edit Profile: None", in: controls.outputButton.menu).submenu)
-        XCTAssertNotNil(try? item("Choose a profile editing target to use quick controls.", in: controls.outputButton.menu))
-        XCTAssertNotNil(try? item("Manage Outputs…", in: controls.outputButton.menu))
+        XCTAssertTrue(controls.appearanceButton.isEnabled)
+        XCTAssertFalse(controls.backgroundButton.isEnabled)
+        XCTAssertTrue(try XCTUnwrap(controls.appearanceButton.toolTip).contains("Choose a Profile Target in this menu"))
+        XCTAssertNotNil(try item("None", in: controls.appearanceButton.menu).submenu)
+        XCTAssertNotNil(try? item("Choose a Profile Target to use quick controls.", in: controls.appearanceButton.menu))
+        XCTAssertNotNil(try? item("Manage Outputs…", in: controls.networkButton.menu))
     }
 
     func testQuickFontSizesUseProfilePointsAndEditInPlace() throws {
@@ -316,7 +311,7 @@ final class OutputDefaultTests: XCTestCase {
         let firstAfter = try pixels(firstView)
         XCTAssertNotEqual(firstBefore, firstAfter, "The edited destination must render its new font")
         XCTAssertNotEqual(try pixels(secondView), secondBefore, "Shared-profile edits must reach every output using it")
-        invoke(try item(outputs.managementDestinationLabel(second) + " · " + store.workspaceName(second.workspaceID), in: item("Edit Profile: " + first.name, in: controls.outputButton.menu).submenu))
+        invoke(try item(outputs.managementDestinationLabel(second), in: item(first.name, in: controls.appearanceButton.menu).submenu))
         controls.render()
         invoke(try item("120 pt", in: controls.appearanceButton.menu)); controls.render()
         for _ in 0..<20 { await Task.yield() }
@@ -473,7 +468,7 @@ final class OutputDefaultTests: XCTestCase {
             descendants(NSPopUpButton.self, in: chrome).first { $0.accessibilityLabel()?.hasPrefix(labelPrefix) == true }
         }
         try await waitForUIState("native toolbar controls to mount") {
-            ["Workspaces", "Profile editing target:", "Network workspace routing", "Profile for output:", "Background for output:", "Thumbnails"].allSatisfy { button($0) != nil }
+            ["Workspaces", "Network workspace routing", "Profile for output:", "Background for output:", "Thumbnails"].allSatisfy { button($0) != nil }
         }
         // Locate the reminder independently of the native view wrapper.
         func updateItem() -> NSToolbarItem? { window.toolbar?.items.first { $0.itemIdentifier.rawValue == "app.update" } }
@@ -535,9 +530,9 @@ final class OutputDefaultTests: XCTestCase {
         store.edit { $0.destinations.append(network) }
         store.edit { $0.destinations[0].name = longName }
         try await waitForUIState("the renamed default to reach the toolbar") {
-            button("Profile editing target:")?.toolTip?.contains(longName) == true && button("NDI workspace routing")?.toolTip?.contains(longWorkspaceName) == true
+            button("Profile for output:")?.toolTip?.contains(longName) == true && button("NDI workspace routing")?.toolTip?.contains(longWorkspaceName) == true
         }
-        let controlPrefixes = ["Workspaces", "Profile editing target:", "NDI workspace routing",
+        let controlPrefixes = ["Workspaces", "NDI workspace routing",
                                "Profile for output:", "Background for output:", "Thumbnails"]
         for size in [NSSize(width: 1060, height: 600), .init(width: 1280, height: 800), .init(width: 1400, height: 800)] {
             window.setContentSize(size)
@@ -564,7 +559,6 @@ final class OutputDefaultTests: XCTestCase {
             }
             window.layoutIfNeeded(); chrome.layoutSubtreeIfNeeded()
             // Inspect the controls actually mounted in the native toolbar.
-            let outputButton = try XCTUnwrap(button("Profile editing target:"))
             let networkButton = try XCTUnwrap(button("NDI workspace routing"))
             let appearanceButton = try XCTUnwrap(button("Profile for output:"))
             let backgroundButton = try XCTUnwrap(button("Background for output:"))
@@ -581,22 +575,23 @@ final class OutputDefaultTests: XCTestCase {
             XCTAssertEqual(workspaceButton.accessibilityValue() as? String, longWorkspaceName)
             XCTAssertEqual(workspaceButton.frame.width, workspaceWidth, accuracy: 1,
                            "Update reminders must preserve the compact workspace control's width")
-            XCTAssertEqual(outputButton.title, "Output")
-            XCTAssertTrue(try XCTUnwrap(outputButton.toolTip).contains(longName))
-            XCTAssertTrue(try XCTUnwrap(outputButton.accessibilityLabel()).contains(longName))
+            XCTAssertNil(button("Audio for "), "Toolbar Output / Listen was removed")
             let profileName = try XCTUnwrap(store.profile(try XCTUnwrap(store.defaultDestination).profileID)?.name)
-            XCTAssertNotNil(try? item("Edit Profile: " + profileName, in: outputButton.menu))
+            XCTAssertFalse(networkButton.menu?.items.contains { $0.title == OutputAudioListeningState.title } == true)
+            XCTAssertNotNil(try? item("Profile Target", in: appearanceButton.menu))
+            XCTAssertNotNil(try? item(profileName, in: appearanceButton.menu))
+            XCTAssertTrue(try XCTUnwrap(appearanceButton.toolTip).contains(longName))
             XCTAssertTrue(networkButton.title.hasPrefix("NDI: ")); XCTAssertTrue(networkButton.title.hasSuffix("…"))
             XCTAssertLessThan(networkButton.frame.width, 220)
             XCTAssertTrue(try XCTUnwrap(networkButton.accessibilityLabel()).contains(longWorkspaceName))
             XCTAssertEqual(try item("Move to " + longWorkspaceName, in: networkButton.menu).state, .on)
-            let quickButtons = [outputButton, networkButton, appearanceButton, backgroundButton, thumbnailButton]
+            let quickButtons = [networkButton, appearanceButton, backgroundButton, thumbnailButton]
             let toolbarIndices = try quickButtons.map { try toolbarIndex(of: $0) }
             XCTAssertEqual(Set(toolbarIndices).count, quickButtons.count, "An opaque stack must not absorb multiple output controls")
             XCTAssertEqual(toolbarIndices, toolbarIndices.sorted())
             XCTAssertNil(workspaceButton.enclosingScrollView, "Workspace navigation must stay outside the scrolling library")
             XCTAssertLessThan(chrome.convert(workspaceButton.bounds, from: workspaceButton).maxX,
-                              chrome.convert(outputButton.bounds, from: outputButton).minX)
+                              chrome.convert(networkButton.bounds, from: networkButton).minX)
             let reminderIndex = try XCTUnwrap(window.toolbar?.items.firstIndex { $0 === reminder })
             XCTAssertGreaterThan(reminderIndex, try XCTUnwrap(toolbarIndices.last))
             XCTAssertTrue(reminder.isVisible, "The available update must fit in the supported minimum toolbar width")
@@ -690,17 +685,17 @@ final class OutputDefaultTests: XCTestCase {
         let defaultID = try XCTUnwrap(store.defaultDestination?.id)
         XCTAssertNil(store.setEnabled(false, for: defaultID))
         try await waitForUIState("disabled-default controls to refresh") {
-            button("Profile for output:")?.isEnabled == false && button("Background for output:")?.isEnabled == false
+            button("Profile for output:")?.isEnabled == true && button("Background for output:")?.isEnabled == false
         }
-        XCTAssertFalse(try XCTUnwrap(button("Profile for output:")).isEnabled)
+        XCTAssertTrue(try XCTUnwrap(button("Profile for output:")).isEnabled)
         XCTAssertFalse(try XCTUnwrap(button("Background for output:")).isEnabled)
-        XCTAssertTrue(try XCTUnwrap(button("Profile editing target:")).isEnabled)
+        XCTAssertTrue(try XCTUnwrap(button("NDI workspace routing")).isEnabled)
         XCTAssertTrue(try XCTUnwrap(button("Thumbnails")).isEnabled)
         store.setDefaultDestination(nil)
         try await waitForUIState("the None default to reach the toolbar") {
-            button("Profile editing target:")?.accessibilityLabel() == "Profile editing target: None"
+            button("Profile for output:")?.accessibilityLabel() == "Profile for output: None"
         }
-        XCTAssertNotNil(try? item("Choose a profile editing target to use quick controls.", in: button("Profile editing target:")?.menu))
+        XCTAssertNotNil(try? item("Choose a Profile Target to use quick controls.", in: button("Profile for output:")?.menu))
         XCTAssertTrue(try XCTUnwrap(button("Thumbnails")).isEnabled)
         store.setDefaultDestination(defaultID)
         XCTAssertNil(store.setEnabled(true, for: defaultID))

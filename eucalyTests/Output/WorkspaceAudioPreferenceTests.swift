@@ -111,7 +111,7 @@ final class WorkspaceAudioPreferenceTests: XCTestCase {
         XCTAssertEqual(item.state, .off)
     }
 
-    func testOutputMenusShareListeningStateAndKeepItIndependentOfDefaultOutputAndFocus() throws {
+    func testMenubarListeningIsIndependentOfDefaultOutputAndFocus() throws {
         let store = OutputProfileStore(), transport = RecordingNetworkOutput()
         let peerID = try XCTUnwrap(store.addWorkspace(name: "Online"))
         let outputs = OutputCoordinator(profiles: store, displays: ProjectionDisplayManager(displays: { [] }), network: transport, keyWindow: { nil })
@@ -122,46 +122,56 @@ final class WorkspaceAudioPreferenceTests: XCTestCase {
         app.workspaceWindows = makeWorkspaceWindows(outputs: outputs)
         let menus = AppMenuController(app: app)
         let controls = OutputQuickControlsController(outputs: outputs, workspaceID: home.outputSourceID, manageOutputs: {})
-        let peerControls = OutputQuickControlsController(outputs: outputs, workspaceID: peerID, manageOutputs: {})
-        let menuItem = try XCTUnwrap(menus.outputMenu.item(withTitle: "Listen on This Mac"))
-        let toolbarItem = try XCTUnwrap(controls.outputButton.menu?.item(withTitle: "Listen on This Mac"))
-        XCTAssertTrue(toolbarItem.isEnabled)
-        XCTAssertEqual(toolbarItem.state, .on)
+        func listenItem() throws -> NSMenuItem {
+            // menuNeedsUpdate rebuilds Output; always resolve the live item before acting.
+            try XCTUnwrap(menus.outputMenu.item(withTitle: "Listen on This Mac"))
+        }
+        var menuItem = try listenItem()
+        XCTAssertNotNil(menus.outputMenu.item(withTitle: "Audio"))
+        XCTAssertFalse(controls.networkButton.menu?.items.contains { $0.title == OutputAudioListeningState.title } == true,
+                       "Listen belongs on the menubar Output menu, not Network")
         XCTAssertTrue(menus.validateMenuItem(menuItem)); XCTAssertEqual(menuItem.state, .on)
-        XCTAssertNotNil(controls.outputButton.menu?.item(withTitle: "Audio for Home"))
-        XCTAssertNotNil(menus.outputMenu.item(withTitle: "Uses the default macOS audio output."))
-        XCTAssertNotNil(controls.outputButton.menu?.item(withTitle: "Uses the default macOS audio output."))
-        XCTAssertEqual(toolbarItem.toolTip, menuItem.toolTip)
+        XCTAssertTrue(try XCTUnwrap(menuItem.toolTip).contains("Audio for Home"))
+        XCTAssertTrue(try XCTUnwrap(menuItem.toolTip).contains("Uses the default macOS audio output."))
 
-        // A toolbar action is scoped to its own window, even when another
-        // workspace became the command target after its menu was constructed.
         outputs.focusWorkspace(peer)
-        try invoke(toolbarItem)
-        XCTAssertFalse(outputs.monitorAudioLocally(workspace: home.outputSourceID))
-        XCTAssertTrue(outputs.monitorAudioLocally(workspace: peerID))
-        XCTAssertEqual(controls.outputButton.menu?.item(withTitle: "Listen on This Mac")?.state, .off)
-        peerControls.render()
-        XCTAssertEqual(peerControls.outputButton.menu?.item(withTitle: "Listen on This Mac")?.state, .on)
-        outputs.focusWorkspace(home)
-        XCTAssertTrue(menus.validateMenuItem(menuItem)); XCTAssertEqual(menuItem.state, .off)
+        menus.menuNeedsUpdate(menus.outputMenu)
+        menuItem = try listenItem()
+        XCTAssertTrue(menus.validateMenuItem(menuItem)); XCTAssertEqual(menuItem.state, .on)
         menus.outputMenu.performActionForItem(at: menus.outputMenu.index(of: menuItem))
-        controls.render()
-        XCTAssertEqual(controls.outputButton.menu?.item(withTitle: "Listen on This Mac")?.state, .on)
+        XCTAssertFalse(outputs.monitorAudioLocally(workspace: peerID))
+        XCTAssertTrue(outputs.monitorAudioLocally(workspace: home.outputSourceID))
+        outputs.focusWorkspace(home)
+        menus.menuNeedsUpdate(menus.outputMenu)
+        menuItem = try listenItem()
+        XCTAssertTrue(menus.validateMenuItem(menuItem)); XCTAssertEqual(menuItem.state, .on)
+        menus.outputMenu.performActionForItem(at: menus.outputMenu.index(of: menuItem))
+        XCTAssertFalse(outputs.monitorAudioLocally(workspace: home.outputSourceID))
 
         store.setDefaultDestination(nil); controls.render()
-        XCTAssertTrue(try XCTUnwrap(controls.outputButton.menu?.item(withTitle: "Listen on This Mac")).isEnabled)
-        XCTAssertFalse(controls.appearanceButton.isEnabled)
-        store.renameWorkspace(home.outputSourceID, name: "House"); controls.render()
+        XCTAssertTrue(controls.appearanceButton.isEnabled, "Appearance stays openable to choose a Profile Target")
+        XCTAssertFalse(controls.backgroundButton.isEnabled)
+        store.renameWorkspace(home.outputSourceID, name: "House")
         menus.menuNeedsUpdate(menus.outputMenu)
-        XCTAssertNotNil(controls.outputButton.menu?.item(withTitle: "Audio for House"))
-        XCTAssertNotNil(menus.outputMenu.item(withTitle: "Audio for House"))
+        menuItem = try listenItem()
+        _ = menus.validateMenuItem(menuItem)
+        XCTAssertTrue(try XCTUnwrap(menuItem.toolTip).contains("Audio for House"))
         XCTAssertFalse(outputs.isRunning); XCTAssertTrue(transport.starts.isEmpty)
 
-        let retained = try XCTUnwrap(peerControls.outputButton.menu?.item(withTitle: "Listen on This Mac"))
+        outputs.focusWorkspace(peer)
+        menus.menuNeedsUpdate(menus.outputMenu)
+        menuItem = try listenItem()
+        _ = menus.validateMenuItem(menuItem)
         XCTAssertTrue(outputs.deleteWorkspace(peerID))
+        XCTAssertNil(store.document.workspaces.first { $0.id == peerID })
+        menus.menuNeedsUpdate(menus.outputMenu)
+        menuItem = try listenItem()
+        XCTAssertTrue(menus.validateMenuItem(menuItem), "Listen retargets the remaining workspace; it cannot revive the deleted one")
+        XCTAssertTrue(try XCTUnwrap(menuItem.toolTip).contains("Audio for House"))
         let saved = store.document
-        try invoke(retained)
-        XCTAssertEqual(store.document, saved, "A retained listening action cannot recreate a deleted workspace")
+        menus.outputMenu.performActionForItem(at: menus.outputMenu.index(of: menuItem))
+        XCTAssertNil(store.document.workspaces.first { $0.id == peerID }, "Listen must not recreate a deleted workspace")
+        XCTAssertNotEqual(store.document, saved, "Listen continues to edit the remaining workspace’s preference")
     }
 
     func testNativeProjectionExplainsEffectiveLocalAudioWithoutOverwritingSavedPreference() throws {
@@ -169,18 +179,26 @@ final class WorkspaceAudioPreferenceTests: XCTestCase {
         defer { hub.outputs.stopAllOutputs() }
         let id = hub.session.outputSourceID
         hub.outputs.setMonitorAudioLocally(false, workspace: id)
-        let controls = OutputQuickControlsController(outputs: hub.outputs, workspaceID: id, manageOutputs: {})
-        let retained = try XCTUnwrap(controls.outputButton.menu?.item(withTitle: "Listen on This Mac"))
+        let app = AppDelegate()
+        app.outputProfiles = hub.outputs.profiles; app.outputs = hub.outputs
+        app.workspaceWindows = makeWorkspaceWindows(outputs: hub.outputs)
+        let menus = AppMenuController(app: app)
+        hub.outputs.focusWorkspace(hub.session)
+        menus.menuNeedsUpdate(menus.outputMenu)
+        var item = try XCTUnwrap(menus.outputMenu.item(withTitle: "Listen on This Mac"))
+        XCTAssertTrue(menus.validateMenuItem(item)); XCTAssertEqual(item.state, .off)
         hub.load("Verse\nNative audio")
-        hub.session.showSlides(); controls.render()
-        let item = try XCTUnwrap(controls.outputButton.menu?.item(withTitle: "Listen on This Mac"))
-        XCTAssertFalse(item.isEnabled); XCTAssertEqual(item.state, .on)
-        XCTAssertNotNil(controls.outputButton.menu?.item(withTitle: "Native projection uses the default macOS audio output."))
-        try invoke(retained)
-        XCTAssertFalse(hub.outputs.monitorAudioLocally(workspace: id))
-        hub.outputs.closeOutput(hub.nativeRow); controls.render()
-        let closed = try XCTUnwrap(controls.outputButton.menu?.item(withTitle: "Listen on This Mac"))
-        XCTAssertTrue(closed.isEnabled); XCTAssertEqual(closed.state, .off)
+        hub.session.showSlides()
+        menus.menuNeedsUpdate(menus.outputMenu)
+        item = try XCTUnwrap(menus.outputMenu.item(withTitle: "Listen on This Mac"))
+        XCTAssertFalse(menus.validateMenuItem(item)); XCTAssertEqual(item.state, .on)
+        XCTAssertTrue(try XCTUnwrap(item.toolTip).contains("Native projection"))
+        menus.outputMenu.performActionForItem(at: menus.outputMenu.index(of: item))
+        XCTAssertFalse(hub.outputs.monitorAudioLocally(workspace: id), "Locked effective listening must not overwrite the saved preference")
+        hub.outputs.closeOutput(hub.nativeRow)
+        menus.menuNeedsUpdate(menus.outputMenu)
+        item = try XCTUnwrap(menus.outputMenu.item(withTitle: "Listen on This Mac"))
+        XCTAssertTrue(menus.validateMenuItem(item)); XCTAssertEqual(item.state, .off)
     }
 
     func testStandaloneMusicExplainsItsLocalRouteWithoutChangingTheNDIOnlyPreference() throws {
@@ -188,18 +206,20 @@ final class WorkspaceAudioPreferenceTests: XCTestCase {
         let session = outputs.session(workspace: OutputWorkspaceRecord.primaryID)
         defer { session.clearBackgroundAudio() }
         outputs.setMonitorAudioLocally(false, workspace: session.outputSourceID)
+        let app = AppDelegate()
+        app.outputProfiles = store; app.outputs = outputs
+        app.workspaceWindows = makeWorkspaceWindows(outputs: outputs)
+        let menus = AppMenuController(app: app)
+        outputs.focusWorkspace(session)
         session.setBackgroundAudio(url: URL(fileURLWithPath: "/tmp/listening-standalone.caf"), autoplay: true)
-        let controls = OutputQuickControlsController(outputs: outputs, workspaceID: session.outputSourceID, manageOutputs: {})
-        let item = try XCTUnwrap(controls.outputButton.menu?.item(withTitle: "Listen on This Mac"))
-        XCTAssertEqual(item.state, .on); XCTAssertFalse(item.isEnabled)
-        XCTAssertNotNil(controls.outputButton.menu?.item(withTitle: "Standalone music uses the default macOS audio output."))
+        menus.menuNeedsUpdate(menus.outputMenu)
+        var item = try XCTUnwrap(menus.outputMenu.item(withTitle: "Listen on This Mac"))
+        XCTAssertFalse(menus.validateMenuItem(item)); XCTAssertEqual(item.state, .on)
+        XCTAssertTrue(try XCTUnwrap(item.toolTip).contains("Standalone music"))
         XCTAssertFalse(outputs.monitorAudioLocally(workspace: session.outputSourceID))
-        session.clearBackgroundAudio(); controls.render()
-        XCTAssertTrue(try XCTUnwrap(controls.outputButton.menu?.item(withTitle: "Listen on This Mac")).isEnabled)
-        XCTAssertEqual(controls.outputButton.menu?.item(withTitle: "Listen on This Mac")?.state, .off)
-    }
-
-    private func invoke(_ item: NSMenuItem) throws {
-        XCTAssertTrue(NSApp.sendAction(try XCTUnwrap(item.action), to: item.target, from: item))
+        session.clearBackgroundAudio()
+        menus.menuNeedsUpdate(menus.outputMenu)
+        item = try XCTUnwrap(menus.outputMenu.item(withTitle: "Listen on This Mac"))
+        XCTAssertTrue(menus.validateMenuItem(item)); XCTAssertEqual(item.state, .off)
     }
 }

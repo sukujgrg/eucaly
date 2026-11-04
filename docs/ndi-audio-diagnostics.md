@@ -456,13 +456,13 @@ retained beside the soak in `signed-build-checks.json`.
 
 ## Independent local audio monitoring
 
-Workspace → Monitor Audio Locally now controls local listening separately from
-NDI programme gain. Existing and new workspaces default to off. Both video and
-background music are silent locally for NDI-only playback; native projection
-retains ordinary audio while open. The same option is present in the native
-Workspace menu and workspace toolbar menu, with no shortcut. Programme mute and
-music volume still affect both destinations. Standalone local music remains an
-explicit playback action; output closure or transfer cannot invent that action.
+**Output → Listen on This Mac** (menubar Output only; no toolbar control) owns
+local listening separately from NDI programme gain. New and unset workspace
+preferences default on; an explicit saved off remains off. Turning it off keeps
+video and background music silent locally for NDI-only playback; native
+projection retains ordinary audio while open. Programme mute and music volume
+still affect both destinations. Standalone local music remains an explicit
+playback action; output closure or transfer cannot invent that action.
 
 Local AVPlayer volume is configured before the first play, independently of the
 logical gain applied to tapped PCM. Monitoring changes do not replace players,

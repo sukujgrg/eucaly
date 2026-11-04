@@ -127,10 +127,11 @@ colours through rename, reordering and reopening. The legacy palette and saved
 workspace identities are preserved.
 
 The native `PresentationToolbarController` keeps navigation/title leading, common
-Output/Network and Appearance/Background/Thumbnails controls in functional groups,
-and Search plus the single prominent Show/Hide action trailing. Critical actions
-have native high visibility priority. The sidebar toggle uses an app-owned item
-identifier and explicit split-controller target; AppKit configures reserved
+Network and Appearance/Background/Thumbnails controls in functional groups, and
+Search plus the single prominent Show/Hide action trailing. There is no toolbar
+Output control; Listen on This Mac lives on the menubar Output menu. Critical
+actions have native high visibility priority. The sidebar toggle uses an app-owned
+item identifier and explicit split-controller target; AppKit configures reserved
 identifiers itself, so `.toggleSidebar` cannot carry that delegate-owned target.
 Native spacing replaces the former opaque horizontal group. The
 update reminder has a trailing icon item outside the operational groups.
@@ -162,20 +163,27 @@ Names are trimmed, non-empty, single-line and at most 160 UTF-8 bytes. A Setting
 sheet blocks tab changes, and every rename requires explicit Rename. Closing its
 parent window or quitting cancels an unconfirmed workspace rename.
 
-Output and Network quick menus finish with a separated **Manage Outputs…**
-action. Appearance and Background quick menus finish with **Manage Profiles…**,
-opening the Profiles Settings toolbar tab (selecting the current editing-target
-profile when known). Workspace management uses the same footer convention.
+**Profile Target** (which destination scopes Appearance and Background) sits at
+the top of the **Appearance** pull-down; Appearance stays openable when the
+target is missing or disabled so the operator can choose another. Background
+waits for a usable target and points at Appearance. Monitor assignment and
+**Move to This Workspace** live in Manage Outputs. Network routing stays on the
+toolbar Network control; its Move actions use section headers for source
+identity. Network finishes with **Manage Outputs…**. Appearance and Background
+finish with **Manage Profiles…**, opening the Profiles Settings toolbar tab
+(selecting the current editing-target profile when known). Workspace management
+uses the same footer convention.
 
-**Output → Listen on This Mac** is available in both the toolbar and menu bar.
-It names the affected workspace and explains that listening uses the default
+**Output → Listen on This Mac** is menubar-only (under an **Audio** section). It
+is an occasional per-workspace preference, not a toolbar control. Help on the
+toggle names the affected workspace and explains that listening uses the default
 macOS audio output. New and unset workspace preferences default on; explicit
 saved off remains off. Native projection keeps its normal audio, so while it is
-open the menu shows listening checked and unavailable to change, with an
-explanation. This does not overwrite the saved preference for NDI-only playback.
-Explicit standalone music uses its own playback controls and receives the same
-checked state and explanation while that local route is requested.
-The toggle changes local video/music listening without changing NDI gain, music
+open the menu shows listening checked and unavailable to change, with that
+explanation in help. This does not overwrite the saved preference for NDI-only
+playback. Explicit standalone music uses its own playback controls and receives
+the same checked state and explanation while that local route is requested. The
+toggle changes local video/music listening without changing NDI gain, music
 routing, playback position, players or output lifetimes. Settings restoration
 reads on the persistence queue after pending writes; it cannot re-save an older
 snapshot that was read ahead of the latest listening edit.
@@ -204,9 +212,10 @@ removed workspace. Closing controls still retains its Current, accepted program,
 NDI source and background audio; Open brings back its controls without a new program.
 
 Each destination has one optional saved `workspaceID`. Several destinations can
-follow one workspace; different workspaces can present simultaneously. The Output
-menu lists owners and provides **Move to This Workspace**. Settings displays the
-owner and the same explicit action. Show/Start operates only on assigned outputs;
+follow one workspace; different workspaces can present simultaneously. Manage
+Outputs lists owners and provides **Move to This Workspace**; the Network menu
+routes network sources between workspace Currents. Show/Start operates only on
+assigned outputs;
 it never takes another workspace's destinations. Ordinary Load, navigation,
 playback, Show/Hide, Clear, background controls and Stop are workspace scoped.
 **Stop All Outputs** is a distinct global Slides-menu action without a shortcut.
@@ -461,7 +470,7 @@ See [runtime setup](ndi-runtime.md).
 
 Profiles retain native font/colour controls, multilingual fitting, stacked/column
 layout, padding and relative component typography. Outputs select a Profile only;
-Profiles Settings tab and toolbar Edit Profile edits affect every consumer of that Profile.
+Profiles Settings tab and toolbar Appearance/Background edits (scoped by Appearance → Profile Target) affect every consumer of that Profile.
 Duplicate a Profile before editing when an independent look is required. The
 default-output picker remains an editing preference for quick Profile edits.
 Workspace background commands edit each distinct assigned Profile once before

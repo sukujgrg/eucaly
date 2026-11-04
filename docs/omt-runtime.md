@@ -36,9 +36,10 @@ OMTReceiver composites transparent pixels over its display background.
 
 Video sound follows the owning workspace. The existing background-music
 destination picker selects one NDI **or** OMT destination (or Off); adding OMT
-does not duplicate or reroute music. Listen on This Mac remains the workspace's
-separate local-monitoring preference. Hide, Clear, independent backgrounds and
-ordinary workspace Stop retain their existing semantics.
+does not duplicate or reroute music. Output → Listen on This Mac (menubar Output
+only) remains the workspace's separate local-monitoring preference. Hide, Clear,
+independent backgrounds and ordinary workspace Stop retain their existing
+semantics.
 
 OMT's connection statistic counts TCP connections, including separate audio and
 video connections. The UI labels that count as connections; it is not an exact
