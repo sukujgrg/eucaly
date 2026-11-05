@@ -149,20 +149,15 @@ private final class EditorPaneFixture {
     private static func view(_ state: EditorPaneFixtureState) -> EditorPaneContainerView {
         EditorPaneContainerView(
             newFileWarning: nil,
-            rawLyrics: Binding(get: { state.draft }, set: { state.draft = $0 }),
-            editorID: state.editorID,
+            editor: state.editor,
             saveButtonTitle: "Save As…",
-            canSave: state.canSave,
-            canPreviewDraft: state.canPreview,
             focusController: state.focusController,
             onAction: { state.actions.append($0) }
         )
     }
 
     func update(draft: String, canSave: Bool, canPreview: Bool) {
-        state.draft = draft
-        state.canSave = canSave
-        state.canPreview = canPreview
+        state.apply(draft: draft, canSave: canSave, canPreview: canPreview)
         host.rootView = Self.view(state)
     }
 
@@ -260,17 +255,26 @@ private final class EditorPaneFixture {
 
 @MainActor
 private final class EditorPaneFixtureState {
-    var draft: String
-    var canSave: Bool
-    var canPreview: Bool
+    let editor = LyricsEditorSession()
     var actions: [EditorPaneAction] = []
-    let editorID = UUID()
     let focusController = PlainTextEditorFocusController()
 
+    var draft: String { editor.draft }
+
     init(draft: String, canSave: Bool, canPreview: Bool) {
-        self.draft = draft
-        self.canSave = canSave
-        self.canPreview = canPreview
+        apply(draft: draft, canSave: canSave, canPreview: canPreview)
+    }
+
+    func apply(draft: String, canSave: Bool, canPreview: Bool) {
+        editor.beginNew()
+        editor.draft = draft
+        // New drafts are dirty when non-empty. Synchronize Preview only when
+        // the fixture asks for canPreview == false with a loadable draft.
+        if !canPreview, editor.hasLoadableDraft {
+            editor.markPreviewed()
+        }
+        XCTAssertEqual(editor.canSave, canSave)
+        XCTAssertEqual(editor.canPreviewDraft, canPreview)
     }
 }
 

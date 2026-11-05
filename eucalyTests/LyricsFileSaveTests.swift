@@ -1,10 +1,11 @@
 import XCTest
 @testable import eucaly
 
+@MainActor
 final class LyricsFileSaveTests: XCTestCase {
     func testTwoEditorsDetectConflictAndCancelPreservesTheSecondDraft() throws {
         try withFile { url in
-            var first = LyricsEditorSession(), second = LyricsEditorSession()
+            let first = LyricsEditorSession(); let second = LyricsEditorSession()
             first.beginEditing(text: "Original", sourceURL: url)
             second.beginEditing(text: "Original", sourceURL: url)
             first.draft = "First workspace edits"
@@ -33,7 +34,7 @@ final class LyricsFileSaveTests: XCTestCase {
 
     func testExplicitOverwriteSavesTheSecondEditorsDraft() throws {
         try withFile { url in
-            var second = LyricsEditorSession()
+            let second = LyricsEditorSession()
             second.beginEditing(text: "Original", sourceURL: url)
             second.draft = "Second workspace edits"
             try "First workspace edits".write(to: url, atomically: true, encoding: .utf8)
@@ -69,7 +70,7 @@ final class LyricsFileSaveTests: XCTestCase {
 
     func testEditorReplacementDuringOverwriteConfirmationRejectsTheStaleSave() throws {
         try withFile { url in
-            var editor = LyricsEditorSession()
+            let editor = LyricsEditorSession()
             editor.beginEditing(text: "Original", sourceURL: url)
             editor.draft = "Old editor draft"
             let documentID = editor.documentID, draft = editor.draft

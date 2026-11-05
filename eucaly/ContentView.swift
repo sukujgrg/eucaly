@@ -16,7 +16,7 @@ public struct ContentView: View {
     @State private var importCancellation: LibraryImportCancellation?
     @State private var isImporting = false
     @State private var importSelectionGeneration = UUID()
-    @State private var lyricsEditor = LyricsEditorSession()
+    @StateObject private var lyricsEditor = LyricsEditorSession()
     @State private var lyricsEditorFocusController = PlainTextEditorFocusController()
     @State private var lyricsCleanupController = LyricsCleanupController()
     @StateObject private var session: PresentationSession
@@ -28,6 +28,7 @@ public struct ContentView: View {
     @State private var markdownFiles: [URL] = []
     @State private var previewLibraryFiles: [URL] = []
     @State private var backgroundAudioLibraryFiles: [URL] = []
+    @State private var backgroundAudioLibraryURLSet: Set<URL> = []
     @State private var selectedLibraryURLs: [URL] = []
     @State private var selectedPlaylistEntryIDs: [UUID] = []
     @StateObject private var playlistStore: PlaylistStore
@@ -224,7 +225,7 @@ public struct ContentView: View {
         }
         .onChange(of: libraryRevision) { _, _ in
             guard let selected = selectedAudioURL?.standardizedFileURL,
-                  !backgroundAudioLibraryFiles.contains(where: { $0.standardizedFileURL == selected }) else { return }
+                  !backgroundAudioLibraryURLSet.contains(selected) else { return }
             importSelectionGeneration = UUID()
             selectedAudioURL = session.backgroundAudioURL?.standardizedFileURL
         }
@@ -286,7 +287,7 @@ public struct ContentView: View {
             isLibraryLoading: isLibraryLoading,
             libraryLoadFailure: libraryLoadFailure,
             libraryRevision: libraryRevision,
-            playlistItems: playlistSidebarItems,
+            playlistItems: playlistStore.sidebarItems,
             libraryRootURL: libraryRootURL,
             captureWindows: captureWindows,
             libraryScrollRequest: libraryScrollRequest,
@@ -405,8 +406,8 @@ public struct ContentView: View {
             sidebarSelection: sidebarSelection
         )
         NewLyricsAction.apply(state: &state, clearPreview: clearPreviewDocument)
-        lyricsEditor = state.editor
         selectedLibraryURLs = []
+        selectedPlaylistEntryIDs = state.selectedPlaylistEntryIDs
         setSidebarSelectionWithoutLoading(state.sidebarSelection)
         isEditorPreviewAreaCollapsed = false
         newFileWarning = nil
@@ -416,14 +417,8 @@ public struct ContentView: View {
         DetailRootView(
             editorPane: EditorPaneContainerView(
                 newFileWarning: newFileWarning,
-                rawLyrics: Binding(get: { lyricsEditor.draft }, set: { draft in
-                    importSelectionGeneration = UUID()
-                    lyricsEditor.draft = draft
-                }),
-                editorID: lyricsEditor.documentID,
+                editor: lyricsEditor,
                 saveButtonTitle: saveButtonTitle,
-                canSave: canSaveEditorContent,
-                canPreviewDraft: lyricsEditor.canPreviewDraft,
                 focusController: lyricsEditorFocusController,
                 onAction: handleEditorAction
             ),
@@ -610,9 +605,7 @@ public struct ContentView: View {
     }
 
     private func clearPreviewDocument() {
-        let clearedWindowFromPreview = (0..<flow.previewSlideCount).contains {
-            flow.previewSlide(at: $0)?.captureWindowID != nil
-        }
+        let clearedWindowFromPreview = flow.previewContainsCaptureWindow()
         flow.clearPreviewDocument()
         lyricsEditor.invalidatePreview()
         if clearedWindowFromPreview {
@@ -807,7 +800,7 @@ public struct ContentView: View {
         let cancellation = LibraryImportCancellation()
         let selectionGeneration = importSelectionGeneration
         let previewToken = previewLoadToken
-        let editor = lyricsEditor
+        let editorFingerprint = lyricsEditor.importFingerprint
         let sidebar = sidebarSelection
         let previewSelection = flow.previewSelectionID
         let selectedAudio = selectedAudioURL
@@ -838,7 +831,8 @@ public struct ContentView: View {
                 // additionally requires the requesting controls to remain active.
                 let maySelectImport = workspaceCommands.isActive
                     && importSelectionGeneration == selectionGeneration
-                    && previewLoadToken == previewToken && lyricsEditor == editor
+                    && previewLoadToken == previewToken
+                    && lyricsEditor.importFingerprint == editorFingerprint
                     && sidebarSelection == sidebar && flow.previewSelectionID == previewSelection
                     && selectedAudioURL == selectedAudio && session.backgroundAudioURL == activeAudio
                     && session.backgroundAudioPlaybackState == audioPlaybackState
@@ -929,33 +923,30 @@ public struct ContentView: View {
         for root: URL
     ) -> [URL] {
         displayedLibraryRootURL = root.standardizedFileURL
-        let files = metadata.map(\.url.standardizedFileURL)
-        let previewFiles = metadata
-            .filter { $0.kind.isPreviewLibraryItem }
-            .map(\.url.standardizedFileURL)
-        let backgroundAudioFiles = metadata
-            .filter { $0.kind.isBackgroundAudioSource }
-            .map(\.url.standardizedFileURL)
-        let displayNames = Dictionary(
-            uniqueKeysWithValues: metadata.map { ($0.url.standardizedFileURL, $0.title) }
+        let state = LibrarySidebarState.make(from: metadata)
+        let listsUnchanged = state.listsMatch(
+            markdownFiles: markdownFiles,
+            previewLibraryFiles: previewLibraryFiles,
+            backgroundAudioLibraryFiles: backgroundAudioLibraryFiles
         )
+        let titlesUnchanged = state.titlesMatch(fileDisplayNames)
 
-        let listsUnchanged =
-            markdownFiles == files
-            && previewLibraryFiles == previewFiles
-            && backgroundAudioLibraryFiles == backgroundAudioFiles
-        let titlesUnchanged = displayNames.allSatisfy { fileDisplayNames[$0.key] == $0.value }
-
-        markdownFiles = files
-        previewLibraryFiles = previewFiles
-        backgroundAudioLibraryFiles = backgroundAudioFiles
-        librarySearch.setScopeFiles(previewFiles)
-        fileDisplayNames.merge(displayNames) { _, new in new }
+        if !listsUnchanged {
+            markdownFiles = state.markdownFiles
+            previewLibraryFiles = state.previewLibraryFiles
+            backgroundAudioLibraryFiles = state.backgroundAudioLibraryFiles
+            backgroundAudioLibraryURLSet = state.backgroundAudioURLs
+        }
+        librarySearch.setScopeFiles(state.previewLibraryFiles)
+        if !titlesUnchanged {
+            fileDisplayNames.merge(state.displayNames) { _, new in new }
+        }
         if !listsUnchanged || !titlesUnchanged {
             libraryRevision &+= 1
+            playlistStore.refreshResolvedSidebarItems(titleForURL: displayName(for:))
         }
         reconcileLibrarySelection()
-        return previewFiles
+        return state.previewLibraryFiles
     }
 
 
@@ -1153,7 +1144,7 @@ public struct ContentView: View {
     }
 
     private var playlistResolvedURLs: [URL] {
-        playlistStore.entries.compactMap { playlistStore.resolvedURL(for: $0) }
+        playlistStore.resolvedURLs
     }
 
     @MainActor
@@ -1198,8 +1189,7 @@ public struct ContentView: View {
 
         // The store already publishes the committed order. A second disk read
         // must not turn a successful add into an apparent failure and retry.
-        reconcilePlaylistSelection()
-        rebuildDisplayNames(for: playlistResolvedURLs)
+        finishPlaylistMutation()
         return .added
     }
 
@@ -1213,19 +1203,6 @@ public struct ContentView: View {
         }
     }
 
-    private var playlistSidebarItems: [PlaylistSidebarItem] {
-        playlistStore.entries.map { entry in
-            let resolved = playlistStore.resolvedURL(for: entry)
-            let title: String
-            if let resolved {
-                title = displayName(for: resolved)
-            } else {
-                title = URL(fileURLWithPath: entry.relativePath).lastPathComponent
-            }
-            return PlaylistSidebarItem(id: entry.id, title: title, exists: resolved != nil)
-        }
-    }
-
     private func rebuildDisplayNames(for urls: [URL]) {
         let missing = urls
             .map(\.standardizedFileURL)
@@ -1233,6 +1210,12 @@ public struct ContentView: View {
         guard !missing.isEmpty else { return }
         let names = libraryFileScanner.displayNames(for: missing)
         fileDisplayNames.merge(names) { _, new in new }
+        playlistStore.refreshResolvedSidebarItems(titleForURL: displayName(for:))
+    }
+
+    private func finishPlaylistMutation() {
+        reconcilePlaylistSelection()
+        rebuildDisplayNames(for: playlistResolvedURLs)
     }
 
     private func loadPlaylists() {
@@ -1289,7 +1272,7 @@ public struct ContentView: View {
 
         if playlistStore.add(url: source, after: selectedPlaylistEntryID) != nil {
             newFileWarning = nil
-            loadPlaylists()
+            finishPlaylistMutation()
             return
         }
 
@@ -1304,7 +1287,7 @@ public struct ContentView: View {
             return
         }
         newFileWarning = nil
-        loadPlaylists()
+        finishPlaylistMutation()
     }
 
     private func removePlaylistItem(_ id: UUID) {
@@ -1315,7 +1298,7 @@ public struct ContentView: View {
             return
         }
         newFileWarning = nil
-        loadPlaylists()
+        finishPlaylistMutation()
     }
 
     private func moveSelectedPlaylistEntriesUp() {
@@ -1328,7 +1311,7 @@ public struct ContentView: View {
             return
         }
         newFileWarning = nil
-        loadPlaylists()
+        finishPlaylistMutation()
         refreshPlaylistMultiPreviewIfNeeded()
     }
 
@@ -1342,7 +1325,7 @@ public struct ContentView: View {
             return
         }
         newFileWarning = nil
-        loadPlaylists()
+        finishPlaylistMutation()
         refreshPlaylistMultiPreviewIfNeeded()
     }
 
@@ -1415,12 +1398,11 @@ public struct ContentView: View {
         let request = SidebarSelectionRequest(change: change)
         let selection = change.primary
 
-        let samePrimary = selection == sidebarSelection
-        let sameLibrary = change.libraryURLs == selectedLibraryURLs
-        let samePlaylist = change.playlistEntryIDs == selectedPlaylistEntryIDs
-        if samePrimary, sameLibrary, samePlaylist {
-            guard !lyricsEditor.isEditing, selection != nil else { return true }
-            applySidebarSelectionChange(change)
+        if change.admitsWithoutRecomposingPreview(
+            currentPrimary: sidebarSelection,
+            selectedLibraryURLs: selectedLibraryURLs,
+            selectedPlaylistEntryIDs: selectedPlaylistEntryIDs
+        ) {
             return true
         }
 
@@ -1495,9 +1477,7 @@ public struct ContentView: View {
             let ids = change.playlistEntryIDs.isEmpty
                 ? change.primary.flatMap { if case .playlist(let id) = $0 { return [id] }; return nil } ?? []
                 : change.playlistEntryIDs
-            let hadWindowPreview = (0..<flow.previewSlideCount).contains {
-                flow.previewSlide(at: $0)?.captureWindowID != nil
-            }
+            let hadWindowPreview = flow.previewContainsCaptureWindow()
             let resolved = flow.resolvedPlaylistURLs(ids, from: playlistStore)
             if resolved.urls.isEmpty {
                 lyricsEditor.invalidatePreview()
@@ -1694,7 +1674,7 @@ public struct ContentView: View {
         guard hasActiveEditorPane else { return false }
         do {
             guard try LyricsEditorDraftActions.updatePreview(
-                editor: &lyricsEditor, focus: lyricsEditorFocusController, flow: flow
+                editor: lyricsEditor, focus: lyricsEditorFocusController, flow: flow
             ) else { return false }
             isEditorPreviewAreaCollapsed = false
             newFileWarning = nil
@@ -1735,7 +1715,7 @@ public struct ContentView: View {
             windowID = captureWindows.first?.windowID
         }
         guard let windowID else { return }
-        if flow.previewSlides.contains(where: { $0.captureWindowID == windowID }) {
+        if flow.previewContainsCaptureWindow(windowID) {
             clearPreviewDocument()
         }
         if (0..<session.slideCount).contains(where: { session.slide(at: $0)?.captureWindowID == windowID }) {
@@ -1794,7 +1774,7 @@ public struct ContentView: View {
     }
 
     private func failPreviewLoad(token: UUID, source: PreviewSource) {
-        let clearedWindowFromPreview = flow.previewSlides.contains { $0.captureWindowID != nil }
+        let clearedWindowFromPreview = flow.previewContainsCaptureWindow()
         guard flow.failPreviewLoad(token: token, source: source) else { return }
         if clearedWindowFromPreview {
             releaseWindowCaptureSelectionIfUnused()
@@ -1870,24 +1850,7 @@ public struct ContentView: View {
     }
 
     private func previewLyricsSourceURL() -> URL? {
-        guard !flow.previewIsEmpty else { return nil }
-        let urls = previewSource.fileURLs
-        if urls.count == 1, LibraryFileKind(url: urls[0]).isEditableLyrics {
-            return urls[0]
-        }
-        // After a partial multi-load that left only lyrics, previewSource may already
-        // be the sole file even when the sidebar highlight set is still multi.
-        if let document = flow.previewDocument,
-           document.sourceURLs.count == 1,
-           let url = document.sourceURLs.first,
-           LibraryFileKind(url: url).isEditableLyrics,
-           document.soleVirtualPDFSource == nil,
-           !document.materializedSlides.contains(where: {
-               $0.imageURL != nil || $0.videoURL != nil || $0.pdfURL != nil || $0.captureWindowID != nil
-           }) {
-            return url
-        }
-        return nil
+        flow.previewEditableLyricsURL()
     }
 
 }

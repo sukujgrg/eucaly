@@ -34,7 +34,7 @@ enum LyricsEditorDraftActions {
     /// complete document is valid, retaining the selected slide where possible.
     @discardableResult
     static func updatePreview(
-        editor: inout LyricsEditorSession,
+        editor: LyricsEditorSession,
         focus: PlainTextEditorFocusController,
         flow: PresentationFlowController
     ) throws -> Bool {

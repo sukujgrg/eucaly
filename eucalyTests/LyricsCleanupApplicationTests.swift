@@ -86,7 +86,7 @@ final class LyricsCleanupApplicationTests: XCTestCase {
 
     @MainActor
     private final class Fixture {
-        var editor = LyricsEditorSession()
+        let editor = LyricsEditorSession()
         let focus = PlainTextEditorFocusController()
         let window: NSWindow
         var coordinator: PlainTextEditor.Coordinator!

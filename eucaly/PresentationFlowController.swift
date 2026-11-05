@@ -53,6 +53,20 @@ final class PresentationFlowController: ObservableObject {
         previewDocument?.materializedSlides ?? []
     }
 
+    func previewContainsCaptureWindow(_ windowID: CGWindowID? = nil) -> Bool {
+        previewDocument?.containsCaptureWindow(windowID) ?? false
+    }
+
+    /// Editable lyrics URL for the current Preview deck, without materializing slides.
+    func previewEditableLyricsURL() -> URL? {
+        guard !previewIsEmpty else { return nil }
+        let urls = previewSource.fileURLs
+        if urls.count == 1, LibraryFileKind(url: urls[0]).isEditableLyrics {
+            return urls[0]
+        }
+        return previewDocument?.soleEditableLyricsURL
+    }
+
     var previewSelectionID: Slide.ID? {
         previewSelection.selectedSlideID
     }

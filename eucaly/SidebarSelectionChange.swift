@@ -21,6 +21,18 @@ nonisolated struct SidebarSelectionChange: Equatable, Sendable {
     }
 
     static var cleared: SidebarSelectionChange { SidebarSelectionChange() }
+
+    /// Media-flow admission: selection already matches Preview ownership.
+    /// Same primary/URLs/IDs must not recompose Preview (no disk reload on re-click).
+    func admitsWithoutRecomposingPreview(
+        currentPrimary: SidebarSelection?,
+        selectedLibraryURLs: [URL],
+        selectedPlaylistEntryIDs: [UUID]
+    ) -> Bool {
+        primary == currentPrimary
+            && libraryURLs == selectedLibraryURLs.map(\.standardizedFileURL)
+            && playlistEntryIDs == selectedPlaylistEntryIDs
+    }
 }
 
 /// Retires deleted library identities without accepting a different Preview source.

@@ -114,6 +114,24 @@ final class PlaylistStoreTests: XCTestCase {
         XCTAssertEqual(store.lastError, "Only files inside the library root can be added to Playlist.")
     }
 
+    func testRefreshResolvedSidebarItemsReStatsDeletedFiles() throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fileURL = root.appendingPathComponent("Song.txt")
+        try "Verse\nHello".write(to: fileURL, atomically: true, encoding: .utf8)
+        let store = PlaylistStore()
+        store.load(fromRoot: root)
+        let id = try XCTUnwrap(store.add(url: fileURL, after: nil))
+        XCTAssertEqual(store.sidebarItems, [PlaylistSidebarItem(id: id, title: "Song.txt", exists: true)])
+        XCTAssertEqual(store.resolvedURL(for: id), fileURL)
+
+        try FileManager.default.removeItem(at: fileURL)
+        store.refreshResolvedSidebarItems(titleForURL: { $0.lastPathComponent })
+
+        XCTAssertEqual(store.sidebarItems, [PlaylistSidebarItem(id: id, title: "Song.txt", exists: false)])
+        XCTAssertNil(store.resolvedURL(for: id))
+    }
+
     private func makeRoot() throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("eucaly-playlist-tests-\(UUID().uuidString)", isDirectory: true)

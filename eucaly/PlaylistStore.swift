@@ -17,11 +17,14 @@ final class PlaylistStore: ObservableObject {
     static let shared = PlaylistStore()
 
     @Published private(set) var entries: [PlaylistEntry] = []
+    /// Sidebar rows resolved at load/mutation time — not during SwiftUI body eval.
+    @Published private(set) var sidebarItems: [PlaylistSidebarItem] = []
     @Published private(set) var lastError: String?
 
     private var rootURL: URL?
     private var playlistDirectoryURL: URL?
     private var playlistDocumentURL: URL?
+    private var resolvedURLsByID: [UUID: URL] = [:]
     private let fileManager = FileManager.default
     private let playlistDirectoryName = "Playlist"
     private let playlistFileName = "playlist.json"
@@ -33,6 +36,8 @@ final class PlaylistStore: ObservableObject {
         lastError = nil
         guard let root else {
             entries = []
+            resolvedURLsByID = [:]
+            sidebarItems = []
             playlistDirectoryURL = nil
             playlistDocumentURL = nil
             return true
@@ -48,9 +53,14 @@ final class PlaylistStore: ObservableObject {
 
         do {
             entries = try readEntries()
+            republishSidebarItems(titleForURL: { $0.lastPathComponent })
             return true
         } catch {
-            if previousRoot != root { entries = [] }
+            if previousRoot != root {
+                entries = []
+                resolvedURLsByID = [:]
+                sidebarItems = []
+            }
             lastError = "Could not read Playlist: \(error.localizedDescription)"
             return false
         }
@@ -107,14 +117,49 @@ final class PlaylistStore: ObservableObject {
     }
 
     func resolvedURL(for entry: PlaylistEntry) -> URL? {
-        guard let root = rootURL else { return nil }
-        let url = root.appendingPathComponent(entry.relativePath)
-        return fileManager.fileExists(atPath: url.path) ? url : nil
+        if let cached = resolvedURLsByID[entry.id] { return cached }
+        return resolveExistingURL(for: entry)
     }
 
     func resolvedURL(for id: UUID) -> URL? {
+        if let cached = resolvedURLsByID[id] { return cached }
         guard let entry = entries.first(where: { $0.id == id }) else { return nil }
-        return resolvedURL(for: entry)
+        return resolveExistingURL(for: entry)
+    }
+
+    var resolvedURLs: [URL] {
+        entries.compactMap { resolvedURLsByID[$0.id] }
+    }
+
+    /// Rebuild sidebar rows by re-statting existence and applying titles in one pass.
+    /// Title-only refresh is not offered — cached existence must never assert present
+    /// without a filesystem check.
+    func refreshResolvedSidebarItems(titleForURL: (URL) -> String) {
+        republishSidebarItems(titleForURL: titleForURL)
+    }
+
+    private func resolveExistingURL(for entry: PlaylistEntry) -> URL? {
+        guard let root = rootURL else { return nil }
+        let url = root.appendingPathComponent(entry.relativePath)
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
+        return url
+    }
+
+    private func republishSidebarItems(titleForURL: (URL) -> String) {
+        var map: [UUID: URL] = [:]
+        let items = entries.map { entry -> PlaylistSidebarItem in
+            if let url = resolveExistingURL(for: entry) {
+                map[entry.id] = url
+                return PlaylistSidebarItem(id: entry.id, title: titleForURL(url), exists: true)
+            }
+            return PlaylistSidebarItem(
+                id: entry.id,
+                title: URL(fileURLWithPath: entry.relativePath).lastPathComponent,
+                exists: false
+            )
+        }
+        resolvedURLsByID = map
+        sidebarItems = items
     }
 
     private func readEntries() throws -> [PlaylistEntry] {
@@ -143,6 +188,7 @@ final class PlaylistStore: ObservableObject {
             try fileManager.createDirectory(at: playlistDirectoryURL, withIntermediateDirectories: true)
             try data.write(to: playlistDocumentURL, options: .atomic)
             entries = latestEntries
+            republishSidebarItems(titleForURL: { $0.lastPathComponent })
             return true
         } catch {
             lastError = "Could not save Playlist: \(error.localizedDescription)"
