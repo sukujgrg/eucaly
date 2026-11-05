@@ -1,4 +1,5 @@
 import AppKit
+import CoreGraphics
 import XCTest
 @testable import eucaly
 
@@ -121,8 +122,12 @@ final class AppMenuTests: XCTestCase {
         hub.outputs.focusWorkspace(other)
         window.workspaceSession = other
         XCTAssertFalse(menus.validateMenuItem(toggle), "Another workspace's Current cannot enable Command-Return")
-        // Virtual PDFs have no materialized slides but still count as Current.
-        other.setPDFSlideSource(.init(url: URL(fileURLWithPath: "/tmp/menu-current.pdf"), pageCount: 200))
+        // Virtual PDFs have no materialized slides but still count as Current once accepted.
+        let pdfURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("menu-current-\(UUID().uuidString).pdf")
+        defer { try? FileManager.default.removeItem(at: pdfURL) }
+        try writePDF(to: pdfURL, pageCount: 2)
+        XCTAssertTrue(other.setPDFSlideSource(.init(url: pdfURL, pageCount: 2)))
         XCTAssertTrue(other.slides.isEmpty)
         XCTAssertTrue(menus.validateMenuItem(toggle))
 
@@ -498,6 +503,21 @@ final class AppMenuTests: XCTestCase {
 
     private func descendants(_ menu: NSMenu) -> [NSMenuItem] {
         menu.items.flatMap { [$0] + ($0.submenu.map(descendants) ?? []) }
+    }
+
+    private func writePDF(to url: URL, pageCount: Int) throws {
+        let staging = url.deletingLastPathComponent().appendingPathComponent("staging-\(UUID().uuidString).pdf")
+        defer { try? FileManager.default.removeItem(at: staging) }
+        var mediaBox = CGRect(x: 0, y: 0, width: 200, height: 150)
+        let context = try XCTUnwrap(CGContext(staging as CFURL, mediaBox: &mediaBox, nil))
+        for index in 0..<pageCount {
+            context.beginPDFPage(nil)
+            context.setFillColor(CGColor(gray: CGFloat(index + 1) / CGFloat(pageCount + 1), alpha: 1))
+            context.fill(mediaBox)
+            context.endPDFPage()
+        }
+        context.closePDF()
+        try Data(contentsOf: staging).write(to: url, options: .atomic)
     }
 }
 

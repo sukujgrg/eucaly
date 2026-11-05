@@ -1,4 +1,5 @@
 import Combine
+import CoreGraphics
 import XCTest
 @testable import eucaly
 
@@ -61,15 +62,18 @@ final class PresentationSelectionSchedulingTests: XCTestCase {
         withExtendedLifetime(observation) {}
     }
 
-    func testQueuedNavigationDoesNotMoveAReplacementPDF() async {
+    func testQueuedNavigationDoesNotMoveAReplacementPDF() async throws {
         let session = PresentationSession()
         session.setSlides(makeSlides())
         session.moveSelection(direction: .nextItem)
-        let source = PDFSlideSource(
-            url: URL(fileURLWithPath: "/library/replacement.pdf"),
-            pageCount: 8
-        )
-        session.setPDFSlideSource(source, preferredSelectionIndex: 3)
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PresentationSelectionScheduling-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("replacement.pdf")
+        try writePDF(to: url, pageCount: 8)
+        let source = PDFSlideSource(url: url, pageCount: 8)
+        XCTAssertTrue(session.setPDFSlideSource(source, preferredSelectionIndex: 3))
         await drainMainQueue()
         XCTAssertEqual(session.currentSlideID, PDFSlideCatalog.slide(url: source.url, pageIndex: 3).id)
     }
@@ -92,5 +96,20 @@ final class PresentationSelectionSchedulingTests: XCTestCase {
 
     private func makeSlides() -> [Slide] {
         LyricsParser.parseDocument("One\n\nTwo\n\nThree\n\nFour", fileName: "Test.txt").slides
+    }
+
+    private func writePDF(to url: URL, pageCount: Int) throws {
+        let staging = url.deletingLastPathComponent().appendingPathComponent("staging-\(UUID().uuidString).pdf")
+        defer { try? FileManager.default.removeItem(at: staging) }
+        var mediaBox = CGRect(x: 0, y: 0, width: 200, height: 150)
+        let context = try XCTUnwrap(CGContext(staging as CFURL, mediaBox: &mediaBox, nil))
+        for index in 0..<pageCount {
+            context.beginPDFPage(nil)
+            context.setFillColor(CGColor(gray: CGFloat(index + 1) / CGFloat(pageCount + 1), alpha: 1))
+            context.fill(mediaBox)
+            context.endPDFPage()
+        }
+        context.closePDF()
+        try Data(contentsOf: staging).write(to: url, options: .atomic)
     }
 }
