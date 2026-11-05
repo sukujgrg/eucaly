@@ -1,11 +1,25 @@
 import Foundation
+import Combine
 
-nonisolated struct LyricsEditorSession: Equatable {
-    private(set) var documentID = UUID()
-    private(set) var sourceURL: URL?
+/// Fingerprint of editor intent for import auto-select cancellation.
+/// Draft typing must cancel follow-up selection without relying on reference identity.
+nonisolated struct LyricsEditorImportFingerprint: Equatable, Sendable {
+    let documentID: UUID
+    let isEditing: Bool
+    let sourceURL: URL?
+    let draft: String
+}
+
+/// Owns lyrics draft text. Lifecycle fields publish so the workspace can show/hide
+/// the editor; draft mutations do not publish, so typing stays local to the pane.
+@MainActor
+final class LyricsEditorSession: ObservableObject {
+    @Published private(set) var documentID = UUID()
+    @Published private(set) var sourceURL: URL?
+    @Published private(set) var isEditing = false
+
     private(set) var savedText = ""
     private(set) var previewedText: String?
-    private(set) var isEditing = false
     var draft = ""
 
     var isDirty: Bool {
@@ -28,7 +42,16 @@ nonisolated struct LyricsEditorSession: Equatable {
         hasLoadableDraft && !isPreviewSynchronized
     }
 
-    mutating func beginNew() {
+    var importFingerprint: LyricsEditorImportFingerprint {
+        LyricsEditorImportFingerprint(
+            documentID: documentID,
+            isEditing: isEditing,
+            sourceURL: sourceURL,
+            draft: draft
+        )
+    }
+
+    func beginNew() {
         documentID = UUID()
         sourceURL = nil
         savedText = ""
@@ -37,7 +60,7 @@ nonisolated struct LyricsEditorSession: Equatable {
         isEditing = true
     }
 
-    mutating func beginEditing(text: String, sourceURL: URL) {
+    func beginEditing(text: String, sourceURL: URL) {
         documentID = UUID()
         self.sourceURL = sourceURL
         savedText = text
@@ -46,24 +69,24 @@ nonisolated struct LyricsEditorSession: Equatable {
         isEditing = true
     }
 
-    mutating func markSaved(to sourceURL: URL) {
+    func markSaved(to sourceURL: URL) {
         self.sourceURL = sourceURL
         savedText = draft
     }
 
-    mutating func markPreviewed() {
+    func markPreviewed() {
         previewedText = draft
     }
 
-    mutating func invalidatePreview() {
+    func invalidatePreview() {
         previewedText = nil
     }
 
-    mutating func clearDraft() {
+    func clearDraft() {
         draft = ""
     }
 
-    mutating func endEditing() {
+    func endEditing() {
         sourceURL = nil
         savedText = ""
         previewedText = nil

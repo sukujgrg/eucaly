@@ -239,7 +239,7 @@ final class LyricsEditorDraftActionsTests: XCTestCase {
 
     @MainActor
     private final class Fixture {
-        var editor = LyricsEditorSession()
+        let editor = LyricsEditorSession()
         let focus = PlainTextEditorFocusController()
         let flow = PresentationFlowController()
         let current = PresentationSession(projectionDisplays: ProjectionDisplayManager(displays: { [] }))
@@ -283,7 +283,7 @@ final class LyricsEditorDraftActionsTests: XCTestCase {
         }
 
         func previewDraft() throws -> Bool {
-            try LyricsEditorDraftActions.updatePreview(editor: &editor, focus: focus, flow: flow)
+            try LyricsEditorDraftActions.updatePreview(editor: editor, focus: focus, flow: flow)
         }
 
         func edit(_ action: () throws -> Void) rethrows {

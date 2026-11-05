@@ -1,9 +1,10 @@
 import XCTest
 @testable import eucaly
 
+@MainActor
 final class LyricsEditorSessionTests: XCTestCase {
     func testNewDraftStartsCleanAndBecomesDirtyAfterEditing() {
-        var session = LyricsEditorSession()
+        let session = LyricsEditorSession()
 
         session.beginNew()
         XCTAssertTrue(session.isEditing)
@@ -27,7 +28,7 @@ final class LyricsEditorSessionTests: XCTestCase {
 
     func testSavingUpdatesIdentityAndDirtyBaseline() {
         let url = URL(fileURLWithPath: "/tmp/song.txt")
-        var session = LyricsEditorSession()
+        let session = LyricsEditorSession()
         session.beginNew()
         session.draft = "#verse\nA lyric"
 
@@ -41,7 +42,7 @@ final class LyricsEditorSessionTests: XCTestCase {
 
     func testExistingFileTracksChangesAgainstLoadedText() {
         let url = URL(fileURLWithPath: "/tmp/song.txt")
-        var session = LyricsEditorSession()
+        let session = LyricsEditorSession()
         session.beginEditing(text: "Original", sourceURL: url)
 
         XCTAssertFalse(session.isDirty)
@@ -56,7 +57,7 @@ final class LyricsEditorSessionTests: XCTestCase {
 
     func testClearDraftDoesNotForgetFileIdentityOrSavedText() {
         let url = URL(fileURLWithPath: "/tmp/song.txt")
-        var session = LyricsEditorSession()
+        let session = LyricsEditorSession()
         session.beginEditing(text: "Original", sourceURL: url)
 
         session.clearDraft()
@@ -70,7 +71,7 @@ final class LyricsEditorSessionTests: XCTestCase {
     }
 
     func testUndoingDraftClearDoesNotResynchronizeAClearedPreview() {
-        var session = LyricsEditorSession()
+        let session = LyricsEditorSession()
         session.beginEditing(text: "Original lyrics", sourceURL: URL(fileURLWithPath: "/tmp/song.txt"))
         XCTAssertTrue(session.isPreviewSynchronized)
 
@@ -86,7 +87,7 @@ final class LyricsEditorSessionTests: XCTestCase {
 
     func testEndEditingResetsTheWholeEditorSession() {
         let url = URL(fileURLWithPath: "/tmp/song.txt")
-        var session = LyricsEditorSession()
+        let session = LyricsEditorSession()
         session.beginEditing(text: "Original", sourceURL: url)
         session.draft = "Corrected"
 
@@ -101,7 +102,7 @@ final class LyricsEditorSessionTests: XCTestCase {
     }
 
     func testOpeningAnExistingFileCleansOnlyTheDraftAndKeepsTheSavedBaseline() {
-        var session = LyricsEditorSession()
+        let session = LyricsEditorSession()
         let original = "\u{FEFF}Verse\r\nAmazing\u{00AD}\u{00A0}grace"
         session.beginEditing(text: original, sourceURL: URL(fileURLWithPath: "/tmp/song.txt"))
         XCTAssertEqual(session.draft, "Verse\nAmazing grace")
@@ -112,7 +113,7 @@ final class LyricsEditorSessionTests: XCTestCase {
     }
 
     func testUndoDocumentIdentityChangesOnlyForANewEditingSession() {
-        var session = LyricsEditorSession()
+        let session = LyricsEditorSession()
         session.beginNew()
         let firstDocument = session.documentID
         session.draft = "lyrics"
@@ -122,5 +123,16 @@ final class LyricsEditorSessionTests: XCTestCase {
         XCTAssertEqual(session.documentID, firstDocument)
         session.beginEditing(text: "other lyrics", sourceURL: URL(fileURLWithPath: "/tmp/other.txt"))
         XCTAssertNotEqual(session.documentID, firstDocument, "History must never cross document boundaries")
+    }
+
+    func testImportFingerprintTracksDraftWithoutRelyingOnObjectIdentity() {
+        let session = LyricsEditorSession()
+        session.beginNew()
+        session.draft = "First draft"
+        let before = session.importFingerprint
+        session.draft = "Edited during import"
+        XCTAssertNotEqual(session.importFingerprint, before)
+        XCTAssertEqual(session.importFingerprint.documentID, before.documentID)
+        XCTAssertEqual(session.importFingerprint.isEditing, before.isEditing)
     }
 }

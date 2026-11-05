@@ -53,7 +53,7 @@ nonisolated enum LibraryFileKind: String, Sendable, Equatable {
     }
 }
 
-nonisolated struct LibraryLoadFailure: Error, Sendable {
+nonisolated struct LibraryLoadFailure: Error, Sendable, Equatable {
     let url: URL
     let message: String
 

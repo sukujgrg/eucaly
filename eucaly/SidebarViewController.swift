@@ -4,6 +4,7 @@ import Combine
 @MainActor
 final class SidebarViewController: NSViewController {
     private var configuration: SidebarConfiguration?
+    private var appliedContentIdentity: SidebarConfigurationContentIdentity?
     private let defaults: UserDefaults
     private let expansionStore = SidebarOutlineExpansionStore()
     private let navigation = SidebarOutlineNavigationCoordinator()
@@ -146,9 +147,14 @@ final class SidebarViewController: NSViewController {
     func update(_ configuration: SidebarConfiguration) {
         guard let previousSession = self.configuration?.session else { return }
         let sessionChanged = previousSession !== configuration.session
+        let nextIdentity = SidebarConfigurationContentIdentity(configuration)
+        let contentUnchanged = appliedContentIdentity == nextIdentity
         // Install commands and values together before AppKit applies selection.
         self.configuration = configuration
         if sessionChanged { observeSession() }
+        // Identical data: keep closures/session wiring, skip redundant AppKit apply.
+        if contentUnchanged, !sessionChanged { return }
+        appliedContentIdentity = nextIdentity
         isApplyingSnapshot = true
         defer { isApplyingSnapshot = false }
         if let request = configuration.libraryScrollRequest, request.id != lastScrollRequestID {
@@ -235,6 +241,7 @@ final class SidebarViewController: NSViewController {
         // Retire the callbacks here rather than retaining its ContentView state
         // until the cached native controller itself is eventually released.
         configuration = nil
+        appliedContentIdentity = nil
         libraryTask?.cancel()
         libraryTask = nil
         subscriptions.removeAll()

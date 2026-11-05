@@ -148,6 +148,36 @@ nonisolated struct PresentationDocument: Equatable, Sendable {
         return source
     }
 
+    /// True when any materialized slide carries a window-capture id (virtual PDF never does).
+    func containsCaptureWindow(_ windowID: CGWindowID? = nil) -> Bool {
+        for segment in segments {
+            guard case .slides(let slides) = segment else { continue }
+            for slide in slides {
+                guard let captureID = slide.captureWindowID else { continue }
+                if windowID == nil || windowID == captureID { return true }
+            }
+        }
+        return false
+    }
+
+    /// Sole editable lyrics file when the deck is lyrics-only (no media/window/PDF pages).
+    var soleEditableLyricsURL: URL? {
+        guard soleVirtualPDFSource == nil else { return nil }
+        let urls = sourceURLs
+        guard urls.count == 1, let url = urls.first, LibraryFileKind(url: url).isEditableLyrics else {
+            return nil
+        }
+        for segment in segments {
+            guard case .slides(let slides) = segment else { return nil }
+            if slides.contains(where: {
+                $0.imageURL != nil || $0.videoURL != nil || $0.pdfURL != nil || $0.captureWindowID != nil
+            }) {
+                return nil
+            }
+        }
+        return url
+    }
+
     /// Materialized slides when the document has no virtual segments; otherwise empty.
     var materializedSlides: [Slide] {
         guard segments.allSatisfy({

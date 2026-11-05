@@ -11,13 +11,13 @@ enum EditorPaneAction: Equatable {
 
 struct EditorPaneContainerView: View {
     let newFileWarning: String?
-    @Binding var rawLyrics: String
-    let editorID: UUID
+    @ObservedObject var editor: LyricsEditorSession
     let saveButtonTitle: String
-    let canSave: Bool
-    let canPreviewDraft: Bool
     let focusController: PlainTextEditorFocusController
     let onAction: (EditorPaneAction) -> Void
+    /// Forces Save / Preview enablement to refresh on draft keystrokes without
+    /// publishing through ContentView. Draft itself is intentionally unpublished.
+    @State private var draftRenderToken = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -31,10 +31,10 @@ struct EditorPaneContainerView: View {
             }
 
             PlainTextEditor(
-                text: $rawLyrics,
+                text: draftBinding,
                 focusController: focusController
             )
-                .id(editorID)
+                .id(editor.documentID)
                 .frame(minHeight: 220)
                 .background(
                     VisualEffectView(material: .contentBackground, blendingMode: .withinWindow)
@@ -58,10 +58,37 @@ struct EditorPaneContainerView: View {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(.separator, lineWidth: 1)
         )
+        .onAppear { draftRenderToken = 0 }
+    }
+
+    private var draftBinding: Binding<String> {
+        Binding(
+            get: { editor.draft },
+            set: { newValue in
+                editor.draft = newValue
+                draftRenderToken &+= 1
+            }
+        )
     }
 
     private var hasUsableText: Bool {
-        !rawLyrics.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        _ = draftRenderToken
+        return !editor.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var canSave: Bool {
+        _ = draftRenderToken
+        return editor.canSave
+    }
+
+    private var canPreviewDraft: Bool {
+        _ = draftRenderToken
+        return editor.canPreviewDraft
+    }
+
+    private var isDraftEmpty: Bool {
+        _ = draftRenderToken
+        return editor.draft.isEmpty
     }
 
     private var title: some View {
@@ -102,8 +129,12 @@ struct EditorPaneContainerView: View {
                 .help("Normalize headings and spacing, removing redundant empty lines below headings while preserving slide boundaries. Undo restores the previous text.")
                 .accessibilityIdentifier("LyricsEditor.Format")
             Divider()
-            Button("Clear Draft", role: .destructive) { onAction(.clear) }
-                .disabled(rawLyrics.isEmpty)
+            Button("Clear Draft", role: .destructive) {
+                onAction(.clear)
+                // Clear may mutate draft outside draftBinding; refresh enablement locally.
+                draftRenderToken &+= 1
+            }
+                .disabled(isDraftEmpty)
                 .help("Empty the lyrics draft and Preview. Undo restores the draft.")
                 .accessibilityIdentifier("LyricsEditor.Clear")
         }

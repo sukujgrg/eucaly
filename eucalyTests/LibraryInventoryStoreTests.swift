@@ -32,7 +32,7 @@ final class LibraryInventoryStoreTests: XCTestCase {
         await inventory.waitForRefresh(root: root)
         first.setQuery("first query", currentSelectedURL: nil)
         second.setQuery("importeduniquetoken", currentSelectedURL: nil)
-        var editor = LyricsEditorSession()
+        let editor = LyricsEditorSession()
         editor.beginNew(); editor.draft = "Unsaved private draft"
         let privateEditor = editor
         let flow = PresentationFlowController()
@@ -55,7 +55,8 @@ final class LibraryInventoryStoreTests: XCTestCase {
         XCTAssertEqual(found, song)
         XCTAssertEqual(first.query, "first query")
         XCTAssertEqual(second.query, "importeduniquetoken")
-        XCTAssertEqual(editor, privateEditor)
+        XCTAssertIdentical(editor, privateEditor)
+        XCTAssertEqual(editor.importFingerprint, privateEditor.importFingerprint)
         XCTAssertEqual(flow.previewSlides.map(\.id), previewIDs)
         try "#title: Revised title\nVerse\nsaveduniquetoken".write(to: song, atomically: true, encoding: .utf8)
         inventory.refresh(root: root)

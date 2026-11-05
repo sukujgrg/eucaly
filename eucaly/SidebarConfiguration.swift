@@ -13,6 +13,45 @@ struct PlaylistSidebarItem: Identifiable, Hashable {
     let exists: Bool
 }
 
+/// Data fingerprint for idempotent AppKit sidebar apply (closures excluded).
+struct SidebarConfigurationContentIdentity: Equatable {
+    let isWindowCaptureSupported: Bool
+    let libraryRevision: Int
+    let isLibraryLoading: Bool
+    let libraryLoadFailure: LibraryLoadFailure?
+    let playlistItems: [PlaylistSidebarItem]
+    let libraryRootURL: URL?
+    let captureWindowSignature: [String]
+    let libraryScrollRequestID: UUID?
+    let selectedLibraryURLs: [URL]
+    let selectedPlaylistEntryIDs: [UUID]
+    let sidebarSelection: SidebarSelection?
+    let selectedAudioURL: URL?
+    let backgroundAudioLoop: Bool
+    let backgroundAudioVolumeDraft: Double
+    let windowCaptureFrameRate: Int
+
+    init(_ configuration: SidebarConfiguration) {
+        isWindowCaptureSupported = configuration.isWindowCaptureSupported
+        libraryRevision = configuration.libraryRevision
+        isLibraryLoading = configuration.isLibraryLoading
+        libraryLoadFailure = configuration.libraryLoadFailure
+        playlistItems = configuration.playlistItems
+        libraryRootURL = configuration.libraryRootURL
+        captureWindowSignature = configuration.captureWindows.map {
+            "\($0.windowID)|\($0.appName)|\($0.title)"
+        }
+        libraryScrollRequestID = configuration.libraryScrollRequest?.id
+        selectedLibraryURLs = configuration.selectedLibraryURLs
+        selectedPlaylistEntryIDs = configuration.selectedPlaylistEntryIDs
+        sidebarSelection = configuration.sidebarSelection
+        selectedAudioURL = configuration.selectedAudioURL
+        backgroundAudioLoop = configuration.backgroundAudioLoop
+        backgroundAudioVolumeDraft = configuration.backgroundAudioVolumeDraft
+        windowCaptureFrameRate = configuration.windowCaptureFrameRate
+    }
+}
+
 struct SidebarConfiguration {
     let session: PresentationSession
     let isWindowCaptureSupported: Bool

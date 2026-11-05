@@ -19,7 +19,7 @@ final class NewLyricsActionTests: XCTestCase {
             )
             flow.setPreviewSlides([slide])
 
-            var editor = LyricsEditorSession()
+            let editor = LyricsEditorSession()
             editor.beginEditing(text: "Old lyrics", sourceURL: oldURL)
             editor.draft = "Unsaved lyrics"
             var state = NewLyricsState(
