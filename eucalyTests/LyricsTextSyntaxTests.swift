@@ -93,7 +93,7 @@ final class LyricsTextSyntaxTests: XCTestCase {
 
     func testFormattingPreservesMultilingualComponentsAndFullLyricLines() {
         let input = "[Verse 1]\nक्\u{200D}ष\nTranslation:\nمی\u{200C}خوانم\nMeaning is everywhere\n"
-        XCTAssertEqual(LyricsTextSyntax.format(input), "Verse 1\nक्\u{200D}ष\n\nTranslation\nمی\u{200C}خوانم\nMeaning is everywhere")
+        XCTAssertEqual(LyricsTextSyntax.format(input), "Verse 1\nक्\u{200D}ष\nTranslation\nمی\u{200C}خوانم\nMeaning is everywhere")
     }
 
     private func content(_ document: LyricsDocument) -> [String] {

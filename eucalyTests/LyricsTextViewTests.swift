@@ -319,7 +319,7 @@ final class LyricsTextViewTests: XCTestCase {
         defer { fixture.close() }
         fixture.view.setSelectedRange(NSRange(location: 4, length: 2))
         fixture.edit { XCTAssertTrue(fixture.focus.formatLyrics()) }
-        XCTAssertEqual(fixture.draft, "Verse 1\nlyrics\n\nTranslation\nமொழிபெயர்ப்பு")
+        XCTAssertEqual(fixture.draft, "Verse 1\nlyrics\nTranslation\nமொழிபெயர்ப்பு")
         XCTAssertEqual(fixture.view.selectedRange(), NSRange(location: 4, length: 2))
         fixture.undo.undo()
         XCTAssertEqual(fixture.draft, input)

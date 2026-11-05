@@ -139,7 +139,7 @@ final class LyricsEditorDraftActionsTests: XCTestCase {
             XCTAssertTrue(try LyricsEditorDraftActions.normalizeFormatting(editor: fixture.editor, focus: fixture.focus))
         }
 
-        XCTAssertEqual(fixture.editor.draft, "Verse 1\nOriginal lyrics\n\nTranslation\nமொழிபெயர்ப்பு")
+        XCTAssertEqual(fixture.editor.draft, "Verse 1\nOriginal lyrics\nTranslation\nமொழிபெயர்ப்பு")
         XCTAssertEqual(fixture.view.selectedRange(), NSRange(location: 4, length: 2))
         XCTAssertEqual(fixture.editor.previewedText, source)
         XCTAssertTrue(fixture.editor.canPreviewDraft)

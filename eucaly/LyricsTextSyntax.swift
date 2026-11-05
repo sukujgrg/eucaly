@@ -50,9 +50,11 @@ nonisolated enum LyricsTextSyntax {
         return spaced + "\n\n" + sourceLines[footerStart...].joined(separator: "\n")
     }
 
-    /// One blank between sections/separators; no blank under a heading.
-    /// Does not sanitize characters. Cleanup uses this so proposals match
-    /// SKILLS spacing without re-cleaning protected title/credit lines.
+    /// One blank before primary section headers / separators, and when a source
+    /// blank marks a real stanza boundary. Companion headers stay on the same
+    /// slide, so they do not auto-insert a blank by themselves. No blank under
+    /// a heading. Does not sanitize characters. Cleanup uses this so proposals
+    /// match SKILLS spacing without re-cleaning protected title/credit lines.
     static func normalizeSectionSpacing(_ text: String) -> String {
         let sourceLines = LyricsTextSanitizer.normalizeLineEndings(text).components(separatedBy: "\n")
         let footerStart = LyricsCopyrightParser.footer(in: sourceLines)?.startIndex
@@ -67,14 +69,15 @@ nonisolated enum LyricsTextSyntax {
             if isBlank(line) { pendingBlank = !output.isEmpty; continue }
 
             let separator = isSeparator(line)
-            let header = LyricsSectionCatalog.canonicalHeaderLine(line)
+            let primaryHeader = LyricsSectionCatalog.canonicalHeaderLine(line)
+            let canonical = primaryHeader
                 ?? LyricsSectionCatalog.canonicalCompanionHeaderLine(line)
             let followsHeading = output.last.map { LyricsSectionCatalog.isHeading($0) } ?? false
             let keepsBlank = pendingBlank && (!followsHeading || stanzaStarts.contains(index))
-            if !output.isEmpty, keepsBlank || separator || header != nil || output.last == "---" {
+            if !output.isEmpty, keepsBlank || separator || primaryHeader != nil || output.last == "---" {
                 output.append("")
             }
-            output.append(separator ? "---" : header ?? line)
+            output.append(separator ? "---" : canonical ?? line)
             pendingBlank = false
         }
         if let footerStart {
