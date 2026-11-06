@@ -129,7 +129,7 @@ final class WorkspaceAppearanceTransactionTests: XCTestCase {
                 document.profiles.append(shared)
                 if splitProfiles { document.profiles.append(secondProfile) }
                 document.destinations = [firstRow, secondRow, disabledRow]
-                document.defaultDestinationID = firstRow.id
+                document.profileTargets[OutputWorkspaceRecord.primaryID] = firstRow.id
                 while document.profiles.count < profileCount {
                     document.profiles.append(OutputProfile(id: UUID(), name: "Saved appearance \(document.profiles.count)", kind: .audience))
                 }

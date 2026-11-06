@@ -80,36 +80,47 @@ nonisolated struct OutputProfileDocument: Codable, Equatable {
     // individual UTF-8 byte to six escaped bytes. Retain that supported model
     // within one shared, finite budget for acceptance, storage and recovery.
     static let maximumEncodedBytes = 64 * 1_024 * 1_024
-    var version = 8
+    var version = 9
     var workspaces: [OutputWorkspaceRecord] = [.primary]
     var profiles: [OutputProfile]
     var destinations: [OutputDestinationConfiguration]
-    var defaultDestinationID: UUID? = nil
+    /// Workspace ID → destination ID for Appearance/Background Profile Target.
+    var profileTargets: [UUID: UUID] = [:]
     var backgroundAudioDestinationID: UUID? = nil
 
-    init(version: Int = 8, profiles: [OutputProfile], destinations: [OutputDestinationConfiguration], defaultDestinationID: UUID? = nil) {
+    init(version: Int = 9, profiles: [OutputProfile], destinations: [OutputDestinationConfiguration],
+         profileTargets: [UUID: UUID] = [:], backgroundAudioDestinationID: UUID? = nil) {
         self.version = version; self.profiles = profiles; self.destinations = destinations
-        self.defaultDestinationID = defaultDestinationID
+        self.profileTargets = profileTargets
+        self.backgroundAudioDestinationID = backgroundAudioDestinationID
     }
 
-    private enum CodingKeys: String, CodingKey { case version, workspaces, profiles, destinations, defaultDestinationID, backgroundAudioDestinationID }
+    private enum CodingKeys: String, CodingKey {
+        case version, workspaces, profiles, destinations, profileTargets, backgroundAudioDestinationID
+    }
     init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         version = try c.decode(Int.self, forKey: .version)
         workspaces = try c.decodeIfPresent([OutputWorkspaceRecord].self, forKey: .workspaces) ?? [.primary]
         profiles = try c.decode([OutputProfile].self, forKey: .profiles)
         destinations = try c.decode([OutputDestinationConfiguration].self, forKey: .destinations)
-        // Missing means the old primary output. Explicit null means None and
-        // must survive launches, migration and removal of the former default.
-        defaultDestinationID = c.contains(.defaultDestinationID)
-            ? try c.decodeIfPresent(UUID.self, forKey: .defaultDestinationID) : destinations.first?.id
+        if c.contains(.profileTargets) {
+            let stringKeyed = try c.decode([String: String].self, forKey: .profileTargets)
+            profileTargets = Dictionary(uniqueKeysWithValues: stringKeyed.compactMap { workspace, destination in
+                guard let workspaceID = UUID(uuidString: workspace), let destinationID = UUID(uuidString: destination) else { return nil }
+                return (workspaceID, destinationID)
+            })
+        } else {
+            profileTargets = [:]
+        }
         backgroundAudioDestinationID = try c.decodeIfPresent(UUID.self, forKey: .backgroundAudioDestinationID)
     }
     func encode(to encoder: any Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(version, forKey: .version); try c.encode(workspaces, forKey: .workspaces); try c.encode(profiles, forKey: .profiles)
         try c.encode(destinations, forKey: .destinations)
-        try c.encode(defaultDestinationID, forKey: .defaultDestinationID)
+        let targetsPayload = Dictionary(uniqueKeysWithValues: profileTargets.map { ($0.key.uuidString, $0.value.uuidString) })
+        try c.encode(targetsPayload, forKey: .profileTargets)
         try c.encode(backgroundAudioDestinationID, forKey: .backgroundAudioDestinationID)
     }
 }
@@ -127,7 +138,8 @@ nonisolated enum OutputProfileMigration {
         profiles[0].typography.size = 84 * (scale.isFinite ? min(4, max(0.1, scale)) : 1)
         profiles[0].background.bookmark = defaults?.string(forKey: "backgroundVisualBookmark").flatMap { $0.isEmpty ? nil : $0 }
         let audience = OutputDestinationConfiguration(name: "Audience", profileID: OutputProfile.audienceID, monitor: monitor)
-        return .init(profiles: profiles, destinations: [audience], defaultDestinationID: audience.id)
+        return .init(profiles: profiles, destinations: [audience],
+                     profileTargets: [OutputWorkspaceRecord.primaryID: audience.id])
     }
 }
 
@@ -153,18 +165,38 @@ nonisolated extension OutputProfileDocument {
         for index in profiles.indices { profiles[index].restoreBuiltInNameIfNeeded() }
     }
 
+    /// Prefer an enabled owned row, then any owned row, in saved order.
+    func preferredProfileTarget(for workspaceID: UUID) -> OutputDestinationConfiguration? {
+        let owned = destinations.filter { $0.workspaceID == workspaceID }
+        return owned.first(where: \.enabled) ?? owned.first
+    }
+
+    /// Fill missing Profile Targets for workspaces that already own destinations.
+    /// Does not clear or replace an existing entry.
+    mutating func seedMissingProfileTargets() {
+        for workspace in workspaces {
+            guard profileTargets[workspace.id] == nil,
+                  let destination = preferredProfileTarget(for: workspace.id) else { continue }
+            profileTargets[workspace.id] = destination.id
+        }
+    }
+
     var isValid: Bool {
         let network = destinations.compactMap(\.networkSettings)
         guard network.allSatisfy(\.isValid), Set(network.map(\.sourceID)).count == network.count,
               backgroundAudioDestinationID == nil || destinations.contains(where: { $0.id == backgroundAudioDestinationID && $0.isNetworkDestination }) else { return false }
-        guard version == 8, (1...OutputWorkspaceRecord.legacyPersistenceLimit).contains(workspaces.count),
+        guard version == 9, (1...OutputWorkspaceRecord.legacyPersistenceLimit).contains(workspaces.count),
               Set(workspaces.map(\.id)).count == workspaces.count,
               workspaces.allSatisfy({ !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.name.utf8.count <= 160 }),
               destinations.allSatisfy({ destination in destination.workspaceID == nil || workspaces.contains(where: { $0.id == destination.workspaceID }) }), (1...128).contains(profiles.count), destinations.count <= 16,
               Set(profiles.map(\.id)).count == profiles.count,
               Set(destinations.map(\.id)).count == destinations.count,
               profiles.contains(where: { $0.id == OutputProfile.audienceID }),
-              destinations.allSatisfy({ destination in destination.name.utf8.count <= 160 && profiles.contains { $0.id == destination.profileID } }) else { return false }
+              destinations.allSatisfy({ destination in destination.name.utf8.count <= 160 && profiles.contains { $0.id == destination.profileID } }),
+              profileTargets.allSatisfy({ workspaceID, destinationID in
+                  workspaces.contains(where: { $0.id == workspaceID })
+                      && destinations.contains(where: { $0.id == destinationID && $0.workspaceID == workspaceID })
+              }) else { return false }
         guard profiles.allSatisfy({ profile in
             guard profile.name.utf8.count <= 160, ["stacked", "columns"].contains(profile.layout),
                   ["left", "center", "right"].contains(profile.alignment), ["top", "middle", "bottom"].contains(profile.position),

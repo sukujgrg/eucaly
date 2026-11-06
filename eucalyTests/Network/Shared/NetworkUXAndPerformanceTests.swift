@@ -78,10 +78,10 @@ final class NetworkUXAndPerformanceTests: XCTestCase {
         editor.render()
         XCTAssertFalse(editor.textControls.isHidden, "A reusable profile shared with a native output must retain its native controls")
         let quick = OutputQuickControlsController(outputs: fixture.outputs, manageOutputs: {})
-        fixture.store.setDefaultDestination(fixture.lyrics); quick.render()
-        XCTAssertTrue(quick.appearanceButton.isEnabled); XCTAssertTrue(quick.backgroundButton.isEnabled)
-        fixture.store.setDefaultDestination(fixture.media); quick.render()
-        XCTAssertTrue(quick.appearanceButton.isEnabled); XCTAssertTrue(quick.backgroundButton.isEnabled)
+        fixture.store.setDefaultDestination(fixture.lyrics, workspace: OutputWorkspaceRecord.primaryID); quick.render()
+        XCTAssertTrue(quick.appearance.isEnabled); XCTAssertTrue(quick.background.isEnabled)
+        fixture.store.setDefaultDestination(fixture.media, workspace: OutputWorkspaceRecord.primaryID); quick.render()
+        XCTAssertTrue(quick.appearance.isEnabled); XCTAssertTrue(quick.background.isEnabled)
     }
 
     func testGlobalMusicChoicesDisambiguateNamesAndKeepUUIDRouting() throws {

@@ -13,12 +13,12 @@ final class WorkspaceBackgroundUITests: XCTestCase {
         let controls = OutputQuickControlsController(outputs: fixture.outputs, workspaceID: fixture.home.outputSourceID,
             manageOutputs: {}, makeBackgroundPanel: { panel }, createBackgroundBookmark: { _ in nil },
             beginBackgroundSheet: { _, _, completion in completeQuick = completion })
-        _ = fixture.hostButton(controls.backgroundButton)
+        _ = fixture.host(controls)
         let original = fixture.store.document
         let failed = expectation(description: "Quick picker reports failed bookmark")
         let observation = fixture.home.$projectionDisplayIssue.compactMap { $0 }
             .filter { $0.contains("Choose again") }.first().sink { _ in failed.fulfill() }
-        try invoke(menuItem("Choose…", in: controls.backgroundButton.menu))
+        try invoke(menuItem("Choose…", in: controls.background.menu))
         try XCTUnwrap(completeQuick)(.OK)
         await fulfillment(of: [failed], timeout: 3)
         withExtendedLifetime(observation) {}
@@ -65,7 +65,7 @@ final class WorkspaceBackgroundUITests: XCTestCase {
         defer { fixture.close() }
         let controls = OutputQuickControlsController(outputs: fixture.outputs,
             workspaceID: fixture.home.outputSourceID, manageOutputs: {})
-        let clear = try menuItem("Clear", in: controls.backgroundButton.menu)
+        let clear = try menuItem("Clear", in: controls.background.menu)
         fixture.fillProfiles(to: 128)
         let countBefore = fixture.store.document.profiles.count
 
@@ -120,8 +120,8 @@ final class WorkspaceBackgroundUITests: XCTestCase {
                 XCTAssertTrue(presented === panel)
                 completion = completed
             })
-        _ = fixture.hostButton(controls.backgroundButton)
-        try invoke(menuItem("Choose…", in: controls.backgroundButton.menu))
+        _ = fixture.host(controls)
+        try invoke(menuItem("Choose…", in: controls.background.menu))
         let complete = try XCTUnwrap(completion)
         fixture.fillProfiles(to: 128)
         let countBefore = fixture.store.document.profiles.count
@@ -259,7 +259,7 @@ final class WorkspaceBackgroundUITests: XCTestCase {
             store.edit { document in
                 document.profiles.append(shared)
                 document.destinations = rows + [peerRow]
-                document.defaultDestinationID = rows.first?.id
+                document.profileTargets[OutputWorkspaceRecord.primaryID] = rows.first?.id
                 while document.profiles.count < profileCount {
                     document.profiles.append(OutputProfile(id: UUID(), name: "Unused appearance \(document.profiles.count)", kind: .audience))
                 }
@@ -309,10 +309,12 @@ final class WorkspaceBackgroundUITests: XCTestCase {
             window.layoutIfNeeded()
             return window
         }
-        func hostButton(_ button: NSButton) -> NSWindow {
+        func host(_ controls: OutputQuickControlsController) -> NSWindow {
             let window = makeWindow()
-            button.frame = .init(x: 20, y: 20, width: 160, height: 28)
-            window.contentView?.addSubview(button)
+            let toolbar = NSToolbar(identifier: "eucaly.test.background.\(UUID())")
+            window.toolbar = toolbar
+            controls.mountedToolbar = toolbar
+            controls.hostWindow = window
             return window
         }
         func projectionWindow() -> PresentationWindow {

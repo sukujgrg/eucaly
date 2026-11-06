@@ -339,7 +339,7 @@ public struct ContentView: View {
     }
 
     private func showProfileSettings() {
-        let profileID = session.outputCoordinator.profiles.defaultDestination?.profileID
+        let profileID = session.outputCoordinator.profiles.defaultDestination(for: session.outputSourceID)?.profileID
         AppDelegate.postShowManageProfiles(profileID: profileID)
     }
 

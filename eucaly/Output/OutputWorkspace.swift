@@ -83,6 +83,15 @@ extension OutputProfileStore {
     func workspaceName(_ id: UUID?) -> String {
         document.workspaces.first { $0.id == id }?.name ?? "Unassigned"
     }
+    /// Settings and toolbar labels; disambiguates duplicate workspace names by UUID prefix.
+    func managementWorkspaceName(_ id: UUID?) -> String {
+        guard let id else { return workspaceName(nil) }
+        guard let record = document.workspaces.first(where: { $0.id == id }) else { return "Unassigned" }
+        if document.workspaces.filter({ $0.name == record.name }).count > 1 {
+            return record.name + " · " + String(id.uuidString.prefix(8))
+        }
+        return record.name
+    }
 }
 
 /// The controls are hosted by an AppKit workspace window. This view has no

@@ -7,9 +7,9 @@ final class OutputRetirementTests: XCTestCase {
     func testMixedLegacyDocumentRetainsNativeSettingsAndRemovesRetiredDefault() throws {
         let fixture = try legacy()
         let document = try OutputLegacyMigration.decode(fixture.data)
-        XCTAssertEqual(document.version, 8)
+        XCTAssertEqual(document.version, 9)
         XCTAssertEqual(document.destinations, [fixture.native])
-        XCTAssertNil(document.defaultDestinationID)
+        XCTAssertEqual(document.profileTargets, [OutputWorkspaceRecord.primaryID: fixture.native.id])
         var expected = fixture.profiles + [fixture.promotedExclusive]
         XCTAssertEqual(document.profiles, expected)
         XCTAssertEqual(try OutputLegacyMigration.decode(JSONEncoder().encode(document)), document)
@@ -19,7 +19,7 @@ final class OutputRetirementTests: XCTestCase {
         object["destinations"] = (object["destinations"] as! [[String: Any]]).dropFirst().map { $0 }
         let document = try OutputLegacyMigration.decode(JSONSerialization.data(withJSONObject: object))
         XCTAssertTrue(document.destinations.isEmpty)
-        XCTAssertNil(document.defaultDestinationID)
+        XCTAssertTrue(document.profileTargets.isEmpty)
     }
     func testVersionOneMonitorAssignmentSurvivesDisabledStateAndNativeDefault() throws {
         let fixture = try legacy()
@@ -31,7 +31,7 @@ final class OutputRetirementTests: XCTestCase {
         object["destinations"] = rows; object["defaultDestinationID"] = fixture.native.id.uuidString
         let document = try OutputLegacyMigration.decode(JSONSerialization.data(withJSONObject: object))
         XCTAssertEqual(document.destinations, [fixture.native])
-        XCTAssertEqual(document.defaultDestinationID, fixture.native.id)
+        XCTAssertEqual(document.profileTargets, [OutputWorkspaceRecord.primaryID: fixture.native.id])
     }
     func testInvalidLegacyConfigurationKeepsOriginalAndRecoversNativeAssignmentsWithoutCleanup() async throws {
         let suite = "RetirementRecovery.\(UUID())", defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -48,7 +48,7 @@ final class OutputRetirementTests: XCTestCase {
         XCTAssertNotNil(store.recoveryNotice)
         XCTAssertEqual(defaults.data(forKey: OutputProfileStore.key), data)
         XCTAssertEqual(store.document.destinations, [fixture.native])
-        XCTAssertNil(store.document.defaultDestinationID)
+        XCTAssertEqual(store.document.profileTargets, [OutputWorkspaceRecord.primaryID: fixture.native.id])
         XCTAssertTrue(recorder.calls.isEmpty)
     }
     func testCleanupFollowsVerifiedPersistenceAndTouchesOnlyRetiredServicesOffMain() async throws {
@@ -100,13 +100,16 @@ final class OutputRetirementTests: XCTestCase {
         var profiles = OutputProfile.builtIns
         profiles[0].typography.fontName = "Tamil MN"; profiles[0].padding = 1.3
         let native = OutputDestinationConfiguration(name: "Stage", profileID: OutputProfile.audienceID,
-            monitor: .init(identity: UUID().uuidString, name: "Kept monitor"), enabled: false)
+            monitor: .init(identity: UUID().uuidString, name: "Kept monitor"), enabled: false,
+            workspaceID: OutputWorkspaceRecord.primaryID)
         let remoteID = UUID(), exclusiveID = UUID()
         var exclusive = profiles[0]; exclusive.id = exclusiveID; exclusive.customizedForDestinationID = remoteID
         var reusable = profiles[0]; reusable.id = UUID(); reusable.name = "Retained reusable style"
         profiles.append(reusable)
-        let document = OutputProfileDocument(profiles: profiles, destinations: [native], defaultDestinationID: remoteID)
+        let document = OutputProfileDocument(profiles: profiles, destinations: [native], profileTargets: [OutputWorkspaceRecord.primaryID: native.id])
         var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(document)) as? [String: Any])
+        object.removeValue(forKey: "profileTargets")
+        object["defaultDestinationID"] = native.id.uuidString
         object["version"] = 4
         var rawProfiles = object["profiles"] as! [[String: Any]]
         var retired = rawProfiles[0]; retired["kind"] = "altView"; retired["id"] = "00000000-0000-4000-8000-000000000006"

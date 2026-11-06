@@ -7,9 +7,12 @@ adds OMT while preserving version-6 identities and assignments, and retains the
 original pre-v7 bytes in a separate migration backup. Document version 8 makes
 Outputs select reusable Profiles only: former exclusive appearances are promoted,
 and network chroma colour moves onto each destination’s `keyColour`, with a
-separate pre-v8 backup. Protocol-specific OMT format, SDK lifetime, packaging and
-connection-count details are documented in [OMT outputs](omt-runtime.md).
-Picked-window network output remains deferred for both protocols.
+separate pre-v8 backup. Document version 9 stores Profile Target per workspace
+(`profileTargets`) instead of one document-global default, with a separate
+pre-v9 backup. Shared Profiles remain the only appearance edit surface. Protocol-specific
+OMT format, SDK lifetime, packaging and connection-count details are documented in
+[OMT outputs](omt-runtime.md). Picked-window network output remains deferred for both
+protocols.
 
 ## Content, assignment and lifetime
 
@@ -128,7 +131,11 @@ workspace identities are preserved.
 
 The native `PresentationToolbarController` keeps navigation/title leading, common
 Network and Appearance/Background/Thumbnails controls in functional groups, and
-Search plus the single prominent Show/Hide action trailing. There is no toolbar
+Search plus the single prominent Show/Hide action trailing. Quick menus use
+`NSMenuToolbarItem` system chrome (not view-hosted popups) so AppKit owns shared
+toolbar sizing with Search, Show Slides, Sidebar and Update. Fixed spaces separate
+titled Network/Background items from icon-only Appearance/Thumbnails so Liquid
+Glass does not merge text and symbol actions. There is no toolbar
 Output control; Listen on This Mac lives on the menubar Output menu. Critical
 actions have native high visibility priority. The sidebar toggle uses an app-owned
 item identifier and explicit split-controller target; AppKit configures reserved
@@ -163,16 +170,19 @@ Names are trimmed, non-empty, single-line and at most 160 UTF-8 bytes. A Setting
 sheet blocks tab changes, and every rename requires explicit Rename. Closing its
 parent window or quitting cancels an unconfirmed workspace rename.
 
-**Profile Target** (which destination scopes Appearance and Background) sits at
-the top of the **Appearance** pull-down; Appearance stays openable when the
-target is missing or disabled so the operator can choose another. Background
-waits for a usable target and points at Appearance. Monitor assignment and
-**Move to This Workspace** live in Manage Outputs. Network routing stays on the
-toolbar Network control; its Move actions use section headers for source
-identity. Network finishes with **Manage Outputs…**. Appearance and Background
-finish with **Manage Profiles…**, opening the Profiles Settings toolbar tab
-(selecting the current editing-target profile when known). Workspace management
-uses the same footer convention.
+**Profile Target** is per workspace: each controls window’s Appearance/Background
+menus choose which of **that workspace’s** destinations scopes quick edits. The
+picker lists only owned destinations plus None. Shared Profiles stay the single
+edit surface—when two workspaces target destinations that use the same Profile,
+Background captions correctly move together; that is not a reason to fork
+Profiles from this control. Appearance stays openable when the target is missing
+or disabled so the operator can choose another. Background waits for a usable
+target and points at Appearance. Monitor assignment and **Move to This Workspace**
+live in Manage Outputs. Network routing stays on the toolbar Network control and
+never sets Profile Target. Network finishes with **Manage Outputs…**. Appearance
+and Background finish with **Manage Profiles…**, opening the Profiles Settings
+toolbar tab on **this workspace’s** Profile Target profile when known. Workspace
+management uses the same footer convention.
 
 **Output → Listen on This Mac** is menubar-only (under an **Audio** section). It
 is an occasional per-workspace preference, not a toolbar control. Help on the
@@ -591,6 +601,17 @@ onto `NetworkOutputSettings.keyColour` (defaulting to chroma green when missing)
 and retains the original pre-v8 bytes in `outputProfilesProfileOwnershipMigrationBackup`
 without replacing earlier migration backups. Migration never adds a network output
 or starts a helper.
+
+Document version 9 replaces the document-global `defaultDestinationID` with
+`profileTargets` (workspace ID → destination ID). Migration keeps the former
+global default on the workspace that owned that row, then seeds every other
+workspace that already owns destinations (enabled preferred, else first owned).
+Factory/first-run documents seed Home → the initial Audience destination. Adding
+a new output seeds that workspace’s Profile Target when it has none; moving an
+existing output does not. Original pre-v9 bytes are retained in
+`outputProfilesProfileTargetMigrationBackup`. A one-shot defaults revision
+backfills sparse post-migrate maps. Migration never adds a network output,
+starts a helper, or forks Profiles.
 
 Earlier version-5 retirement still removes AltView/SRT rows and factory/exclusive
 profiles, while retaining supported native appearance, backgrounds and monitor UUIDs.

@@ -336,7 +336,7 @@ final class WorkspaceFileRemovalTests: XCTestCase {
             root = FileManager.default.temporaryDirectory.appendingPathComponent("workspace-file-removal-\(UUID())", isDirectory: true)
             try! FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             store = OutputProfileStore(defaults: defaults)
-            store.edit { $0.destinations = []; $0.defaultDestinationID = nil }
+            store.edit { $0.destinations = []; $0.profileTargets = [:] }
             outputs = OutputCoordinator(profiles: store, displays: ProjectionDisplayManager(displays: { [] }),
                                         retainsPreparedSessions: true, network: ndi)
             session = outputs.session(workspace: OutputWorkspaceRecord.primaryID)
