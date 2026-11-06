@@ -47,9 +47,16 @@ struct OutputAudioListeningState: Equatable {
 
 @MainActor
 final class OutputQuickControlsController: NSObject, ObservableObject {
-    let networkButton = NSPopUpButton(frame: .zero, pullsDown: true)
-    let appearanceButton = NSPopUpButton(frame: .zero, pullsDown: true)
-    let backgroundButton = NSPopUpButton(frame: .zero, pullsDown: true)
+    /// Window that presents the background open panel. The toolbar installs this
+    /// only while its toolbar is the window's mounted toolbar; unit tests set it
+    /// when exercising sheet admission.
+    weak var hostWindow: NSWindow?
+    /// Mounted toolbar identity used to refuse Choose… after an in-window switch
+    /// parks these controls while a stale hostWindow might still point at the window.
+    weak var mountedToolbar: NSToolbar?
+    private(set) var network = ToolbarMenuChrome()
+    private(set) var appearance = ToolbarMenuChrome()
+    private(set) var background = ToolbarMenuChrome()
     let outputs: OutputCoordinator
     let workspaceID: UUID?
     var store: OutputProfileStore { outputs.profiles }
@@ -99,55 +106,67 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
              $0.beginSheetModal(for: $1, completionHandler: $2)
          }) {
         self.outputs = outputs
-        self.workspaceID = workspaceID ?? outputs.focusedWorkspaceID
+        self.workspaceID = workspaceID
+            ?? outputs.focusedWorkspaceID
+            ?? outputs.profiles.document.workspaces.first?.id
         self.manageOutputs = manageOutputs
         self.manageProfiles = manageProfiles
         self.createBackgroundBookmark = createBackgroundBookmark
         self.makeBackgroundPanel = makeBackgroundPanel
         self.beginBackgroundSheet = beginBackgroundSheet
         super.init()
-        for button in [networkButton, backgroundButton, appearanceButton] {
-            button.bezelStyle = .toolbar
-            // Network and Background show identity beside the symbol; Appearance stays icon-only.
-            button.imagePosition = button === appearanceButton ? .imageOnly : .imageLeft
-            button.setContentHuggingPriority(.required, for: .horizontal)
-            button.setContentCompressionResistancePriority(.required, for: .horizontal)
-        }
+        appearance.image = NSImage(systemSymbolName: "textformat", accessibilityDescription: "Appearance")
+        background.image = NSImage(systemSymbolName: "photo.on.rectangle", accessibilityDescription: "Background")
+        network.image = NSImage(systemSymbolName: "network", accessibilityDescription: "Network")
         render()
     }
+
+    func apply(network item: NSMenuToolbarItem) { network.apply(to: item) }
+    func apply(appearance item: NSMenuToolbarItem) { appearance.apply(to: item) }
+    func apply(background item: NSMenuToolbarItem) { background.apply(to: item) }
 
     func render() {
         guard !isRetired else { return }
         renderNetworkRouting()
-        let destination = store.defaultDestination
+        guard let workspaceID else {
+            appearance.isEnabled = false
+            background.isEnabled = false
+            return
+        }
+        let destination = store.defaultDestination(for: workspaceID)
         let profile = destination.flatMap { store.profile($0.profileID) }
-        let target = store.quickEditTarget
+        let target = store.quickEditTarget(for: workspaceID)
         let profileName = destination.flatMap { store.profile($0.profileID)?.name } ?? "None"
         let reason = store.recoveryNotice ?? (destination == nil ? "Choose a Profile Target to use quick controls."
             : destination?.enabled == false ? "Profile Target is disabled."
             : nil)
         let name = destination?.name ?? "None"
         let scope = destination.map(accessibilityDestinationTitle) ?? "None"
-        let rows = store.document.destinations.map { row in
+        let rows = store.document.destinations.filter { $0.workspaceID == workspaceID }.map { row in
             DefaultEntry(id: row.id, shortTitle: shortDestinationTitle(row), detailTitle: accessibilityDestinationTitle(row))
         }
         let canEdit = target != nil
-        let appearance = AppearanceState(rows: rows, defaultID: store.document.defaultDestinationID, target: target,
+        let appearanceStateValue = AppearanceState(rows: rows, defaultID: destination?.id, target: target,
                                          profile: profile, canEdit: canEdit, reason: reason)
+        let sharedConsumers = profile.map { profile in
+            store.document.destinations.filter { $0.profileID == profile.id }.count
+        } ?? 0
         let appearanceHelp: String
         if let recovery = store.recoveryNotice { appearanceHelp = recovery }
         else if destination == nil { appearanceHelp = "Choose a Profile Target in this menu to use Appearance and Background quick controls." }
         else if destination?.enabled == false {
             appearanceHelp = "Profile Target is disabled. Enable it in Manage Outputs or choose another target in this menu."
+        } else if sharedConsumers > 1 {
+            appearanceHelp = "Quick edits change shared profile “\(profileName)” for every output using it."
         } else {
-            appearanceHelp = reason ?? "Quick edits change profile “\(profileName)” for every output using it. Duplicate the profile in Manage Profiles first if you need an independent look."
+            appearanceHelp = reason ?? "Quick edits change profile “\(profileName)”."
         }
         // Appearance stays openable so operators can pick a Profile Target; Background
         // waits for a usable target. Recovery freezes both until the document is healthy.
         let appearanceOpenable = store.recoveryNotice == nil
-        appearanceButton.isEnabled = appearanceOpenable
-        backgroundButton.isEnabled = canEdit
-        appearanceButton.toolTip = "Profile for \(name)\n\(appearanceHelp)"
+        appearance.isEnabled = appearanceOpenable
+        background.isEnabled = canEdit
+        appearance.toolTip = "Profile for \(name)\n\(appearanceHelp)"
         let backgroundSummary = backgroundSummary(for: profile)
         let backgroundHelp: String
         if canEdit {
@@ -157,30 +176,37 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         } else {
             backgroundHelp = "Choose a Profile Target from the Appearance menu to edit backgrounds."
         }
-        backgroundButton.toolTip = "Background for \(name)\n\(backgroundHelp)"
-        appearanceButton.setControlAccessibility(label: "Profile for output: \(scope)", help: appearanceHelp)
-        backgroundButton.setControlAccessibility(label: "Background for output: \(scope)", help: backgroundHelp)
-        if appearance != appearanceState {
-            appearanceState = appearance
-            appearanceButton.menu = appearanceMenu(profileName: profileName, destination: destination, rows: rows,
+        background.toolTip = "Background for \(name)\n\(backgroundHelp)"
+        appearance.accessibilityLabel = "Profile for output: \(scope)"
+        appearance.accessibilityHelp = appearanceHelp
+        background.accessibilityLabel = "Background for output: \(scope)"
+        background.accessibilityHelp = backgroundHelp
+        background.title = backgroundSummary
+        background.image = NSImage(systemSymbolName: "photo.on.rectangle", accessibilityDescription: backgroundSummary)
+        appearance.title = ""
+        appearance.image = NSImage(systemSymbolName: "textformat", accessibilityDescription: "Appearance")
+        if appearanceStateValue != appearanceState {
+            appearanceState = appearanceStateValue
+            appearance.menu = appearanceMenu(profileName: profileName, destination: destination, rows: rows,
                                                    profile: profile, target: target, canEdit: canEdit)
-            backgroundButton.menu = backgroundMenu(profile, target: target, summary: backgroundSummary)
+            background.menu = backgroundMenu(profile, target: target)
         }
     }
 
     private func appendProfileTarget(to menu: NSMenu, profileName: String, destination: OutputDestinationConfiguration?, rows: [DefaultEntry]) {
+        guard let workspaceID else { return }
         menu.addItem(section("Profile Target"))
         let defaults = NSMenu(); defaults.autoenablesItems = false
         defaults.addItem(command("None", selected: destination == nil) { [weak self] in
-            self?.store.setDefaultDestination(nil)
+            self?.store.setDefaultDestination(nil, workspace: workspaceID)
             self?.render()
         })
         for row in rows {
             let item = command(row.shortTitle, selected: row.id == destination?.id) { [weak self] in
-                self?.store.setDefaultDestination(row.id)
+                self?.store.setDefaultDestination(row.id, workspace: workspaceID)
                 self?.render()
             }
-            annotate(item, help: "Use \(row.detailTitle) as the Profile Target for Appearance and Background quick edits.")
+            annotate(item, help: "Use \(row.detailTitle) as this workspace’s Profile Target for Appearance and Background quick edits.")
             defaults.addItem(item)
         }
         submenu(profileName, defaults, in: menu)
@@ -210,12 +236,12 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         // Bound the visible title using native font metrics. Full workspace and
         // source names remain in the menu, tooltip and accessibility label.
         var title = caption
-        let attributes: [NSAttributedString.Key: Any] = [.font: networkButton.font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)]
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: NSFont.systemFontSize)]
         while (title as NSString).size(withAttributes: attributes).width > 96, title.count > 5 {
             title.removeLast()
         }
         if title != caption { title += "…" }
-        let menu = menu(caption: title, symbol: "network", showsTitle: true)
+        let menu = NSMenu(); menu.autoenablesItems = false
         let summary = state.sources.map {
             (technologies.count > 1 ? $0.technology.title + ": " : "") + $0.sourceName + " → " + owner($0.workspaceID)
                 + ($0.enabled ? "" : " (Disabled)")
@@ -223,8 +249,12 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         let help = state.recoveryNotice ?? (state.sources.isEmpty
             ? "Add an NDI or OMT output in Manage Outputs to route it between workspaces."
             : "Choose a workspace’s Current for " + technologyName + " output. A live move keeps the source name and receiver connection; a stopped output stays stopped.")
-        networkButton.toolTip = [summary, help].filter { !$0.isEmpty }.joined(separator: "\n")
-        networkButton.setControlAccessibility(label: technologyName + " workspace routing" + (summary.isEmpty ? "" : ": " + summary), help: help)
+        network.title = title
+        network.image = NSImage(systemSymbolName: "network", accessibilityDescription: technologyName)
+        network.toolTip = [summary, help].filter { !$0.isEmpty }.joined(separator: "\n")
+        network.accessibilityLabel = technologyName + " workspace routing" + (summary.isEmpty ? "" : ": " + summary)
+        network.accessibilityHelp = help
+        network.isEnabled = !isRetired
         if state.sources.isEmpty { menu.addItem(status("No network outputs configured.")) }
         for (index, source) in state.sources.enumerated() {
             let choices = state.sources.count == 1 ? menu : NSMenu()
@@ -249,7 +279,7 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         }
         if let notice = state.recoveryNotice { menu.addItem(status(notice)) }
         addManagementFooter(to: menu, target: .outputs)
-        networkButton.menu = menu
+        network.menu = menu
         refreshNetworkMoveDescriptions()
     }
 
@@ -278,7 +308,7 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
     }
     private func appearanceMenu(profileName: String, destination: OutputDestinationConfiguration?, rows: [DefaultEntry],
                                 profile: OutputProfile?, target: OutputProfileStore.QuickEditTarget?, canEdit: Bool) -> NSMenu {
-        let menu = menu(caption: "Appearance", symbol: "textformat")
+        let menu = NSMenu(); menu.autoenablesItems = false
         appendProfileTarget(to: menu, profileName: profileName, destination: destination, rows: rows)
         defer { addManagementFooter(to: menu, target: .profiles) }
         guard canEdit, let profile, let target else { return menu }
@@ -345,10 +375,8 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         if profile.background.bookmark != nil { return "Selected image or video" }
         return "Solid colour"
     }
-    private func backgroundMenu(_ profile: OutputProfile?, target: OutputProfileStore.QuickEditTarget?,
-                                summary: String) -> NSMenu {
-        // Pull-down first item is the visible button title — keep the current asset there.
-        let menu = menu(caption: summary, symbol: "photo.on.rectangle", showsTitle: true)
+    private func backgroundMenu(_ profile: OutputProfile?, target: OutputProfileStore.QuickEditTarget?) -> NSMenu {
+        let menu = NSMenu(); menu.autoenablesItems = false
         defer { addManagementFooter(to: menu, target: .profiles) }
         guard let profile, let target else { return menu }
         let hasVisual = profile.background.bookmark != nil
@@ -365,10 +393,16 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         submenu("Fit", fit, in: menu)
         return menu
     }
+    private func isMounted(on window: NSWindow) -> Bool {
+        guard let mountedToolbar else { return false }
+        return hostWindow === window && window.toolbar === mountedToolbar
+    }
+
     private func chooseBackground(_ target: OutputProfileStore.QuickEditTarget) {
         guard !isRetired,
               let destination = store.enabledDefault(for: target), store.profile(destination.profileID) != nil,
-              let window = backgroundButton.window, window.attachedSheet == nil else { return }
+              let window = hostWindow, window.attachedSheet == nil,
+              isMounted(on: window) else { return }
         let store = store
         let outputs = outputs
         let createBackgroundBookmark = createBackgroundBookmark
@@ -377,12 +411,14 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         let panel = makeBackgroundPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [.image, .movie]
         // Creating an AppKit panel may run a nested event loop. The controls,
-        // requesting workspace and default output must still be the same.
-        guard !isRetired, backgroundButton.window === window, window.attachedSheet == nil,
+        // requesting workspace and default output must still be the same, and
+        // these controls must still own the window's mounted toolbar.
+        guard !isRetired, isMounted(on: window), window.attachedSheet == nil,
               store.document.workspaces.contains(where: { $0.id == requestingWorkspaceID }),
               store.enabledDefault(for: target) != nil else { return }
         beginBackgroundSheet(panel, window) { [weak self] result in
-            guard self?.isRetired == false, result == .OK, let url = panel.url else { return }
+            guard let self, !self.isRetired, self.isMounted(on: window),
+                  result == .OK, let url = panel.url else { return }
             // Accepting the native selection transfers preparation to the app's
             // store/output owners. Closing controls after this admission must
             // not discard an explicitly accepted background choice.
@@ -417,18 +453,6 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         case .profiles:
             menu.addItem(command("Manage Profiles…") { [weak self] in self?.manageProfiles() })
         }
-    }
-    private func menu(caption: String, symbol: String, showsTitle: Bool = false) -> NSMenu {
-        let menu = NSMenu(); menu.autoenablesItems = false
-        let label = NSMenuItem(title: caption, action: nil, keyEquivalent: "")
-        label.image = NSImage(systemSymbolName: symbol, accessibilityDescription: caption)
-        menu.addItem(label)
-        if !showsTitle {
-            // Pull-down buttons display their first item's image; the remaining
-            // items retain complete labels and native keyboard/menu behavior.
-            label.title = ""
-        }
-        return menu
     }
     private func shortDestinationTitle(_ destination: OutputDestinationConfiguration) -> String {
         outputs.managementDestinationLabel(destination)
@@ -468,7 +492,11 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
     }
     func retire() {
         isRetired = true
-        for button in [networkButton, appearanceButton, backgroundButton] { button.isEnabled = false }
+        network.isEnabled = false
+        appearance.isEnabled = false
+        background.isEnabled = false
+        hostWindow = nil
+        mountedToolbar = nil
     }
     @objc private func performCommand(_ sender: NSMenuItem) {
         guard !isRetired else { return }

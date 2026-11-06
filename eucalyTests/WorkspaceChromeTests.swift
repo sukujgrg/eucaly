@@ -102,19 +102,46 @@ final class WorkspaceChromeTests: XCTestCase {
         XCTAssertTrue(NSApp.sendAction(action, to: toolbar, from: search))
         XCTAssertEqual(state.searches, 1)
         let thumbnails = toolbar.thumbnailControls
-        let choices = try XCTUnwrap(thumbnails.button.menu?.items.first { $0.submenu != nil }?.submenu)
+        let choices = try XCTUnwrap(thumbnails.chrome.menu?.items.first { $0.submenu != nil }?.submenu)
         let choice = try XCTUnwrap(choices.items.first { $0.action != nil && $0.state != .on })
         let percentageAction = try XCTUnwrap(choice.action)
         let savedScale = f.defaults.object(forKey: "thumbnailScale") as? Double
         window.close()
         XCTAssertFalse(toolbar.validateToolbarItem(search))
-        XCTAssertFalse(thumbnails.button.isEnabled)
+        XCTAssertFalse(thumbnails.chrome.isEnabled)
         XCTAssertTrue(NSApp.sendAction(action, to: toolbar, from: search))
         toolbar.updateActions(toggleSlides: {}, searchLibrary: { state.searches += 100 }, manageOutputs: {})
         XCTAssertTrue(NSApp.sendAction(action, to: toolbar, from: search))
         XCTAssertTrue(NSApp.sendAction(percentageAction, to: thumbnails, from: choice))
         XCTAssertEqual(state.searches, 1)
         XCTAssertEqual(f.defaults.object(forKey: "thumbnailScale") as? Double, savedScale)
+    }
+
+    func testParkedToolbarClearsBackgroundHostWindowAfterInWindowSwitch() async throws {
+        let f = try Fixture(); defer { f.close() }
+        let window = try XCTUnwrap(f.windows.open(f.a)?.window)
+        f.focus.window = window
+        let homeSplit = try await mountedSplit(in: window)
+        let homeToolbar = try XCTUnwrap(homeSplit.toolbarController)
+        XCTAssertTrue(homeToolbar.quickControls.hostWindow === window)
+        XCTAssertTrue(homeToolbar.quickControls.mountedToolbar === homeToolbar.toolbar)
+        let thumbnails = try XCTUnwrap(homeToolbar.toolbar.items.first {
+            $0.itemIdentifier.rawValue == "workspace.thumbnails"
+        } as? NSMenuToolbarItem)
+        XCTAssertEqual(thumbnails.image?.accessibilityDescription,
+                       homeToolbar.thumbnailControls.chrome.accessibilityValue)
+        let controller = try XCTUnwrap(window.windowController as? OutputWorkspaceWindowController)
+        XCTAssertTrue(f.windows.open(f.b, from: f.a) === controller)
+        try await until("the second workspace owns the window toolbar") {
+            window.toolbar !== homeToolbar.toolbar
+        }
+        // A passive outputs publication re-renders parked chrome and must clear
+        // the stale sheet host without waiting for an explicit Background action.
+        f.outputs.objectWillChange.send()
+        try await until("parked controls clear the background host window") {
+            homeToolbar.quickControls.hostWindow == nil
+        }
+        XCTAssertTrue(homeToolbar.quickControls.mountedToolbar === homeToolbar.toolbar)
     }
 
     func testCollapsedSidebarReleasesTheWholeDetailArea() async throws {

@@ -113,7 +113,7 @@ final class OutputProfileTests: XCTestCase {
         store.flush()
         XCTAssertEqual(store.document.destinations.count, 1)
         XCTAssertEqual(store.document.destinations.first?.monitor, target)
-        XCTAssertEqual(store.document.version, 8)
+        XCTAssertEqual(store.document.version, 9)
         XCTAssertEqual(store.audience.typography.size, 126)
         XCTAssertEqual(store.audience.typography(for: .meaning).size, 63)
         XCTAssertEqual(store.audience.background.bookmark, "bookmark")
@@ -145,7 +145,7 @@ final class OutputProfileTests: XCTestCase {
         let data = try XCTUnwrap(defaults.data(forKey: OutputProfileStore.key))
         XCTAssertEqual(try JSONDecoder().decode(OutputProfileDocument.self, from: data), expected)
         XCTAssertEqual(OutputProfileStore(defaults: defaults).document, expected)
-        XCTAssertEqual(defaults.integer(forKey: "outputProfileDefaultsRevision"), 2)
+        XCTAssertEqual(defaults.integer(forKey: "outputProfileDefaultsRevision"), 3)
     }
 
     func testRetiredPresetsRestoreAssignmentsAndCustomComponentsWithoutRecovery() throws {
@@ -339,7 +339,7 @@ final class OutputProfileRecoveryTests: XCTestCase {
         XCTAssertEqual(store.document.destinations.map(\.monitor), doc.destinations.map(\.monitor))
         XCTAssertEqual(store.document.destinations.map(\.id), doc.destinations.map(\.id))
         XCTAssertTrue(store.document.destinations.allSatisfy { !$0.enabled })
-        XCTAssertEqual(store.document.version, 8)
+        XCTAssertEqual(store.document.version, 9)
         store.flush(); XCTAssertEqual(defaults.data(forKey: OutputProfileStore.key), original)
     }
 }

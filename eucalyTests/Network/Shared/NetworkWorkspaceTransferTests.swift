@@ -154,7 +154,7 @@ final class NetworkWorkspaceTransferTests: XCTestCase {
         one.ndi = .init(sourceName: "One")
         var two = OutputDestinationConfiguration(name: "Two", profileID: OutputProfile.audienceID, monitor: nil, workspaceID: online)
         two.ndi = .init(sourceName: "Two")
-        store.edit { $0.destinations = [one, two]; $0.defaultDestinationID = one.id }
+        store.edit { $0.destinations = [one, two]; $0.profileTargets[home] = one.id; $0.profileTargets[online] = two.id }
         let outputs = OutputCoordinator(profiles: store, displays: ProjectionDisplayManager(displays: { [] }), retainsPreparedSessions: true, network: router)
         defer { outputs.stopAllOutputs() }
         let a = outputs.session(workspace: home), b = outputs.session(workspace: online)
@@ -168,7 +168,7 @@ final class NetworkWorkspaceTransferTests: XCTestCase {
         for index in 0..<40 {
             outputs.focusWorkspace(index.isMultiple(of: 2) ? b : a)
             XCTAssertTrue(outputs.moveOutput(one.id, to: index.isMultiple(of: 2) ? b : a))
-            store.editDefaultProfile(try XCTUnwrap(store.quickEditTarget)) {
+            store.editDestinationProfile(one.id) {
                 $0.typography.size = Double(60 + index)
                 $0.layout = index.isMultiple(of: 2) ? "columns" : "stacked"
                 $0.position = index.isMultiple(of: 2) ? "top" : "bottom"
@@ -207,6 +207,8 @@ final class NetworkWorkspaceTransferTests: XCTestCase {
         var row = OutputDestinationConfiguration(name: "YouTube", profileID: OutputProfile.lowerThirdID, monitor: nil)
         row.ndi = .init(sourceName: "Existing eucaly source")
         store.edit { $0.destinations.append(row); $0.backgroundAudioDestinationID = row.id }
+        store.setDefaultDestination(row.id, workspace: house)
+        XCTAssertEqual(store.document.profileTargets[house], row.id)
         let outputs = OutputCoordinator(profiles: store, displays: displays, retainsPreparedSessions: true, network: router,
                                         driverFactory: { FakeOutputDriver() })
         defer { outputs.stopAllOutputs() }
@@ -217,15 +219,17 @@ final class NetworkWorkspaceTransferTests: XCTestCase {
         let controls = OutputQuickControlsController(outputs: outputs, workspaceID: house, manageOutputs: {})
         try await until { log.senders.first?.submissions.last?.request.text?.text.components.first?.text == "House lyrics" }
         let sender = try XCTUnwrap(log.senders.first), generation = sender.generation
-        let profiles = store.document.profiles, defaultID = store.document.defaultDestinationID
+        let profiles = store.document.profiles, targetsBefore = store.document.profileTargets
+        XCTAssertEqual(targetsBefore[house], row.id)
         func move(to name: String) throws {
-            let item = try XCTUnwrap(controls.networkButton.menu?.items.first { $0.title == "Move to " + name })
+            let item = try XCTUnwrap(controls.network.menu?.items.first { $0.title == "Move to " + name })
             XCTAssertTrue(item.isEnabled)
             NSApp.sendAction(try XCTUnwrap(item.action), to: item.target, from: item)
         }
         try move(to: "Online")
         try await until { sender.submissions.last?.request.text?.text.components.first?.text == "Online lyrics" }
-        XCTAssertEqual(controls.networkButton.title, "NDI: Online")
+        XCTAssertNil(store.document.profileTargets[house], "Moving the targeted output clears that workspace’s Profile Target entry")
+        XCTAssertEqual(controls.network.title, "NDI: Online")
         XCTAssertEqual(outputs.snapshot(for: native.id).current.components.first?.text, "House lyrics")
         XCTAssertEqual(outputs.destination(native.id), native)
         XCTAssertEqual(outputs.focusedWorkspaceID, house)
@@ -233,10 +237,12 @@ final class NetworkWorkspaceTransferTests: XCTestCase {
         a.setSlides(LyricsParser.parseDocument("Verse\nLater house lyrics").slides); a.showSlides()
         try move(to: "House")
         try await until { sender.submissions.last?.request.text?.text.components.first?.text == "Later house lyrics" }
-        XCTAssertEqual(controls.networkButton.title, "NDI: House")
+        XCTAssertEqual(controls.network.title, "NDI: House")
         XCTAssertEqual(outputs.destination(row.id)?.ndi, row.ndi)
         XCTAssertEqual(store.document.profiles, profiles)
-        XCTAssertEqual(store.document.defaultDestinationID, defaultID)
+        XCTAssertEqual(store.document.profileTargets, targetsBefore.filter { $0.key != house },
+                       "Profile Target map keeps valid entries; the previous home target was dropped when its output moved away")
+        XCTAssertNil(store.document.profileTargets[house])
         XCTAssertEqual(store.document.backgroundAudioDestinationID, row.id)
         XCTAssertEqual(sender.name, "Existing eucaly source")
         XCTAssertEqual(sender.generation, generation)

@@ -66,7 +66,13 @@ final class PresentationToolbarController: NSObject, NSToolbarDelegate, NSToolba
             .sink { [weak self] _ in self?.render() }.store(in: &observations)
         NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.thumbnailControls.refresh() }.store(in: &observations)
+            .sink { [weak self] _ in
+                guard let self, self.actions.handlers != nil else { return }
+                self.thumbnailControls.refresh()
+                if let item = self.items[.init("workspace.thumbnails")] as? NSMenuToolbarItem {
+                    self.thumbnailControls.apply(to: item)
+                }
+            }.store(in: &observations)
         render()
     }
 
@@ -108,13 +114,28 @@ final class PresentationToolbarController: NSObject, NSToolbarDelegate, NSToolba
         guard actions.handlers != nil, let window, splitController?.viewIfLoaded?.window === window else { return }
         installedWindow = window
         if window.toolbar !== toolbar { window.toolbar = toolbar }
+        syncBackgroundHostWindow()
         render()
     }
 
+    /// Background Choose… may only sheet on the window while this toolbar is
+    /// mounted. Parked controls clear the host so they cannot present on another
+    /// workspace's window after an in-place switch.
+    private func syncBackgroundHostWindow() {
+        quickControls.mountedToolbar = toolbar
+        guard let window = installedWindow, window.toolbar === toolbar else {
+            quickControls.hostWindow = nil
+            return
+        }
+        quickControls.hostWindow = window
+    }
+
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        // Spacers separate titled Network/Background from icon-only Appearance/
+        // Thumbnails so Liquid Glass does not merge text and symbol actions.
         var result: [NSToolbarItem.Identifier] = [.flexibleSpace, Self.sidebarID, Self.sidebarSeparatorID,
             .init("output.network"), .space,
-            .init("output.appearance"), .init("output.background"), .init("workspace.thumbnails"),
+            .init("output.appearance"), .space, .init("output.background"), .space, .init("workspace.thumbnails"),
             .flexibleSpace, Self.searchID, .space, Self.slidesID]
         if updates.state.availableVersion != nil { result += [.space, Self.updateID] }
         return result
@@ -161,17 +182,22 @@ final class PresentationToolbarController: NSObject, NSToolbarDelegate, NSToolba
             items[identifier] = item
             return item
         }
-        let view: NSView
-        let label: String
+        let item: NSMenuToolbarItem
         switch identifier {
-        case .init("output.network"): view = quickControls.networkButton; label = "Network"
-        case .init("output.appearance"): view = quickControls.appearanceButton; label = "Appearance"
-        case .init("output.background"): view = quickControls.backgroundButton; label = "Background"
-        case .init("workspace.thumbnails"): view = thumbnailControls.button; label = "Thumbnails"
+        case .init("output.network"):
+            item = NSMenuToolbarItem(itemIdentifier: identifier)
+            quickControls.apply(network: item)
+        case .init("output.appearance"):
+            item = NSMenuToolbarItem(itemIdentifier: identifier)
+            quickControls.apply(appearance: item)
+        case .init("output.background"):
+            item = NSMenuToolbarItem(itemIdentifier: identifier)
+            quickControls.apply(background: item)
+        case .init("workspace.thumbnails"):
+            item = NSMenuToolbarItem(itemIdentifier: identifier)
+            thumbnailControls.apply(to: item)
         default: return nil
         }
-        let item = NSToolbarItem(itemIdentifier: identifier)
-        item.label = label; item.paletteLabel = label; item.view = view
         items[identifier] = item
         return item
     }
@@ -199,16 +225,11 @@ final class PresentationToolbarController: NSObject, NSToolbarDelegate, NSToolba
             slides?.toolTip = chrome.isEmpty ? "Load a document into Current to show slides."
                 : "\(label) (\(WorkspacePresentationCommand.toggleSlides.shortcutDescription))"
         }
-        quickControls.render(); renderSidebar()
-        for (identifier, button) in [("output.network", quickControls.networkButton),
-                                     ("output.appearance", quickControls.appearanceButton),
-                                     ("output.background", quickControls.backgroundButton),
-                                     ("workspace.thumbnails", thumbnailControls.button)] {
-            // Native toolbar viewers expose item metadata; keep it scoped to
-            // the same destination/workspace as the retained popup control.
-            items[.init(identifier)]?.label = button.accessibilityLabel() ?? button.title
-            items[.init(identifier)]?.toolTip = button.toolTip
-        }
+        syncBackgroundHostWindow()
+        quickControls.render()
+        thumbnailControls.refresh()
+        renderSidebar()
+        applyMenuChrome()
         renderUpdate()
         // A parked toolbar can refresh controls, but cannot attach itself to
         // the window now displaying another workspace.
@@ -236,6 +257,21 @@ final class PresentationToolbarController: NSObject, NSToolbarDelegate, NSToolba
         items[Self.sidebarID]?.label = label; items[Self.sidebarID]?.toolTip = label
     }
 
+    private func applyMenuChrome() {
+        if let item = items[.init("output.network")] as? NSMenuToolbarItem {
+            quickControls.apply(network: item)
+        }
+        if let item = items[.init("output.appearance")] as? NSMenuToolbarItem {
+            quickControls.apply(appearance: item)
+        }
+        if let item = items[.init("output.background")] as? NSMenuToolbarItem {
+            quickControls.apply(background: item)
+        }
+        if let item = items[.init("workspace.thumbnails")] as? NSMenuToolbarItem {
+            thumbnailControls.apply(to: item)
+        }
+    }
+
     private func renderUpdate() {
         guard let item = items[Self.updateID] else { return }
         item.label = updates.state.availableVersion.map { "Update available: eucaly " + $0 } ?? "Update"
@@ -251,6 +287,10 @@ final class PresentationToolbarController: NSObject, NSToolbarDelegate, NSToolba
         case Self.slidesID: return !session.isEmpty
         case Self.updateID: return updates.state.availableVersion != nil && updates.state.canCheckForUpdates
         case Self.sidebarID: return splitController != nil
+        case .init("output.network"): return quickControls.network.isEnabled
+        case .init("output.appearance"): return quickControls.appearance.isEnabled
+        case .init("output.background"): return quickControls.background.isEnabled
+        case .init("workspace.thumbnails"): return thumbnailControls.chrome.isEnabled
         default: return true
         }
     }

@@ -232,7 +232,7 @@ final class OutputRenderingTests: XCTestCase {
         defer { window.close() }
         try await settleUntil { (try? self.hasRedBackground(view)) == true }
         let currentID = session.currentSlide?.id
-        outputs.profiles.editDefaultProfile(try XCTUnwrap(outputs.profiles.quickEditTarget)) { $0.position = "middle" }
+        outputs.profiles.editDefaultProfile(try XCTUnwrap(outputs.profiles.quickEditTarget(for: OutputWorkspaceRecord.primaryID))) { $0.position = "middle" }
         XCTAssertEqual(outputs.profiles.audience.id, original.id)
         XCTAssertEqual(outputs.profiles.audience.position, "middle")
         XCTAssertEqual(outputs.media.backgroundURL(for: outputs.profiles.audience), url, "Changing typography must retain the same background resource")
@@ -245,7 +245,7 @@ final class OutputRenderingTests: XCTestCase {
         XCTAssertEqual(session.currentSlide?.id, currentID)
         XCTAssertEqual(outputs.profiles.audience.position, "middle")
         for position in ["bottom", "top", "middle"] {
-            outputs.profiles.editDefaultProfile(try XCTUnwrap(outputs.profiles.quickEditTarget)) { $0.position = position }
+            outputs.profiles.editDefaultProfile(try XCTUnwrap(outputs.profiles.quickEditTarget(for: OutputWorkspaceRecord.primaryID))) { $0.position = position }
             XCTAssertEqual(outputs.media.backgroundURL(for: outputs.profiles.audience), url)
             try await Task.sleep(for: .milliseconds(20))
             XCTAssertTrue(try hasRedBackground(view), "Subsequent position edits must also retain the image")

@@ -6,14 +6,14 @@ import CryptoKit
 final class OutputProfileStore: ObservableObject {
     static let key = "outputProfilesV1"
     private static let defaultsRevisionKey = "outputProfileDefaultsRevision"
-    private static let currentDefaultsRevision = 2
+    private static let currentDefaultsRevision = 3
     @Published private(set) var document: OutputProfileDocument
     @Published private(set) var recoveryNotice: String?
     let backgroundPreferences: WorkspaceBackgroundPreferences
     private let defaults: UserDefaults?
     private var observers: [UUID: () -> Void] = [:]
     private let persistence: OutputProfilePersistence?
-    private var quickControlsGeneration: UInt64 = 0
+    private var quickControlsGenerations: [UUID: UInt64] = [:]
     private var recoveryOriginalData: Data?
 
     var reusableProfiles: [OutputProfile] { document.profiles.filter(\.isReusable) }
@@ -47,23 +47,34 @@ final class OutputProfileStore: ObservableObject {
     }
 
     struct QuickEditTarget: Equatable {
+        let workspaceID: UUID
         let destinationID: UUID
         fileprivate let generation: UInt64
     }
-    var defaultDestination: OutputDestinationConfiguration? {
-        document.destinations.first { $0.id == document.defaultDestinationID }
+    func defaultDestination(for workspaceID: UUID) -> OutputDestinationConfiguration? {
+        guard let destinationID = document.profileTargets[workspaceID] else { return nil }
+        return document.destinations.first { $0.id == destinationID && $0.workspaceID == workspaceID }
     }
-    var quickEditTarget: QuickEditTarget? {
-        guard recoveryNotice == nil, let destination = defaultDestination, destination.enabled else { return nil }
-        return .init(destinationID: destination.id, generation: quickControlsGeneration)
+    func quickEditTarget(for workspaceID: UUID) -> QuickEditTarget? {
+        guard recoveryNotice == nil,
+              let destination = defaultDestination(for: workspaceID), destination.enabled else { return nil }
+        return .init(workspaceID: workspaceID, destinationID: destination.id,
+                     generation: quickControlsGenerations[workspaceID, default: 0])
     }
     func enabledDefault(for target: QuickEditTarget) -> OutputDestinationConfiguration? {
-        guard target == quickEditTarget else { return nil }
-        return defaultDestination
+        guard target == quickEditTarget(for: target.workspaceID) else { return nil }
+        return defaultDestination(for: target.workspaceID)
     }
-    func setDefaultDestination(_ id: UUID?) {
-        guard recoveryNotice == nil, id == nil || document.destinations.contains(where: { $0.id == id }) else { return }
-        edit { $0.defaultDestinationID = id }
+    func setDefaultDestination(_ id: UUID?, workspace workspaceID: UUID) {
+        guard recoveryNotice == nil,
+              document.workspaces.contains(where: { $0.id == workspaceID }) else { return }
+        if let id {
+            guard document.destinations.contains(where: { $0.id == id && $0.workspaceID == workspaceID }) else { return }
+        }
+        edit { doc in
+            if let id { doc.profileTargets[workspaceID] = id }
+            else { doc.profileTargets.removeValue(forKey: workspaceID) }
+        }
     }
     @discardableResult
     func editDefaultProfile(_ target: QuickEditTarget, _ change: (inout OutputProfile) -> Void) -> String? {
@@ -142,6 +153,11 @@ final class OutputProfileStore: ObservableObject {
                    defaults?.data(forKey: "outputProfilesProfileOwnershipMigrationBackup") == nil {
                     defaults?.set(data, forKey: "outputProfilesProfileOwnershipMigrationBackup")
                 }
+                if let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   (root["version"] as? Int ?? 0) < 9,
+                   defaults?.data(forKey: "outputProfilesProfileTargetMigrationBackup") == nil {
+                    defaults?.set(data, forKey: "outputProfilesProfileTargetMigrationBackup")
+                }
                 let defaultsRevision = defaults?.integer(forKey: Self.defaultsRevisionKey) ?? 0
                 if defaultsRevision < 1 {
                     // Upgrade the untouched built-in background once. Subsequent
@@ -154,6 +170,11 @@ final class OutputProfileStore: ObservableObject {
                 }
                 // Revision 2 also saves the removal of compatibility-decoded
                 // scripture roles and typography overrides in version 3 files.
+                if defaultsRevision < 3 {
+                    // One-shot: workspaces that owned destinations but received no
+                    // v9 Profile Target (sparse migrate / pre-seed Add Output).
+                    document.seedMissingProfileTargets()
+                }
                 document.restoreBuiltInProfileNames()
             } catch {
                 document = OutputLegacyMigration.recover(data, fallback: fallback)
@@ -244,22 +265,53 @@ final class OutputProfileStore: ObservableObject {
     func edit(_ action: (inout OutputProfileDocument) -> Void) {
         var next = document; action(&next)
         next.restoreBuiltInProfileNames()
-        if !next.destinations.contains(where: { $0.id == next.defaultDestinationID }) { next.defaultDestinationID = nil }
+        sanitizeProfileTargets(&next)
+        seedProfileTargetsForNewDestinations(from: document, into: &next)
         if !next.destinations.contains(where: { $0.id == next.backgroundAudioDestinationID && $0.isNetworkDestination }) { next.backgroundAudioDestinationID = nil }
         guard next.isValid, next != document else { return }
-        let previousDefault = defaultDestination
-        let nextDefault = next.destinations.first { $0.id == next.defaultDestinationID }
-        if document.defaultDestinationID != next.defaultDestinationID || previousDefault?.enabled != nextDefault?.enabled
-            || previousDefault?.profileID != nextDefault?.profileID {
-            quickControlsGeneration &+= 1
-        }
+        bumpQuickControlsGenerations(from: document, to: next)
         let outputChanged = next.destinations != document.destinations || next.profiles != document.profiles
             || next.backgroundAudioDestinationID != document.backgroundAudioDestinationID
         document = next
         if outputChanged { mirrorAudiencePreferences() }
         persist()
-        // Default selection is an editing preference, never a lifecycle event.
+        // Profile Target selection is an editing preference, never a lifecycle event.
         if outputChanged { for action in Array(observers.values) { action() } }
+    }
+
+    private func sanitizeProfileTargets(_ document: inout OutputProfileDocument) {
+        document.profileTargets = document.profileTargets.filter { workspaceID, destinationID in
+            document.workspaces.contains(where: { $0.id == workspaceID })
+                && document.destinations.contains(where: { $0.id == destinationID && $0.workspaceID == workspaceID })
+        }
+    }
+
+    /// Add Output seeds a missing Profile Target. Moves reuse destination IDs and
+    /// must not invent a target on the destination workspace.
+    private func seedProfileTargetsForNewDestinations(from previous: OutputProfileDocument, into next: inout OutputProfileDocument) {
+        let previousIDs = Set(previous.destinations.map(\.id))
+        for destination in next.destinations where !previousIDs.contains(destination.id) {
+            guard let workspaceID = destination.workspaceID,
+                  next.profileTargets[workspaceID] == nil else { continue }
+            next.profileTargets[workspaceID] = next.preferredProfileTarget(for: workspaceID)?.id ?? destination.id
+        }
+    }
+
+    private func bumpQuickControlsGenerations(from previous: OutputProfileDocument, to next: OutputProfileDocument) {
+        let workspaceIDs = Set(previous.workspaces.map(\.id)).union(next.workspaces.map(\.id))
+        for workspaceID in workspaceIDs {
+            let previousID = previous.profileTargets[workspaceID]
+            let nextID = next.profileTargets[workspaceID]
+            let previousDestination = previousID.flatMap { id in previous.destinations.first { $0.id == id } }
+            let nextDestination = nextID.flatMap { id in next.destinations.first { $0.id == id } }
+            if previousID != nextID
+                || previousDestination?.enabled != nextDestination?.enabled
+                || previousDestination?.profileID != nextDestination?.profileID {
+                quickControlsGenerations[workspaceID, default: 0] &+= 1
+            }
+        }
+        let surviving = Set(next.workspaces.map(\.id))
+        quickControlsGenerations = quickControlsGenerations.filter { surviving.contains($0.key) }
     }
     private func mirrorAudiencePreferences() {
         guard let defaults, recoveryNotice == nil else { return }

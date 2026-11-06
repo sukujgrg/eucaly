@@ -21,7 +21,7 @@ final class OutputWorkspaceRecoveryTests: XCTestCase {
         var network = OutputDestinationConfiguration(name: "Saved stream", profileID: appearance.id, monitor: nil, workspaceID: owner)
         network.omt = .init(sourceName: "Chapel OMT")
         var document = OutputProfileDocument(profiles: OutputProfile.builtIns + [appearance, invalid],
-                                            destinations: [native, network], defaultDestinationID: native.id)
+                                            destinations: [native, network], profileTargets: [owner: native.id])
         document.workspaces = workspaces
         document.backgroundAudioDestinationID = network.id
         let original = try JSONEncoder().encode(document)

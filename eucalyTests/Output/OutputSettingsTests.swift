@@ -88,7 +88,7 @@ final class OutputSettingsTests: XCTestCase {
         home.setSlides(LyricsParser.parseDocument("Verse\nKeep program").slides)
         var row = OutputDestinationConfiguration(name: "Music source", profileID: OutputProfile.audienceID, monitor: nil)
         row.ndi = .init(sourceName: "Music source")
-        fixture.store.edit { $0.destinations.append(row); $0.defaultDestinationID = row.id; $0.backgroundAudioDestinationID = row.id }
+        fixture.store.edit { $0.destinations.append(row); $0.profileTargets[home.outputSourceID] = row.id; $0.backgroundAudioDestinationID = row.id }
         fixture.outputs.startNetworkOutput(row.id)
         let other = fixture.store.document.destinations[0]
         fixture.controller.selectDestination(row.id)
@@ -96,7 +96,7 @@ final class OutputSettingsTests: XCTestCase {
         XCTAssertNil(fixture.outputs.destination(row.id))
         XCTAssertFalse(driver.activeIDs.contains(row.id))
         XCTAssertNil(fixture.store.document.backgroundAudioDestinationID)
-        XCTAssertNil(fixture.store.document.defaultDestinationID)
+        XCTAssertNil(fixture.store.document.profileTargets[home.outputSourceID])
         XCTAssertEqual(fixture.outputs.destination(other.id), other)
         XCTAssertFalse(fixture.controller.undoRemoveOutput.isHidden)
         fixture.controller.undoRemoveOutput.performClick(nil)
@@ -106,7 +106,7 @@ final class OutputSettingsTests: XCTestCase {
         XCTAssertEqual(restored.profileID, row.profileID)
         XCTAssertEqual(restored.workspaceID, row.workspaceID)
         XCTAssertEqual(fixture.store.document.backgroundAudioDestinationID, row.id)
-        XCTAssertEqual(fixture.store.document.defaultDestinationID, row.id)
+        XCTAssertEqual(fixture.store.document.profileTargets[home.outputSourceID], row.id)
         XCTAssertFalse(driver.activeIDs.contains(row.id))
         XCTAssertEqual(driver.starts, [row.id])
     }
@@ -152,7 +152,7 @@ final class OutputSettingsTests: XCTestCase {
         renamed[0].name = "Audience appearance"
         renamed[1].name = "Stage Confidence"
         let destination = OutputDestinationConfiguration(name: "Audience", profileID: OutputProfile.audienceID, monitor: nil)
-        let document = OutputProfileDocument(profiles: renamed, destinations: [destination], defaultDestinationID: destination.id)
+        let document = OutputProfileDocument(profiles: renamed, destinations: [destination], profileTargets: [OutputWorkspaceRecord.primaryID: destination.id])
         defaults.set(try JSONEncoder().encode(document), forKey: OutputProfileStore.key)
         let restored = OutputProfileStore(defaults: defaults)
         XCTAssertEqual(restored.profile(OutputProfile.audienceID)?.name, "Audience")
@@ -412,9 +412,11 @@ final class OutputSettingsTests: XCTestCase {
         fixture.outputs.focusWorkspace(session)
         let current = session.currentSlideID
         let native = fixture.store.document.destinations[0]
-        let defaultID = fixture.store.document.defaultDestinationID
+        XCTAssertNil(fixture.store.document.profileTargets[workspace])
         NSApp.sendAction(try XCTUnwrap(fixture.controller.addNDI.action), to: fixture.controller.addNDI.target, from: fixture.controller.addNDI)
         let ndi = try XCTUnwrap(fixture.controller.destinationEditor?.destination)
+        XCTAssertEqual(fixture.store.document.profileTargets[workspace], ndi.id,
+                       "First Add Output seeds Profile Target for an empty workspace")
         NSApp.sendAction(try XCTUnwrap(fixture.controller.addOMT.action), to: fixture.controller.addOMT.target, from: fixture.controller.addOMT)
         let omt = try XCTUnwrap(fixture.controller.destinationEditor?.destination)
         let editor = try XCTUnwrap(fixture.controller.destinationEditor?.networkEditor)
@@ -432,7 +434,8 @@ final class OutputSettingsTests: XCTestCase {
         XCTAssertEqual(ndi.profileID, OutputProfile.audienceID)
         XCTAssertEqual(fixture.store.document.destinations[0], native)
         XCTAssertEqual(fixture.outputs.destination(ndi.id), ndi)
-        XCTAssertEqual(fixture.store.document.defaultDestinationID, defaultID)
+        XCTAssertEqual(fixture.store.document.profileTargets[workspace], ndi.id,
+                       "Later Add Output leaves an existing Profile Target alone")
         XCTAssertEqual(session.currentSlideID, current)
         XCTAssertTrue(fixture.outputs.network.activeIDs.isEmpty)
         XCTAssertFalse(fixture.outputs.isRunning)
@@ -817,7 +820,7 @@ final class OutputSettingsTests: XCTestCase {
         NSApp.sendAction(try XCTUnwrap(layout.action), to: layout.target, from: layout)
         XCTAssertEqual(fixture.store.profile(profileID)?.layout, "columns")
         XCTAssertEqual(fixture.store.document.profiles.count, countBefore)
-        fixture.store.editDefaultProfile(try XCTUnwrap(fixture.store.quickEditTarget)) { $0.typography.size = 120 }
+        fixture.store.editDefaultProfile(try XCTUnwrap(fixture.store.quickEditTarget(for: OutputWorkspaceRecord.primaryID))) { $0.typography.size = 120 }
         XCTAssertEqual(fixture.store.profile(profileID)?.typography.size, 120)
         fixture.controller.selectDestination(companion.id)
         fixture.store.editDestinationProfile(companion.id) { $0.layout = "stacked"; $0.typography.size = 48 }
@@ -842,9 +845,9 @@ final class OutputSettingsTests: XCTestCase {
         }
         XCTAssertNil(fixture.store.editDestinationProfile(companion.id) { $0.layout = "columns" })
         XCTAssertEqual(fixture.store.profile(first.profileID)?.layout, "columns")
-        fixture.store.editDefaultProfile(try XCTUnwrap(fixture.store.quickEditTarget)) { $0.padding = 0.25 }
+        fixture.store.editDefaultProfile(try XCTUnwrap(fixture.store.quickEditTarget(for: OutputWorkspaceRecord.primaryID))) { $0.padding = 0.25 }
         XCTAssertEqual(fixture.store.document.profiles.count, 128)
-        XCTAssertEqual(fixture.store.defaultDestination?.profileID, first.profileID)
+        XCTAssertEqual(fixture.store.defaultDestination(for: OutputWorkspaceRecord.primaryID)?.profileID, first.profileID)
     }
 
     func testProfileClearVisualCommitsOutputNameAndClearsSharedBookmark() throws {
@@ -879,7 +882,7 @@ final class OutputSettingsTests: XCTestCase {
         XCTAssertEqual(fixture.outputs.ownership.source, owner)
         XCTAssertEqual(session.currentSlideID, current)
         XCTAssertTrue(fixture.outputs.isOpen(first.id))
-        XCTAssertEqual(fixture.store.defaultDestination?.id, first.id)
+        XCTAssertEqual(fixture.store.defaultDestination(for: OutputWorkspaceRecord.primaryID)?.id, first.id)
     }
 
     func testSettingsSelectionAndLiveStyleChangesPreserveCurrentAndOwnership() throws {
@@ -1116,28 +1119,29 @@ final class OutputSettingsTests: XCTestCase {
         let fixture = OutputSettingsFixture()
         defer { fixture.close() }
         let controller = fixture.controller
-        let original = try XCTUnwrap(fixture.store.defaultDestination)
+        let original = try XCTUnwrap(fixture.store.defaultDestination(for: OutputWorkspaceRecord.primaryID))
         let first = try XCTUnwrap(controller.destinationEditor)
         let creationMenu = controller.addOutputMenu.menu
         XCTAssertNotNil(creationMenu?.items.first?.image, "The pull-down's first item owns the + glyph")
         XCTAssertEqual(creationMenu?.items.map(\.title), ["+", "Native Monitor Output", "NDI Output", "OMT Output"])
         XCTAssertTrue(fixture.window.makeFirstResponder(first.nameField))
         try XCTUnwrap(first.nameField.currentEditor()).string = "Original draft"
+        fixture.outputs.focusWorkspace(fixture.outputs.session(workspace: OutputWorkspaceRecord.primaryID))
         NSApp.sendAction(try XCTUnwrap(controller.addNative.action), to: controller.addNative.target, from: controller.addNative)
         let secondID = try XCTUnwrap(controller.selectedID)
-        XCTAssertEqual(fixture.store.defaultDestination?.id, original.id)
-        XCTAssertEqual(fixture.store.defaultDestination?.name, "Original draft")
+        XCTAssertEqual(fixture.store.defaultDestination(for: OutputWorkspaceRecord.primaryID)?.id, original.id)
+        XCTAssertEqual(fixture.store.defaultDestination(for: OutputWorkspaceRecord.primaryID)?.name, "Original draft")
         let second = try XCTUnwrap(controller.destinationEditor)
         XCTAssertTrue(fixture.window.makeFirstResponder(second.nameField))
         try XCTUnwrap(second.nameField.currentEditor()).string = "Second draft"
         controller.finishEditing()
         // Toolbar Output menu owns the quick-controls target; Settings does not.
-        fixture.store.setDefaultDestination(secondID)
-        XCTAssertEqual(fixture.store.defaultDestination?.id, secondID)
-        XCTAssertEqual(fixture.store.defaultDestination?.name, "Second draft")
-        XCTAssertFalse(try XCTUnwrap(fixture.store.defaultDestination).enabled)
+        fixture.store.setDefaultDestination(secondID, workspace: OutputWorkspaceRecord.primaryID)
+        XCTAssertEqual(fixture.store.defaultDestination(for: OutputWorkspaceRecord.primaryID)?.id, secondID)
+        XCTAssertEqual(fixture.store.defaultDestination(for: OutputWorkspaceRecord.primaryID)?.name, "Second draft")
+        XCTAssertFalse(try XCTUnwrap(fixture.store.defaultDestination(for: OutputWorkspaceRecord.primaryID)).enabled)
         controller.selectDestination(original.id)
-        XCTAssertEqual(fixture.store.defaultDestination?.id, secondID)
+        XCTAssertEqual(fixture.store.defaultDestination(for: OutputWorkspaceRecord.primaryID)?.id, secondID)
         let row = try XCTUnwrap(controller.tableView(controller.table, viewFor: controller.table.tableColumns[0], row: 1))
         XCTAssertFalse(try XCTUnwrap(row.accessibilityLabel()).contains("Appearance editing target"))
         controller.reload()
@@ -1146,11 +1150,11 @@ final class OutputSettingsTests: XCTestCase {
         XCTAssertTrue(fixture.window.makeFirstResponder(second.nameField))
         try XCTUnwrap(second.nameField.currentEditor()).string = "Before removal"
         controller.removeOutput.performClick(nil)
-        XCTAssertNil(fixture.store.defaultDestination)
-        XCTAssertNil(fixture.store.document.defaultDestinationID)
+        XCTAssertNil(fixture.store.defaultDestination(for: OutputWorkspaceRecord.primaryID))
+        XCTAssertNil(fixture.store.document.profileTargets[OutputWorkspaceRecord.primaryID])
         XCTAssertEqual(second.nameField.stringValue, "Before removal", "Commit before detaching the destination editor")
         fixture.store.flush()
-        XCTAssertNil(OutputProfileStore(defaults: fixture.defaults).defaultDestination)
+        XCTAssertNil(OutputProfileStore(defaults: fixture.defaults).defaultDestination(for: OutputWorkspaceRecord.primaryID))
         XCTAssertNil(fixture.outputs.ownership.source); XCTAssertFalse(fixture.outputs.isRunning)
     }
 
@@ -1159,7 +1163,7 @@ final class OutputSettingsTests: XCTestCase {
         defer { fixture.close() }
         let outputs = fixture.controller
         let profiles = fixture.profiles
-        let original = try XCTUnwrap(fixture.store.defaultDestination)
+        let original = try XCTUnwrap(fixture.store.defaultDestination(for: OutputWorkspaceRecord.primaryID))
         fixture.showProfiles()
         profiles.selectProfile(OutputProfile.audienceID)
         profiles.addProfile.performClick(nil)
@@ -1177,7 +1181,7 @@ final class OutputSettingsTests: XCTestCase {
         NSApp.sendAction(try XCTUnwrap(outputs.addNative.action), to: outputs.addNative.target, from: outputs.addNative)
         NSApp.sendAction(try XCTUnwrap(outputs.removeOutput.action), to: outputs.removeOutput.target, from: outputs.removeOutput)
         XCTAssertEqual(fixture.store.document.destinations.count, outputCount)
-        XCTAssertEqual(fixture.store.defaultDestination, original)
+        XCTAssertEqual(fixture.store.defaultDestination(for: OutputWorkspaceRecord.primaryID), original)
         profiles.setPresented(false); profiles.setPresented(true)
         XCTAssertTrue(fixture.window.contentViewController === profiles)
         XCTAssertFalse(profiles.addProfile.isHiddenOrHasHiddenAncestor)
@@ -1192,13 +1196,13 @@ final class OutputSettingsTests: XCTestCase {
         outputs.removeOutput.performClick(nil)
         fixture.displays.refresh()
         XCTAssertNil(fixture.store.document.destinations.first?.monitor)
-        XCTAssertNil(fixture.store.defaultDestination)
+        XCTAssertNil(fixture.store.defaultDestination(for: OutputWorkspaceRecord.primaryID))
     }
 
     func testOutputFooterKeepsCompleteIntrinsicLabelsInBothAppearances() throws {
         let fixture = OutputSettingsFixture()
         defer { fixture.close() }
-        let original = try XCTUnwrap(fixture.store.defaultDestination)
+        let original = try XCTUnwrap(fixture.store.defaultDestination(for: OutputWorkspaceRecord.primaryID))
         let other = OutputDestinationConfiguration(name: "Side screen", profileID: OutputProfile.audienceID, monitor: nil, enabled: false)
         fixture.store.edit { $0.destinations.append(other) }
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {

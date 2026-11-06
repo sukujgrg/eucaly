@@ -7,7 +7,8 @@ extension OutputProfileStore {
         let destination: OutputDestinationConfiguration
         let profile: OutputProfile
         let index: Int
-        let wasEditingTarget: Bool
+        /// Workspace whose Profile Target pointed at this destination, if any.
+        let editingTargetWorkspaceID: UUID?
         let wasMusicRoute: Bool
     }
 
@@ -15,8 +16,9 @@ extension OutputProfileStore {
         guard recoveryNotice == nil,
               let index = document.destinations.firstIndex(where: { $0.id == id }),
               let profile = profile(document.destinations[index].profileID) else { return nil }
+        let editingWorkspace = document.profileTargets.first { $0.value == id }?.key
         let removed = RemovedOutput(destination: document.destinations[index], profile: profile, index: index,
-            wasEditingTarget: document.defaultDestinationID == id, wasMusicRoute: document.backgroundAudioDestinationID == id)
+            editingTargetWorkspaceID: editingWorkspace, wasMusicRoute: document.backgroundAudioDestinationID == id)
         edit { $0.destinations.removeAll { $0.id == id } }
         return document.destinations.contains(where: { $0.id == id }) ? nil : removed
     }
@@ -38,23 +40,14 @@ extension OutputProfileStore {
             var restored = saved; restored.enabled = false
             if needsProfile { next.profiles.append(removed.profile) }
             next.destinations.insert(restored, at: min(removed.index, next.destinations.count))
-            if removed.wasEditingTarget && next.defaultDestinationID == nil { next.defaultDestinationID = saved.id }
+            if let workspaceID = removed.editingTargetWorkspaceID,
+               next.workspaces.contains(where: { $0.id == workspaceID }),
+               restored.workspaceID == workspaceID {
+                next.profileTargets[workspaceID] = saved.id
+            }
             if removed.wasMusicRoute && next.backgroundAudioDestinationID == nil { next.backgroundAudioDestinationID = saved.id }
         }
         return document.destinations.contains(where: { $0.id == saved.id }) ? nil : "The output could not be restored. Its saved configuration is still available to Undo Remove."
     }
 
-}
-
-extension OutputCoordinator {
-    func managementWorkspaceName(_ id: UUID?) -> String {
-        guard let record = profiles.document.workspaces.first(where: { $0.id == id }) else { return "Unassigned" }
-        let duplicate = profiles.document.workspaces.filter { $0.name == record.name }.count > 1
-        return record.name + (duplicate ? " · " + record.id.uuidString.prefix(8) : "")
-    }
-
-    func managementDestinationLabel(_ destination: OutputDestinationConfiguration) -> String {
-        guard destination.isMonitorDestination else { return profiles.destinationLabel(destination) }
-        return destination.name + " (" + (destination.monitor.map { displays.label(for: $0) } ?? "No monitor") + ")"
-    }
 }

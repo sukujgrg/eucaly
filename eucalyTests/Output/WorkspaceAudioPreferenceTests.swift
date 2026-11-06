@@ -128,7 +128,7 @@ final class WorkspaceAudioPreferenceTests: XCTestCase {
         }
         var menuItem = try listenItem()
         XCTAssertNotNil(menus.outputMenu.item(withTitle: "Audio"))
-        XCTAssertFalse(controls.networkButton.menu?.items.contains { $0.title == OutputAudioListeningState.title } == true,
+        XCTAssertFalse(controls.network.menu?.items.contains { $0.title == OutputAudioListeningState.title } == true,
                        "Listen belongs on the menubar Output menu, not Network")
         XCTAssertTrue(menus.validateMenuItem(menuItem)); XCTAssertEqual(menuItem.state, .on)
         XCTAssertTrue(try XCTUnwrap(menuItem.toolTip).contains("Audio for Home"))
@@ -148,9 +148,9 @@ final class WorkspaceAudioPreferenceTests: XCTestCase {
         menus.outputMenu.performActionForItem(at: menus.outputMenu.index(of: menuItem))
         XCTAssertFalse(outputs.monitorAudioLocally(workspace: home.outputSourceID))
 
-        store.setDefaultDestination(nil); controls.render()
-        XCTAssertTrue(controls.appearanceButton.isEnabled, "Appearance stays openable to choose a Profile Target")
-        XCTAssertFalse(controls.backgroundButton.isEnabled)
+        store.setDefaultDestination(nil, workspace: OutputWorkspaceRecord.primaryID); controls.render()
+        XCTAssertTrue(controls.appearance.isEnabled, "Appearance stays openable to choose a Profile Target")
+        XCTAssertFalse(controls.background.isEnabled)
         store.renameWorkspace(home.outputSourceID, name: "House")
         menus.menuNeedsUpdate(menus.outputMenu)
         menuItem = try listenItem()

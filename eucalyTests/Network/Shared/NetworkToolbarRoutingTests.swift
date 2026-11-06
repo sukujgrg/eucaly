@@ -8,9 +8,9 @@ final class NetworkToolbarRoutingTests: XCTestCase {
         for deleteWorkspace in [true, false] {
             let f = Fixture(); defer { f.outputs.stopAllOutputs() }
             let controls = OutputQuickControlsController(outputs: f.outputs, workspaceID: f.online, manageOutputs: {})
-            XCTAssertFalse(controls.networkButton.menu?.items.contains { $0.title == OutputAudioListeningState.title } == true,
+            XCTAssertFalse(controls.network.menu?.items.contains { $0.title == OutputAudioListeningState.title } == true,
                            "Listen belongs on the menubar Output menu, not Network")
-            let action = try item("Move to Online", in: controls.networkButton.menu)
+            let action = try item("Move to Online", in: controls.network.menu)
             XCTAssertTrue(action.isEnabled)
             XCTAssertNil(f.outputs.preparedSession(workspace: f.online))
             if deleteWorkspace { XCTAssertTrue(f.outputs.deleteWorkspace(f.online)) }
@@ -31,11 +31,11 @@ final class NetworkToolbarRoutingTests: XCTestCase {
         var second = f.outputs.destination(f.network)!
         second.id = UUID(); second.ndi = .init(sourceName: "Second"); second.enabled = false
         f.store.edit { $0.destinations.append(second) }
-        f.store.setDefaultDestination(nil)
+        f.store.setDefaultDestination(nil, workspace: OutputWorkspaceRecord.primaryID)
         let originalProfiles = f.store.document.profiles
         let controls = OutputQuickControlsController(outputs: f.outputs, workspaceID: f.house, manageOutputs: {})
-        XCTAssertEqual(controls.networkButton.title, "NDI: 2 outputs")
-        let menu = try XCTUnwrap(controls.networkButton.menu)
+        XCTAssertEqual(controls.network.title, "NDI: 2 outputs")
+        let menu = try XCTUnwrap(controls.network.menu)
         let sources = menu.items.compactMap(\.submenu)
         XCTAssertEqual(sources.count, 2)
         let houseLabel = "Move to " + f.outputs.managementWorkspaceName(f.house)
@@ -50,7 +50,8 @@ final class NetworkToolbarRoutingTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(f.outputs.destination(second.id)).enabled)
         XCTAssertEqual(f.outputs.destination(second.id)?.ndi, second.ndi)
         XCTAssertEqual(f.store.document.profiles, originalProfiles)
-        XCTAssertNil(f.store.document.defaultDestinationID)
+        XCTAssertNil(f.store.document.profileTargets[f.house])
+        XCTAssertNil(f.store.document.profileTargets[f.online])
         XCTAssertTrue(f.transport.starts.isEmpty)
         XCTAssertEqual(f.outputs.focusedWorkspaceID, f.house)
     }
@@ -59,28 +60,28 @@ final class NetworkToolbarRoutingTests: XCTestCase {
         let f = Fixture(); defer { f.outputs.stopAllOutputs() }
         let controls = OutputQuickControlsController(outputs: f.outputs, workspaceID: f.house, manageOutputs: {})
         let other = OutputQuickControlsController(outputs: f.outputs, workspaceID: f.online, manageOutputs: {})
-        let menu = controls.networkButton.menu
+        let menu = controls.network.menu
         let move = try item("Move to Online", in: menu)
         XCTAssertTrue(move.toolTip?.contains("remains stopped") == true)
         XCTAssertNil(f.outputs.preparedSession(workspace: f.online))
         f.a.setSlides(lyrics("House")); f.a.showSlides(); controls.render()
-        XCTAssertTrue(controls.networkButton.menu === menu, "Output status must not replace an unchanged routing menu")
-        XCTAssertTrue(try item("Move to Online", in: controls.networkButton.menu) === move)
+        XCTAssertTrue(controls.network.menu === menu, "Output status must not replace an unchanged routing menu")
+        XCTAssertTrue(try item("Move to Online", in: controls.network.menu) === move)
         XCTAssertTrue(move.toolTip?.contains("live source") == true)
         XCTAssertTrue(move.toolTip?.contains("target Current is empty") == true)
         let windows = Set(NSApp.windows.map(ObjectIdentifier.init))
-        invoke(try item("Move to Online", in: controls.networkButton.menu))
+        invoke(try item("Move to Online", in: controls.network.menu))
         other.render()
-        XCTAssertEqual(other.networkButton.title, "NDI: Online")
-        XCTAssertEqual(try item("Move to Online", in: other.networkButton.menu).state, .on)
+        XCTAssertEqual(other.network.title, "NDI: Online")
+        XCTAssertEqual(try item("Move to Online", in: other.network.menu).state, .on)
         XCTAssertNotNil(f.outputs.preparedSession(workspace: f.online))
         XCTAssertEqual(Set(NSApp.windows.map(ObjectIdentifier.init)), windows, "Routing a closed workspace must not open its tab")
         XCTAssertEqual(f.outputs.focusedWorkspaceID, f.house)
         XCTAssertTrue(f.store.renameWorkspace(f.online, name: "YouTube"))
         controls.render(); other.render()
-        XCTAssertEqual(controls.networkButton.title, "NDI: YouTube")
-        XCTAssertEqual(other.networkButton.title, "NDI: YouTube")
-        XCTAssertEqual(try item("Move to YouTube", in: controls.networkButton.menu).state, .on)
+        XCTAssertEqual(controls.network.title, "NDI: YouTube")
+        XCTAssertEqual(other.network.title, "NDI: YouTube")
+        XCTAssertEqual(try item("Move to YouTube", in: controls.network.menu).state, .on)
         XCTAssertEqual(f.outputs.destination(f.native)?.workspaceID, f.house)
         XCTAssertEqual(f.transport.starts, [f.network])
     }
@@ -92,14 +93,14 @@ final class NetworkToolbarRoutingTests: XCTestCase {
         online.setSlides([.init(index: 0, lines: [], label: "Picked Window", videoURL: nil, pdfURL: nil, pdfPageIndex: nil,
                                imageURL: nil, captureWindowID: 42)])
         let controls = OutputQuickControlsController(outputs: f.outputs, workspaceID: f.house, manageOutputs: {})
-        let action = try item("Move to Online", in: controls.networkButton.menu)
+        let action = try item("Move to Online", in: controls.network.menu)
         let original = f.outputs.destination(f.network), current = f.outputs.snapshot(for: f.network).current
         invoke(action)
         XCTAssertEqual(f.outputs.destination(f.network), original)
         XCTAssertEqual(f.outputs.snapshot(for: f.network).current, current)
         XCTAssertTrue(f.a.projectionDisplayIssue?.contains("Online") == true)
         XCTAssertTrue(f.a.projectionDisplayIssue?.contains("NDI supports lyrics") == true)
-        XCTAssertEqual(controls.networkButton.title, "NDI: House")
+        XCTAssertEqual(controls.network.title, "NDI: House")
         f.store.editDestinationProfile(f.network) { $0.typography.size = 64 }
         XCTAssertTrue(f.a.projectionDisplayIssue?.contains("Online") == true, "Unrelated edits must not obscure the failed move")
         online.setSlides(lyrics("Online live"))
@@ -114,7 +115,7 @@ final class NetworkToolbarRoutingTests: XCTestCase {
     func testStaleActionsCannotReviveDeletedWorkspacesOrMoveAnOutputThatIsNoLongerNDI() throws {
         let f = Fixture(); defer { f.outputs.stopAllOutputs() }
         let controls = OutputQuickControlsController(outputs: f.outputs, workspaceID: f.house, manageOutputs: {})
-        let action = try item("Move to Online", in: controls.networkButton.menu)
+        let action = try item("Move to Online", in: controls.network.menu)
         XCTAssertTrue(f.outputs.deleteWorkspace(f.online))
         invoke(action)
         XCTAssertNil(f.outputs.preparedSession(workspace: f.online))
@@ -122,22 +123,22 @@ final class NetworkToolbarRoutingTests: XCTestCase {
         XCTAssertEqual(f.outputs.destination(f.network)?.workspaceID, f.house)
         let replacement = try XCTUnwrap(f.store.addWorkspace(name: "Replacement"))
         controls.render()
-        let replacementAction = try item("Move to Replacement", in: controls.networkButton.menu)
+        let replacementAction = try item("Move to Replacement", in: controls.network.menu)
         f.store.edit { doc in doc.destinations[doc.destinations.firstIndex { $0.id == f.network }!].ndi = nil }
         invoke(replacementAction)
         XCTAssertNil(f.outputs.preparedSession(workspace: replacement))
         XCTAssertEqual(f.outputs.destination(f.network)?.workspaceID, f.house)
         controls.render()
-        XCTAssertEqual(controls.networkButton.title, "Network")
-        XCTAssertNotNil(try item("No network outputs configured.", in: controls.networkButton.menu))
+        XCTAssertEqual(controls.network.title, "Network")
+        XCTAssertNotNil(try item("No network outputs configured.", in: controls.network.menu))
         XCTAssertTrue(f.transport.starts.isEmpty)
     }
 
     func testOMTRoutingUsesCurrentWithoutRestartingOrOpeningWorkspaceControls() throws {
         let f = Fixture(technology: .omt); defer { f.outputs.stopAllOutputs() }
         let controls = OutputQuickControlsController(outputs: f.outputs, workspaceID: f.house, manageOutputs: {})
-        XCTAssertEqual(controls.networkButton.title, "OMT: House")
-        XCTAssertTrue(controls.networkButton.accessibilityLabel()?.hasPrefix("OMT workspace routing") == true)
+        XCTAssertEqual(controls.network.title, "OMT: House")
+        XCTAssertTrue(controls.network.accessibilityLabel?.hasPrefix("OMT workspace routing") == true)
         XCTAssertTrue(f.transport.starts.isEmpty)
         XCTAssertNil(f.outputs.preparedSession(workspace: f.online))
         f.a.setSlides(lyrics("House live")); f.a.showSlides()
@@ -147,8 +148,8 @@ final class NetworkToolbarRoutingTests: XCTestCase {
         let windows = Set(NSApp.windows.map(ObjectIdentifier.init))
         let music = f.store.document.backgroundAudioDestinationID
         controls.render()
-        invoke(try item("Move to Online", in: controls.networkButton.menu))
-        XCTAssertEqual(controls.networkButton.title, "OMT: Online")
+        invoke(try item("Move to Online", in: controls.network.menu))
+        XCTAssertEqual(controls.network.title, "OMT: Online")
         XCTAssertEqual(f.outputs.destination(f.network)?.omt, source)
         XCTAssertEqual(f.outputs.destination(f.network)?.workspaceID, f.online)
         XCTAssertEqual(f.outputs.snapshot(for: f.network).current.components.first?.text, "Online live")
@@ -166,8 +167,8 @@ final class NetworkToolbarRoutingTests: XCTestCase {
         omt.workspaceID = f.online
         f.store.edit { $0.destinations.append(omt) }
         let controls = OutputQuickControlsController(outputs: f.outputs, workspaceID: f.house, manageOutputs: {})
-        XCTAssertTrue(controls.networkButton.title.hasPrefix("Network:"))
-        let menu = try XCTUnwrap(controls.networkButton.menu)
+        XCTAssertTrue(controls.network.title.hasPrefix("Network:"))
+        let menu = try XCTUnwrap(controls.network.menu)
         XCTAssertNotNil(menu.items.first { $0.title.hasPrefix("NDI · ") })
         let omtMenu = try XCTUnwrap(menu.items.first { $0.title.hasPrefix("OMT · ") }?.submenu)
         XCTAssertNotNil(try item("OMT · eucaly · Disabled", in: omtMenu))
@@ -178,7 +179,7 @@ final class NetworkToolbarRoutingTests: XCTestCase {
         XCTAssertEqual(f.outputs.destination(omt.id)?.networkTechnology, .omt)
         XCTAssertFalse(try XCTUnwrap(f.outputs.destination(omt.id)).enabled)
         XCTAssertTrue(f.transport.starts.isEmpty)
-        let refreshed = try XCTUnwrap(controls.networkButton.menu?.items.first { $0.title.hasPrefix("OMT · ") }?.submenu)
+        let refreshed = try XCTUnwrap(controls.network.menu?.items.first { $0.title.hasPrefix("OMT · ") }?.submenu)
         let staleAction = try item("Move to Online", in: refreshed)
         f.store.edit { document in
             let index = document.destinations.firstIndex { $0.id == omt.id }!

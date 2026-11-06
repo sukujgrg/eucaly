@@ -162,6 +162,7 @@ final class WorkspaceBackgroundStateTests: XCTestCase {
             .init(name: "Moved Audience", profileID: peerProfile.id, monitor: nil, workspaceID: peerID)
         ])
         document.workspaces.append(.init(id: peerID, name: "Peer"))
+        document.seedMissingProfileTargets()
         defaults.set(try JSONEncoder().encode(document), forKey: OutputProfileStore.key)
         defaults.set("peer bookmark", forKey: "backgroundVisualBookmark")
         var resolved: [String] = []

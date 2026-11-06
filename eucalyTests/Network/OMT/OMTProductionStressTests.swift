@@ -106,7 +106,7 @@ final class OMTProductionHarnessTests: XCTestCase {
         let store = OutputProfileStore(defaults: nil)
         var row = OutputDestinationConfiguration(name: "Isolated OMT", profileID: OutputProfile.audienceID, monitor: nil)
         row.omt = .init(sourceName: "Isolated OMT")
-        store.edit { $0.destinations = [row]; $0.defaultDestinationID = row.id }
+        store.edit { $0.destinations = [row]; $0.profileTargets[OutputWorkspaceRecord.primaryID] = row.id }
         var senders: [OMTProductionNormalExitSender] = []
         let router = NetworkOutputRouter(senderFactory: { event in
             let sender = OMTProductionNormalExitSender(event: event); senders.append(sender); return sender
@@ -248,7 +248,7 @@ private final class OMTProductionRun {
         store.edit { doc in
             doc.destinations = [one, two, companion]
             if let nativeRow { doc.destinations.append(nativeRow) }
-            doc.defaultDestinationID = one.id
+            doc.profileTargets[OutputWorkspaceRecord.primaryID] = one.id
             doc.backgroundAudioDestinationID = nil
             for index in doc.workspaces.indices { doc.workspaces[index].monitorAudioLocally = false }
             for index in doc.profiles.indices { doc.profiles[index].background.visible = false }

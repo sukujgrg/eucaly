@@ -29,7 +29,7 @@ nonisolated enum OutputLegacyMigration {
     static func decode(_ data: Data) throws -> OutputProfileDocument {
         guard data.count <= maximumDocumentBytes,
               var root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let version = root["version"] as? Int, (1...8).contains(version) else { throw Failure.invalid }
+              let version = root["version"] as? Int, (1...9).contains(version) else { throw Failure.invalid }
         if version < 5 {
             guard let profiles = root["profiles"] as? [[String: Any]], (1...128).contains(profiles.count),
                   let destinations = root["destinations"] as? [[String: Any]], destinations.count <= 16 else { throw Failure.invalid }
@@ -153,7 +153,24 @@ nonisolated enum OutputLegacyMigration {
             }
             root["version"] = 8
         }
-        let document = try JSONDecoder().decode(OutputProfileDocument.self, from: JSONSerialization.data(withJSONObject: root))
+        if version < 9 {
+            // Profile Target is per workspace. Keep the former global default on the
+            // workspace that owned that row, then seed every other workspace that
+            // already owns destinations so Appearance/Background work after switch.
+            var targets: [String: String] = [:]
+            if let oldDefault = root["defaultDestinationID"] as? String,
+               let destinations = root["destinations"] as? [[String: Any]],
+               let owner = destinations.first(where: { $0["id"] as? String == oldDefault })?["workspaceID"] as? String {
+                targets[owner] = oldDefault
+            }
+            root["profileTargets"] = targets
+            root.removeValue(forKey: "defaultDestinationID")
+            root["version"] = 9
+        } else {
+            root.removeValue(forKey: "defaultDestinationID")
+        }
+        var document = try JSONDecoder().decode(OutputProfileDocument.self, from: JSONSerialization.data(withJSONObject: root))
+        if version < 9 { document.seedMissingProfileTargets() }
         guard document.isValid else { throw Failure.invalid }
         return document
     }
@@ -239,10 +256,26 @@ nonisolated enum OutputLegacyMigration {
             profiles.append(profile)
         }
         result.workspaces = workspaces; result.profiles = profiles; result.destinations = destinations
-        let defaultID = root.keys.contains("defaultDestinationID")
-            ? (root["defaultDestinationID"] as? String).flatMap(UUID.init(uuidString:))
-            : destinations.first?.id
-        result.defaultDestinationID = destinations.contains { $0.id == defaultID } ? defaultID : nil
+        result.version = 9
+        var targets: [UUID: UUID] = [:]
+        if let saved = root["profileTargets"] as? [String: String] {
+            for (workspaceKey, destinationKey) in saved {
+                guard let workspaceID = UUID(uuidString: workspaceKey),
+                      let destinationID = UUID(uuidString: destinationKey),
+                      destinations.contains(where: { $0.id == destinationID && $0.workspaceID == workspaceID }) else { continue }
+                targets[workspaceID] = destinationID
+            }
+        } else {
+            let defaultID = root.keys.contains("defaultDestinationID")
+                ? (root["defaultDestinationID"] as? String).flatMap(UUID.init(uuidString:))
+                : destinations.first?.id
+            if let defaultID,
+               let owner = destinations.first(where: { $0.id == defaultID })?.workspaceID {
+                targets[owner] = defaultID
+            }
+        }
+        result.profileTargets = targets
+        result.seedMissingProfileTargets()
         let musicID = (root["backgroundAudioDestinationID"] as? String).flatMap(UUID.init(uuidString:))
         result.backgroundAudioDestinationID = destinations.contains { $0.id == musicID && $0.isNetworkDestination } ? musicID : nil
         return result

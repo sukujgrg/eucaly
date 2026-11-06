@@ -14,13 +14,18 @@ final class WorkspaceMigrationTests: XCTestCase {
         row.ndi = .init(sourceName: "Worship")
         originalStore.edit {
             $0.destinations.append(row)
-            $0.defaultDestinationID = row.id
             $0.backgroundAudioDestinationID = row.id
             $0.workspaces[1].monitorAudioLocally = false
         }
         originalStore.editDestinationProfile(row.id) { $0.typography.size = 103; $0.background.colour = .chromaGreen }
-        let expected = originalStore.document
+        var expected = originalStore.document
+        expected.profileTargets = [
+            OutputWorkspaceRecord.primaryID: expected.destinations[0].id,
+            online: row.id
+        ]
         var root = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(expected)) as? [String: Any])
+        root.removeValue(forKey: "profileTargets")
+        root["defaultDestinationID"] = expected.destinations[0].id.uuidString
         root["version"] = 6
         let original = try JSONSerialization.data(withJSONObject: root)
         let earlierBackup = Data("preserved pre-v6 backup".utf8)
@@ -120,6 +125,7 @@ final class WorkspaceMigrationTests: XCTestCase {
         XCTAssertEqual(try OutputLegacyMigration.decode(JSONEncoder().encode(operatorNamed)), operatorNamed)
         root["workspaces"] = [["id": other.uuidString, "name": "Online"]]
         root["destinations"] = []
+        root["profileTargets"] = [:] as [String: String]
         root["defaultDestinationID"] = NSNull()
         root["defaultWorkspaceID"] = UUID().uuidString
         let recovered = try OutputLegacyMigration.decode(JSONSerialization.data(withJSONObject: root))
@@ -133,15 +139,15 @@ final class WorkspaceMigrationTests: XCTestCase {
         lyrics.ndi = .init(sourceName: "Custom Worship")
         var media = OutputDestinationConfiguration(name: "Online Media", profileID: OutputProfile.audienceID, monitor: nil)
         media.ndi = .init(sourceName: "Custom Online")
-        store.edit { $0.destinations += [lyrics, media]; $0.backgroundAudioDestinationID = media.id; $0.defaultDestinationID = lyrics.id }
+        store.edit { $0.destinations += [lyrics, media]; $0.backgroundAudioDestinationID = media.id; $0.profileTargets[OutputWorkspaceRecord.primaryID] = lyrics.id }
         store.editDestinationProfile(lyrics.id) { $0.typography.size = 112; $0.background.colour = .chromaGreen }
         let original = store.document
         let migrated = try OutputLegacyMigration.decode(legacy(original))
-        XCTAssertEqual(migrated.version, 8)
+        XCTAssertEqual(migrated.version, 9)
         XCTAssertEqual(migrated.workspaces, [.primary])
         XCTAssertEqual(migrated.destinations, original.destinations)
         XCTAssertEqual(migrated.profiles, original.profiles)
-        XCTAssertEqual(migrated.defaultDestinationID, lyrics.id)
+        XCTAssertEqual(migrated.profileTargets[OutputWorkspaceRecord.primaryID], lyrics.id)
         XCTAssertEqual(migrated.backgroundAudioDestinationID, media.id)
         XCTAssertEqual(migrated.destinations.compactMap(\.ndi).map(\.sourceID), [lyrics.ndi!.sourceID, media.ndi!.sourceID])
         XCTAssertTrue(migrated.destinations.allSatisfy { $0.workspaceID == OutputWorkspaceRecord.primaryID })
@@ -213,13 +219,17 @@ final class WorkspaceMigrationTests: XCTestCase {
         }
         root["destinations"] = destinations
         let migrated = try OutputLegacyMigration.decode(JSONSerialization.data(withJSONObject: root))
-        XCTAssertEqual(migrated.version, 8)
+        XCTAssertEqual(migrated.version, 9)
         XCTAssertNil(migrated.profiles.first { $0.id == exclusiveID }?.customizedForDestinationID)
         XCTAssertEqual(migrated.destinations.first?.ndi?.keyColour, exclusive.background.colour)
     }
 
     private func legacy(_ document: OutputProfileDocument) throws -> Data {
         var root = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(document)) as? [String: Any])
+        root.removeValue(forKey: "profileTargets")
+        if let lyrics = document.profileTargets[OutputWorkspaceRecord.primaryID] {
+            root["defaultDestinationID"] = lyrics.uuidString
+        }
         root["version"] = 5; root.removeValue(forKey: "workspaces")
         root["destinations"] = try XCTUnwrap(root["destinations"] as? [[String: Any]]).enumerated().map { index, original in
             var row = original; row.removeValue(forKey: "workspaceID")

@@ -1070,6 +1070,13 @@ final class OutputCoordinator: ObservableObject {
         }
         setIssue(nil, workspace: id)
     }
+
+    func managementWorkspaceName(_ id: UUID?) -> String { profiles.managementWorkspaceName(id) }
+    func managementDestinationLabel(_ destination: OutputDestinationConfiguration) -> String {
+        guard destination.isMonitorDestination else { return profiles.destinationLabel(destination) }
+        return destination.name + " (" + (destination.monitor.map { displays.label(for: $0) } ?? "No monitor") + ")"
+    }
+
     deinit {
         let displays = displays, profiles = profiles, displayObservation = displayObservation, profileObservation = profileObservation, windows = windows
         DispatchQueue.main.async {
