@@ -247,8 +247,10 @@ final class ManageProfilesController: NSViewController, NSTableViewDataSource, N
     }
 
     @objc private func removeSelectedProfile(_ sender: Any?) {
-        guard let id = selectedID, let profile = store.profile(id) else { return }
+        guard let id = selectedID else { return }
+        // Commit a pending rename before reading the name shown in the alert.
         finishEditing()
+        guard let profile = store.profile(id) else { return }
         let ids = profileRows().compactMap(\.id)
         guard let index = ids.firstIndex(of: id) else { return }
         guard confirmProfileRemoval(profile) else { return }

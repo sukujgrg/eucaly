@@ -23,6 +23,8 @@ final class SidebarViewController: NSViewController {
     private var grouping: LibraryGrouping
 
     let scrollView = NSScrollView()
+    /// Pinned Workspaces control ahead of section chrome in the Tab chain.
+    weak var keyViewPredecessor: NSView?
     /// Workspace detail host that receives Tab after the last sidebar control.
     weak var keyViewSuccessor: NSView?
     private let document = SidebarDocumentStackView()
@@ -183,11 +185,15 @@ final class SidebarViewController: NSViewController {
         repairKeyViewLoop()
     }
 
-    /// Chains visible section headers and controls, then connects to the detail
-    /// host so Tab leaves and returns to the sidebar predictably.
+    /// Chains the pinned Workspaces control, visible section headers and
+    /// controls, then connects to the detail host so Tab leaves and returns
+    /// predictably while autorecalculation stays off.
     func repairKeyViewLoop() {
         guard !isDetached else { return }
         var keys: [NSView] = []
+        if let predecessor = keyViewPredecessor, !predecessor.isHiddenOrHasHiddenAncestor {
+            keys.append(predecessor)
+        }
         if !failureNotice.isHidden {
             keys.append(retryLibrary)
         }

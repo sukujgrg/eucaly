@@ -158,7 +158,7 @@ final class OutputDestinationEditor: NSViewController, NSTextFieldDelegate {
             : coordinator.isOpen(destinationID) ? "Output open. Appearance follows the selected profile."
             : isConfidence
                 ? "Confidence opens a standby clock on this monitor. Show Slides presents Current above Next when text is selected."
-                : "Show Slides opens this output with Current. Open Native Output places a background-only window without accepting Current.")
+                : "Show Slides opens this output with Current. Open Native Output opens this monitor without accepting or changing Current; if slides are already showing, this window shows that same Current.")
         let ownerIssue = destination.workspaceID.flatMap { coordinator.outputIssue(workspace: $0) }
         let workspaceStatus = ownerIssue.map { "Workspace " + coordinator.managementWorkspaceName(destination.workspaceID) + ": " + $0 }
         statusLabel.stringValue = [nativeStatus, workspaceStatus].compactMap { $0 }.joined(separator: "\n")

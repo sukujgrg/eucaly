@@ -108,7 +108,8 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         super.init()
         for button in [networkButton, backgroundButton, appearanceButton] {
             button.bezelStyle = .toolbar
-            button.imagePosition = button === networkButton ? .imageLeft : .imageOnly
+            // Network and Background show identity beside the symbol; Appearance stays icon-only.
+            button.imagePosition = button === appearanceButton ? .imageOnly : .imageLeft
             button.setContentHuggingPriority(.required, for: .horizontal)
             button.setContentCompressionResistancePriority(.required, for: .horizontal)
         }
@@ -163,7 +164,7 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
             appearanceState = appearance
             appearanceButton.menu = appearanceMenu(profileName: profileName, destination: destination, rows: rows,
                                                    profile: profile, target: target, canEdit: canEdit)
-            backgroundButton.menu = backgroundMenu(profile, target: target)
+            backgroundButton.menu = backgroundMenu(profile, target: target, summary: backgroundSummary)
         }
     }
 
@@ -344,8 +345,10 @@ final class OutputQuickControlsController: NSObject, ObservableObject {
         if profile.background.bookmark != nil { return "Selected image or video" }
         return "Solid colour"
     }
-    private func backgroundMenu(_ profile: OutputProfile?, target: OutputProfileStore.QuickEditTarget?) -> NSMenu {
-        let menu = menu(caption: "Background", symbol: "photo.on.rectangle")
+    private func backgroundMenu(_ profile: OutputProfile?, target: OutputProfileStore.QuickEditTarget?,
+                                summary: String) -> NSMenu {
+        // Pull-down first item is the visible button title — keep the current asset there.
+        let menu = menu(caption: summary, symbol: "photo.on.rectangle", showsTitle: true)
         defer { addManagementFooter(to: menu, target: .profiles) }
         guard let profile, let target else { return menu }
         let hasVisual = profile.background.bookmark != nil

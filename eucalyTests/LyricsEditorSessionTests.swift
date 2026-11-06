@@ -135,4 +135,28 @@ final class LyricsEditorSessionTests: XCTestCase {
         XCTAssertEqual(session.importFingerprint.documentID, before.documentID)
         XCTAssertEqual(session.importFingerprint.isEditing, before.isEditing)
     }
+
+    func testPreviewAdmissionGenerationTracksSyncTransitionsNotEveryKeystroke() {
+        let session = LyricsEditorSession()
+        session.beginNew()
+        let start = session.previewAdmissionGeneration
+
+        session.draft = "#verse\nA lyric"
+        XCTAssertEqual(session.previewAdmissionGeneration, start + 1,
+                       "Becoming loadable must refresh Load-to-Current chrome")
+        session.draft += " more"
+        XCTAssertEqual(session.previewAdmissionGeneration, start + 1,
+                       "Further typing while still unsynchronized must not republish")
+
+        session.markPreviewed()
+        XCTAssertEqual(session.previewAdmissionGeneration, start + 2)
+        XCTAssertTrue(session.isPreviewSynchronized)
+
+        session.draft += " edit"
+        XCTAssertEqual(session.previewAdmissionGeneration, start + 3,
+                       "Breaking Preview sync must refresh Load chrome immediately")
+        session.draft += " again"
+        XCTAssertEqual(session.previewAdmissionGeneration, start + 3,
+                       "Keystrokes after the sync break stay local to the editor pane")
+    }
 }

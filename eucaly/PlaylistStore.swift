@@ -25,6 +25,8 @@ final class PlaylistStore: ObservableObject {
     private var playlistDirectoryURL: URL?
     private var playlistDocumentURL: URL?
     private var resolvedURLsByID: [UUID: URL] = [:]
+    private var pendingMissingSidebarIDs: Set<UUID> = []
+    private var missingSidebarTask: Task<Void, Never>?
     private let fileManager = FileManager.default
     private let playlistDirectoryName = "Playlist"
     private let playlistFileName = "playlist.json"
@@ -117,18 +119,15 @@ final class PlaylistStore: ObservableObject {
     }
 
     func resolvedURL(for entry: PlaylistEntry) -> URL? {
-        if let cached = resolvedURLsByID[entry.id] { return cached }
-        return resolveExistingURL(for: entry)
+        verifiedResolvedURL(id: entry.id, entry: entry)
     }
 
     func resolvedURL(for id: UUID) -> URL? {
-        if let cached = resolvedURLsByID[id] { return cached }
-        guard let entry = entries.first(where: { $0.id == id }) else { return nil }
-        return resolveExistingURL(for: entry)
+        verifiedResolvedURL(id: id, entry: entries.first(where: { $0.id == id }))
     }
 
     var resolvedURLs: [URL] {
-        entries.compactMap { resolvedURLsByID[$0.id] }
+        entries.compactMap { resolvedURL(for: $0) }
     }
 
     /// Rebuild sidebar rows by re-statting existence and applying titles in one pass.
@@ -138,11 +137,51 @@ final class PlaylistStore: ObservableObject {
         republishSidebarItems(titleForURL: titleForURL)
     }
 
+    /// Cache accelerates path reuse only after a fresh existence check. A missing
+    /// file drops the cache entry and schedules an honest sidebar `exists` update
+    /// off the current turn so view evaluation never publishes inline.
+    private func verifiedResolvedURL(id: UUID, entry: PlaylistEntry?) -> URL? {
+        if let cached = resolvedURLsByID[id] {
+            if fileManager.fileExists(atPath: cached.path) { return cached }
+            resolvedURLsByID.removeValue(forKey: id)
+            scheduleSidebarMissing(id)
+            return nil
+        }
+        guard let entry else { return nil }
+        return resolveExistingURL(for: entry)
+    }
+
     private func resolveExistingURL(for entry: PlaylistEntry) -> URL? {
         guard let root = rootURL else { return nil }
         let url = root.appendingPathComponent(entry.relativePath)
         guard fileManager.fileExists(atPath: url.path) else { return nil }
         return url
+    }
+
+    private func scheduleSidebarMissing(_ id: UUID) {
+        pendingMissingSidebarIDs.insert(id)
+        guard missingSidebarTask == nil else { return }
+        missingSidebarTask = Task { @MainActor [weak self] in
+            await Task.yield()
+            guard let self else { return }
+            self.missingSidebarTask = nil
+            let ids = self.pendingMissingSidebarIDs
+            self.pendingMissingSidebarIDs = []
+            guard !ids.isEmpty else { return }
+            var items = self.sidebarItems
+            var changed = false
+            for id in ids {
+                guard let index = items.firstIndex(where: { $0.id == id }), items[index].exists else { continue }
+                if let entry = self.entries.first(where: { $0.id == id }),
+                   let url = self.resolveExistingURL(for: entry) {
+                    self.resolvedURLsByID[id] = url
+                    continue
+                }
+                items[index] = PlaylistSidebarItem(id: id, title: items[index].title, exists: false)
+                changed = true
+            }
+            if changed { self.sidebarItems = items }
+        }
     }
 
     private func republishSidebarItems(titleForURL: (URL) -> String) {
