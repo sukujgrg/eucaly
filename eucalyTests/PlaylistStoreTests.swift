@@ -132,6 +132,29 @@ final class PlaylistStoreTests: XCTestCase {
         XCTAssertNil(store.resolvedURL(for: id))
     }
 
+    func testResolvedURLReStatsDeletedFilesWithoutWaitingForRefresh() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fileURL = root.appendingPathComponent("Song.txt")
+        try "Verse\nHello".write(to: fileURL, atomically: true, encoding: .utf8)
+        let store = PlaylistStore()
+        store.load(fromRoot: root)
+        let id = try XCTUnwrap(store.add(url: fileURL, after: nil))
+        XCTAssertEqual(store.resolvedURL(for: id), fileURL)
+        XCTAssertEqual(store.sidebarItems.first?.exists, true)
+
+        try FileManager.default.removeItem(at: fileURL)
+        XCTAssertNil(store.resolvedURL(for: id),
+                     "Load paths must not reuse a cached URL after the file disappears")
+
+        let deadline = Date().addingTimeInterval(1)
+        while Date() < deadline, store.sidebarItems.first?.exists != false {
+            await Task.yield()
+        }
+        XCTAssertEqual(store.sidebarItems, [PlaylistSidebarItem(id: id, title: "Song.txt", exists: false)],
+                       "Sidebar existence must catch up after a stale cache hit without an explicit refresh")
+    }
+
     private func makeRoot() throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("eucaly-playlist-tests-\(UUID().uuidString)", isDirectory: true)

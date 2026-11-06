@@ -173,6 +173,23 @@ final class WorkspaceChromeTests: XCTestCase {
         window.setContentSize(.init(width: 1280, height: 700))
         let split = try await mountedSplit(in: window)
         XCTAssertFalse(window.autorecalculatesKeyViewLoop)
+        let workspaces = split.workspacesAccessory.controls.button
+        XCTAssertIdentical(split.sidebarController.keyViewPredecessor, workspaces)
+        // Explicit chain: Workspaces → sidebar chrome → detail portal → Workspaces.
+        XCTAssertIdentical(split.sidebarController.keyViewSuccessor?.nextKeyView, workspaces,
+                           "Detail must return into the pinned Workspaces control while autorecalculation stays off")
+        XCTAssertTrue(window.makeFirstResponder(workspaces))
+        var reachedSidebarChrome = false
+        for _ in 0..<40 {
+            window.selectNextKeyView(nil)
+            guard let focused = window.firstResponder as? NSView else { continue }
+            if focused.isDescendant(of: split.sidebarController.view) {
+                reachedSidebarChrome = true
+                break
+            }
+        }
+        XCTAssertTrue(reachedSidebarChrome, "Tab from Workspaces must enter scrolling sidebar chrome")
+
         let libraryHeader = try XCTUnwrap(sidebarHeaders(in: split.sidebarController.view).first { $0.section == .library })
         XCTAssertTrue(window.makeFirstResponder(libraryHeader))
         var sawDetail = false
@@ -183,7 +200,10 @@ final class WorkspaceChromeTests: XCTestCase {
             if focused.isDescendant(of: split.detailController.view) {
                 sawDetail = true
             }
-            if sawDetail, focused.isDescendant(of: split.sidebarController.view) {
+            if sawDetail,
+               focused === workspaces
+                || focused.isDescendant(of: split.workspacesAccessory.view)
+                || focused.isDescendant(of: split.sidebarController.view) {
                 returnedToSidebar = true
                 break
             }

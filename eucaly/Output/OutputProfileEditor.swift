@@ -30,6 +30,9 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
     private var renderedProfile: OutputProfile?
     private var disclosures: [OutputSettingsDisclosure] = []
     private var backgroundColourRow: NSView?
+    /// Hidden for network-only Profiles; retired explicitly so a late panel
+    /// callback cannot write Colour after the row is removed from the form.
+    private weak var backgroundColourWell: NSColorWell?
     private let createBackgroundBookmark: @Sendable (URL) -> String?
     private let makeBackgroundPanel: @MainActor () -> NSOpenPanel
     private let beginBackgroundSheet: @MainActor (NSOpenPanel, NSWindow, @escaping (NSApplication.ModalResponse) -> Void) -> Void
@@ -102,7 +105,9 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
         }
 
         form.section("Background")
-        let colourRow = color("Colour", get: { $0.background.colour }, opaque: true, set: { $0.background.colour = $1 })
+        let colourRow = color("Colour", get: { $0.background.colour }, opaque: true, set: { $0.background.colour = $1 }) {
+            self.backgroundColourWell = $0
+        }
         backgroundColourRow = colourRow; form.add(colourRow)
         form.add(backgroundColourNotice)
         let visuals = visualControls; form.add(visuals)
@@ -155,9 +160,10 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
         usageNotice.stringValue = hasNetwork ? networkName + " outputs use the owning workspace’s lyrics, images, PDFs and video, with independent backgrounds. Transparency and chroma colour are set on each " + networkName + " output." : ""
         usageNotice.isHidden = usageNotice.stringValue.isEmpty
         backgroundColourRow?.isHidden = networkOnly
-        // Hiding the well must retire an open colour panel; otherwise a late
-        // panel callback still writes the shared profile in place.
-        if networkOnly { for well in colors.keys { well.deactivate() } }
+        // Retire only the hidden Colour well. Typography colour wells stay
+        // active across render()/edit so network-only Profile text colour
+        // picking is not closed by status or store churn.
+        if networkOnly { backgroundColourWell?.deactivate() }
         if networkOnly {
             backgroundColourNotice.stringValue = "Set transparency and chroma colour on each " + networkName + " output. Visual backgrounds below apply in either mode."
         } else if hasNetwork {
@@ -196,6 +202,11 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
         for well in colors.keys { well.deactivate() }
     }
     override func viewWillDisappear() { super.viewWillDisappear(); finishEditing() }
+
+#if DEBUG
+    var backgroundColourRowForTests: NSView? { backgroundColourRow }
+    var registeredColourWellCountForTests: Int { colors.count }
+#endif
 
     @discardableResult
     func edit(_ change: (inout OutputProfile) -> Void) -> Bool {
@@ -374,8 +385,10 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
         return row
     }
     private func color(_ title: String, get: @escaping (OutputProfile) -> OutputColour, opaque: Bool = false,
-                       set: @escaping (inout OutputProfile, OutputColour) -> Void) -> NSView {
+                       set: @escaping (inout OutputProfile, OutputColour) -> Void,
+                       storeWell: ((NSColorWell) -> Void)? = nil) -> NSView {
         let well = NSColorWell(); well.target = self; well.action = #selector(colorChanged(_:)); well.setAccessibilityLabel(title)
+        storeWell?(well)
         colors[well] = { [weak self] color in self?.edit { set(&$0, OutputColour(nativeColor: color, opaque: opaque)) } }
         renders.append { well.color = get($0).nativeColor }
         return outputSettingsRow(title, well)

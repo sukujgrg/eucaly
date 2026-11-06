@@ -162,6 +162,25 @@ final class OutputDefaultTests: XCTestCase {
         XCTAssertEqual(background.colour, .chromaGreen, "Clear has the same asset-only meaning as the profile editor")
     }
 
+    func testBackgroundQuickControlShowsCurrentAssetOnTheButton() throws {
+        let store = OutputProfileStore()
+        let outputs = OutputCoordinator(profiles: store, displays: ProjectionDisplayManager(displays: { [] }),
+                                        driverFactory: { FakeOutputDriver() })
+        defer { outputs.stop() }
+        store.editDefaultProfile(try XCTUnwrap(store.quickEditTarget)) {
+            $0.background.bookmark = "selected asset"
+            $0.background.displayName = "stage.png"
+        }
+        let controls = OutputQuickControlsController(outputs: outputs, manageOutputs: {})
+        controls.render()
+        XCTAssertEqual(controls.backgroundButton.imagePosition, .imageLeft)
+        XCTAssertEqual(controls.backgroundButton.menu?.items.first?.title, "stage.png",
+                       "Pull-down chrome must show the current visual asset beside the symbol")
+        store.editDefaultProfile(try XCTUnwrap(store.quickEditTarget)) { $0.clearBackground() }
+        controls.render()
+        XCTAssertEqual(controls.backgroundButton.menu?.items.first?.title, "Solid colour")
+    }
+
     func testNativeQuickMenusRevalidateOldActionsAndRetainUnchangedMenus() throws {
         let store = OutputProfileStore()
         let displays = ProjectionDisplayManager(displays: { [] })

@@ -235,6 +235,45 @@ final class OutputSettingsTests: XCTestCase {
         XCTAssertFalse(fixture.store.removeProfile(custom.id), "Removal must recheck newly added consumers")
     }
 
+    func testRemoveProfileConfirmationUsesNameCommittedByFinishEditing() throws {
+        let fixture = OutputSettingsFixture(); defer { fixture.close() }
+        var copy = fixture.store.audience
+        copy.id = UUID()
+        copy.name = "Spare look"
+        fixture.store.edit { $0.profiles.append(copy) }
+        fixture.selectProfile(copy.id)
+        let editor = try XCTUnwrap(fixture.profiles.profileEditor)
+        XCTAssertTrue(fixture.window.makeFirstResponder(editor.nameField))
+        editor.nameField.stringValue = "Committed spare"
+        var confirmedName: String?
+        fixture.profiles.confirmProfileRemoval = { profile in
+            confirmedName = profile.name
+            return true
+        }
+        fixture.profiles.removeProfile.performClick(nil)
+        XCTAssertEqual(confirmedName, "Committed spare",
+                       "Remove Appearance must confirm the post-commit name, matching Remove Output")
+        XCTAssertNil(fixture.store.profile(copy.id))
+    }
+
+    func testNetworkOnlyProfileRenderRetiresOnlyHiddenBackgroundColourWell() throws {
+        let fixture = OutputSettingsFixture(); defer { fixture.close() }
+        var network = OutputDestinationConfiguration(
+            name: "NDI Output", profileID: OutputProfile.audienceID, monitor: nil, enabled: false
+        )
+        network.destination = .ndi(NetworkOutputSettings(sourceName: "eucaly"))
+        fixture.store.edit { $0.destinations = [network] }
+        fixture.selectProfile(OutputProfile.audienceID)
+        let editor = try XCTUnwrap(fixture.profiles.profileEditor)
+        XCTAssertTrue(editor.backgroundColourRowForTests?.isHidden == true)
+        // Text colour wells remain registered and must stay usable across render().
+        editor.render(force: true)
+        editor.render()
+        XCTAssertTrue(editor.backgroundColourRowForTests?.isHidden == true)
+        XCTAssertGreaterThan(editor.registeredColourWellCountForTests, 1,
+                             "Typography colour wells remain available while Colour stays hidden")
+    }
+
     func testDuplicatingProfileDoesNotReassignOutputs() throws {
         let fixture = OutputSettingsFixture(); defer { fixture.close() }
         let appearance = fixture.store.document.destinations[0].profileID

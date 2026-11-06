@@ -96,6 +96,9 @@ final class WorkspaceSplitViewController: NSSplitViewController {
     }
 
     private func repairWorkspaceKeyViewLoop() {
+        // Workspaces sits outside the scrolling sidebar; splice it into the
+        // explicit Tab chain while autorecalculation remains disabled.
+        sidebarController.keyViewPredecessor = workspacesAccessory.controls.button
         sidebarController.keyViewSuccessor = detailKeyPortal
         sidebarController.repairKeyViewLoop()
     }

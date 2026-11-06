@@ -672,6 +672,8 @@ public struct ContentView: View {
     }
 
     private var canLoadPreviewToCurrent: Bool {
+        // Track admission transitions without depending on unpublished draft text.
+        _ = lyricsEditor.previewAdmissionGeneration
         guard flow.canLoadPreview else { return false }
         if lyricsEditor.isEditing {
             return lyricsEditor.isPreviewSynchronized
@@ -680,6 +682,7 @@ public struct ContentView: View {
     }
 
     private var loadToCurrentHelp: String {
+        _ = lyricsEditor.previewAdmissionGeneration
         if isPreviewLoading {
             return "Wait for Preview to finish loading."
         }
