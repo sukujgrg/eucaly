@@ -123,13 +123,62 @@ final class PlaylistStoreTests: XCTestCase {
         store.load(fromRoot: root)
         let id = try XCTUnwrap(store.add(url: fileURL, after: nil))
         XCTAssertEqual(store.sidebarItems, [PlaylistSidebarItem(id: id, title: "Song.txt", exists: true)])
-        XCTAssertEqual(store.resolvedURL(for: id), fileURL)
+        XCTAssertEqual(store.resolvedURL(for: id), fileURL.standardizedFileURL)
 
         try FileManager.default.removeItem(at: fileURL)
         store.refreshResolvedSidebarItems(titleForURL: { $0.lastPathComponent })
 
         XCTAssertEqual(store.sidebarItems, [PlaylistSidebarItem(id: id, title: "Song.txt", exists: false)])
         XCTAssertNil(store.resolvedURL(for: id))
+    }
+
+    func testWarmDisplayTitleCacheSurvivesMutationAndReloadWithoutDiskReread() throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = root.appendingPathComponent("220192.txt")
+        let second = root.appendingPathComponent("anthem.txt")
+        try "#title: Holy Forever\nVerse\nWe sing".write(to: first, atomically: true, encoding: .utf8)
+        try "Verse\nWe gather".write(to: second, atomically: true, encoding: .utf8)
+        let store = PlaylistStore()
+        store.load(fromRoot: root)
+        let firstID = try XCTUnwrap(store.add(url: first, after: nil))
+        var titles: [URL: String] = [
+            first.standardizedFileURL: "Holy Forever",
+            second.standardizedFileURL: "We gather"
+        ]
+        store.refreshResolvedSidebarItems { titles[$0.standardizedFileURL] ?? $0.lastPathComponent }
+        XCTAssertEqual(store.sidebarItems.first?.title, "Holy Forever")
+
+        let secondID = try XCTUnwrap(store.add(url: second, after: firstID))
+        XCTAssertEqual(
+            store.sidebarItems,
+            [
+                PlaylistSidebarItem(id: firstID, title: "Holy Forever", exists: true),
+                PlaylistSidebarItem(id: secondID, title: "anthem.txt", exists: true)
+            ],
+            "Mutations must keep already-resolved display titles and only filename-fallback new rows"
+        )
+
+        // Mimic ContentView.rebuildDisplayNames with a warm inventory cache: no
+        // disk title fill, only an in-memory remap through the shared labels.
+        store.refreshResolvedSidebarItems { titles[$0.standardizedFileURL] ?? $0.lastPathComponent }
+        XCTAssertEqual(
+            store.sidebarItems,
+            [
+                PlaylistSidebarItem(id: firstID, title: "Holy Forever", exists: true),
+                PlaylistSidebarItem(id: secondID, title: "We gather", exists: true)
+            ]
+        )
+
+        store.load(fromRoot: root)
+        XCTAssertEqual(
+            store.sidebarItems.map(\.title),
+            ["Holy Forever", "We gather"],
+            "Same-root reload must preserve resolved titles until the next inventory refresh"
+        )
+        titles[first.standardizedFileURL] = "Grace in every season"
+        store.refreshResolvedSidebarItems { titles[$0.standardizedFileURL] ?? $0.lastPathComponent }
+        XCTAssertEqual(store.sidebarItems.map(\.title), ["Grace in every season", "We gather"])
     }
 
     func testResolvedURLReStatsDeletedFilesWithoutWaitingForRefresh() async throws {

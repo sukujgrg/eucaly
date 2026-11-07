@@ -885,11 +885,13 @@ private final class LibrarySearchItemCellView: NSTableCellView {
         addSubview(symbolView)
 
         titleField.translatesAutoresizingMaskIntoConstraints = false
-        titleField.font = .systemFont(ofSize: 13, weight: .medium)
+        titleField.font = .systemFont(ofSize: 13, weight: .semibold)
         titleField.textColor = .labelColor
         titleField.lineBreakMode = .byTruncatingMiddle
         titleField.maximumNumberOfLines = 1
-        textField = titleField
+        // Do not assign `textField`. NSTableCellView mirrors objectValue into
+        // textField and can clear the song title on reuse while location/snippet
+        // (plain subviews) keep their configure(...) values.
         titleField.identifier = NSUserInterfaceItemIdentifier("LibrarySearch.ItemTitle")
 
         locationField.translatesAutoresizingMaskIntoConstraints = false
@@ -904,18 +906,26 @@ private final class LibrarySearchItemCellView: NSTableCellView {
         subtitleField.textColor = .secondaryLabelColor
         subtitleField.lineBreakMode = .byTruncatingTail
         subtitleField.maximumNumberOfLines = 2
+        subtitleField.cell?.wraps = true
+        subtitleField.cell?.truncatesLastVisibleLine = true
         subtitleField.identifier = NSUserInterfaceItemIdentifier("LibrarySearch.ItemSnippet")
         textStack.translatesAutoresizingMaskIntoConstraints = false
         textStack.orientation = .vertical
         textStack.alignment = .leading
         textStack.spacing = 2
         textStack.detachesHiddenViews = true
+        // Title and location must keep their lines; the snippet yields first if the
+        // fixed row height is tight so a long excerpt cannot crush the song title.
+        titleField.setContentCompressionResistancePriority(.required, for: .vertical)
+        locationField.setContentCompressionResistancePriority(.required, for: .vertical)
+        subtitleField.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+        subtitleField.setContentHuggingPriority(.defaultLow, for: .vertical)
         for field in [titleField, locationField, subtitleField] {
-            field.setContentCompressionResistancePriority(.required, for: .vertical)
             textStack.addArrangedSubview(field)
             field.widthAnchor.constraint(equalTo: textStack.widthAnchor).isActive = true
         }
         addSubview(textStack)
+        clipsToBounds = true
 
         playlistButton.translatesAutoresizingMaskIntoConstraints = false
         playlistButton.image = NSImage(
@@ -962,6 +972,14 @@ private final class LibrarySearchItemCellView: NSTableCellView {
         fatalError("init(coder:) has not been implemented")
     }
 
+    override func layout() {
+        super.layout()
+        let width = textStack.bounds.width
+        if width > 0, abs(subtitleField.preferredMaxLayoutWidth - width) > 0.5 {
+            subtitleField.preferredMaxLayoutWidth = width
+        }
+    }
+
     func configure(
         title: String,
         subtitle: String,
@@ -976,8 +994,12 @@ private final class LibrarySearchItemCellView: NSTableCellView {
         locationField.stringValue = location ?? ""
         locationField.toolTip = location
         locationField.isHidden = location == nil
-        subtitleField.stringValue = subtitle
-        subtitleField.isHidden = subtitle.isEmpty
+        // Index excerpts may carry four lines; the row only has room for two under
+        // the bold title and folder/filename. Keep the full excerpt for AX/tooltips.
+        let visibleSnippet = Self.cappedSnippet(subtitle, lineLimit: 2)
+        subtitleField.stringValue = visibleSnippet
+        subtitleField.toolTip = subtitle.isEmpty ? nil : subtitle
+        subtitleField.isHidden = visibleSnippet.isEmpty
         symbolView.image = NSImage(systemSymbolName: systemImage, accessibilityDescription: nil)
         self.showsPlaylistButton = showsPlaylistButton
         playlistButton.isEnabled = true
@@ -988,6 +1010,7 @@ private final class LibrarySearchItemCellView: NSTableCellView {
 
         setAccessibilityLabel(title)
         let detail = [location, subtitle.isEmpty ? nil : subtitle].compactMap { $0 }.joined(separator: "\n")
+        setAccessibilityValue(detail.isEmpty ? nil : detail)
         setAccessibilityHelp(detail.isEmpty ? nil : detail)
         var accessibilityActions = [NSAccessibilityCustomAction(name: showsPlaylistButton ? "Preview" : title,
             target: self, selector: #selector(performAccessibleActivation))]
@@ -999,6 +1022,14 @@ private final class LibrarySearchItemCellView: NSTableCellView {
         self.onActivate = onActivate
         self.onAddToPlaylist = onAddToPlaylist
         updateColors()
+        needsLayout = true
+    }
+
+    private static func cappedSnippet(_ snippet: String, lineLimit: Int) -> String {
+        guard lineLimit > 0, !snippet.isEmpty else { return snippet }
+        let lines = snippet.split(separator: "\n", omittingEmptySubsequences: false)
+        guard lines.count > lineLimit else { return snippet }
+        return lines.prefix(lineLimit).joined(separator: "\n")
     }
 
     func focusPlaylistAccessory(in window: NSWindow, nextKeyView: NSView?, onBackTab: @escaping () -> Void) -> Bool {

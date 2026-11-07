@@ -134,6 +134,7 @@ final class LibrarySearchNavigationTests: XCTestCase {
                 XCTAssertEqual(title.stringValue, row == 1 ? "Amazing Grace" : "movie.mov")
                 XCTAssertFalse(title.isHidden)
                 XCTAssertEqual(cell.accessibilityLabel(), title.stringValue)
+                XCTAssertEqual(title.font, NSFont.systemFont(ofSize: 13, weight: .semibold))
                 XCTAssertGreaterThan(try XCTUnwrap(title.font).pointSize, try XCTUnwrap(location.font).pointSize)
                 XCTAssertFalse(location.isHidden)
                 XCTAssertEqual(location.stringValue, row == 1 ? "Lyrics/song.txt" : "Videos/movie.mov")
@@ -150,11 +151,80 @@ final class LibrarySearchNavigationTests: XCTestCase {
                     let excerpt = try XCTUnwrap(labels.first { $0.identifier?.rawValue == "LibrarySearch.ItemSnippet" })
                     XCTAssertTrue(excerpt.stringValue.hasPrefix("Matching passage"))
                     XCTAssertFalse(excerpt.isHidden)
+                    XCTAssertEqual(
+                        cell.accessibilityValue() as? String,
+                        "Lyrics/song.txt\nMatching passage at the end of the lyrics\nFollowing lyric"
+                    )
                     XCTAssertGreaterThanOrEqual(excerpt.frame.height, 2 * (excerpt.font?.ascender ?? 0),
                                                 "The excerpt owns two lines independently of the file location")
                     XCTAssertFalse(excerpt.convert(excerpt.bounds, to: cell).intersects(location.convert(location.bounds, to: cell)))
+                } else {
+                    XCTAssertEqual(cell.accessibilityValue() as? String, "Videos/movie.mov")
                 }
             }
+        }
+    }
+
+    @MainActor
+    func testResultCellKeepsAuthoredTitleVisibleAboveFourLineSnippets() async throws {
+        let song = URL(fileURLWithPath: "/tmp/Library/verseviewlyrics/221908.txt")
+        let fourLineSnippet = [
+            "onnumaathram njaan aagrahikkunnu",
+            "daivame ninte mukham kaanuvaan",
+            "ente maanasam vaanjchikkunnu",
+            "naathaa ninte shabdam kelkkuvaan"
+        ].joined(separator: "\n")
+        let fixture = SearchNavigationFixture(actions: [], results: [
+            .init(url: song, snippet: fourLineSnippet, title: "Onnumaathram njaan aagrahikkunnu")
+        ])
+        defer { fixture.close() }
+        await drainFocusRequest()
+        func descendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + descendants($0) } }
+
+        for width in [CGFloat(620), CGFloat(360)] {
+            fixture.scrollView.setFrameSize(.init(width: width, height: 300))
+            fixture.scrollView.layoutSubtreeIfNeeded()
+            fixture.table.layoutSubtreeIfNeeded()
+            let cell = try XCTUnwrap(fixture.table.view(atColumn: 0, row: 1, makeIfNecessary: true) as? NSTableCellView)
+            // Reuse + objectValue must not wipe the song title after configure.
+            cell.objectValue = nil
+            cell.layoutSubtreeIfNeeded()
+            let labels = descendants(cell).compactMap { $0 as? NSTextField }
+            let title = try XCTUnwrap(labels.first { $0.identifier?.rawValue == "LibrarySearch.ItemTitle" })
+            let location = try XCTUnwrap(labels.first { $0.identifier?.rawValue == "LibrarySearch.ItemLocation" })
+            let excerpt = try XCTUnwrap(labels.first { $0.identifier?.rawValue == "LibrarySearch.ItemSnippet" })
+
+            XCTAssertEqual(title.stringValue, "Onnumaathram njaan aagrahikkunnu")
+            XCTAssertFalse(title.isHidden)
+            XCTAssertGreaterThan(title.frame.height, 0)
+            XCTAssertEqual(title.font, NSFont.systemFont(ofSize: 13, weight: .semibold))
+            XCTAssertEqual(cell.accessibilityLabel(), "Onnumaathram njaan aagrahikkunnu")
+            XCTAssertEqual(location.stringValue, "verseviewlyrics/221908.txt")
+            XCTAssertEqual(
+                excerpt.stringValue,
+                "onnumaathram njaan aagrahikkunnu\ndaivame ninte mukham kaanuvaan",
+                "The row shows at most two excerpt lines under the title"
+            )
+            XCTAssertEqual(excerpt.stringValue.split(separator: "\n").count, 2)
+            XCTAssertEqual(
+                cell.accessibilityValue() as? String,
+                "verseviewlyrics/221908.txt\n" + fourLineSnippet
+            )
+
+            let titleFrame = title.convert(title.bounds, to: cell)
+            let locationFrame = location.convert(location.bounds, to: cell)
+            let excerptFrame = excerpt.convert(excerpt.bounds, to: cell)
+            for frame in [titleFrame, locationFrame, excerptFrame] {
+                XCTAssertGreaterThanOrEqual(frame.minY, -0.5)
+                XCTAssertLessThanOrEqual(frame.maxY, cell.bounds.maxY + 0.5,
+                                         "Title must remain inside the fixed row at width \(width)")
+                XCTAssertGreaterThan(frame.height, 0)
+            }
+            // NSTableCellView is not flipped: larger Y is toward the top of the row.
+            XCTAssertGreaterThan(titleFrame.minY, locationFrame.maxY - 0.5)
+            XCTAssertGreaterThan(locationFrame.minY, excerptFrame.maxY - 0.5)
+            XCTAssertFalse(titleFrame.intersects(locationFrame))
+            XCTAssertFalse(titleFrame.intersects(excerptFrame))
         }
     }
 

@@ -1206,13 +1206,17 @@ public struct ContentView: View {
         }
     }
 
+    /// Disk title reads only for URLs absent from the inventory cache. Playlist
+    /// labels always remap in memory through `displayName(for:)` afterward so a
+    /// warm cache cannot leave mutation/load rows stuck on filenames.
     private func rebuildDisplayNames(for urls: [URL]) {
         let missing = urls
             .map(\.standardizedFileURL)
             .filter { fileDisplayNames[$0] == nil }
-        guard !missing.isEmpty else { return }
-        let names = libraryFileScanner.displayNames(for: missing)
-        fileDisplayNames.merge(names) { _, new in new }
+        if !missing.isEmpty {
+            let names = libraryFileScanner.displayNames(for: missing)
+            fileDisplayNames.merge(names) { _, new in new }
+        }
         playlistStore.refreshResolvedSidebarItems(titleForURL: displayName(for:))
     }
 
