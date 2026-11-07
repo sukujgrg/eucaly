@@ -15,47 +15,31 @@ final class LibrarySearchWorkspaceTests: XCTestCase {
     }
 
     func testClosingControlsReleasesSearchFixtureWithRetainedNativeConfirmation() async throws {
-        var retained: AnyObject?
+        let probe = SearchCloseRetentionProbe()
         try await exerciseSearchFixture(fullscreen: false, beforeClose: { window in
-            func find(_ view: NSView) -> OutputWorkspaceCloseConfirmation.ConfirmationView? {
-                if let confirmation = view as? OutputWorkspaceCloseConfirmation.ConfirmationView { return confirmation }
-                return view.subviews.lazy.compactMap(find).first
-            }
-            retained = try XCTUnwrap(find(try XCTUnwrap(window.contentView)))
+            try probe.retainConfirmation(in: window)
         })
-        withExtendedLifetime(retained) {}
+        withExtendedLifetime(probe.retained) {}
     }
 
     func testClosingFullscreenControlsReleasesSearchFixtureWithRetainedToolbarActions() async throws {
-        var retained: [AnyObject] = []
+        let probe = SearchCloseRetentionProbe()
         try await exerciseSearchFixture(fullscreen: true, beforeClose: { window in
-            let toolbar = try XCTUnwrap(window.toolbar?.delegate as? PresentationToolbarController)
-            retained = [toolbar, toolbar.quickControls]
+            try probe.retainToolbar(in: window)
         })
-        withExtendedLifetime(retained) {}
+        withExtendedLifetime(probe.retained) {}
     }
 
     func testClosingFullscreenControlsReleasesSearchFixtureWithInspectedAccessibilityViews() async throws {
-        var retained: [AnyObject] = []
+        let probe = SearchCloseRetentionProbe()
         try await exerciseSearchFixture(fullscreen: true, beforeClose: { window in
-            var visited: Set<ObjectIdentifier> = []
-            func inspect(_ object: AnyObject) {
-                guard visited.insert(ObjectIdentifier(object)).inserted else { return }
-                retained.append(object)
-                if let view = object as? NSView { for child in view.subviews { inspect(child) } }
-                if let element = object as? any NSAccessibilityProtocol {
-                    for child in element.accessibilityChildren() ?? [] { inspect(child as AnyObject) }
-                }
-            }
-            inspect(window)
-            if let content = window.contentView { inspect(content) }
-            XCTAssertGreaterThan(retained.count, 20, "The probe must retain actual native and accessibility surfaces")
+            try probe.retainAccessibilitySurfaces(in: window)
         })
-        withExtendedLifetime(retained) {}
+        withExtendedLifetime(probe.retained) {}
     }
 
     private func exerciseSearchFixture(fullscreen: Bool,
-        beforeClose: (NSWindow) throws -> Void = { _ in }) async throws {
+        beforeClose: @MainActor (NSWindow) throws -> Void = { _ in }) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("SearchContentView-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let closed = expectation(description: "Search fixture releases its SQLite connection before removing the library")
@@ -85,7 +69,8 @@ final class LibrarySearchWorkspaceTests: XCTestCase {
     /// The close callback owns directory removal, including if a failed test
     /// leaves framework references alive beyond the assertion deadline.
     private func exerciseSearchCommandInRealContentView(
-        root: URL, fullscreen: Bool, lifetime: FixtureLifetime, beforeClose: (NSWindow) throws -> Void,
+        root: URL, fullscreen: Bool, lifetime: FixtureLifetime,
+        beforeClose: @MainActor (NSWindow) throws -> Void,
         onConnectionClosed: @escaping @Sendable (Int32) -> Void
     ) async throws {
         let song = root.appendingPathComponent("220192.txt")
@@ -360,6 +345,44 @@ final class LibrarySearchWorkspaceTests: XCTestCase {
         weak var model: LibrarySearchModel?
         weak var inventory: LibraryInventoryStore?
         weak var index: LibraryTextSearchIndex?
+    }
+
+    /// Owns retained surfaces for close-lifetime probes so beforeClose does not
+    /// mutate captured locals or nest nonisolated AppKit helpers.
+    @MainActor private final class SearchCloseRetentionProbe {
+        private(set) var retained: [AnyObject] = []
+
+        func retainConfirmation(in window: NSWindow) throws {
+            retained = [try XCTUnwrap(findConfirmation(in: try XCTUnwrap(window.contentView)))]
+        }
+
+        func retainToolbar(in window: NSWindow) throws {
+            let toolbar = try XCTUnwrap(window.toolbar?.delegate as? PresentationToolbarController)
+            retained = [toolbar, toolbar.quickControls]
+        }
+
+        func retainAccessibilitySurfaces(in window: NSWindow) throws {
+            retained.removeAll()
+            var visited: Set<ObjectIdentifier> = []
+            func inspect(_ object: AnyObject) {
+                guard visited.insert(ObjectIdentifier(object)).inserted else { return }
+                retained.append(object)
+                if let view = object as? NSView {
+                    for child in view.subviews { inspect(child) }
+                }
+                if let element = object as? any NSAccessibilityProtocol {
+                    for child in element.accessibilityChildren() ?? [] { inspect(child as AnyObject) }
+                }
+            }
+            inspect(window)
+            if let content = window.contentView { inspect(content) }
+            XCTAssertGreaterThan(retained.count, 20, "The probe must retain actual native and accessibility surfaces")
+        }
+
+        private func findConfirmation(in view: NSView) -> OutputWorkspaceCloseConfirmation.ConfirmationView? {
+            if let confirmation = view as? OutputWorkspaceCloseConfirmation.ConfirmationView { return confirmation }
+            return view.subviews.lazy.compactMap { self.findConfirmation(in: $0) }.first
+        }
     }
 
     private func assertHittable(_ control: NSView, in window: NSWindow,

@@ -423,7 +423,7 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
             let fileAcquisitionGuard = makeFileAcquisitionGuard(url)
             Task { @MainActor [weak self] in
                 let bookmark = await Task.detached { createBackgroundBookmark(url) }.value
-                guard var profile = store.profile(selectedProfileID) else { return }
+                guard let profile = store.profile(selectedProfileID) else { return }
                 guard let bookmark else {
                     if let self, self.profileID == selectedProfileID {
                         self.validationLabel.stringValue = "The selected background could not be saved. Choose Visual again to retry; the existing background is unchanged."

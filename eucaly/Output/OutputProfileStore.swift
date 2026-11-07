@@ -265,8 +265,10 @@ final class OutputProfileStore: ObservableObject {
     /// - Parameter seedProfileTargetsForNewDestinations: Add Output seeds a missing
     ///   Profile Target. Undo Remove must pass `false` so restoring a row cannot
     ///   invent a target when the operator left None or chose another output.
-    func edit(_ action: (inout OutputProfileDocument) -> Void,
-              seedProfileTargetsForNewDestinations seedNewTargets: Bool = true) {
+    func edit(
+        seedProfileTargetsForNewDestinations seedNewTargets: Bool = true,
+        _ action: (inout OutputProfileDocument) -> Void
+    ) {
         var next = document; action(&next)
         next.restoreBuiltInProfileNames()
         sanitizeProfileTargets(&next)

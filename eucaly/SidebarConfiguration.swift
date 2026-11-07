@@ -1,7 +1,7 @@
 import Foundation
 import CoreGraphics
 
-enum SidebarSelection: Hashable {
+nonisolated enum SidebarSelection: Hashable, Sendable {
     case library(URL)
     case playlist(UUID)
     case window(CGWindowID)

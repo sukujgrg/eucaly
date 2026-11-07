@@ -209,12 +209,17 @@ final class OutputDefaultTests: XCTestCase {
             beginBackgroundSheet: { _, _, completed in completion = completed })
         // Stale hostWindow after another toolbar takes the window — the former
         // popup-button path failed closed because view.window became nil.
+        // Retain parked so the weak mountedToolbar stays non-nil and refusal is
+        // ownership mismatch, not a dead temporary.
+        let parked = NSToolbar(identifier: "eucaly.test.parked.\(UUID())")
         let foreign = NSToolbar(identifier: "eucaly.test.foreign.\(UUID())")
+        controls.mountedToolbar = parked
         fixture.window.toolbar = foreign
         controls.hostWindow = fixture.window
-        controls.mountedToolbar = NSToolbar(identifier: "eucaly.test.parked.\(UUID())")
-        invoke(try item("Choose…", in: controls.background.menu))
-        XCTAssertNil(completion, "Parked controls must not sheet on another workspace's window")
+        try withExtendedLifetime(parked) {
+            invoke(try item("Choose…", in: controls.background.menu))
+            XCTAssertNil(completion, "Parked controls must not sheet on another workspace's window")
+        }
         fixture.host(controls)
         invoke(try item("Choose…", in: controls.background.menu))
         XCTAssertNotNil(completion, "Mounted controls may still present Choose… on their window")

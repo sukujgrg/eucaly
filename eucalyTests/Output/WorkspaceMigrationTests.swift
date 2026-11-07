@@ -204,7 +204,7 @@ final class WorkspaceMigrationTests: XCTestCase {
         exclusive.background.colour = .init(red: 0.2, green: 0.4, blue: 0.6)
         var row = OutputDestinationConfiguration(id: destinationID, name: "Online", profileID: exclusiveID, monitor: nil)
         row.ndi = .init(sourceName: "Online")
-        var document = OutputProfileDocument(version: 7, profiles: OutputProfile.builtIns + [exclusive], destinations: [row])
+        let document = OutputProfileDocument(version: 7, profiles: OutputProfile.builtIns + [exclusive], destinations: [row])
         var root = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(document)) as? [String: Any])
         root["version"] = 7
         var destinations = try XCTUnwrap(root["destinations"] as? [[String: Any]])
