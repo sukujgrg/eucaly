@@ -304,7 +304,8 @@ final class LibrarySearchWorkspaceTests: XCTestCase {
         XCTAssertTrue(presenter.present(in: window, model: model, currentSelectedURL: { nil },
             onRunAction: { _ in XCTFail("Add must not run a command") },
             onOpenResult: { opened.append($0) }, onAddResultToPlaylist: { url in
-                playlist.add(url: url, after: nil) == nil ? .failed(playlist.lastError ?? "Add failed") : .added
+                playlist.add(url: url, after: nil, titleForURL: { $0.lastPathComponent }) == nil
+                    ? .failed(playlist.lastError ?? "Add failed") : .added
             }))
         let palette = try XCTUnwrap(presenter.activeController)
         try await until { palette.searchField.currentEditor() != nil }

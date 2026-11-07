@@ -17,7 +17,7 @@ final class PlaylistStore: ObservableObject {
     static let shared = PlaylistStore()
 
     @Published private(set) var entries: [PlaylistEntry] = []
-    /// Sidebar rows resolved at load/mutation time — not during SwiftUI body eval.
+    /// Sidebar rows resolved at mutation/refresh time — not during SwiftUI body eval.
     @Published private(set) var sidebarItems: [PlaylistSidebarItem] = []
     @Published private(set) var lastError: String?
 
@@ -31,6 +31,8 @@ final class PlaylistStore: ObservableObject {
     private let playlistDirectoryName = "Playlist"
     private let playlistFileName = "playlist.json"
 
+    /// Loads entries and rebuilds the resolve map. Does not publish sidebar labels —
+    /// callers must `refreshResolvedSidebarItems` after filling inventory titles.
     @discardableResult
     func load(fromRoot root: URL?) -> Bool {
         let previousRoot = rootURL
@@ -54,14 +56,11 @@ final class PlaylistStore: ObservableObject {
         }
 
         do {
-            let previousTitles = previousRoot?.standardizedFileURL == root.standardizedFileURL
-                ? preservedTitlesByURL()
-                : [:]
             entries = try readEntries()
-            republishSidebarItems(titleForURL: { Self.temporaryTitle(for: $0, preserving: previousTitles) })
+            rebuildResolvedURLs()
             return true
         } catch {
-            if previousRoot != root {
+            if previousRoot?.standardizedFileURL != root.standardizedFileURL {
                 entries = []
                 resolvedURLsByID = [:]
                 sidebarItems = []
@@ -72,7 +71,7 @@ final class PlaylistStore: ObservableObject {
     }
 
     @discardableResult
-    func add(url: URL, after anchorID: UUID?) -> UUID? {
+    func add(url: URL, after anchorID: UUID?, titleForURL: (URL) -> String) -> UUID? {
         guard let root = rootURL else {
             lastError = "Set a library root before adding to Playlist."
             return nil
@@ -83,7 +82,7 @@ final class PlaylistStore: ObservableObject {
         }
 
         let newEntry = PlaylistEntry(id: UUID(), relativePath: relativePath, addedAt: Date())
-        let saved = updateEntries { entries in
+        let saved = updateEntries(titleForURL: titleForURL) { entries in
             if let anchorID, let anchorIndex = entries.firstIndex(where: { $0.id == anchorID }) {
                 entries.insert(newEntry, at: anchorIndex + 1)
             } else {
@@ -94,15 +93,15 @@ final class PlaylistStore: ObservableObject {
     }
 
     @discardableResult
-    func remove(ids: Set<UUID>) -> Bool {
+    func remove(ids: Set<UUID>, titleForURL: (URL) -> String) -> Bool {
         guard !ids.isEmpty else { return true }
-        return updateEntries { $0.removeAll { ids.contains($0.id) } }
+        return updateEntries(titleForURL: titleForURL) { $0.removeAll { ids.contains($0.id) } }
     }
 
     @discardableResult
-    func moveUp(ids: Set<UUID>) -> Bool {
+    func moveUp(ids: Set<UUID>, titleForURL: (URL) -> String) -> Bool {
         guard !ids.isEmpty else { return true }
-        return updateEntries { entries in
+        return updateEntries(titleForURL: titleForURL) { entries in
             guard entries.count > 1 else { return }
             for index in 1..<entries.count where ids.contains(entries[index].id) && !ids.contains(entries[index - 1].id) {
                 entries.swapAt(index, index - 1)
@@ -111,9 +110,9 @@ final class PlaylistStore: ObservableObject {
     }
 
     @discardableResult
-    func moveDown(ids: Set<UUID>) -> Bool {
+    func moveDown(ids: Set<UUID>, titleForURL: (URL) -> String) -> Bool {
         guard !ids.isEmpty else { return true }
-        return updateEntries { entries in
+        return updateEntries(titleForURL: titleForURL) { entries in
             guard entries.count > 1 else { return }
             for index in stride(from: entries.count - 2, through: 0, by: -1) where ids.contains(entries[index].id) && !ids.contains(entries[index + 1].id) {
                 entries.swapAt(index, index + 1)
@@ -161,21 +160,15 @@ final class PlaylistStore: ObservableObject {
         return url
     }
 
-    /// Keep previously resolved display titles across load/mutation republishes so
-    /// filename is only a temporary fallback until the workspace refreshes from
-    /// the shared inventory cache.
-    private func preservedTitlesByURL() -> [URL: String] {
-        var titles: [URL: String] = [:]
-        titles.reserveCapacity(sidebarItems.count)
-        for item in sidebarItems {
-            guard let url = resolvedURLsByID[item.id]?.standardizedFileURL else { continue }
-            titles[url] = item.title
+    private func rebuildResolvedURLs() {
+        var map: [UUID: URL] = [:]
+        map.reserveCapacity(entries.count)
+        for entry in entries {
+            if let url = resolveExistingURL(for: entry) {
+                map[entry.id] = url
+            }
         }
-        return titles
-    }
-
-    private static func temporaryTitle(for url: URL, preserving previous: [URL: String]) -> String {
-        previous[url.standardizedFileURL] ?? url.lastPathComponent
+        resolvedURLsByID = map
     }
 
     private func scheduleSidebarMissing(_ id: UUID) {
@@ -209,6 +202,7 @@ final class PlaylistStore: ObservableObject {
         let items = entries.map { entry -> PlaylistSidebarItem in
             if let url = resolveExistingURL(for: entry) {
                 map[entry.id] = url
+                // `url` is already standardized by resolveExistingURL.
                 return PlaylistSidebarItem(id: entry.id, title: titleForURL(url), exists: true)
             }
             return PlaylistSidebarItem(
@@ -234,7 +228,10 @@ final class PlaylistStore: ObservableObject {
     /// Mutations use the latest saved order, even for separately constructed stores.
     /// An unreadable document must not be replaced by an empty fallback snapshot.
     @discardableResult
-    private func updateEntries(_ update: (inout [PlaylistEntry]) -> Void) -> Bool {
+    private func updateEntries(
+        titleForURL: (URL) -> String,
+        _ update: (inout [PlaylistEntry]) -> Void
+    ) -> Bool {
         lastError = nil
         guard let playlistDirectoryURL, let playlistDocumentURL else {
             lastError = "Set a library root before changing Playlist."
@@ -246,9 +243,8 @@ final class PlaylistStore: ObservableObject {
             let data = try JSONEncoder().encode(PlaylistDocument(version: 1, entries: latestEntries))
             try fileManager.createDirectory(at: playlistDirectoryURL, withIntermediateDirectories: true)
             try data.write(to: playlistDocumentURL, options: .atomic)
-            let previousTitles = preservedTitlesByURL()
             entries = latestEntries
-            republishSidebarItems(titleForURL: { Self.temporaryTitle(for: $0, preserving: previousTitles) })
+            republishSidebarItems(titleForURL: titleForURL)
             return true
         } catch {
             lastError = "Could not save Playlist: \(error.localizedDescription)"

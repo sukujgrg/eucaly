@@ -1022,14 +1022,28 @@ private final class LibrarySearchItemCellView: NSTableCellView {
         self.onActivate = onActivate
         self.onAddToPlaylist = onAddToPlaylist
         updateColors()
-        needsLayout = true
+        let stackWidth = textStack.bounds.width
+        if stackWidth > 0 {
+            if abs(subtitleField.preferredMaxLayoutWidth - stackWidth) > 0.5 {
+                subtitleField.preferredMaxLayoutWidth = stackWidth
+            }
+        } else {
+            needsLayout = true
+        }
     }
 
     private static func cappedSnippet(_ snippet: String, lineLimit: Int) -> String {
         guard lineLimit > 0, !snippet.isEmpty else { return snippet }
-        let lines = snippet.split(separator: "\n", omittingEmptySubsequences: false)
-        guard lines.count > lineLimit else { return snippet }
-        return lines.prefix(lineLimit).joined(separator: "\n")
+        var end = snippet.startIndex
+        var linesFound = 0
+        while let newline = snippet[end...].firstIndex(of: "\n") {
+            linesFound += 1
+            if linesFound == lineLimit {
+                return String(snippet[..<newline])
+            }
+            end = snippet.index(after: newline)
+        }
+        return snippet
     }
 
     func focusPlaylistAccessory(in window: NSWindow, nextKeyView: NSView?, onBackTab: @escaping () -> Void) -> Bool {

@@ -81,7 +81,11 @@ final class PlaylistSelectionReconciliationTests: XCTestCase {
         XCTAssertTrue(store.load(fromRoot: root))
         var ordered: [UUID] = []
         for title in ["First", "Second", "Third", "Fourth"] {
-            ordered.append(try XCTUnwrap(store.add(url: root.appendingPathComponent(title + ".txt"), after: nil)))
+            ordered.append(try XCTUnwrap(store.add(
+                url: root.appendingPathComponent(title + ".txt"),
+                after: nil,
+                titleForURL: { $0.lastPathComponent }
+            )))
         }
         let document = root.appendingPathComponent("Playlist/playlist.json")
         let originalDocument = try Data(contentsOf: document)
@@ -93,12 +97,12 @@ final class PlaylistSelectionReconciliationTests: XCTestCase {
             selected.insert(staleID)
             let availability = PlaylistMoveAvailability(selectedIDs: selected, orderedIDs: ordered)
 
-            XCTAssertTrue(store.moveUp(ids: selected))
+            XCTAssertTrue(store.moveUp(ids: selected, titleForURL: { $0.lastPathComponent }))
             XCTAssertEqual(availability.canMoveUp, store.entries.map(\.id) != ordered, "Up for selection mask \(mask)")
             try originalDocument.write(to: document, options: .atomic)
             XCTAssertTrue(store.load(fromRoot: root))
 
-            XCTAssertTrue(store.moveDown(ids: selected))
+            XCTAssertTrue(store.moveDown(ids: selected, titleForURL: { $0.lastPathComponent }))
             XCTAssertEqual(availability.canMoveDown, store.entries.map(\.id) != ordered, "Down for selection mask \(mask)")
             try originalDocument.write(to: document, options: .atomic)
             XCTAssertTrue(store.load(fromRoot: root))
@@ -111,10 +115,13 @@ final class PlaylistSelectionReconciliationTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let store = PlaylistStore()
         XCTAssertTrue(store.load(fromRoot: root))
-        let first = try XCTUnwrap(store.add(url: root.appendingPathComponent("First.txt"), after: nil))
-        let primary = try XCTUnwrap(store.add(url: root.appendingPathComponent("Second.txt"), after: nil))
-        let third = try XCTUnwrap(store.add(url: root.appendingPathComponent("Third.txt"), after: nil))
-        XCTAssertTrue(store.remove(ids: [primary]))
+        let first = try XCTUnwrap(store.add(
+            url: root.appendingPathComponent("First.txt"), after: nil, titleForURL: { $0.lastPathComponent }))
+        let primary = try XCTUnwrap(store.add(
+            url: root.appendingPathComponent("Second.txt"), after: nil, titleForURL: { $0.lastPathComponent }))
+        let third = try XCTUnwrap(store.add(
+            url: root.appendingPathComponent("Third.txt"), after: nil, titleForURL: { $0.lastPathComponent }))
+        XCTAssertTrue(store.remove(ids: [primary], titleForURL: { $0.lastPathComponent }))
         let available = Set(store.entries.map(\.id))
         let firstWorkspace = PlaylistSelectionReconciliation(
             selectedIDs: [first, primary], primaryID: primary, availableIDs: available)
@@ -133,14 +140,16 @@ final class PlaylistSelectionReconciliationTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let store = PlaylistStore()
         XCTAssertTrue(store.load(fromRoot: root))
-        let first = try XCTUnwrap(store.add(url: root.appendingPathComponent("First.txt"), after: nil))
-        let primary = try XCTUnwrap(store.add(url: root.appendingPathComponent("Second.txt"), after: nil))
+        let first = try XCTUnwrap(store.add(
+            url: root.appendingPathComponent("First.txt"), after: nil, titleForURL: { $0.lastPathComponent }))
+        let primary = try XCTUnwrap(store.add(
+            url: root.appendingPathComponent("Second.txt"), after: nil, titleForURL: { $0.lastPathComponent }))
         let before = PlaylistSelectionReconciliation(
             selectedIDs: [first, primary], primaryID: primary, availableIDs: Set(store.entries.map(\.id)))
         let document = root.appendingPathComponent("Playlist/playlist.json")
         let unreadable = Data("not a readable playlist".utf8)
         try unreadable.write(to: document)
-        XCTAssertFalse(store.remove(ids: [primary]))
+        XCTAssertFalse(store.remove(ids: [primary], titleForURL: { $0.lastPathComponent }))
         let after = PlaylistSelectionReconciliation(
             selectedIDs: before.selectedIDs, primaryID: before.primaryID, availableIDs: Set(store.entries.map(\.id)))
         XCTAssertEqual(after, before)

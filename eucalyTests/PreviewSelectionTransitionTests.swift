@@ -69,7 +69,8 @@ final class PreviewSelectionTransitionTests: XCTestCase {
         fixture.flow.setPreviewSlides(LyricsParser.parseDocument("Restored lyrics").slides)
         XCTAssertTrue(fixture.flow.canLoadPreview)
 
-        XCTAssertTrue(fixture.playlist.remove(ids: [fixture.entryID]))
+        XCTAssertTrue(fixture.playlist.remove(
+            ids: [fixture.entryID], titleForURL: { $0.lastPathComponent }))
         XCTAssertFalse(fixture.flow.previewPlaylistEntry(fixture.entryID, from: fixture.playlist) { _ in
             XCTFail("A retained selection for a removed entry must not load a file")
         })
@@ -208,7 +209,8 @@ final class PreviewSelectionTransitionTests: XCTestCase {
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             let playlist = PlaylistStore()
             XCTAssertTrue(playlist.load(fromRoot: root))
-            let entryID = try XCTUnwrap(playlist.add(url: missingURL, after: nil))
+            let entryID = try XCTUnwrap(playlist.add(
+                url: missingURL, after: nil, titleForURL: { $0.lastPathComponent }))
             let current = LyricsParser.parseDocument("Current stays private to this workspace").slides
             self.root = root
             self.missingURL = missingURL
