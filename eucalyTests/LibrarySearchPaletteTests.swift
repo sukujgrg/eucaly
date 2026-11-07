@@ -333,7 +333,8 @@ final class LibrarySearchPaletteTests: XCTestCase {
                 onOpenResult: { [weak self] in self?.opened.append($0) },
                 onAddResultToPlaylist: { [weak self] url in
                     guard let self else { return .failed("Closed") }
-                    return self.store.add(url: url, after: nil) != nil
+                    return self.store.add(
+                        url: url, after: nil, titleForURL: { $0.lastPathComponent }) != nil
                         ? .added : .failed(self.store.lastError ?? "Could not add file")
                 }))
             return try XCTUnwrap(presenter.activeController)

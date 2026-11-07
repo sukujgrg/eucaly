@@ -1126,10 +1126,12 @@ public struct ContentView: View {
         }
         ensurePlaylistDirectory(in: root)
         playlistStore.load(fromRoot: root)
-        reconcilePlaylistSelection()
         folderURL = root
         libraryInventory.ensureLoaded(root: root)
         if let snapshot = libraryInventory.snapshot(root: root) { applyLibraryInventory(snapshot) }
+        // Load does not publish labels; refresh once after inventory titles are warm.
+        refreshPlaylistSidebarTitles()
+        reconcilePlaylistSelection()
     }
 
     private func ensurePlaylistDirectory(in root: URL) {
@@ -1144,10 +1146,6 @@ public struct ContentView: View {
         let standardizedURL = url.standardizedFileURL
         if let name = fileDisplayNames[standardizedURL], !name.isEmpty { return name }
         return standardizedURL.lastPathComponent
-    }
-
-    private var playlistResolvedURLs: [URL] {
-        playlistStore.resolvedURLs
     }
 
     @MainActor
@@ -1186,13 +1184,13 @@ public struct ContentView: View {
             return .failed("Set a library root before adding to playlists.")
         }
 
-        guard playlistStore.add(url: url, after: selectedPlaylistEntryID) != nil else {
+        guard commitPlaylistAdd(url, after: selectedPlaylistEntryID) != nil else {
             return .failed(playlistStore.lastError ?? "Could not add this file to Playlist.")
         }
 
         // The store already publishes the committed order. A second disk read
         // must not turn a successful add into an apparent failure and retry.
-        finishPlaylistMutation()
+        reconcilePlaylistSelection()
         return .added
     }
 
@@ -1206,23 +1204,20 @@ public struct ContentView: View {
         }
     }
 
-    /// Disk title reads only for URLs absent from the inventory cache. Playlist
-    /// labels always remap in memory through `displayName(for:)` afterward so a
-    /// warm cache cannot leave mutation/load rows stuck on filenames.
-    private func rebuildDisplayNames(for urls: [URL]) {
-        let missing = urls
-            .map(\.standardizedFileURL)
-            .filter { fileDisplayNames[$0] == nil }
-        if !missing.isEmpty {
-            let names = libraryFileScanner.displayNames(for: missing)
-            fileDisplayNames.merge(names) { _, new in new }
-        }
+    private func refreshPlaylistSidebarTitles(including urls: [URL] = []) {
+        LibraryFileDisplayNames.ensureMissing(
+            urls: urls + playlistStore.resolvedURLs,
+            in: &fileDisplayNames,
+            using: libraryFileScanner
+        )
         playlistStore.refreshResolvedSidebarItems(titleForURL: displayName(for:))
     }
 
-    private func finishPlaylistMutation() {
-        reconcilePlaylistSelection()
-        rebuildDisplayNames(for: playlistResolvedURLs)
+    @discardableResult
+    private func commitPlaylistAdd(_ url: URL, after anchorID: UUID?) -> UUID? {
+        LibraryFileDisplayNames.ensureMissing(
+            urls: [url], in: &fileDisplayNames, using: libraryFileScanner)
+        return playlistStore.add(url: url, after: anchorID, titleForURL: displayName(for:))
     }
 
     private func loadPlaylists() {
@@ -1232,7 +1227,7 @@ public struct ContentView: View {
             newFileWarning = playlistStore.lastError
             return
         }
-        rebuildDisplayNames(for: playlistResolvedURLs)
+        refreshPlaylistSidebarTitles()
     }
 
     private func reconcilePlaylistSelection() {
@@ -1277,9 +1272,9 @@ public struct ContentView: View {
             return
         }
 
-        if playlistStore.add(url: source, after: selectedPlaylistEntryID) != nil {
+        if commitPlaylistAdd(source, after: selectedPlaylistEntryID) != nil {
             newFileWarning = nil
-            finishPlaylistMutation()
+            reconcilePlaylistSelection()
             return
         }
 
@@ -1289,23 +1284,25 @@ public struct ContentView: View {
     private func removeSelectedFromPlaylist() {
         reconcilePlaylistSelection()
         guard !selectedPlaylistEntryIDs.isEmpty else { return }
-        guard playlistStore.remove(ids: Set(selectedPlaylistEntryIDs)) else {
+        guard playlistStore.remove(
+            ids: Set(selectedPlaylistEntryIDs), titleForURL: displayName(for:)
+        ) else {
             newFileWarning = playlistStore.lastError
             return
         }
         newFileWarning = nil
-        finishPlaylistMutation()
+        reconcilePlaylistSelection()
     }
 
     private func removePlaylistItem(_ id: UUID) {
         reconcilePlaylistSelection()
         guard playlistStore.entries.contains(where: { $0.id == id }) else { return }
-        guard playlistStore.remove(ids: [id]) else {
+        guard playlistStore.remove(ids: [id], titleForURL: displayName(for:)) else {
             newFileWarning = playlistStore.lastError
             return
         }
         newFileWarning = nil
-        finishPlaylistMutation()
+        reconcilePlaylistSelection()
     }
 
     private func moveSelectedPlaylistEntriesUp() {
@@ -1313,12 +1310,14 @@ public struct ContentView: View {
         let availability = PlaylistMoveAvailability(
             selectedIDs: Set(selectedPlaylistEntryIDs), orderedIDs: playlistStore.entries.map(\.id))
         guard availability.canMoveUp else { return }
-        guard playlistStore.moveUp(ids: Set(selectedPlaylistEntryIDs)) else {
+        guard playlistStore.moveUp(
+            ids: Set(selectedPlaylistEntryIDs), titleForURL: displayName(for:)
+        ) else {
             newFileWarning = playlistStore.lastError
             return
         }
         newFileWarning = nil
-        finishPlaylistMutation()
+        reconcilePlaylistSelection()
         refreshPlaylistMultiPreviewIfNeeded()
     }
 
@@ -1327,12 +1326,14 @@ public struct ContentView: View {
         let availability = PlaylistMoveAvailability(
             selectedIDs: Set(selectedPlaylistEntryIDs), orderedIDs: playlistStore.entries.map(\.id))
         guard availability.canMoveDown else { return }
-        guard playlistStore.moveDown(ids: Set(selectedPlaylistEntryIDs)) else {
+        guard playlistStore.moveDown(
+            ids: Set(selectedPlaylistEntryIDs), titleForURL: displayName(for:)
+        ) else {
             newFileWarning = playlistStore.lastError
             return
         }
         newFileWarning = nil
-        finishPlaylistMutation()
+        reconcilePlaylistSelection()
         refreshPlaylistMultiPreviewIfNeeded()
     }
 
@@ -1655,7 +1656,7 @@ public struct ContentView: View {
             guard isStillCurrent() else { return false }
             lyricsEditor.markSaved(to: url)
             if libraryRootURL == nil {
-                rebuildDisplayNames(for: [url] + playlistResolvedURLs)
+                refreshPlaylistSidebarTitles(including: [url])
             }
             newFileWarning = nil
             _ = syncEditorDraftToPreview()
