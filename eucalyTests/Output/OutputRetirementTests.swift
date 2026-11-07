@@ -10,7 +10,7 @@ final class OutputRetirementTests: XCTestCase {
         XCTAssertEqual(document.version, 9)
         XCTAssertEqual(document.destinations, [fixture.native])
         XCTAssertEqual(document.profileTargets, [OutputWorkspaceRecord.primaryID: fixture.native.id])
-        var expected = fixture.profiles + [fixture.promotedExclusive]
+        let expected = fixture.profiles + [fixture.promotedExclusive]
         XCTAssertEqual(document.profiles, expected)
         XCTAssertEqual(try OutputLegacyMigration.decode(JSONEncoder().encode(document)), document)
     }

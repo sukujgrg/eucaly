@@ -14,7 +14,7 @@ final class PresentationSessionLifetimeTests: XCTestCase {
         session.setSlides(slides)
         outputs?.stopAllOutputs()
         let savedDocument = profiles.document
-        weak var retiredCoordinator = outputs
+        weak let retiredCoordinator = outputs
 
         // Native controls can retain their session after the app-owned runtime
         // retires. Keep that session alive while its passive publication waits.
@@ -42,7 +42,7 @@ final class PresentationSessionLifetimeTests: XCTestCase {
 
         session.moveSelection(1)
         session.moveSelection(direction: .nextItem)
-        weak var retiredCoordinator = outputs
+        weak let retiredCoordinator = outputs
         outputs = nil
         XCTAssertNil(retiredCoordinator, "Queued input must not retain a retired output owner.")
         await drainMainQueue()
@@ -69,7 +69,7 @@ final class PresentationSessionLifetimeTests: XCTestCase {
         // NotificationCenter calls the main-queue observer synchronously here;
         // its actor task cannot run until this turn releases the actual owner.
         NotificationCenter.default.post(name: .AVPlayerItemDidPlayToEndTime, object: item)
-        weak var retiredCoordinator = outputs
+        weak let retiredCoordinator = outputs
         outputs = nil
         XCTAssertNil(retiredCoordinator, "An admitted audio callback must not retain its owner through retirement.")
         await drainMainQueue()

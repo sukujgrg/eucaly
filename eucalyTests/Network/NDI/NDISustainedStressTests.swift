@@ -272,7 +272,7 @@ final class NDISustainedStressTests: XCTestCase {
                 XCTAssertEqual(player.volume, outputs.monitorAudioLocally(workspace: home.outputSourceID) ? 1 : 0)
                 XCTAssertEqual(outputs.media(for: anchor.id)?.programAudioGain.value, 1)
                 XCTAssertEqual(outputs.media(for: anchor.id)?.networkVideoFrames.sourceCount, 1)
-                XCTAssertTrue(player.videoOutput is AVPlayerVideoOutput)
+                XCTAssertNotNil(player.videoOutput)
                 XCTAssertEqual(b.audioGaps, 0, "The stationary receiver must retain its audio sample clock")
                 XCTAssertEqual(b.audio?.droppedFrames, 0, "The audio pump must keep up with the stationary source")
                 XCTAssertEqual(b.silentFrames, anchorStartupSilence,

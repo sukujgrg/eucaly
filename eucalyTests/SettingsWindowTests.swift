@@ -112,7 +112,7 @@ final class SettingsWindowTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(10))
         }
         XCTAssertTrue(general.cacheLabel.stringValue.contains("0 thumbnails"))
-        XCTAssertEqual(general.cacheLabel.accessibilityValue() as? String, general.cacheLabel.stringValue)
+        XCTAssertEqual(general.cacheLabel.accessibilityValue(), general.cacheLabel.stringValue)
     }
 
     func testLibraryPreferencesRetainBookmarkAndPathAndShowRestorationNotice() throws {

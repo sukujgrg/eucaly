@@ -195,7 +195,7 @@ final class NetworkVideoInputTests: XCTestCase {
         var frame: NetworkFrameResource?
         try await until { frame = try b.latest(); return frame != nil }
         XCTAssertEqual(frame?.input.format, .nv12VideoRange)
-        XCTAssertTrue(player.videoOutput is AVPlayerVideoOutput)
+        XCTAssertNotNil(player.videoOutput)
         a.release()
         XCTAssertEqual(pool.sourceCount, 1)
         XCTAssertNotNil(try b.latest())
@@ -214,7 +214,7 @@ final class NetworkVideoInputTests: XCTestCase {
         b.release() // A late release from the retired pool must not remove this source.
         XCTAssertEqual(pool.sourceCount, 1)
         try await until { try replacement.latest() != nil }
-        XCTAssertTrue(player.videoOutput is AVPlayerVideoOutput)
+        XCTAssertNotNil(player.videoOutput)
         replacement.release()
         XCTAssertEqual(pool.sourceCount, 0)
         try await until { player.videoOutput == nil }
@@ -235,7 +235,7 @@ final class NetworkVideoInputTests: XCTestCase {
             _ = resume.wait(timeout: .now() + 2)
         })
         defer { resume.signal(); source.stop(); player.pause() }
-        try await until { player.videoOutput is AVPlayerVideoOutput }
+        try await until { player.videoOutput != nil }
         DispatchQueue.global(qos: .userInitiated).async {
             defer { finished.fulfill() }
             _ = try? source.latest()

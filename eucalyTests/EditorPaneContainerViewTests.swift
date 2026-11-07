@@ -230,26 +230,40 @@ private final class EditorPaneFixture {
     }
 
     func textToolsMenu() throws -> NSMenu {
-        var trackedMenu: NSMenu?
-        let observer = NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: nil) { notification in
-            MainActor.assumeIsolated {
-                guard let menu = notification.object as? NSMenu else { return }
-                trackedMenu = menu
-                // The begin notification precedes entry into the tracking
-                // loop. Cancel on that loop's first controlled opportunity.
-                RunLoop.main.perform(inModes: [.eventTracking]) {
-                    MainActor.assumeIsolated { menu.cancelTracking() }
-                }
-            }
-        }
-        defer { NotificationCenter.default.removeObserver(observer) }
+        let probe = TextToolsMenuTrackingProbe()
+        NotificationCenter.default.addObserver(
+            probe,
+            selector: #selector(TextToolsMenuTrackingProbe.menuDidBeginTracking(_:)),
+            name: NSMenu.didBeginTrackingNotification,
+            object: nil
+        )
+        defer { NotificationCenter.default.removeObserver(probe) }
         try textToolsPopup().performClick(nil)
-        return try XCTUnwrap(trackedMenu, "Pressing Text Tools must open a native menu")
+        return try XCTUnwrap(probe.trackedMenu, "Pressing Text Tools must open a native menu")
     }
 
     func close() {
         window.close()
         if let previousKeyWindow, previousKeyWindow.isVisible { previousKeyWindow.makeKeyAndOrderFront(nil) }
+    }
+}
+
+/// AppKit selector observer — no @Sendable closures capturing NSMenu.
+@MainActor
+private final class TextToolsMenuTrackingProbe: NSObject {
+    var trackedMenu: NSMenu?
+
+    @objc func menuDidBeginTracking(_ notification: Notification) {
+        guard let menu = notification.object as? NSMenu else { return }
+        trackedMenu = menu
+        // The begin notification precedes entry into the tracking loop.
+        // Cancel on that loop's first controlled opportunity via target-action.
+        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(cancelTrackedMenu), object: nil)
+        perform(#selector(cancelTrackedMenu), with: nil, afterDelay: 0, inModes: [.eventTracking])
+    }
+
+    @objc private func cancelTrackedMenu() {
+        trackedMenu?.cancelTracking()
     }
 }
 

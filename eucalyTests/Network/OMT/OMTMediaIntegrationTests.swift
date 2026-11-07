@@ -113,7 +113,7 @@ final class OMTMediaIntegrationTests: XCTestCase {
             XCTAssertEqual(pcm.rightRMS, 0.04 / sqrt(2), accuracy: 0.008)
             XCTAssertEqual(player.volume, 0)
             XCTAssertEqual(outputs.media(for: row.id)?.networkVideoFrames.sourceCount, 1)
-            XCTAssertTrue(player.videoOutput is AVPlayerVideoOutput)
+            XCTAssertNotNil(player.videoOutput)
 
             let privateBoundary = Self.now100ns
             let acceptedRevision = outputs.snapshot(for: row.id).documentRevision
