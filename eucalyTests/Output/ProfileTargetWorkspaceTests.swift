@@ -199,6 +199,42 @@ final class ProfileTargetWorkspaceTests: XCTestCase {
         XCTAssertEqual(store.document.profileTargets[online], onlineRow.id)
     }
 
+    func testUndoRemovePreservesReplacementProfileTarget() throws {
+        let store = OutputProfileStore()
+        let home = OutputWorkspaceRecord.primaryID
+        let first = try XCTUnwrap(store.document.destinations.first)
+        var second = OutputDestinationConfiguration(name: "Stage", profileID: OutputProfile.confidenceID, monitor: nil)
+        second.workspaceID = home
+        store.edit { $0.destinations.append(second) }
+        store.setDefaultDestination(first.id, workspace: home)
+        let removed = try XCTUnwrap(store.removeOutputConfiguration(first.id))
+        XCTAssertNil(store.document.profileTargets[home])
+        store.setDefaultDestination(second.id, workspace: home)
+        XCTAssertNil(store.restoreOutputConfiguration(removed))
+        XCTAssertEqual(store.document.profileTargets[home], second.id,
+                       "Undo must not overwrite a Profile Target chosen after the removal")
+        XCTAssertFalse(try XCTUnwrap(store.document.destinations.first { $0.id == first.id }).enabled)
+    }
+
+    func testUndoRemoveDoesNotSeedWhenProfileTargetIsNone() throws {
+        let store = OutputProfileStore()
+        let home = OutputWorkspaceRecord.primaryID
+        let first = try XCTUnwrap(store.document.destinations.first)
+        var second = OutputDestinationConfiguration(name: "Spare", profileID: OutputProfile.confidenceID, monitor: nil)
+        second.workspaceID = home
+        store.edit { $0.destinations.append(second) }
+        store.setDefaultDestination(nil, workspace: home)
+        XCTAssertNil(store.document.profileTargets[home])
+        let removed = try XCTUnwrap(store.removeOutputConfiguration(second.id))
+        XCTAssertNil(removed.editingTargetWorkspaceID)
+        XCTAssertNil(store.document.profileTargets[home])
+        XCTAssertNil(store.restoreOutputConfiguration(removed))
+        XCTAssertNil(store.document.profileTargets[home],
+                     "Undo must not treat restoration as Add Output seeding")
+        XCTAssertNotNil(store.document.destinations.first { $0.id == first.id })
+        XCTAssertNotNil(store.document.destinations.first { $0.id == second.id })
+    }
+
     func testDualWindowQuickEditGenerationIsWorkspaceScoped() throws {
         let store = OutputProfileStore()
         let home = OutputWorkspaceRecord.primaryID

@@ -36,13 +36,17 @@ extension OutputProfileStore {
         guard !needsProfile || document.profiles.count < 128 else {
             return "The appearance limit has been reached. Remove an unused appearance before restoring this output."
         }
-        edit { next in
+        // Skip Add Output seeding: Undo must not invent a Profile Target when the
+        // operator chose None or another output after the removal.
+        edit(seedProfileTargetsForNewDestinations: false) { next in
             var restored = saved; restored.enabled = false
             if needsProfile { next.profiles.append(removed.profile) }
             next.destinations.insert(restored, at: min(removed.index, next.destinations.count))
+            // Match the music route: only refill an empty Profile Target slot.
             if let workspaceID = removed.editingTargetWorkspaceID,
                next.workspaces.contains(where: { $0.id == workspaceID }),
-               restored.workspaceID == workspaceID {
+               restored.workspaceID == workspaceID,
+               next.profileTargets[workspaceID] == nil {
                 next.profileTargets[workspaceID] = saved.id
             }
             if removed.wasMusicRoute && next.backgroundAudioDestinationID == nil { next.backgroundAudioDestinationID = saved.id }

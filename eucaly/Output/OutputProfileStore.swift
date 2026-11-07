@@ -262,11 +262,15 @@ final class OutputProfileStore: ObservableObject {
         let id = UUID(); observers[id] = action; return id
     }
     func removeObserver(_ id: UUID) { observers.removeValue(forKey: id) }
-    func edit(_ action: (inout OutputProfileDocument) -> Void) {
+    /// - Parameter seedProfileTargetsForNewDestinations: Add Output seeds a missing
+    ///   Profile Target. Undo Remove must pass `false` so restoring a row cannot
+    ///   invent a target when the operator left None or chose another output.
+    func edit(_ action: (inout OutputProfileDocument) -> Void,
+              seedProfileTargetsForNewDestinations seedNewTargets: Bool = true) {
         var next = document; action(&next)
         next.restoreBuiltInProfileNames()
         sanitizeProfileTargets(&next)
-        seedProfileTargetsForNewDestinations(from: document, into: &next)
+        if seedNewTargets { seedProfileTargetsForNewDestinations(from: document, into: &next) }
         if !next.destinations.contains(where: { $0.id == next.backgroundAudioDestinationID && $0.isNetworkDestination }) { next.backgroundAudioDestinationID = nil }
         guard next.isValid, next != document else { return }
         bumpQuickControlsGenerations(from: document, to: next)
