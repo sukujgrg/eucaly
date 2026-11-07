@@ -54,8 +54,11 @@ final class PlaylistStore: ObservableObject {
         }
 
         do {
+            let previousTitles = previousRoot?.standardizedFileURL == root.standardizedFileURL
+                ? preservedTitlesByURL()
+                : [:]
             entries = try readEntries()
-            republishSidebarItems(titleForURL: { $0.lastPathComponent })
+            republishSidebarItems(titleForURL: { Self.temporaryTitle(for: $0, preserving: previousTitles) })
             return true
         } catch {
             if previousRoot != root {
@@ -153,9 +156,26 @@ final class PlaylistStore: ObservableObject {
 
     private func resolveExistingURL(for entry: PlaylistEntry) -> URL? {
         guard let root = rootURL else { return nil }
-        let url = root.appendingPathComponent(entry.relativePath)
+        let url = root.appendingPathComponent(entry.relativePath).standardizedFileURL
         guard fileManager.fileExists(atPath: url.path) else { return nil }
         return url
+    }
+
+    /// Keep previously resolved display titles across load/mutation republishes so
+    /// filename is only a temporary fallback until the workspace refreshes from
+    /// the shared inventory cache.
+    private func preservedTitlesByURL() -> [URL: String] {
+        var titles: [URL: String] = [:]
+        titles.reserveCapacity(sidebarItems.count)
+        for item in sidebarItems {
+            guard let url = resolvedURLsByID[item.id]?.standardizedFileURL else { continue }
+            titles[url] = item.title
+        }
+        return titles
+    }
+
+    private static func temporaryTitle(for url: URL, preserving previous: [URL: String]) -> String {
+        previous[url.standardizedFileURL] ?? url.lastPathComponent
     }
 
     private func scheduleSidebarMissing(_ id: UUID) {
@@ -226,8 +246,9 @@ final class PlaylistStore: ObservableObject {
             let data = try JSONEncoder().encode(PlaylistDocument(version: 1, entries: latestEntries))
             try fileManager.createDirectory(at: playlistDirectoryURL, withIntermediateDirectories: true)
             try data.write(to: playlistDocumentURL, options: .atomic)
+            let previousTitles = preservedTitlesByURL()
             entries = latestEntries
-            republishSidebarItems(titleForURL: { $0.lastPathComponent })
+            republishSidebarItems(titleForURL: { Self.temporaryTitle(for: $0, preserving: previousTitles) })
             return true
         } catch {
             lastError = "Could not save Playlist: \(error.localizedDescription)"
